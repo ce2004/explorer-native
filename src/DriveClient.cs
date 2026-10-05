@@ -797,6 +797,27 @@ namespace ExplorerNative
         }
 
         /// <summary>A file's own name in Drive, which the letter may show cleaned up.</summary>
+        /// <summary>
+        /// Whether a folder is still there and not in the trash. False for one
+        /// that is trashed (its children then list as empty, which must never be
+        /// read as "everything was deleted") or gone for good (404). Throws when
+        /// Drive cannot be asked.
+        /// </summary>
+        internal async Task<bool> FolderAlive(string folderId, CancellationToken token)
+        {
+            using var request = await Request(HttpMethod.Get,
+                $"{Files}/{Uri.EscapeDataString(folderId)}?fields=id,trashed&supportsAllDrives=true", token);
+            using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token, _slowMetadata);
+            var body = await response.Content.ReadAsStringAsync(token);
+            if ((int)response.StatusCode == 404) return false;
+            if (!response.IsSuccessStatusCode)
+                throw new InvalidOperationException(
+                    $"{(int)response.StatusCode}: " + Explain((int)response.StatusCode, body));
+
+            using var doc = JsonDocument.Parse(body);
+            return !(doc.RootElement.TryGetProperty("trashed", out var t) && t.ValueKind == JsonValueKind.True);
+        }
+
         internal async Task<string> NameOf(string fileId, CancellationToken token)
         {
             using var request = await Request(HttpMethod.Get,

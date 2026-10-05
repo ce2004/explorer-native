@@ -363,6 +363,24 @@ namespace ExplorerNative
             var root = pair.LocalFolder;
             var name = DisplayName(pair);
 
+            // A root that has gone (a USB drive unplugged, the folder removed in
+            // Windows Explorer, the Drive folder trashed on the website) must
+            // never read as "every file in it was deleted". A trashed Drive
+            // folder even lists as empty. So both roots are checked before
+            // anything is listed, and a missing one pauses the pair until it
+            // is back; nothing is planned, so nothing can be deleted.
+            bool localThere = Directory.Exists(root);
+            bool driveThere = await client.FolderAlive(pair.DriveFolderId, token).ConfigureAwait(false);
+            if (SyncSafety.RootProblem(localThere, driveThere) is string gone)
+            {
+                bool newProblem = gone != state.Problem;
+                state.Problem = gone;
+                SaveState(pair.Id, state);
+                SetStatus(pair.Id, new PairStatus(state.LastSyncedUtc, gone, false));
+                if (newProblem) _notify("sync.paused", $"{name} {gone}");
+                return;
+            }
+
             string? refuse = Refusal(root);
             if (refuse != null)
             {

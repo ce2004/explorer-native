@@ -321,6 +321,96 @@ namespace ExplorerNative
     }
 
     /// <summary>
+    /// What makes a pass unsafe to plan at all, and what the delete warning
+    /// in the window says. Pure, so both are tested directly.
+    /// </summary>
+    public static class SyncSafety
+    {
+        /// <summary>
+        /// Why a pair must pause rather than sync, or null. A missing root is
+        /// never planned against: every file in it would read as deleted.
+        /// </summary>
+        public static string? RootProblem(bool localFolderThere, bool driveFolderThere) =>
+            !driveFolderThere ? "paused: its Google Drive folder is gone. Remove the sync or restore the folder."
+            : !localFolderThere ? "paused: its PC folder is gone. Remove the sync or restore the folder."
+            : null;
+
+        /// <summary>
+        /// The sync pairs a delete of <paramref name="paths"/> would cut an end
+        /// off, and whether it is the Drive end. A pair is touched when a path is
+        /// its PC folder or holds it, or is its Drive folder on the drive letter
+        /// (by id, through the mount's map, never by walking) or holds it (its
+        /// Drive path mapped onto the letter).
+        /// </summary>
+        public static List<(DriveSyncPair Pair, bool DriveSide)> PairsTouchedBy(
+            IEnumerable<string> paths, IEnumerable<DriveSyncPair> pairs, string? driveLetter, Func<string, string?> idOf)
+        {
+            static string Norm(string p) => p.Replace('/', '\\').TrimEnd('\\');
+            static bool AtOrUnder(string inner, string outer) =>
+                inner.Equals(outer, StringComparison.OrdinalIgnoreCase) ||
+                inner.StartsWith(outer + "\\", StringComparison.OrdinalIgnoreCase);
+
+            string? letter = string.IsNullOrEmpty(driveLetter) ? null : Norm(driveLetter);
+            var result = new List<(DriveSyncPair, bool)>();
+            var list = pairs.ToList();
+
+            foreach (var raw in paths)
+            {
+                var path = Norm(raw);
+                bool onDrive = letter != null && AtOrUnder(path, letter);
+                foreach (var pair in list)
+                {
+                    if (result.Any(r => r.Item1.Id == pair.Id)) continue;
+
+                    if (!onDrive && pair.LocalFolder.Length > 0 && AtOrUnder(Norm(pair.LocalFolder), path))
+                    {
+                        result.Add((pair, false));
+                        continue;
+                    }
+
+                    if (!onDrive) continue;
+                    if (idOf(raw) is string id && id == pair.DriveFolderId)
+                    {
+                        result.Add((pair, true));
+                        continue;
+                    }
+
+                    // "My Drive/Music" is G:\Music; a shared drive keeps its folder name.
+                    var drivePath = pair.DriveFolderPath ?? "";
+                    var rest = drivePath.StartsWith("My Drive", StringComparison.OrdinalIgnoreCase)
+                        ? drivePath["My Drive".Length..].TrimStart('/')
+                        : drivePath;
+                    var mapped = rest.Length == 0 ? letter! : letter + "\\" + Norm(rest);
+                    if (drivePath.Length > 0 && AtOrUnder(mapped, path)) result.Add((pair, true));
+                }
+            }
+            return result;
+        }
+
+        /// <summary>
+        /// The warning before a folder that is part of sync pairs is deleted
+        /// in Explorer Native. One paragraph per pair, then the buttons do the rest.
+        /// </summary>
+        public static string DeleteWarning(IReadOnlyList<DriveSyncPair> pairs, bool deletingDriveSide)
+        {
+            var text = new System.Text.StringBuilder();
+            foreach (var pair in pairs)
+            {
+                var name = string.IsNullOrWhiteSpace(pair.Name) ? pair.LocalFolder : pair.Name.Trim();
+                text.Append($"This folder is part of the sync pair {name}. Deleting it follows that sync's settings. ")
+                    .Append("Remove the sync first if you only want to delete it here. ");
+                if (pair.CopyDeletes)
+                    text.Append("If you delete it anyway, it is deleted on both sides: the other copy goes to ")
+                        .Append(deletingDriveSide ? "the Recycle Bin." : "the Google Drive trash.");
+                else
+                    text.Append("If you delete it anyway, only this side is deleted; the other copy is kept.");
+                text.Append("\n\n");
+            }
+            return text.ToString().TrimEnd();
+        }
+    }
+
+    /// <summary>
     /// Disk space and resume arithmetic for the monitor, kept pure so it is
     /// tested directly. A disk is never filled past a margin: the larger of
     /// 2 gigabytes or 5 percent of the volume.

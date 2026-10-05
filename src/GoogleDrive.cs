@@ -1327,6 +1327,17 @@ namespace ExplorerNative
         /// on its caller's thread until its first await. It goes to a worker, and
         /// giving up on it is possible even though the listing itself carries on.
         /// </summary>
+        /// <summary>
+        /// The Drive id the mount already knows for a path on the letter, or
+        /// null. Only the map: nothing is listed and nothing is read.
+        /// </summary>
+        internal string? KnownIdOf(string path)
+        {
+            DriveMount? mount;
+            lock (_gate) mount = _mount;
+            return mount?.IdFor(path);
+        }
+
         private static async Task<string?> IdOrRelist(DriveMount mount, string path, CancellationToken token)
         {
             var id = mount.IdFor(path);

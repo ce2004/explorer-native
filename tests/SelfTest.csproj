@@ -21,7 +21,7 @@
     <Compile Include="..\src\SizeFormatter.cs" />
     <Compile Include="..\src\TimeFormatter.cs" />
     <Compile Include="..\src\FileLauncher.cs" />
-    <Compile Include="..\src\Settings.cs" /><Compile Include="..\src\Notifications.cs" /><Compile Include="..\src\Speech.cs" /><Compile Include="..\src\SpeechForm.cs" /><Compile Include="..\src\SettingChoices.cs" /><Compile Include="..\src\LimiterForm.cs" /><Compile Include="..\src\SpeedForm.cs" /><Compile Include="..\src\AudioReport.cs" /><Compile Include="..\src\ShortcutBox.cs" /><Compile Include="..\src\ShortcutsForm.cs" /><Compile Include="..\src\SettingsForm.cs" /><Compile Include="..\src\FormatsForm.cs" /><Compile Include="..\src\DriveSync.cs" /><Compile Include="..\src\DriveMonitor.cs" /><Compile Include="..\src\DriveMonitorForm.cs" /><Compile Include="..\src\PromptForm.cs" />
+    <Compile Include="..\src\Settings.cs" /><Compile Include="..\src\Notifications.cs" /><Compile Include="..\src\Speech.cs" /><Compile Include="..\src\SpeechForm.cs" /><Compile Include="..\src\SettingChoices.cs" /><Compile Include="..\src\LimiterForm.cs" /><Compile Include="..\src\SpeedForm.cs" /><Compile Include="..\src\AudioReport.cs" /><Compile Include="..\src\ShortcutBox.cs" /><Compile Include="..\src\ShortcutsForm.cs" /><Compile Include="..\src\SettingsForm.cs" /><Compile Include="..\src\FormatsForm.cs" /><Compile Include="..\src\DriveSync.cs" /><Compile Include="..\src\DriveMonitor.cs" /><Compile Include="..\src\DriveMonitorForm.cs" /><Compile Include="..\src\SyncDeleteForm.cs" /><Compile Include="..\src\PromptForm.cs" />
     <Compile Include="..\src\HotkeyManager.cs" />
     <Compile Include="..\src\Shortcut.cs" />
     <Compile Include="..\src\ReservedShortcuts.cs" />

@@ -511,7 +511,105 @@ namespace ExplorerNative
             DriveLetterMoveTests();
             DriveMonitorTests();
             DriveMonitorResilienceTests();
+            SyncDeleteTests();
             AccountButtonTests();
+        }
+
+        /// <summary>
+        /// A pair whose folder is gone never deletes anything, and deleting a
+        /// synced folder in the window says what will happen on the other side.
+        /// </summary>
+        private static void SyncDeleteTests()
+        {
+            var t0 = new DateTime(2026, 10, 1, 12, 0, 0, DateTimeKind.Utc);
+
+            // Why the guard exists: a trashed Drive folder lists as empty, and
+            // with deletes on the planner would then recycle every PC file.
+            var local = new Dictionary<string, SyncFile>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["a.flac"] = new(5, t0), ["b.flac"] = new(6, t0),
+            };
+            var last = new Dictionary<string, SyncBase>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["a.flac"] = new(5, t0, 5, t0, "A"), ["b.flac"] = new(6, t0, 6, t0, "B"),
+            };
+            var unguarded = SyncPlanner.Plan(SyncMode.TwoWay, true, local,
+                new Dictionary<string, SyncFile>(StringComparer.OrdinalIgnoreCase), last);
+            Check("an empty Drive listing alone would read as everything deleted",
+                unguarded.All(a => a.Kind == SyncActionKind.DeleteLocal) && unguarded.Count == 2);
+            Equal("so a gone Drive folder pauses the pair instead",
+                "paused: its Google Drive folder is gone. Remove the sync or restore the folder.",
+                SyncSafety.RootProblem(localFolderThere: true, driveFolderThere: false) ?? "");
+            Equal("and so does a gone PC folder",
+                "paused: its PC folder is gone. Remove the sync or restore the folder.",
+                SyncSafety.RootProblem(localFolderThere: false, driveFolderThere: true) ?? "");
+            Check("both there: it syncs, which is how it resumes by itself",
+                SyncSafety.RootProblem(true, true) == null);
+            var engine = SourceFile("DriveMonitor.cs") ?? "";
+            int guard = engine.IndexOf("SyncSafety.RootProblem(", StringComparison.Ordinal);
+            int scan = engine.IndexOf("var local = ScanLocal(root", StringComparison.Ordinal);
+            Check("the engine checks both roots before it lists or plans anything", guard > 0 && scan > guard);
+            Check("and asks Drive whether its folder is trashed, not just listable",
+                engine.Contains("client.FolderAlive(pair.DriveFolderId", StringComparison.Ordinal));
+
+            // The warning's wording.
+            var on = new DriveSyncPair { Name = "Music", LocalFolder = @"C:\Music", DriveFolderPath = "My Drive/Music", DriveFolderId = "M", CopyDeletes = true };
+            var off = new DriveSyncPair { Name = "Docs", LocalFolder = @"D:\Docs", DriveFolderPath = "My Drive/Docs", DriveFolderId = "D" };
+            var onText = SyncSafety.DeleteWarning(new[] { on }, deletingDriveSide: false);
+            Check("the warning names the pair and says to remove the sync first",
+                onText.StartsWith("This folder is part of the sync pair Music. Deleting it follows that sync's settings. " +
+                                  "Remove the sync first if you only want to delete it here."));
+            Check("deletes on, deleting the PC side: the other copy goes to the Google Drive trash",
+                onText.EndsWith("If you delete it anyway, it is deleted on both sides: the other copy goes to the Google Drive trash."));
+            Check("deletes on, deleting the Drive side: the other copy goes to the Recycle Bin",
+                SyncSafety.DeleteWarning(new[] { on }, deletingDriveSide: true).EndsWith("goes to the Recycle Bin."));
+            Check("deletes off: only this side is deleted",
+                SyncSafety.DeleteWarning(new[] { off }, false)
+                    .EndsWith("If you delete it anyway, only this side is deleted; the other copy is kept."));
+            var both = SyncSafety.DeleteWarning(new[] { on, off }, false);
+            Check("several pairs are all listed in one warning", both.Contains("sync pair Music") && both.Contains("sync pair Docs"));
+
+            // Which pairs a delete touches.
+            var pairs = new[] { on, off };
+            string Touched(params string[] paths) => string.Join(",",
+                SyncSafety.PairsTouchedBy(paths, pairs, "G:", p => p.Equals(@"G:\Tunes", StringComparison.OrdinalIgnoreCase) ? "M" : null)
+                    .Select(t => t.Pair.Name + (t.DriveSide ? ":drive" : ":pc")));
+            Equal("the PC folder itself", "Music:pc", Touched(@"C:\Music"));
+            Equal("a folder holding it", "Music:pc", Touched(@"C:\"));
+            Equal("a folder inside it is just a delete, synced as usual", "", Touched(@"C:\Music\Album"));
+            Equal("a sibling that only starts with the same letters is not it", "", Touched(@"C:\Musical"));
+            Equal("the Drive folder on the letter, matched by its Drive id", "Music:drive", Touched(@"G:\Tunes"));
+            Equal("or by its Drive path", "Docs:drive", Touched(@"G:\Docs"));
+            Equal("the whole letter holds every Drive folder", "Music:drive,Docs:drive", Touched(@"G:\"));
+            Equal("one selection touching two pairs lists both", "Music:pc,Docs:pc", Touched(@"C:\Music", @"D:\Docs"));
+            Equal("an unrelated folder touches nothing", "", Touched(@"E:\Other"));
+
+            // The dialog: Cancel is the default and Escape, and the buttons are in order.
+            string error = "";
+            string accept = "", escape = "", order = "";
+            var thread = new Thread(() =>
+            {
+                try
+                {
+                    using var form = new SyncDeleteForm(new[] { on }, false);
+                    accept = (form.AcceptButton as Button)?.Text ?? "";
+                    escape = (form.CancelButton as Button)?.Text ?? "";
+                    order = string.Join("|", FindAll<Button>(form).OrderBy(b => b.TabIndex).Select(b => b.Text));
+                }
+                catch (Exception ex) { error = ex.GetType().Name + ": " + ex.Message; }
+            });
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
+            thread.Join(TimeSpan.FromSeconds(30));
+            Equal("the sync warning builds", "", error);
+            Equal("Enter cancels", "Cancel", accept);
+            Equal("so does Escape", "Cancel", escape);
+            Equal("the buttons, in order", "&Remove the sync, then delete|&Delete anyway|Cancel", order);
+            var main = SourceFile("MainForm.cs") ?? "";
+            int remove = main.IndexOf("RemoveSyncPairs(touched.Select", StringComparison.Ordinal);
+            int deleting = main.IndexOf("outcome = await TrashOnDrive(paths);", StringComparison.Ordinal);
+            Check("Delete and Shift+Delete both ask, and the pair goes before any file does",
+                remove > 0 && deleting > remove);
         }
 
         /// <summary>

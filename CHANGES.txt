@@ -10,6 +10,8 @@ Changes made while offline, or while Explorer Native was closed, are found and s
 Big transfers carry on where they stopped after the connection drops, instead of starting again. Downloads are checked against Google Drive's copy before they replace anything.
 Before adding a folder, and before each file, the monitor checks there is room: it never fills the PC's disk past a margin, the larger of 2 gigabytes or 5 percent of the disk, and never asks for more than Google Drive has free. When a folder runs out of room it pauses, says so, and carries on by itself when there is space again.
 A big sync says how much there is to do when it starts and again at a quarter, half and three quarters, and the monitor window shows how far each folder has got.
+Deleting a folder that is part of a sync pair warns first and says what will happen on the other side. You can remove the sync and delete only here, delete anyway, or cancel.
+If a monitored folder disappears on either side, because a USB drive was unplugged or the folder was deleted outside Explorer Native or trashed in Google Drive, the sync pauses and says so instead of deleting anything. It carries on by itself when the folder is back.
 The Google Drive account button in Preferences says what it will do: Connect, Disconnect while Drive is working, or Reconnect when Google needs you to sign in again. Disconnect keeps you signed in.
 
 1.0.4

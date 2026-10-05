@@ -6046,6 +6046,57 @@ namespace ExplorerNative
             return null;
         }
 
+        /// <summary>Removes sync pairs and what was remembered about them, saved at once.</summary>
+        private void RemoveSyncPairs(HashSet<string> ids)
+        {
+            var monitor = DriveMonitor.Current;
+            var remaining = (monitor?.Pairs ?? _settings.DriveSyncPairs).Where(p => !ids.Contains(p.Id)).ToList();
+            if (monitor != null) monitor.SetPairs(remaining);
+            else
+            {
+                _settings.DriveSyncPairs = remaining;
+                _settings.Save();
+            }
+            DriveMonitor.ForgetRemovedPairs(remaining);
+        }
+
+        /// <summary>
+        /// The other side's folder of each pair, after its first side was
+        /// deleted: the PC folder to the Recycle Bin, or the Drive folder to the
+        /// Drive trash through the API.
+        /// </summary>
+        private async Task DeleteOtherSyncEnds(List<(DriveSyncPair Pair, bool DriveSide)> ends)
+        {
+            if (ends.Count == 0) return;
+            var owner = Handle;
+            var client = Drive?.Client;
+            var errors = new List<string>();
+
+            await Task.Run(async () =>
+            {
+                foreach (var (pair, driveSide) in ends)
+                {
+                    try
+                    {
+                        if (driveSide)
+                        {
+                            if (Directory.Exists(pair.LocalFolder) && !ShellDelete.Recycle(pair.LocalFolder, owner))
+                                errors.Add($"{pair.LocalFolder}: kept, because it could only have been deleted permanently");
+                        }
+                        else if (client == null)
+                            errors.Add($"{pair.DriveFolderPath}: Google Drive is not connected, so it was not trashed");
+                        else
+                            await client.Trash(pair.DriveFolderId, CancellationToken.None);
+                    }
+                    catch (Exception ex) { errors.Add($"{DriveMonitor.DisplayName(pair)}: {ex.Message}"); }
+                }
+            });
+
+            if (IsDisposed) return;
+            if (errors.Count > 0) Announce("The other copy was not deleted. " + string.Join("; ", errors), isError: true);
+            else AnnounceOperation("Deleted on both sides");
+        }
+
         private async void DeleteSelected(bool permanentOverride)
         {
             if (IsDrivesView) { Announce("Cannot delete a drive", isError: true); return; }
@@ -6079,7 +6130,36 @@ namespace ExplorerNative
                 return;
             }
 
-            if (_settings.ConfirmDelete)
+            // A folder tied to a Google Drive sync pair is asked about first, in
+            // one dialog for every pair the selection touches. That dialog is the
+            // confirmation, so the ordinary one is not asked as well.
+            var monitor = DriveMonitor.Current;
+            var touched = SyncSafety.PairsTouchedBy(paths,
+                monitor?.Pairs ?? (IEnumerable<DriveSyncPair>)_settings.DriveSyncPairs,
+                Drive?.Letter, p => Drive?.KnownIdOf(p));
+            var syncChoice = SyncDeleteChoice.Cancel;
+            if (touched.Count > 0)
+            {
+                using (var ask = new SyncDeleteForm(touched.Select(t => t.Pair).ToList(), onDrive))
+                {
+                    ask.ShowDialog(this);
+                    syncChoice = ask.Choice;
+                }
+                if (syncChoice == SyncDeleteChoice.Cancel)
+                {
+                    AnnounceOperation("delete.cancelled", "Delete cancelled");
+                    RestoreListFocus();
+                    return;
+                }
+
+                // The pairs go before any file does. Removed afterwards, a
+                // monitor pass running during a long Recycle Bin delete would see
+                // half the files gone and, with deletes on, copy those deletes to
+                // the other side.
+                RemoveSyncPairs(touched.Select(t => t.Pair.Id).ToHashSet());
+            }
+
+            if (_settings.ConfirmDelete && touched.Count == 0)
             {
                 var what = paths.Length == 1 ? $"\"{Path.GetFileName(paths[0])}\"" : $"{paths.Length} items";
 
@@ -6193,6 +6273,11 @@ namespace ExplorerNative
             finally { _deleting = false; _suppressWatch--; }
 
             if (IsDisposed) return;
+
+            // Delete anyway, with deletes on: the other end of each pair goes
+            // too — to the Recycle Bin or the Drive trash, never for good.
+            if (syncChoice == SyncDeleteChoice.DeleteAnyway)
+                await DeleteOtherSyncEnds(touched.Where(t => t.Pair.CopyDeletes).ToList());
 
             await RefreshAsync(landOn, folder: origin);
             if (IsDisposed) return;
