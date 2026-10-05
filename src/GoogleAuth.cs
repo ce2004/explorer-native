@@ -202,37 +202,83 @@ namespace ExplorerNative
         public const string ClientFileName = "client_secret.json";
 
         /// <summary>
-        /// Copies a desktop-client JSON, as the Cloud console downloads it, into
-        /// <paramref name="directory"/> as <see cref="ClientFileName"/>, replacing
-        /// any client file already there. Returns null on success, otherwise what
-        /// is wrong with the file. <paramref name="clientChanged"/> is true when
-        /// it names a different client from the one before, which means a saved
-        /// sign-in belongs to the old one and has to be made again.
+        /// Asks Google whether a client ID and secret are real, without a
+        /// browser: the token endpoint is sent a made-up authorization code.
+        /// Google checks the client first, so a wrong ID or secret comes back
+        /// as invalid_client, and a right one gets as far as complaining about
+        /// the code (invalid_grant). Returns null when Google accepts the pair,
+        /// otherwise what to tell the person.
         /// </summary>
-        public static string? ImportClientJson(string sourcePath, string directory, out bool clientChanged)
+        public static async Task<string?> CheckClientAsync(string clientId, string clientSecret, CancellationToken token)
         {
-            clientChanged = false;
-
-            string text;
-            try { text = ProtectedFile.ReadAllText(sourcePath); }
-            catch (Exception ex) { return "The file could not be read: " + ex.Message; }
+            var form = new Dictionary<string, string>
+            {
+                ["grant_type"] = "authorization_code",
+                ["code"] = "explorer-native-client-check",
+                ["redirect_uri"] = "http://127.0.0.1",
+                ["client_id"] = clientId,
+                ["client_secret"] = clientSecret,
+            };
 
             try
             {
-                using var doc = JsonDocument.Parse(text);
-                if (!doc.RootElement.TryGetProperty("installed", out var node))
-                    return doc.RootElement.TryGetProperty("web", out _)
-                        ? "This is a web application client. Create a Desktop app client in the Google " +
-                          "Cloud console and download that one."
-                        : "This is not a Google OAuth client file.";
-                if (!node.TryGetProperty("client_id", out var id) || string.IsNullOrWhiteSpace(id.GetString()) ||
-                    !node.TryGetProperty("client_secret", out var secret) || string.IsNullOrWhiteSpace(secret.GetString()))
-                    return "The file has no client ID or client secret in it.";
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+                using var response = await http.PostAsync(TokenEndpoint, new FormUrlEncodedContent(form), token)
+                    .ConfigureAwait(false);
+                var body = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+
+                string error = "";
+                try
+                {
+                    using var doc = JsonDocument.Parse(body);
+                    if (doc.RootElement.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String)
+                        error = e.GetString() ?? "";
+                }
+                catch (JsonException) { }
+
+                return error switch
+                {
+                    "invalid_grant" => null,
+                    "invalid_client" => "Google does not accept that client ID and secret. Check both, " +
+                                        "and that the client is a Desktop app.",
+                    "unauthorized_client" => "Google knows that client but will not let it sign in. Make sure " +
+                                             "it is a Desktop app client.",
+                    _ => $"Google gave an unexpected answer ({(int)response.StatusCode} {error}).",
+                };
             }
-            catch (JsonException)
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
             {
-                return "This is not a Google OAuth client file.";
+                return "Google could not be reached to check them. Check the internet connection and press OK again.";
             }
+        }
+
+        /// <summary>
+        /// Saves a client ID and secret into <paramref name="directory"/> as
+        /// <see cref="ClientFileName"/>, encrypted, replacing any client file
+        /// already there. Returns null on success, otherwise what went wrong.
+        /// <paramref name="clientChanged"/> is true when it names a different
+        /// client from the one before, which means a saved sign-in belongs to
+        /// the old one and has to be made again.
+        /// </summary>
+        public static string? SaveClient(string clientId, string clientSecret, string directory, out bool clientChanged)
+        {
+            clientChanged = false;
+            if (string.IsNullOrWhiteSpace(clientId) || string.IsNullOrWhiteSpace(clientSecret))
+                return "Enter both the client ID and the client secret.";
+
+            // The same shape the Cloud console downloads, so ReadClientJson
+            // reads it like any other.
+            var text = JsonSerializer.Serialize(new Dictionary<string, object>
+            {
+                ["installed"] = new Dictionary<string, object>
+                {
+                    ["client_id"] = clientId.Trim(),
+                    ["client_secret"] = clientSecret.Trim(),
+                    ["auth_uri"] = "https://accounts.google.com/o/oauth2/auth",
+                    ["token_uri"] = TokenEndpoint,
+                    ["redirect_uris"] = new[] { "http://localhost" },
+                },
+            });
 
             try
             {

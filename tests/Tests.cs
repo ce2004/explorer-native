@@ -3552,25 +3552,29 @@ namespace ExplorerNative
                 Equal("the id comes back", "abc.apps.googleusercontent.com", found?.ClientId ?? "");
                 Equal("and the secret", "GOCSPX-xyz", found?.ClientSecret ?? "");
 
-                // Preferences, Choose credentials file.
+                // Preferences, Google client ID and secret.
                 var into = Path.Combine(dir, "settings");
-                Check("a web client is refused on import",
-                    GoogleAuth.ImportClientJson(Path.Combine(dir, "web.json"), into, out _) != null);
-                Check("junk is refused on import",
-                    GoogleAuth.ImportClientJson(Path.Combine(dir, "unrelated.json"), into, out _) != null);
-                Check("nothing was written for either", GoogleAuth.ReadClientJson(into) == null);
+                Check("an empty secret is refused",
+                    GoogleAuth.SaveClient("abc.apps.googleusercontent.com", " ", into, out _) != null);
+                Check("nothing was written for it", GoogleAuth.ReadClientJson(into) == null);
 
                 Directory.CreateDirectory(into);
                 File.WriteAllText(Path.Combine(into, "old-client.json"),
                     "{\"installed\":{\"client_id\":\"old\",\"client_secret\":\"s\"}}");
-                Check("a desktop client imports",
-                    GoogleAuth.ImportClientJson(Path.Combine(dir, "client_secret.json"), into, out bool changed) == null);
+                Check("an ID and secret save",
+                    GoogleAuth.SaveClient(" abc.apps.googleusercontent.com ", "GOCSPX-xyz", into, out bool changed) == null);
                 Check("a different client is reported as a change", changed);
                 Check("the old client file is gone", !File.Exists(Path.Combine(into, "old-client.json")));
-                Equal("and the new one is what is read", "abc.apps.googleusercontent.com",
+                Equal("and the new one is what is read, trimmed", "abc.apps.googleusercontent.com",
                     GoogleAuth.ReadClientJson(into)?.ClientId ?? "");
-                GoogleAuth.ImportClientJson(Path.Combine(dir, "client_secret.json"), into, out changed);
+                Equal("with its secret", "GOCSPX-xyz", GoogleAuth.ReadClientJson(into)?.ClientSecret ?? "");
+                GoogleAuth.SaveClient("abc.apps.googleusercontent.com", "GOCSPX-xyz", into, out changed);
                 Check("the same client again is not a change", !changed);
+
+                // Google itself, when it can be reached: a made-up client is refused.
+                var verdict = GoogleAuth.CheckClientAsync("123-made-up.apps.googleusercontent.com", "GOCSPX-made-up",
+                    CancellationToken.None).GetAwaiter().GetResult();
+                Check("Google refuses a made-up client ID and secret", verdict != null);
                 Check("the saved client file is not readable as text",
                     !File.ReadAllText(Path.Combine(into, GoogleAuth.ClientFileName)).Contains("GOCSPX"));
 

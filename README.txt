@@ -25,9 +25,13 @@ computer, x64 or Arm64, from https://dotnet.microsoft.com/download/dotnet/8.0
 Google Drive
 
 No Google credentials ship with the app. In Google Cloud console, create an
-OAuth client of type Desktop app and download its JSON. Then in Explorer Native
-open Preferences (Ctrl+P), Google Drive, press Choose credentials file, pick
-that JSON, and press Connect Google Drive to sign in in your browser.
+OAuth client of type Desktop app. Then in Explorer Native open Preferences
+(Ctrl+P), Google Drive, and paste its client ID and client secret into the two
+fields. When you press OK they are checked with Google; if Google accepts
+them they are saved encrypted and the browser opens for you to sign in.
+
+Everything Explorer Native saves in AppData (settings, the client ID and
+secret, the sign-in, logs) is encrypted for your Windows account.
 
 
 Updates

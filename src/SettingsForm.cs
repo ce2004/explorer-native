@@ -19,6 +19,9 @@ namespace ExplorerNative
     {
         private readonly Settings _working;
         private readonly List<Action> _applies = new();
+
+        /// <summary>Checked before OK closes the dialog; false keeps it open.</summary>
+        private Func<System.Threading.Tasks.Task<bool>>? _beforeOk;
         private readonly List<Control> _panels = new();
 
         public Settings Result => _working;
@@ -115,7 +118,23 @@ namespace ExplorerNative
             buttons.Controls.Add(ok);
             buttons.Controls.Add(reset);
 
-            ok.Click += (_, _) => { foreach (var apply in _applies) apply(); };
+            // Not a plain DialogResult button: the Google client ID and secret
+            // are checked with Google first, and a refusal keeps the dialog open.
+            ok.DialogResult = DialogResult.None;
+            bool closing = false;
+            ok.Click += async (_, _) =>
+            {
+                if (closing) return;
+                closing = true;
+                try
+                {
+                    if (_beforeOk != null && !await _beforeOk()) return;
+                    foreach (var apply in _applies) apply();
+                    DialogResult = DialogResult.OK;
+                    Close();
+                }
+                finally { closing = false; }
+            };
 
             AcceptButton = ok;
             CancelButton = cancel;
@@ -490,17 +509,24 @@ namespace ExplorerNative
         {
             bool signedIn = GoogleDrive.HasSavedSignIn;
 
-            var credentialsInfo = AddInfo(panel, CredentialsSummary());
-            var choose = new Button
+            // The client ID and secret from a Desktop app OAuth client in the
+            // person's own Google Cloud project. Nothing is compiled in. Checked
+            // with Google when OK is pressed, and saved encrypted only if Google
+            // accepts them.
+            AddInfo(panel,
+                "Google client ID and secret: from an OAuth client of type Desktop app in your own " +
+                "Google Cloud project. They are checked with Google when you press OK.");
+            var current = GoogleAuth.Credentials(GoogleDrive.CredentialsDirectory);
+            var idBox = new TextBox { Text = current?.ClientId ?? "", Width = 360, AccessibleName = "Google client ID" };
+            var secretBox = new TextBox
             {
-                Text = "Choose credentials &file…",
-                AutoSize = true,
-                Margin = new Padding(0, 4, 0, 10),
+                Text = current?.ClientSecret ?? "",
+                Width = 360,
+                UseSystemPasswordChar = true,
+                AccessibleName = "Google client secret",
             };
-            // The summary rides on the button too: a label is never focused, so
-            // NVDA would otherwise only read it by reviewing the window.
-            choose.AccessibleDescription = credentialsInfo.Text;
-            panel.Controls.Add(choose);
+            AddLabelled(panel, "Google client &ID", idBox);
+            AddLabelled(panel, "Google client s&ecret", secretBox);
 
             AddInfo(panel, signedIn
                 ? "Signed in to Google. The sign-in is remembered, so this will not be asked for again."
@@ -525,14 +551,15 @@ namespace ExplorerNative
             connect.AccessibleDescription =
                 "Switches Google Drive on and closes Preferences, so the browser opens over the "
                 + "file list rather than behind this window.";
-            connect.Click += (_, _) =>
+            connect.Click += async (_, _) =>
             {
+                if (!await _beforeOk!()) return;
                 if (GoogleAuth.Credentials(GoogleDrive.CredentialsDirectory) == null)
                 {
                     MessageBox.Show(this,
-                        "Choose your Google credentials file first, with Choose credentials file.",
+                        "Enter your Google client ID and client secret first.",
                         "Connect Google Drive", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                    choose.Focus();
+                    idBox.Focus();
                     return;
                 }
 
@@ -589,27 +616,42 @@ namespace ExplorerNative
                     "Sign out of Google", MessageBoxButtons.OK, MessageBoxIcon.Information);
             };
 
-            choose.Click += (_, _) =>
+            // Runs before OK (and Connect) close the dialog. Unchanged or empty
+            // fields pass straight through; anything new is checked with Google
+            // and the dialog stays open, on the field, if Google refuses it.
+            string savedId = idBox.Text, savedSecret = secretBox.Text;
+            _beforeOk = async () =>
             {
-                using var dialog = new OpenFileDialog
-                {
-                    Title = "Choose Google credentials file",
-                    Filter = "OAuth client file (*.json)|*.json|All files (*.*)|*.*",
-                    InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "\\Downloads",
-                };
-                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                var id = idBox.Text.Trim();
+                var secret = secretBox.Text.Trim();
+                if (id == savedId && secret == savedSecret) return true;
+                if (id.Length == 0 && secret.Length == 0) return true;
 
-                var problem = GoogleAuth.ImportClientJson(dialog.FileName, GoogleDrive.CredentialsDirectory,
-                    out bool changed);
-                if (problem != null)
+                if (id.Length == 0 || secret.Length == 0)
                 {
-                    MessageBox.Show(this, problem, "Choose credentials file",
-                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    return;
+                    MessageBox.Show(this, "Enter both the Google client ID and the client secret.",
+                        "Google Drive", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    (id.Length == 0 ? idBox : secretBox).Focus();
+                    return false;
                 }
 
-                // A saved sign-in was granted to the previous client and
-                // Google will refuse it for this one.
+                Say("Checking with Google");
+                UseWaitCursor = true;
+                string? problem;
+                try { problem = await GoogleAuth.CheckClientAsync(id, secret, System.Threading.CancellationToken.None); }
+                finally { UseWaitCursor = false; }
+
+                bool changed = false;
+                problem ??= GoogleAuth.SaveClient(id, secret, GoogleDrive.CredentialsDirectory, out changed);
+                if (problem != null)
+                {
+                    MessageBox.Show(this, problem, "Google Drive", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    idBox.Focus();
+                    return false;
+                }
+
+                // A saved sign-in was granted to the previous client, and Google
+                // refuses it for this one.
                 if (changed && GoogleDrive.HasSavedSignIn)
                 {
                     GoogleDrive.ForgetSignIn();
@@ -617,12 +659,13 @@ namespace ExplorerNative
                     connect.Text = "&Connect Google Drive";
                 }
 
-                credentialsInfo.Text = CredentialsSummary();
-                choose.AccessibleDescription = credentialsInfo.Text;
-                MessageBox.Show(this,
-                    "Credentials saved. Press Connect Google Drive to sign in.",
-                    "Choose credentials file", MessageBoxButtons.OK, MessageBoxIcon.Information);
-                connect.Focus();
+                savedId = id;
+                savedSecret = secret;
+
+                // Valid: switch Drive on, so closing Preferences signs in.
+                driveBox.Checked = true;
+                Say("Google accepted them. Signing in");
+                return true;
             };
 
             row.Controls.Add(connect);
@@ -1032,33 +1075,6 @@ namespace ExplorerNative
             };
             parent.Controls.Add(label);
             return label;
-        }
-
-        /// <summary>Whether a Google client file is in place, and which project it is for.</summary>
-        private static string CredentialsSummary()
-        {
-            try
-            {
-                var path = System.IO.Path.Combine(GoogleDrive.CredentialsDirectory, GoogleAuth.ClientFileName);
-                if (GoogleAuth.Credentials(GoogleDrive.CredentialsDirectory) == null)
-                    return "No Google credentials file yet. Choose the OAuth client JSON for a Desktop app " +
-                           "from your Google Cloud project, then connect.";
-
-                string project = "";
-                if (System.IO.File.Exists(path))
-                {
-                    using var doc = System.Text.Json.JsonDocument.Parse(ProtectedFile.ReadAllText(path));
-                    if (doc.RootElement.GetProperty("installed").TryGetProperty("project_id", out var p))
-                        project = p.GetString() ?? "";
-                }
-                return project.Length > 0
-                    ? $"Google credentials loaded, for project {project}."
-                    : "Google credentials loaded.";
-            }
-            catch
-            {
-                return "Google credentials loaded.";
-            }
         }
 
         /// <summary>"AutoRename" -> "Auto rename", so the combo reads as words.</summary>
