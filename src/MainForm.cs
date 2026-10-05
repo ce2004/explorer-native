@@ -602,6 +602,7 @@ namespace ExplorerNative
         {
             _settings = settings;
             ApplySettingsToUi();
+            if (_syncConfiguratorItem != null) _syncConfiguratorItem.Visible = DriveMonitorForm.OnFileMenu(settings);
 
             // Hidden files, sorting and folders-first change the other tab's
             // listing too, and only the front one is reloaded now.
@@ -724,6 +725,15 @@ namespace ExplorerNative
             Controls.Add(status);
         }
 
+        private ToolStripMenuItem? _syncConfiguratorItem;
+
+        /// <summary>File, Google Drive sync configurator: the folder pairs, saved as they change.</summary>
+        private void OpenSyncConfigurator()
+        {
+            using (var dialog = new DriveMonitorForm(_settings.DriveSyncPairs)) dialog.ShowDialog(this);
+            RestoreListFocus();
+        }
+
         private void BuildMenu()
         {
             var menu = new MenuStrip();
@@ -737,6 +747,14 @@ namespace ExplorerNative
             file.DropDownItems.Add(Item("&Rename", Keys.F2, RenameSelected));
             file.DropDownItems.Add(Item("&Delete", Keys.Delete, () => DeleteSelected(false)));
             file.DropDownItems.Add(Item("Delete &permanently", Keys.Shift | Keys.Delete, () => DeleteSelected(true)));
+
+            // Only while Google Drive is switched on (Connect and Disconnect
+            // switch it), decided as the menu opens and after Preferences.
+            _syncConfiguratorItem = Item("Google Drive &sync configurator...", Keys.None, OpenSyncConfigurator);
+            _syncConfiguratorItem.Visible = DriveMonitorForm.OnFileMenu(_settings);
+            file.DropDownItems.Add(_syncConfiguratorItem);
+            file.DropDownOpening += (_, _) => _syncConfiguratorItem.Visible = DriveMonitorForm.OnFileMenu(_settings);
+
             file.DropDownItems.Add(new ToolStripSeparator());
             file.DropDownItems.Add(Item("P&roperties (Alt+Enter)", Keys.None, ShowProperties));
             file.DropDownItems.Add(new ToolStripSeparator());

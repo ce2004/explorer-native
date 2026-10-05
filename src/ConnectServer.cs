@@ -613,6 +613,33 @@ namespace ExplorerNative
             bool head = r.Method == "HEAD";
             bool post = r.Method == "POST", put = r.Method == "PUT";
             if (r.Method != "GET" && !head && !post && !put) { await Error(s, 405, "Only GET, HEAD, POST and PUT.", false, token); return; }
+
+            // The web app's own files: its shell, no data, so no code needed.
+            if ((r.Method == "GET" || head) && WebAssets.TryGet(r.Path, out var asset, out var assetType))
+            {
+                await Write(s, $"HTTP/1.1 200 OK\r\nContent-Type: {assetType}\r\nContent-Length: {asset.Length}\r\n" +
+                               "Cache-Control: no-cache\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n" +
+                               "Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; " +
+                               "connect-src 'self'; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n\r\n", token);
+                if (!head) await s.WriteAsync(asset, token);
+                return;
+            }
+
+            // Who is asking, before any code: tells the web app whether to ask for one.
+            if (r.Path == "/api/whoami")
+            {
+                bool trusted = TrustedTailscaleUser(r);
+                await Json(s, 200, new
+                {
+                    needsCode = !trusted,
+                    codeOk = CodeMatches(r),
+                    user = r.Headers.TryGetValue("tailscale-user-name", out var un) ? un : null,
+                    computer = Environment.MachineName,
+                    apiVersion = 4,
+                }, head, token);
+                return;
+            }
+
             if (!Authorised(r)) { await Error(s, 401, "Wrong or missing pairing code.", head, token); return; }
             string path = r.Query.TryGetValue("path", out var p) ? p : "";
 
@@ -645,6 +672,9 @@ namespace ExplorerNative
                         await Json(s, 200, await Size(path, token), head, token);
                         break;
                     case "/api/stat":
+                    // The same, under a name ad and tracker blockers leave alone: "/stat?" is a
+                    // common blocking rule, and a blocked request never reaches the PC. The web app uses this.
+                    case "/api/details":
                         await Json(s, 200, await Stat(path, r.Query.TryGetValue("hash", out var hv) && hv == "1", token), head, token);
                         break;
                     case "/api/job":
@@ -762,7 +792,7 @@ namespace ExplorerNative
         /// <summary>The one method a route answers (HEAD goes with GET), or "" for no such route.</summary>
         private static string MethodFor(string path) => path switch
         {
-            "/api/info" or "/api/drives" or "/api/list" or "/api/file" or "/api/size" or "/api/stat" or "/api/job"
+            "/api/info" or "/api/drives" or "/api/list" or "/api/file" or "/api/size" or "/api/stat" or "/api/details" or "/api/job"
                 or "/api/upload/status" or "/api/formats" or "/api/audio" => "GET",
             "/api/rename" or "/api/delete" or "/api/mkdir" or "/api/copy" or "/api/move" or "/api/job/cancel"
                 or "/api/upload" or "/api/upload/start" or "/api/upload/finish" or "/api/upload/cancel" => "POST",
@@ -911,6 +941,7 @@ namespace ExplorerNative
                     {
                         var paths = ParseTailscalePaths(json);
                         lock (_pathsGate) _paths = paths;
+                        try { Volatile.Write(ref _ownLogin, TailscaleWeb.ParseStatus(json).Login); } catch { }
                     }
                 }
                 catch (Exception e) { _log?.Invoke("Connect: tailscale status: " + e.Message); }
@@ -1403,7 +1434,9 @@ namespace ExplorerNative
             return list;
         }
 
-        private bool Authorised(Request r)
+        private bool Authorised(Request r) => CodeMatches(r) || TrustedTailscaleUser(r);
+
+        private bool CodeMatches(Request r)
         {
             string given = r.Headers.TryGetValue("x-connect-code", out var h) ? h
                 : r.Query.TryGetValue("code", out var q) ? q : "";
@@ -1411,6 +1444,34 @@ namespace ExplorerNative
             var b = Encoding.UTF8.GetBytes(_code());
             return b.Length > 0 && CryptographicOperations.FixedTimeEquals(a, b);
         }
+
+        /// <summary>
+        /// A request Tailscale Serve proxied for the person who owns this PC. Serve
+        /// connects from loopback and names the tailnet user in Tailscale-User-Login.
+        /// </summary>
+        private bool TrustedTailscaleUser(Request r)
+        {
+            if (DateTime.UtcNow - _pathsAt > PathsFor) RefreshPaths();
+            var peer = (r.Socket?.RemoteEndPoint as IPEndPoint)?.Address;
+            string? login = r.Headers.TryGetValue("tailscale-user-login", out var l) ? l : null;
+            return TrustsServeUser(peer, login, Volatile.Read(ref _ownLogin));
+        }
+
+        /// <summary>
+        /// The web app's rule, pure for the tests. Only a loopback connection can be
+        /// Tailscale Serve, so only there is the header believed: a tailnet peer
+        /// connecting straight to the port could send any header it likes. And only
+        /// for this PC's own Tailscale login; anybody else on the tailnet enters the code.
+        /// </summary>
+        public static bool TrustsServeUser(IPAddress? peer, string? headerLogin, string? ownLogin)
+        {
+            if (peer == null || string.IsNullOrEmpty(headerLogin) || string.IsNullOrEmpty(ownLogin)) return false;
+            if (peer.IsIPv4MappedToIPv6) peer = peer.MapToIPv4();
+            return IPAddress.IsLoopback(peer) && string.Equals(headerLogin, ownLogin, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>This PC's Tailscale login, from <c>tailscale status --json</c>; null until read.</summary>
+        private string? _ownLogin;
 
         // MARK: Drives and folders
 

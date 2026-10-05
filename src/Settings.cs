@@ -476,8 +476,8 @@ namespace ExplorerNative
         public string GoogleDriveLetter { get; set; } = "G";
 
         /// <summary>
-        /// Folders kept in step with Google Drive by the monitor (Preferences,
-        /// Google Drive, Configure Google Drive monitor). Empty by default.
+        /// Folders kept in step with Google Drive by the monitor (File, Google
+        /// Drive sync configurator). Empty by default.
         /// </summary>
         public List<DriveSyncPair> DriveSyncPairs { get; set; } = new();
 
@@ -486,6 +486,12 @@ namespace ExplorerNative
         /// run; the tray's Phone connection item shows it. Not in Preferences: there is nothing to choose.
         /// </summary>
         public string ConnectCode { get; set; } = "";
+
+        /// <summary>
+        /// The Explorer Connect web app on https://&lt;this pc&gt;.&lt;tailnet&gt;.ts.net/, through
+        /// Tailscale Serve (Preferences, Web app). Off by default.
+        /// </summary>
+        public bool WebAppEnabled { get; set; }
 
         // ---------- What is spoken ----------
 

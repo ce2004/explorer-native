@@ -10,7 +10,7 @@ using System.Windows.Forms;
 namespace ExplorerNative
 {
     /// <summary>
-    /// Preferences, Google Drive, Configure Google Drive monitor: the folder
+    /// File, Google Drive sync configurator (while Drive is on): the folder
     /// pairs, one sentence each, and Add, Edit, Remove, Sync now and Close.
     /// Changes are saved the moment they are made.
     /// </summary>
@@ -29,7 +29,7 @@ namespace ExplorerNative
             _pairs = working.Select(p => p.Copy()).ToList();
             _monitor = DriveMonitor.Current;
 
-            Text = "Google Drive monitor";
+            Text = "Google Drive sync configurator";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterParent;
             MinimizeBox = false;
@@ -141,6 +141,10 @@ namespace ExplorerNative
 
             string state;
             if (pair.Paused) state = "paused";
+            else if (status?.Problem is { } waiting && waiting.StartsWith("waiting", StringComparison.Ordinal))
+                state = waiting;
+            else if (status is { Running: true, CheckTotal: > 0 })
+                state = $"checking what is already there, {status.CheckDone:N0} of {status.CheckTotal:N0} files";
             else if (status is { Running: true, TotalBytes: > 0 })
                 state = $"syncing, {DriveMonitor.Words(status.DoneBytes)} of {DriveMonitor.Words(status.TotalBytes)}";
             else if (status is { Running: true }) state = "syncing now";
@@ -163,6 +167,9 @@ namespace ExplorerNative
             return $"{DriveMonitor.DisplayName(pair)}: {pair.LocalFolder} and Drive folder {pair.DriveFolderPath}, " +
                    $"{mode}, {deletes}{check}, {state}";
         }
+
+        /// <summary>Whether File shows "Google Drive sync configurator": only while Drive is switched on.</summary>
+        internal static bool OnFileMenu(Settings settings) => settings.GoogleDriveEnabled;
 
         internal static string Ago(TimeSpan span)
         {

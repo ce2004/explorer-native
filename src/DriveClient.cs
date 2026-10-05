@@ -423,8 +423,15 @@ namespace ExplorerNative
         /// whatever the caller does — so the sentence says what happened and not
         /// what is being done about it.
         /// </summary>
+        /// <summary>
+        /// The Retry-After of the last 429, and when it arrived, for the folder
+        /// monitor's backoff. The exceptions only carry the status in their text.
+        /// </summary>
+        internal (TimeSpan? Wait, long At) LastRetryAfter { get; private set; }
+
         private void NoteThrottling(HttpResponseMessage response)
         {
+            LastRetryAfter = (response.Headers.RetryAfter?.Delta, Environment.TickCount64);
             if (Notify == null) return;
 
             long now = Environment.TickCount64;

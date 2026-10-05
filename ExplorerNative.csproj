@@ -12,7 +12,7 @@
     <!-- ARM64 by default; "dotnet publish -r win-x64" builds the x64 copy.
          Release builds stamp Version from the git tag (see .github\workflows). -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-arm64</RuntimeIdentifier>
-    <Version>1.0.5</Version>
+    <Version>1.0.6</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <InvariantGlobalization>true</InvariantGlobalization>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
@@ -42,6 +42,11 @@
 
   <ItemGroup>
     <Compile Include="src\**\*.cs" />
+  </ItemGroup>
+
+  <!-- The Explorer Connect web app, served by ConnectServer (see WebAssets). -->
+  <ItemGroup>
+    <EmbeddedResource Include="web\*.*" LogicalName="web/%(Filename)%(Extension)" />
   </ItemGroup>
 
   <!-- Ogg Vorbis and Ogg Opus, which Windows will not decode for us.

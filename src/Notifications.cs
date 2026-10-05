@@ -241,6 +241,8 @@ namespace ExplorerNative
             Live("sync.start","A big sync starting", DriveOperations, Say, "{0}: {1}, {2} files", "Music", "214 gigabytes to download", "3,120"),
             Live("sync.progress", "Big sync progress", DriveOperations, Say, "{0}: {1} percent synced", "Music", 50),
             Live("sync.space", "Monitored folder out of space", DriveOperations, Loud, "{0} paused: {1} is out of space, needs {2} more", "Music", "C:", "30 gigabytes"),
+            Live("sync.ratelimited", "Drive monitor waiting on Google", DriveOperations, Say, "{0}: waiting, Google is limiting requests", "Music"),
+            Live("sync.checking", "Checking what is already there", DriveOperations, Say, "{0}: checking what is already there, {1} files", "Music", "3,120"),
             Live("drive.folder.loading", "Fetching a folder", DriveOperations, Bar, "Fetching {0} from Google Drive", "artists"),
             Live("drive.folder.loaded", "Folder fetched", DriveOperations, Off, "{0}: {1} items", "artists", 2118),
             Live("drive.folder.slow", "Folder is taking a while", DriveOperations, Bar, "{0} is large; still fetching", "artists"),

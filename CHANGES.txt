@@ -1,3 +1,17 @@
+1.0.6
+Pairing a folder with a Google Drive folder that already holds the same files adopts them instead of copying them again. Files of the same size are compared by checksum first, two at a time and gently, and each checksum is remembered so it is never worked out twice. The monitor says how far it has got.
+A sync pair keeps what it remembers for as long as it exists. Changing its options keeps it; changing either of its folders starts again, still without copying anything that already matches.
+When Google limits requests or has a server problem, the sync waits and tries again for as long as it takes, up to five minutes between tries, and never counts a file as failed for it. It says it is waiting and says when it carries on.
+The Google Drive sync configurator is on the File menu while Google Drive is on, instead of in Preferences.
+New: Explorer Connect as a web app. Open it in Safari on your iPhone or iPad over Tailscale and add it to your Home Screen; there is nothing else to install.
+Preferences has a new Web app page. It finds Tailscale for you and says what is missing: Install Tailscale, Sign in to Tailscale, or Enable HTTPS in Tailscale. Then tick Turn on the web app and it shows the link to open.
+The web app only works over your own Tailscale network. Nothing is reachable from the internet.
+When you open it signed in to Tailscale as the owner of the PC, no pairing code is needed. Anybody else on your Tailscale network enters the pairing code once.
+The web app browses every drive including Google Drive, opens, renames, deletes, copies and moves files, makes folders, uploads from the phone and saves files to the phone.
+It plays music and audiobooks with a queue, skip back and forward, speed, repeat, shuffle and a sleep timer, with lock screen and headphone controls, and remembers where you were in each track.
+It sends text and files to the PC clipboard and shows what is on it, with the clipboard history.
+The web app has no equalizer.
+
 1.0.5
 The drive list reads each drive as its letter, its name and how full it is, for example D, Google Drive, 1 terabyte of 5 terabytes used. Sizes are always in words: megabytes, gigabytes, terabytes.
 New Google Drive monitor: Preferences, Google Drive, Configure Google Drive monitor. Choose folders on this PC to keep in step with folders in Google Drive.

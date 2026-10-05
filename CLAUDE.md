@@ -373,7 +373,24 @@ Resilience rules, at Conner's request, for syncs of hundreds of gigabytes:
 - **Space is checked.** The PC's disk keeps `SyncSpace.Margin` (2 GB or 5%) before each download, and Drive's quota is checked before each upload. Running out stops the pass with a "paused: ..." problem, said once through sync.space, and the pair carries on by itself later. The add/edit dialog totals what would copy (`DriveMonitor.NeedsAsync`) and offers to save the pair paused if it does not fit.
 - **Big passes announce progress.** Over 1 GB or 200 files, sync.start is said at the start and sync.progress at 25, 50 and 75 percent.
 
+1.0.6, for a first sync over two copies of one library (hundreds of gigabytes on both sides), nothing is re-transferred:
+- **Adoption.** On both sides with no state (or changed on both): `SyncPlanner.Adoptable` compares size and then Drive's md5Checksum with the local MD5. Without an md5 on Drive it uses size plus mtime within 2 s. A match is Record; a mismatch follows the clash rule; an unknown hash leaves the file alone that pass.
+- **Hashing.** `DriveMonitor.CheckWhatIsThereAsync` hashes what `NeedingHash` asks for, 2 at a time at BelowNormal priority, cached in `PairState.Hashes` by path, size and mtime (`SyncHashes.Split`).
+- **State lifetime.** The state belongs to the pair id and records its two folders (`StateFits`). Editing options keeps it; a changed folder clears the sync records, and the hashes survive while the PC folder is the same. It is deleted only with the pair.
+- **Rate limits.** `Patiently` wraps every Drive request in the engine. `SyncBackoff.IsTransient` (429, 403 rate limits, 5xx, a daily limit) waits for ever: 2 s doubling, capped at 5 min, jittered, with Retry-After honoured (`DriveClient.LastRetryAfter`). It never fails or skips a file; the episode is announced once via `sync.ratelimited`.
+- **The configurator is File > Google Drive sync configurator**, visible only while `GoogleDriveEnabled` (`DriveMonitorForm.OnFileMenu`).
+
 The account button reads `SettingsForm.AccountState`, which the tray sets: Connect, Disconnect (Connected) or Reconnect (NeedsSignIn). Disconnect unmounts and switches Drive off, but keeps the sign-in.
+
+## The web app (1.0.6)
+
+Explorer Connect also runs as a web app. The files live in web\ (index.html, app.js, app.css, sw.js, manifest, icons), embedded as web/<name> and served by ConnectServer through WebAssets at "/", "/app/...", "/sw.js" and "/manifest.webmanifest", without the pairing code. These are the app shell only; the data is under /api/.
+- Plain JavaScript, no libraries, no build step. The audio element is the only audio path (no Web Audio graph), so iOS has the best chance of playing in the background. There is no EQ.
+- HTTPS comes from Tailscale Serve: `tailscale serve --bg --https=443 http://127.0.0.1:47810` (TailscaleWeb). Never Funnel.
+  - Enable reads `tailscale serve status --json` first and refuses if 443 is used by anything but our handler (ParseServe). Disable removes only ours.
+  - If HTTPS is off for the tailnet, serve prints a login.tailscale.com/f/... link. Preferences shows it as Enable HTTPS in Tailscale and retries every 10 seconds.
+- Auth: Serve connects from loopback with Tailscale-User-Login. ConnectServer.TrustsServeUser accepts that header only from loopback and only when it equals this PC's own login, read from `tailscale status --json` with the ping paths. Everyone else sends the code (header, or code= for media). `/api/whoami` (no auth) tells the page which.
+- Preferences, Web app: the status box re-checks every 4 seconds while Preferences is shown (never in tests, which build the form without showing it). The box acts at once; Cancel puts it back. TrayApplicationContext.ReconcileWebApp makes Serve match the setting at start and on change.
 
 ## Rules this codebase lives by
 

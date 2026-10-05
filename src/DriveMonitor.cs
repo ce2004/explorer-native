@@ -40,7 +40,8 @@ namespace ExplorerNative
         public static DriveMonitor? Current { get; private set; }
 
         public sealed record PairStatus(
-            DateTime? LastSyncedUtc, string? Problem, bool Running, long DoneBytes = 0, long TotalBytes = 0);
+            DateTime? LastSyncedUtc, string? Problem, bool Running, long DoneBytes = 0, long TotalBytes = 0,
+            int CheckDone = 0, int CheckTotal = 0);
 
         /// <summary>A download part way through, and which Drive file it is part of.</summary>
         public sealed record PartialDownload(string RemoteId, long Size, DateTime ModifiedUtc, string? Md5);
@@ -53,8 +54,31 @@ namespace ExplorerNative
             public Dictionary<string, SyncBase> Files { get; set; } = new(StringComparer.OrdinalIgnoreCase);
             public Dictionary<string, PartialDownload> Partials { get; set; } = new(StringComparer.OrdinalIgnoreCase);
             public Dictionary<string, UploadSession> Uploads { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+            /// <summary>PC files' MD5s, so none is hashed twice. See <see cref="SyncHashes"/>.</summary>
+            public Dictionary<string, SyncHashEntry> Hashes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+            /// <summary>Which two folders this state is about. Changing either starts it again.</summary>
+            public string? LocalFolder { get; set; }
+            public string? DriveFolderId { get; set; }
+
             public DateTime? LastSyncedUtc { get; set; }
             public string? Problem { get; set; }
+        }
+
+        /// <summary>
+        /// What of a pair's saved state still applies to it. Editing its options
+        /// keeps everything. Changing its PC folder or its Drive folder throws
+        /// the sync records away (the next pass adopts what already matches, so
+        /// nothing is copied again); the MD5s survive while the PC folder is the
+        /// same. A state from before folders were recorded is taken as the pair's.
+        /// </summary>
+        internal static (bool KeepFiles, bool KeepHashes) StateFits(string? stateLocal, string? stateDrive, DriveSyncPair pair)
+        {
+            if (stateLocal == null && stateDrive == null) return (true, true);
+            bool sameLocal = string.Equals(stateLocal?.TrimEnd('\\'), pair.LocalFolder.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
+            bool sameDrive = string.Equals(stateDrive, pair.DriveFolderId, StringComparison.Ordinal);
+            return (sameLocal && sameDrive, sameLocal);
         }
 
         private const int ChunkBytes = 8 * 1024 * 1024;
@@ -300,7 +324,7 @@ namespace ExplorerNative
                     lock (_gate) _lastChecked[pair.Id] = DateTime.UtcNow;
                     _saidOffline = false;
                 }
-                catch (Exception ex) when (IsOffline(ex, token))
+                catch (Exception ex) when (IsOffline(ex, token) && !SyncBackoff.IsTransient(ex))
                 {
                     // Whatever was done is saved; whatever was not is found
                     // again by the next pass. Every pair stays due, so the
@@ -342,6 +366,146 @@ namespace ExplorerNative
             }
         }
 
+        private int _waitingEpisode;
+
+        /// <summary>
+        /// Runs a Drive request, waiting out "not now" from Google for as long
+        /// as it lasts: a rate limit or a server error is retried with growing,
+        /// jittered waits capped at five minutes (Google's Retry-After honoured),
+        /// and never fails or skips a file. The pair says it is waiting, and is
+        /// announced once per episode and again when Google answers.
+        /// </summary>
+        private async Task<T> Patiently<T>(DriveSyncPair pair, Func<Task<T>> work, DriveClient client, CancellationToken token)
+        {
+            int attempt = 0;
+            var random = new Random();
+            while (true)
+            {
+                try
+                {
+                    var result = await work().ConfigureAwait(false);
+                    if (attempt > 0) Resumed(pair);
+                    return result;
+                }
+                catch (Exception ex) when (!token.IsCancellationRequested && SyncBackoff.IsTransient(ex))
+                {
+                    var (asked, at) = client.LastRetryAfter;
+                    var retryAfter = Environment.TickCount64 - at < 15_000 ? asked : null;
+                    var wait = SyncBackoff.Delay(attempt++, retryAfter, random.NextDouble());
+                    bool limited = ex.ToString().Contains("429") || ex.ToString().Contains("ateLimitExceeded");
+                    var why = limited ? "Google is limiting requests" : "Google Drive is having trouble";
+                    SetStatus(pair.Id, StatusOf(pair.Id) with
+                    {
+                        Problem = $"waiting, {why}, trying again in {Seconds(wait)}",
+                    });
+                    if (Interlocked.Exchange(ref _waitingEpisode, 1) == 0)
+                        _notify("sync.ratelimited", $"{DisplayName(pair)}: waiting, {why}");
+                    await Task.Delay(wait, token).ConfigureAwait(false);
+                }
+            }
+        }
+
+        private void Resumed(DriveSyncPair pair)
+        {
+            SetStatus(pair.Id, StatusOf(pair.Id) with { Problem = null });
+            if (Interlocked.Exchange(ref _waitingEpisode, 0) == 1)
+                _notify("sync.ratelimited", $"{DisplayName(pair)}: Google is answering again, carrying on");
+        }
+
+        private static string Seconds(TimeSpan wait)
+        {
+            int s = Math.Max(1, (int)Math.Round(wait.TotalSeconds));
+            return s < 90 ? $"{s} seconds" : $"{(int)Math.Round(s / 60.0)} minutes";
+        }
+
+        /// <summary>
+        /// Works out the MD5 of each PC file the plan needs one for, two at a
+        /// time on low-priority threads, remembering each in the encrypted state
+        /// so it is never worked out again. Big checks are announced like big
+        /// passes, and the pair says how far it has got.
+        /// </summary>
+        private async Task<Dictionary<string, string>> CheckWhatIsThereAsync(
+            DriveSyncPair pair, PairState state, SyncRules rules,
+            Dictionary<string, SyncFile> local, Dictionary<string, SyncFile> remote, CancellationToken token)
+        {
+            var wanted = SyncPlanner.NeedingHash(rules, local, remote, state.Files);
+            var (known, toHash) = SyncHashes.Split(wanted, local, state.Hashes);
+            if (toHash.Count == 0) return known;
+
+            var name = DisplayName(pair);
+            long bytes = toHash.Sum(p => local[p].Size);
+            bool big = SyncSpace.IsBig(bytes, toHash.Count);
+            if (big) _notify("sync.checking", $"{name}: checking what is already there, {toHash.Count:N0} files");
+
+            int done = 0;
+            var gate = new object();
+            var saved = System.Diagnostics.Stopwatch.StartNew();
+            void Progress()
+            {
+                lock (_gate)
+                    if (_status.TryGetValue(pair.Id, out var was))
+                        _status[pair.Id] = was with { CheckDone = done, CheckTotal = toHash.Count };
+                long now = Environment.TickCount64;
+                if (now - Interlocked.Read(ref _lastProgressEvent) < 500) return;
+                Interlocked.Exchange(ref _lastProgressEvent, now);
+                try { Changed?.Invoke(); } catch { }
+            }
+            Progress();
+
+            try
+            {
+                await Parallel.ForEachAsync(toHash, new ParallelOptions { MaxDegreeOfParallelism = 2, CancellationToken = token },
+                    async (path, ct) =>
+                    {
+                        var thread = Thread.CurrentThread;
+                        var priority = thread.Priority;
+                        thread.Priority = ThreadPriority.BelowNormal;
+                        try
+                        {
+                            var full = Path.Combine(pair.LocalFolder, path.Replace('/', Path.DirectorySeparatorChar));
+                            string md5;
+                            await using (var file = new FileStream(full, FileMode.Open, FileAccess.Read,
+                                             FileShare.ReadWrite | FileShare.Delete, 1 << 20, FileOptions.SequentialScan | FileOptions.Asynchronous))
+                                md5 = Convert.ToHexString(await MD5.HashDataAsync(file, ct).ConfigureAwait(false)).ToLowerInvariant();
+
+                            int before, after;
+                            lock (gate)
+                            {
+                                known[path] = md5;
+                                state.Hashes[path] = new SyncHashEntry(local[path].Size, local[path].ModifiedUtc, md5);
+                                before = done;
+                                after = ++done;
+                                if (saved.ElapsedMilliseconds > 2000)
+                                {
+                                    SaveState(pair.Id, state);
+                                    saved.Restart();
+                                }
+                            }
+                            Progress();
+                            if (big && SyncSpace.QuarterPassed(before, after, toHash.Count) is int percent and > 0)
+                                _notify("sync.checking", $"{name}: {percent} percent checked");
+                        }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                        {
+                            // Unreadable now (open in another program): not adopted,
+                            // and not copied this pass either, since its hash is unknown.
+                            lock (gate) done++;
+                        }
+                        finally { thread.Priority = priority; }
+                    }).ConfigureAwait(false);
+            }
+            finally
+            {
+                lock (gate) SaveState(pair.Id, state);
+                lock (_gate)
+                    if (_status.TryGetValue(pair.Id, out var was))
+                        _status[pair.Id] = was with { CheckDone = 0, CheckTotal = 0 };
+            }
+
+            if (big) _notify("sync.checking", $"{name}: finished checking what is already there");
+            return known;
+        }
+
         private static bool IsOffline(Exception ex, CancellationToken token)
         {
             if (token.IsCancellationRequested) return false;
@@ -359,7 +523,7 @@ namespace ExplorerNative
 
         private async Task SyncPairAsync(DriveClient client, DriveSyncPair pair, CancellationToken token)
         {
-            var state = LoadState(pair.Id);
+            var state = LoadState(pair);
             var root = pair.LocalFolder;
             var name = DisplayName(pair);
 
@@ -370,7 +534,8 @@ namespace ExplorerNative
             // anything is listed, and a missing one pauses the pair until it
             // is back; nothing is planned, so nothing can be deleted.
             bool localThere = Directory.Exists(root);
-            bool driveThere = await client.FolderAlive(pair.DriveFolderId, token).ConfigureAwait(false);
+            bool driveThere = await Patiently(pair, () => client.FolderAlive(pair.DriveFolderId, token), client, token)
+                .ConfigureAwait(false);
             if (SyncSafety.RootProblem(localThere, driveThere) is string gone)
             {
                 bool newProblem = gone != state.Problem;
@@ -389,9 +554,16 @@ namespace ExplorerNative
             }
 
             var local = ScanLocal(root, pair.IncludeSubfolders);
-            var (remote, folders) = await ScanRemoteAsync(client, pair.DriveFolderId, pair.IncludeSubfolders, token)
+            var (remote, folders) = await Patiently(pair,
+                () => ScanRemoteAsync(client, pair.DriveFolderId, pair.IncludeSubfolders, token), client, token)
                 .ConfigureAwait(false);
-            var plan = SyncPlanner.Ordered(SyncPlanner.Plan(SyncRules.For(pair), local, remote, state.Files), local, remote);
+
+            // Files already on both sides with nothing remembered about them (a
+            // first sync over two copies of one library) are compared by MD5
+            // before anything is planned, so a match is adopted, never copied.
+            var rules = SyncRules.For(pair);
+            var md5 = await CheckWhatIsThereAsync(pair, state, rules, local, remote, token).ConfigureAwait(false);
+            var plan = SyncPlanner.Ordered(SyncPlanner.Plan(rules, local, remote, state.Files, md5), local, remote);
 
             // How big this pass is, for the progress said along the way.
             long downBytes = 0, upBytes = 0;
@@ -467,6 +639,8 @@ namespace ExplorerNative
 
                     try
                     {
+                        await Patiently(pair, async () =>
+                        {
                         switch (action.Kind)
                         {
                             case SyncActionKind.Upload:
@@ -529,9 +703,12 @@ namespace ExplorerNative
                                 state.Files.Remove(path);
                                 break;
                         }
+                        return true;
+                        }, client, token).ConfigureAwait(false);
                     }
                     catch (Exception ex) when (!IsOffline(ex, token) && ex is not OperationCanceledException
-                                                                     && ex is not DriveQuotaException)
+                                                                     && ex is not DriveQuotaException
+                                                                     && !SyncBackoff.IsTransient(ex))
                     {
                         // A failure that might really be the connection going:
                         // asked of Drive itself, and if Drive cannot be reached
@@ -906,12 +1083,32 @@ namespace ExplorerNative
                 state.Files = new Dictionary<string, SyncBase>(state.Files ?? new(), StringComparer.OrdinalIgnoreCase);
                 state.Partials = new Dictionary<string, PartialDownload>(state.Partials ?? new(), StringComparer.OrdinalIgnoreCase);
                 state.Uploads = new Dictionary<string, UploadSession>(state.Uploads ?? new(), StringComparer.OrdinalIgnoreCase);
+                state.Hashes = new Dictionary<string, SyncHashEntry>(state.Hashes ?? new(), StringComparer.OrdinalIgnoreCase);
                 return state;
             }
             catch
             {
                 return new PairState();
             }
+        }
+
+        /// <summary>The pair's state, started again where its folders changed (see <see cref="StateFits"/>).</summary>
+        private static PairState LoadState(DriveSyncPair pair)
+        {
+            var state = LoadState(pair.Id);
+            var (keepFiles, keepHashes) = StateFits(state.LocalFolder, state.DriveFolderId, pair);
+            if (!keepFiles)
+            {
+                state.Files.Clear();
+                state.Partials.Clear();
+                state.Uploads.Clear();
+                state.LastSyncedUtc = null;
+                state.Problem = null;
+            }
+            if (!keepHashes) state.Hashes.Clear();
+            state.LocalFolder = pair.LocalFolder;
+            state.DriveFolderId = pair.DriveFolderId;
+            return state;
         }
 
         private static readonly object StateLock = new();

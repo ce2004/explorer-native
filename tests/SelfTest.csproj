@@ -78,7 +78,7 @@
     <Compile Include="..\src\GoogleDrive.cs" />
     <Compile Include="..\src\DriveUpload.cs" />
     <Compile Include="..\src\FileSearch.cs" />
-    <Compile Include="..\src\ConnectServer.cs" /><Compile Include="..\src\ConnectFiles.cs" /><Compile Include="..\src\ConnectAudio.cs" /><Compile Include="..\src\ConnectUploads.cs" /><Compile Include="..\src\ConnectClipboard.cs" /><Compile Include="..\src\ClipboardInterop.cs" /><Compile Include="..\src\ConnectDetails.cs" />
+    <Compile Include="..\src\ConnectServer.cs" /><Compile Include="..\src\ConnectFiles.cs" /><Compile Include="..\src\ConnectAudio.cs" /><Compile Include="..\src\ConnectUploads.cs" /><Compile Include="..\src\ConnectClipboard.cs" /><Compile Include="..\src\ClipboardInterop.cs" /><Compile Include="..\src\ConnectDetails.cs" /><Compile Include="..\src\TailscaleWeb.cs" /><Compile Include="..\src\WebAssets.cs" />
     <Compile Include="SearchTests.cs" />
     <Compile Include="ConnectTests.cs" />
     <Compile Include="SeekTests.cs" />
@@ -108,6 +108,9 @@
     <PackageReference Include="Concentus.OggFile" Version="1.0.7" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="..\web\*.*" LogicalName="web/%(Filename)%(Extension)" />
+  </ItemGroup>
 </Project>
 
 

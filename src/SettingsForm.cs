@@ -75,6 +75,7 @@ namespace ExplorerNative
                 ("Hotkey", BuildHotkeyTab()),
                 ("Audio", BuildAudioTab()),
                 ("Google Drive", BuildGoogleDriveTab()),
+                ("Web app", BuildWebAppTab()),
                 ("Integration", BuildIntegrationTab()),
             };
 
@@ -471,15 +472,6 @@ namespace ExplorerNative
             AddDriveLetter(panel);
 
             AddGoogleAccountControls(panel, driveBox);
-
-            AddButton(panel, "Configure Google Drive &monitor...", () =>
-            {
-                using var dialog = new DriveMonitorForm(_working.DriveSyncPairs);
-                dialog.ShowDialog(this);
-            });
-            AddInfo(panel,
-                "The monitor keeps folders on this PC in step with folders in Google Drive: upload only " +
-                "as a backup, download only, or two-way. Deletes are only copied if you ask for it.");
 
             // This said the opposite until the scope changed under it: "nothing
             // this application does can change or delete anything in your Drive".
@@ -912,6 +904,192 @@ namespace ExplorerNative
             AddInfo(panel,
                 "Reads the tag in the background, so a file with no tags or one on a slow share costs " +
                 "nothing — the file name is used until a title turns up, and stays if none does.");
+        }
+
+        /// <summary>
+        /// Turns the web app's Tailscale Serve handler on or off right now, off the
+        /// UI thread. Set by the tray; null in tests.
+        /// </summary>
+        internal static Func<bool, TailscaleWeb.EnableResult>? WebAppApply;
+
+        /// <summary>
+        /// Preferences, Web app: Explorer Connect in Safari, over Tailscale only.
+        ///
+        /// It finds Tailscale for itself and says, in one sentence, what is missing
+        /// and which button fixes it: Install Tailscale, Sign in to Tailscale,
+        /// Enable HTTPS in Tailscale. The status is a read-only box, so it is a tab
+        /// stop NVDA reads, and it is checked again every few seconds while
+        /// Preferences is open. Turning the box on or off acts at once; Cancel puts
+        /// it back.
+        /// </summary>
+        private FlowLayoutPanel BuildWebAppTab()
+        {
+            var panel = NewPage();
+            AddInfo(panel,
+                "Use this PC's files and music from Safari on your iPhone or iPad, with nothing to install but " +
+                "Tailscale. It only works over your Tailscale network: nothing is reachable from the internet.");
+
+            var status = new TextBox
+            {
+                ReadOnly = true, Multiline = true, BorderStyle = BorderStyle.None, BackColor = SystemColors.Control,
+                Width = 540, Height = 64, Text = "Checking Tailscale…", AccessibleName = "Web app status",
+                Margin = new Padding(3, 8, 3, 4),
+            };
+            panel.Controls.Add(status);
+
+            var row = new FlowLayoutPanel { AutoSize = true, WrapContents = true, Margin = new Padding(0, 4, 0, 4) };
+            Button Make(string text)
+            {
+                var b = new Button { Text = text, AutoSize = true, Visible = false, Margin = new Padding(3, 4, 8, 4) };
+                b.AccessibleName = text.Replace("&", "");
+                row.Controls.Add(b);
+                return b;
+            }
+            var install = Make("&Install Tailscale");
+            var signIn = Make("&Sign in to Tailscale");
+            var https = Make("Enable &HTTPS in Tailscale");
+            panel.Controls.Add(row);
+
+            bool original = _working.WebAppEnabled;
+            var enable = new CheckBox
+            {
+                Text = "&Turn on the web app", Checked = _working.WebAppEnabled, AutoSize = true, Enabled = false,
+                Margin = new Padding(3, 8, 3, 4),
+            };
+            enable.AccessibleName = "Turn on the web app";
+            panel.Controls.Add(enable);
+            _applies.Add(() => _working.WebAppEnabled = enable.Checked);
+
+            var linkBox = new TextBox { ReadOnly = true, Width = 420, AccessibleName = "Web app link", Visible = false };
+            panel.Controls.Add(linkBox);
+            var linkRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 2, 0, 4), Visible = false };
+            var copy = new Button { Text = "&Copy link", AutoSize = true, AccessibleName = "Copy link" };
+            var open = new Button { Text = "&Open in browser", AutoSize = true, AccessibleName = "Open in browser" };
+            linkRow.Controls.Add(copy);
+            linkRow.Controls.Add(open);
+            panel.Controls.Add(linkRow);
+
+            AddInfo(panel,
+                "On your phone: install Tailscale from the App Store and sign in with the same account as this PC. " +
+                "Open the link in Safari. Tap Share, then Add to Home Screen. That's all; it opens like an app.");
+
+            string? httpsUrl = null, problem = null, link = null;
+            bool checking = false, applying = false;
+            DateTime lastTry = DateTime.MinValue;
+
+            void Apply(bool on)
+            {
+                if (WebAppApply == null || applying) return;
+                applying = true;
+                lastTry = DateTime.UtcNow;
+                status.Text = on ? "Turning the web app on…" : "Turning the web app off…";
+                System.Threading.Tasks.Task.Run(() => WebAppApply(on)).ContinueWith(t =>
+                {
+                    if (IsDisposed) return;
+                    BeginInvoke(new Action(() =>
+                    {
+                        applying = false;
+                        var r = t.IsCompletedSuccessfully ? t.Result : new TailscaleWeb.EnableResult(false, "Tailscale did not answer.", null);
+                        httpsUrl = r.EnableHttpsUrl;
+                        problem = r.Ok ? null : r.Problem;
+                        if (on) Say(r.Ok ? "The web app is on" : (r.EnableHttpsUrl != null ? "HTTPS needs switching on in Tailscale" : "The web app could not be turned on"));
+                        else Say("The web app is off");
+                        Refresh();
+                    }));
+                });
+            }
+
+            void Show(TailscaleWeb.Status s, TailscaleWeb.ServeState serve)
+            {
+                install.Visible = s.State == TailscaleWeb.State.NotInstalled;
+                signIn.Visible = s.State is TailscaleWeb.State.NotRunning or TailscaleWeb.State.NeedsLogin;
+                enable.Enabled = s.State == TailscaleWeb.State.Running;
+
+                string text;
+                link = TailscaleWeb.Link(s);
+                bool on = serve == TailscaleWeb.ServeState.Ours;
+                switch (s.State)
+                {
+                    case TailscaleWeb.State.NotInstalled:
+                        text = "Tailscale is not installed on this PC. Press Install Tailscale, then sign in when it opens.";
+                        break;
+                    case TailscaleWeb.State.NotRunning:
+                        text = "Tailscale is installed but not running. Press Sign in to Tailscale.";
+                        break;
+                    case TailscaleWeb.State.NeedsLogin:
+                        text = "Tailscale is installed but not signed in. Press Sign in to Tailscale.";
+                        break;
+                    default:
+                        text = $"Tailscale is signed in as {s.Login ?? "you"}. This PC is {s.HostName ?? Environment.MachineName}.";
+                        if (enable.Checked)
+                        {
+                            if (on) { text += " The web app is on."; problem = null; httpsUrl = null; }
+                            else if (applying) text += " Turning the web app on…";
+                            else if (problem != null) text += " " + problem;
+                            else text += " The web app is not on yet.";
+
+                            // Waiting for HTTPS to be switched on, or for Tailscale to come up: try again by itself.
+                            if (!on && !applying && serve != TailscaleWeb.ServeState.TakenByOther &&
+                                DateTime.UtcNow - lastTry > TimeSpan.FromSeconds(10))
+                                Apply(true);
+                        }
+                        else if (on) text += " The web app is off, but its link is still served; it is turned off now.";
+                        else text += " Turn on the web app to use it from your phone.";
+                        break;
+                }
+
+                https.Visible = httpsUrl != null && enable.Checked && !on;
+                bool showLink = on && link != null;
+                linkBox.Visible = linkRow.Visible = showLink;
+                if (showLink && linkBox.Text != link) linkBox.Text = link!;
+                if (status.Text != text) status.Text = text;
+            }
+
+            void Refresh()
+            {
+                if (checking || IsDisposed) return;
+                checking = true;
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    var s = TailscaleWeb.Read();
+                    var serve = s.State == TailscaleWeb.State.Running ? TailscaleWeb.ReadServe() : TailscaleWeb.ServeState.Off;
+                    return (s, serve);
+                }).ContinueWith(t =>
+                {
+                    if (IsDisposed || !IsHandleCreated) { checking = false; return; }
+                    BeginInvoke(new Action(() =>
+                    {
+                        checking = false;
+                        if (t.IsCompletedSuccessfully) Show(t.Result.s, t.Result.serve);
+                    }));
+                });
+            }
+
+            install.Click += (_, _) => { TailscaleWeb.Install(); Say("Installing Tailscale"); };
+            signIn.Click += (_, _) => { TailscaleWeb.SignIn(); Say("Opening the Tailscale sign-in"); };
+            https.Click += (_, _) => { if (httpsUrl != null) TailscaleWeb.Open(httpsUrl); };
+            copy.Click += (_, _) => { if (link != null) { try { Clipboard.SetText(link); Say("Link copied"); } catch { } } };
+            open.Click += (_, _) => { if (link != null) TailscaleWeb.Open(link); };
+            enable.CheckedChanged += (_, _) => { problem = null; httpsUrl = null; Apply(enable.Checked); };
+
+            // Only while Preferences is on screen: nothing runs tailscale.exe for a
+            // dialog that was built and never shown, as the tests do.
+            var timer = new System.Windows.Forms.Timer { Interval = 4000 };
+            timer.Tick += (_, _) => { if (panel.Visible) Refresh(); };
+            Shown += (_, _) => { Refresh(); timer.Start(); };
+            panel.VisibleChanged += (_, _) => { if (panel.Visible && IsHandleCreated) Refresh(); };
+            FormClosed += (_, _) =>
+            {
+                timer.Dispose();
+                // Cancel puts back what was there before the box was touched.
+                if (DialogResult != DialogResult.OK && enable.Checked != original && WebAppApply != null)
+                {
+                    var apply = WebAppApply;
+                    System.Threading.Tasks.Task.Run(() => apply(original));
+                }
+            };
+
+            return panel;
         }
 
         private FlowLayoutPanel BuildIntegrationTab()

@@ -512,7 +512,112 @@ namespace ExplorerNative
             DriveMonitorTests();
             DriveMonitorResilienceTests();
             SyncDeleteTests();
+            SyncAdoptionTests();
             AccountButtonTests();
+        }
+
+        /// <summary>
+        /// Morgan's case: a library already on both sides is adopted, not copied
+        /// again; the pair keeps what it remembers; Google saying "not now" is
+        /// waited out; and the configurator is on File while Drive is on.
+        /// </summary>
+        private static void SyncAdoptionTests()
+        {
+            var t0 = new DateTime(2026, 10, 1, 12, 0, 0, DateTimeKind.Utc);
+            var uploadedLater = t0.AddDays(30);
+            Dictionary<string, SyncFile> Files(params (string P, SyncFile F)[] items) =>
+                items.ToDictionary(i => i.P, i => i.F, StringComparer.OrdinalIgnoreCase);
+            var none = new Dictionary<string, SyncBase>(StringComparer.OrdinalIgnoreCase);
+            var rules = new SyncRules(SyncMode.TwoWay, false);
+            string Plan(Dictionary<string, SyncFile> l, Dictionary<string, SyncFile> r, Dictionary<string, string>? md5,
+                SyncRules? with = null) =>
+                string.Join(",", SyncPlanner.Plan(with ?? rules, l, r, none, md5).Select(a => a.Kind + ":" + a.Path));
+
+            // The same track on both sides, Drive's copy uploaded a month later.
+            var local = Files(("a.flac", new SyncFile(100, t0)), ("b.flac", new SyncFile(200, t0)));
+            var remote = Files(("a.flac", new SyncFile(100, uploadedLater, "A", "aaa")),
+                               ("b.flac", new SyncFile(200, uploadedLater, "B", "bbb")));
+            var md5 = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["a.flac"] = "AAA", ["b.flac"] = "bbb" };
+            Equal("same size and MD5 is adopted, nothing copied", "Record:a.flac,Record:b.flac", Plan(local, remote, md5));
+            foreach (var mode in new[] { SyncMode.UploadOnly, SyncMode.DownloadOnly })
+                Equal($"{mode} adopts it as well", "Record:a.flac,Record:b.flac",
+                    Plan(local, remote, md5, new SyncRules(mode, true)));
+            md5["b.flac"] = "ccc";
+            Equal("a different MD5 is a clash, kept both by default", "Record:a.flac,KeepBothRemoteWins:b.flac",
+                Plan(local, remote, md5));
+            Equal("an MD5 not worked out yet leaves the file alone", "", Plan(local, remote, null));
+            Equal("so the engine is asked to hash exactly those", "a.flac,b.flac",
+                string.Join(",", SyncPlanner.NeedingHash(rules, local, remote, none)));
+            Equal("a different size is never hashed, and is a clash",
+                "KeepBothRemoteWins:a.flac", Plan(Files(("a.flac", new SyncFile(100, t0))),
+                    Files(("a.flac", new SyncFile(101, uploadedLater, "A", "aaa"))), null));
+
+            // No MD5 on Drive: size and modified time.
+            var noMd5 = Files(("a.flac", new SyncFile(100, t0.AddSeconds(1), "A")));
+            Equal("no Drive MD5: same size and time within 2 seconds is adopted",
+                "Record:a.flac", Plan(Files(("a.flac", new SyncFile(100, t0))), noMd5, null));
+            Equal("no Drive MD5 and a different time is a clash",
+                "KeepBothRemoteWins:a.flac", Plan(Files(("a.flac", new SyncFile(100, t0))),
+                    Files(("a.flac", new SyncFile(100, uploadedLater, "A"))), null));
+            Check("and is not hashed, there being nothing to compare with",
+                SyncPlanner.NeedingHash(rules, Files(("a.flac", new SyncFile(100, t0))), noMd5, none).Count == 0);
+
+            // The hash cache.
+            var cache = new Dictionary<string, SyncHashEntry>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["a.flac"] = new(100, t0, "aaa"),
+                ["b.flac"] = new(200, t0.AddDays(-1), "old"),
+            };
+            var (known, toHash) = SyncHashes.Split(new[] { "a.flac", "b.flac", "c.flac" },
+                Files(("a.flac", new SyncFile(100, t0)), ("b.flac", new SyncFile(200, t0)), ("c.flac", new SyncFile(5, t0))), cache);
+            Equal("a remembered MD5 is used, not worked out again", "aaa", known.GetValueOrDefault("a.flac") ?? "");
+            Equal("a file changed since is hashed again, and a new one for the first time", "b.flac,c.flac",
+                string.Join(",", toHash));
+
+            // Backoff.
+            Equal("first wait 2 seconds", "2", SyncBackoff.Delay(0, null, 0).TotalSeconds.ToString());
+            Equal("then doubling", "16", SyncBackoff.Delay(3, null, 0).TotalSeconds.ToString());
+            Equal("capped at five minutes", "300", SyncBackoff.Delay(20, null, 0).TotalSeconds.ToString());
+            Equal("jitter takes off up to half", "150", SyncBackoff.Delay(20, null, 1).TotalSeconds.ToString());
+            Equal("Retry-After is honoured when it asks for longer", "40",
+                SyncBackoff.Delay(0, TimeSpan.FromSeconds(40), 0).TotalSeconds.ToString());
+            Equal("and not when it asks for less", "16", SyncBackoff.Delay(3, TimeSpan.FromSeconds(1), 0).TotalSeconds.ToString());
+            Check("429 is waited out", SyncBackoff.IsTransient(new InvalidOperationException("list failed 429: Too many requests")));
+            Check("so is a 403 rate limit", SyncBackoff.IsTransient(new InvalidOperationException("upload failed 403: userRateLimitExceeded")));
+            Check("and 503", SyncBackoff.IsTransient(new InvalidOperationException("upload session failed 503: Service unavailable")));
+            Check("and an HTTP 502", SyncBackoff.IsTransient(new System.Net.Http.HttpRequestException("x", null, System.Net.HttpStatusCode.BadGateway)));
+            Check("but not a 404", !SyncBackoff.IsTransient(new InvalidOperationException("list failed 404: File not found")));
+            Check("nor a full account", !SyncBackoff.IsTransient(new DriveQuotaException("storageQuotaExceeded", "full", false)));
+            Check("nor a file that merely has 500 in its name", !SyncBackoff.IsTransient(new IOException("track 500.flac: in use")));
+
+            // The state lives as long as the pair.
+            var pair = new DriveSyncPair { LocalFolder = @"D:\Music", DriveFolderId = "M" };
+            Check("a state from before folders were recorded is kept", DriveMonitor.StateFits(null, null, pair) == (true, true));
+            pair.Mode = SyncMode.UploadOnly; pair.CheckMinutes = 15; pair.SkipExtensions = ".iso";
+            Check("editing options keeps everything", DriveMonitor.StateFits(@"D:\Music\", "M", pair) == (true, true));
+            Check("a different Drive folder starts again, keeping the MD5s",
+                DriveMonitor.StateFits(@"D:\Music", "OTHER", pair) == (false, true));
+            Check("a different PC folder starts again entirely",
+                DriveMonitor.StateFits(@"E:\Music", "M", pair) == (false, false));
+
+            // The File menu.
+            Check("the configurator shows while Drive is on", DriveMonitorForm.OnFileMenu(new Settings { GoogleDriveEnabled = true }));
+            Check("and not while it is off", !DriveMonitorForm.OnFileMenu(new Settings { GoogleDriveEnabled = false }));
+            var main = SourceFile("MainForm.cs") ?? "";
+            Check("it is on File, rechecked as the menu opens and after Preferences",
+                main.Contains("\"Google Drive &sync configurator...\"") &&
+                main.Contains("file.DropDownOpening += (_, _) => _syncConfiguratorItem.Visible = DriveMonitorForm.OnFileMenu(_settings);") &&
+                main.Contains("_syncConfiguratorItem.Visible = DriveMonitorForm.OnFileMenu(settings);"));
+            Check("and no longer in Preferences",
+                !(SourceFile("SettingsForm.cs") ?? "").Contains("Configure Google Drive &monitor"));
+            var pending = new DriveMonitor.PairStatus(null, null, true, 0, 0, 1200, 3120);
+            Check("the pair says how far checking has got",
+                DriveMonitorForm.Describe(new DriveSyncPair { Name = "Music", LocalFolder = @"D:\Music", DriveFolderPath = "My Drive/Music" }, pending, t0)
+                    .EndsWith("checking what is already there, 1,200 of 3,120 files"));
+            Check("and says when it is waiting on Google",
+                DriveMonitorForm.Describe(new DriveSyncPair { Name = "Music" },
+                    new DriveMonitor.PairStatus(null, "waiting, Google is limiting requests, trying again in 40 seconds", true), t0)
+                    .EndsWith("waiting, Google is limiting requests, trying again in 40 seconds"));
         }
 
         /// <summary>

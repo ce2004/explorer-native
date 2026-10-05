@@ -159,6 +159,46 @@ namespace ExplorerNative
             return Math.Abs((now.ModifiedUtc - was.RemoteModifiedUtc).TotalSeconds) > SlackSeconds;
         }
 
+        /// <summary>
+        /// Whether a file on both sides, with nothing remembered to say they
+        /// are in step, is the same file. Different sizes never are. With Drive's
+        /// MD5 the PC file's MD5 decides (null while it is not known yet); with
+        /// none, the size and the modified time within two seconds.
+        /// </summary>
+        public static bool? Adoptable(string path, SyncFile local, SyncFile remote,
+            IReadOnlyDictionary<string, string>? localMd5)
+        {
+            if (local.Size != remote.Size) return false;
+            if (remote.Md5 != null)
+                return localMd5 != null && localMd5.TryGetValue(path, out var md5)
+                    ? string.Equals(md5, remote.Md5, StringComparison.OrdinalIgnoreCase)
+                    : null;
+            return Same(local, remote);
+        }
+
+        /// <summary>
+        /// The PC files whose MD5 the next plan needs: on both sides, nothing
+        /// remembered (or changed on both), the same size, and a checksum on
+        /// Drive to compare with. Under the same rules as the plan.
+        /// </summary>
+        public static List<string> NeedingHash(
+            SyncRules rules, IReadOnlyDictionary<string, SyncFile> local,
+            IReadOnlyDictionary<string, SyncFile> remote, IReadOnlyDictionary<string, SyncBase> last)
+        {
+            var result = new List<string>();
+            foreach (var (path, l) in local)
+            {
+                if (!remote.TryGetValue(path, out var r) || r.Md5 == null || r.Size != l.Size) continue;
+                if (IsSkippedPath(path) || (!rules.IncludeSubfolders && path.Contains('/')) || rules.SkipsType(path)) continue;
+                if (rules.MaxBytes > 0 && l.Size > rules.MaxBytes) continue;
+                if (last.TryGetValue(path, out var b) &&
+                    !(Changed(l, b.LocalSize, b.LocalModifiedUtc) && RemoteChanged(r, b))) continue;
+                result.Add(path);
+            }
+            result.Sort(StringComparer.OrdinalIgnoreCase);
+            return result;
+        }
+
         private static bool Changed(SyncFile now, long size, DateTime modified) =>
             now.Size != size || Math.Abs((now.ModifiedUtc - modified).TotalSeconds) > SlackSeconds;
 
@@ -204,7 +244,8 @@ namespace ExplorerNative
             SyncRules rules,
             IReadOnlyDictionary<string, SyncFile> local,
             IReadOnlyDictionary<string, SyncFile> remote,
-            IReadOnlyDictionary<string, SyncBase> last)
+            IReadOnlyDictionary<string, SyncBase> last,
+            IReadOnlyDictionary<string, string>? localMd5 = null)
         {
             var mode = rules.Mode;
             bool copyDeletes = rules.CopyDeletes;
@@ -239,7 +280,12 @@ namespace ExplorerNative
                 {
                     if (!hasB || (changedL && changedR))
                     {
-                        if (Same(l, r)) Do(SyncActionKind.Record, path);
+                        // Already the same file on both sides (a first sync over
+                        // two copies of one library): remembered, never copied.
+                        var same = Adoptable(path, l, r, localMd5);
+                        if (same == true) Do(SyncActionKind.Record, path);
+                        // Waiting for this PC file's checksum: left alone this pass.
+                        else if (same == null) { }
                         else if (mode == SyncMode.UploadOnly) Do(SyncActionKind.Upload, path);
                         else if (mode == SyncMode.DownloadOnly) Do(SyncActionKind.Download, path);
                         else if (rules.WhenBothChanged == ConflictChoice.PcWins) Do(SyncActionKind.Upload, path);
@@ -317,6 +363,86 @@ namespace ExplorerNative
             return plan.Select((a, i) => (a, i, size: SizeOf(a)))
                 .OrderBy(x => x.size).ThenBy(x => x.i)
                 .Select(x => x.a).ToList();
+        }
+    }
+
+    /// <summary>A PC file's MD5, as it was when it was worked out.</summary>
+    public sealed record SyncHashEntry(long Size, DateTime ModifiedUtc, string Md5);
+
+    /// <summary>
+    /// The MD5s remembered per pair, so no file is hashed twice: an entry is
+    /// good while the file's size and modified time are what they were.
+    /// </summary>
+    public static class SyncHashes
+    {
+        /// <summary>Which of <paramref name="wanted"/> are already known, and which still need hashing.</summary>
+        public static (Dictionary<string, string> Known, List<string> ToHash) Split(
+            IEnumerable<string> wanted, IReadOnlyDictionary<string, SyncFile> local,
+            IReadOnlyDictionary<string, SyncHashEntry> cache)
+        {
+            var known = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var toHash = new List<string>();
+            foreach (var path in wanted)
+            {
+                if (cache.TryGetValue(path, out var entry) && local.TryGetValue(path, out var file) &&
+                    entry.Size == file.Size && entry.ModifiedUtc == file.ModifiedUtc)
+                    known[path] = entry.Md5;
+                else
+                    toHash.Add(path);
+            }
+            return (known, toHash);
+        }
+    }
+
+    /// <summary>
+    /// Waiting out Google: which failures are "not now" rather than "no", and
+    /// how long to wait. A rate limit or a server error is waited out for as
+    /// long as it lasts, and never counts a file as failed or skips it.
+    /// </summary>
+    public static class SyncBackoff
+    {
+        public static readonly TimeSpan Cap = TimeSpan.FromMinutes(5);
+        private static readonly TimeSpan First = TimeSpan.FromSeconds(2);
+
+        /// <summary>
+        /// The wait before attempt <paramref name="attempt"/> (0 for the first
+        /// retry): doubling from two seconds, capped at five minutes, jittered
+        /// down by up to half (<paramref name="jitter"/> from 0 to 1) so several
+        /// waits do not all come back at once. Google's own Retry-After is
+        /// honoured whenever it asks for longer.
+        /// </summary>
+        public static TimeSpan Delay(int attempt, TimeSpan? retryAfter, double jitter)
+        {
+            double seconds = First.TotalSeconds * Math.Pow(2, Math.Clamp(attempt, 0, 30));
+            seconds = Math.Min(seconds, Cap.TotalSeconds) * (1 - 0.5 * Math.Clamp(jitter, 0, 1));
+            var wait = TimeSpan.FromSeconds(seconds);
+            return retryAfter is { } asked && asked > wait ? asked : wait;
+        }
+
+        private static readonly System.Text.RegularExpressions.Regex Status = new(
+            @"(?:^|failed |answered |status )(429|500|502|503|504)\b",
+            System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        /// <summary>
+        /// Whether a failure is Google saying "not now": 429, 403 for a rate
+        /// limit (userRateLimitExceeded, rateLimitExceeded, or a daily limit that
+        /// resets by itself), or 500, 502, 503, 504. Not a full account, not a
+        /// missing file, and not the connection being down, which is offline.
+        /// </summary>
+        public static bool IsTransient(Exception error)
+        {
+            for (var e = error; e != null; e = e.InnerException)
+            {
+                if (e is DriveQuotaException quota) return quota.ResetsOnItsOwn;
+                if (e is System.Net.Http.HttpRequestException { StatusCode: { } code } &&
+                    (int)code is 429 or 500 or 502 or 503 or 504) return true;
+
+                var text = e.Message ?? "";
+                if (text.Contains("userRateLimitExceeded", StringComparison.Ordinal) ||
+                    text.Contains("rateLimitExceeded", StringComparison.Ordinal)) return true;
+                if (Status.IsMatch(text)) return true;
+            }
+            return false;
         }
     }
 

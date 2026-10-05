@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Explorer Connect">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="theme-color" content="#184080">
+<title>Explorer Connect</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="icon" href="/app/icon-192.png">
+<link rel="stylesheet" href="/app/app.css">
+<script type="module" src="/app/app.js"></script>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<nav id="tabs" aria-label="Sections">
+  <button type="button" data-tab="files" aria-current="page">Files</button>
+  <button type="button" data-tab="player">Now Playing</button>
+  <button type="button" data-tab="transfers">Transfers</button>
+  <button type="button" data-tab="clipboard">Clipboard</button>
+  <button type="button" data-tab="settings">Settings</button>
+</nav>
+
+<main id="main">
+  <section id="screen-code" hidden aria-labelledby="code-title">
+    <h1 id="code-title" tabindex="-1">Pairing code</h1>
+    <p>This PC wants its pairing code once. In Explorer Native on the PC, open the tray menu and choose Phone connection to see it.</p>
+    <form id="code-form">
+      <label for="code-input">Pairing code</label>
+      <input id="code-input" inputmode="numeric" autocomplete="one-time-code" required>
+      <button type="submit">Connect</button>
+    </form>
+    <p id="code-error" class="error" role="alert"></p>
+  </section>
+
+  <section id="screen-files" aria-labelledby="files-title">
+    <h1 id="files-title" tabindex="-1">Files</h1>
+    <p id="files-path" class="path"></p>
+    <div class="toolbar" id="files-toolbar">
+      <button type="button" id="btn-up">Up</button>
+      <button type="button" id="btn-play-folder">Play folder</button>
+      <button type="button" id="btn-new-folder">New folder</button>
+      <button type="button" id="btn-upload">Upload from iPhone</button>
+      <input type="file" id="upload-input" multiple class="visually-hidden" tabindex="-1" aria-hidden="true">
+      <button type="button" id="btn-paste" hidden>Paste here</button>
+      <button type="button" id="btn-select">Select</button>
+      <button type="button" id="btn-refresh">Refresh</button>
+    </div>
+    <div class="toolbar" id="select-toolbar" hidden>
+      <span id="select-count" aria-live="polite"></span>
+      <button type="button" id="btn-sel-copy">Copy</button>
+      <button type="button" id="btn-sel-cut">Move</button>
+      <button type="button" id="btn-sel-pc">Copy on PC</button>
+      <button type="button" id="btn-sel-delete">Delete</button>
+      <button type="button" id="btn-sel-done">Done</button>
+    </div>
+    <ul id="file-list" class="list"></ul>
+    <p id="files-empty" hidden>This folder is empty.</p>
+  </section>
+
+  <section id="screen-player" hidden aria-labelledby="player-title">
+    <h1 id="player-title" tabindex="-1">Now Playing</h1>
+    <p id="np-track" class="big">Nothing is playing.</p>
+    <p id="np-sub"></p>
+    <div class="toolbar">
+      <button type="button" id="np-resume" hidden>Resume</button>
+    </div>
+    <label for="np-position">Position</label>
+    <input type="range" id="np-position" min="0" max="0" step="1" value="0">
+    <p id="np-time" aria-hidden="true"></p>
+    <div class="toolbar transport">
+      <button type="button" id="np-prev">Previous</button>
+      <button type="button" id="np-back">Back</button>
+      <button type="button" id="np-play" class="primary">Play</button>
+      <button type="button" id="np-fwd">Forward</button>
+      <button type="button" id="np-next">Next</button>
+    </div>
+    <div class="fields">
+      <label>Speed <select id="np-speed"></select></label>
+      <label>Repeat <select id="np-repeat">
+        <option value="off">Off</option><option value="one">This track</option><option value="all">All</option>
+      </select></label>
+      <label><input type="checkbox" id="np-shuffle"> Shuffle</label>
+      <label>Sleep timer <select id="np-sleep">
+        <option value="0">Off</option><option value="5">5 minutes</option><option value="10">10 minutes</option>
+        <option value="15">15 minutes</option><option value="30">30 minutes</option><option value="45">45 minutes</option>
+        <option value="60">60 minutes</option><option value="90">90 minutes</option><option value="end">End of this track</option>
+      </select></label>
+    </div>
+    <h2>Queue</h2>
+    <ol id="np-queue" class="list"></ol>
+    <audio id="audio" preload="auto"></audio>
+  </section>
+
+  <section id="screen-transfers" hidden aria-labelledby="transfers-title">
+    <h1 id="transfers-title" tabindex="-1">Transfers</h1>
+    <div class="toolbar">
+      <button type="button" id="tr-clear">Clear finished</button>
+      <button type="button" id="tr-stop">Stop all transfers</button>
+    </div>
+    <ul id="transfer-list" class="list"></ul>
+    <p id="transfers-empty">Nothing is transferring.</p>
+  </section>
+
+  <section id="screen-clipboard" hidden aria-labelledby="clip-title">
+    <h1 id="clip-title" tabindex="-1">Clipboard</h1>
+    <h2>The PC's clipboard</h2>
+    <div class="toolbar">
+      <button type="button" id="clip-get">Get the PC's clipboard</button>
+    </div>
+    <div id="clip-now"></div>
+    <h2>Send to the PC</h2>
+    <label for="clip-text">Text</label>
+    <textarea id="clip-text" rows="4"></textarea>
+    <div class="toolbar">
+      <button type="button" id="clip-send">Send text</button>
+      <button type="button" id="clip-paste">Paste from iPhone and send</button>
+      <button type="button" id="clip-send-files">Send files</button>
+      <input type="file" id="clip-files" multiple class="visually-hidden" tabindex="-1" aria-hidden="true">
+    </div>
+    <h2>History</h2>
+    <div class="toolbar">
+      <button type="button" id="clip-history">Show history</button>
+      <button type="button" id="clip-clear">Clear history</button>
+    </div>
+    <ul id="clip-list" class="list"></ul>
+  </section>
+
+  <section id="screen-settings" hidden aria-labelledby="settings-title">
+    <h1 id="settings-title" tabindex="-1">Settings</h1>
+    <p id="set-who"></p>
+    <h2>Files</h2>
+    <div class="fields">
+      <label>Sort by <select id="set-sort">
+        <option value="name">Name</option><option value="date">Date modified</option>
+        <option value="size">Size</option><option value="type">Type</option>
+      </select></label>
+      <label><input type="checkbox" id="set-folders-first"> Folders first</label>
+      <label><input type="checkbox" id="set-extensions"> Show file extensions</label>
+      <label><input type="checkbox" id="set-confirm-delete"> Confirm before deleting</label>
+      <label>When a name is taken <select id="set-conflict">
+        <option value="rename">Keep both</option><option value="skip">Skip</option><option value="overwrite">Replace</option>
+      </select></label>
+      <label><input type="checkbox" id="set-announce-transfers"> Announce transfer progress</label>
+    </div>
+    <h2>Playback</h2>
+    <div class="fields">
+      <label>Skip back <select id="set-skip-back"></select></label>
+      <label>Skip forward <select id="set-skip-fwd"></select></label>
+      <label>Speed <select id="set-speed"></select></label>
+      <label><input type="checkbox" id="set-resume"> Resume each track where you left off</label>
+      <label><input type="checkbox" id="set-play-rest"> Play the rest of the folder</label>
+      <label><input type="checkbox" id="set-continue"> Continue playing when the app reopens</label>
+    </div>
+    <h2>This phone</h2>
+    <div class="toolbar">
+      <button type="button" id="set-forget">Forget the pairing code</button>
+    </div>
+    <p id="set-version"></p>
+  </section>
+</main>
+
+<dialog id="dialog" aria-labelledby="dialog-title">
+  <form method="dialog" id="dialog-form">
+    <h2 id="dialog-title"></h2>
+    <div id="dialog-body"></div>
+    <div class="toolbar" id="dialog-buttons"></div>
+  </form>
+</dialog>
+
+<div id="live" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+<div id="alert" class="visually-hidden" role="alert" aria-atomic="true"></div>
+</body>
+</html>

@@ -51,6 +51,136 @@ namespace ExplorerNative
             await ClipboardTests();
             await PingTests();
             await DetailsTests();
+            await WebAppTests();
+        }
+
+        /// <summary>
+        /// The web app: Tailscale's JSON read right, Serve never taken from anybody
+        /// else, the owner let in by Serve's header and nobody else by it, and the
+        /// app's own files served with the right types.
+        /// </summary>
+        private static async Task WebAppTests()
+        {
+            Console.WriteLine("Web app:");
+            const string status = """
+                { "BackendState": "Running",
+                  "Self": { "DNSName": "laptop.tail3d7403.ts.net.", "HostName": "laptop", "UserID": 5663247441147785,
+                            "TailscaleIPs": ["100.67.248.25"] },
+                  "User": { "5663247441147785": { "LoginName": "me@example.com" } },
+                  "CertDomains": ["laptop.tail3d7403.ts.net"] }
+                """;
+            var s = TailscaleWeb.ParseStatus(status);
+            Check("a signed-in Tailscale reads as running", s.State == TailscaleWeb.State.Running);
+            Equal("with the PC's own login", "me@example.com", s.Login ?? "");
+            Equal("and its name without the trailing dot", "laptop.tail3d7403.ts.net", s.DnsName ?? "");
+            Check("and HTTPS on, from CertDomains", s.HttpsEnabled);
+            Equal("the link is the ts.net address", "https://laptop.tail3d7403.ts.net/", TailscaleWeb.Link(s) ?? "");
+            Check("NeedsLogin reads as needing a sign-in",
+                TailscaleWeb.ParseStatus("""{ "BackendState": "NeedsLogin", "Self": {} }""").State == TailscaleWeb.State.NeedsLogin);
+            Check("Stopped reads as not running",
+                TailscaleWeb.ParseStatus("""{ "BackendState": "Stopped" }""").State == TailscaleWeb.State.NotRunning);
+            Check("no CertDomains means HTTPS is off",
+                !TailscaleWeb.ParseStatus("""{ "BackendState": "Running", "Self": {} }""").HttpsEnabled);
+
+            Check("an empty Serve config is off", TailscaleWeb.ParseServe("{}") == TailscaleWeb.ServeState.Off);
+            Check("nothing at all is off", TailscaleWeb.ParseServe("") == TailscaleWeb.ServeState.Off);
+            Check("our own handler is ours", TailscaleWeb.ParseServe("""
+                { "TCP": { "443": { "HTTPS": true } },
+                  "Web": { "laptop.tail3d7403.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:47810" } } } } }
+                """) == TailscaleWeb.ServeState.Ours);
+            Check("somebody else's proxy on 443 is theirs", TailscaleWeb.ParseServe("""
+                { "TCP": { "443": { "HTTPS": true } },
+                  "Web": { "laptop.tail3d7403.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:3000" } } } } }
+                """) == TailscaleWeb.ServeState.TakenByOther);
+            Check("ours plus another path on 443 is left alone", TailscaleWeb.ParseServe("""
+                { "Web": { "x.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:47810" }, "/grafana": { "Proxy": "http://127.0.0.1:3000" } } } } }
+                """) == TailscaleWeb.ServeState.TakenByOther);
+            Check("a raw TCP forward on 443 is theirs", TailscaleWeb.ParseServe("""
+                { "TCP": { "443": { "TCPForward": "127.0.0.1:22" } } }
+                """) == TailscaleWeb.ServeState.TakenByOther);
+            Check("Serve on another port does not block 443", TailscaleWeb.ParseServe("""
+                { "TCP": { "8443": { "HTTPS": true } },
+                  "Web": { "x.ts.net:8443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:3000" } } } } }
+                """) == TailscaleWeb.ServeState.Off);
+            Equal("the enable-HTTPS link is found in Tailscale's message",
+                "https://login.tailscale.com/f/serve?node=nABC123",
+                TailscaleWeb.EnableLink("Serve is not enabled on your tailnet.\nTo enable, visit:\n\n         https://login.tailscale.com/f/serve?node=nABC123\n") ?? "");
+
+            var loop = IPAddress.Loopback;
+            Check("Serve's header for the PC's owner is trusted from loopback",
+                ConnectServer.TrustsServeUser(loop, "me@example.com", "me@example.com"));
+            Check("and matched without regard to case",
+                ConnectServer.TrustsServeUser(loop, "Me@Example.com", "me@example.com"));
+            Check("another tailnet user is not", !ConnectServer.TrustsServeUser(loop, "friend@example.com", "me@example.com"));
+            Check("the header straight from a tailnet peer is never believed",
+                !ConnectServer.TrustsServeUser(IPAddress.Parse("100.100.1.1"), "me@example.com", "me@example.com"));
+            Check("loopback without the header is not trusted", !ConnectServer.TrustsServeUser(loop, null, "me@example.com"));
+            Check("nothing is trusted before the PC's login is known", !ConnectServer.TrustsServeUser(loop, "me@example.com", null));
+            Check("an IPv4-mapped loopback counts as loopback",
+                ConnectServer.TrustsServeUser(IPAddress.Parse("::ffff:127.0.0.1"), "me@example.com", "me@example.com"));
+
+            int port = FreePort();
+            var server = new ConnectServer(_ => null, p => new FileRangeSource(p), () => Code, loopbackOnly: true, port: port,
+                files: new FakeFiles(), tailscaleStatus: () => status);
+            try
+            {
+                server.Start();
+                if (!await WaitForListener(port)) { Check("the web app server listens", false); return; }
+                await server.PathsSettled();
+                using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}"), Timeout = TimeSpan.FromSeconds(10) };
+
+                async Task<(int Status, string Type, string Body)> Get(string url, string? login = null, bool code = false)
+                {
+                    var request = new HttpRequestMessage(HttpMethod.Get, url);
+                    if (login != null) request.Headers.Add("Tailscale-User-Login", login);
+                    if (code) request.Headers.Add("X-Connect-Code", Code);
+                    var response = await http.SendAsync(request);
+                    return ((int)response.StatusCode, response.Content.Headers.ContentType?.MediaType ?? "",
+                        await response.Content.ReadAsStringAsync());
+                }
+
+                foreach (var (url, type) in new[]
+                         {
+                             ("/", "text/html"), ("/app/app.js", "text/javascript"), ("/app/app.css", "text/css"),
+                             ("/sw.js", "text/javascript"), ("/manifest.webmanifest", "application/manifest+json"),
+                             ("/app/icon-192.png", "image/png"), ("/apple-touch-icon.png", "image/png"),
+                         })
+                {
+                    var (code, got, _) = await Get(url);
+                    Check($"{url} is served without a code, as {type}", code == 200 && got == type, $"{code} {got}");
+                }
+                var (_, _, html) = await Get("/");
+                Check("the page is the Explorer Connect app", html.Contains("Explorer Connect") && html.Contains("/app/app.js"));
+                var (missing, _, _) = await Get("/app/../settings.json");
+                Check("a path climbing out of the app is not served", missing != 200, missing.ToString());
+
+                Equal("the API still needs the code", "401", (await Get("/api/info")).Status.ToString());
+                Equal("the PC's owner through Serve gets in without it", "200", (await Get("/api/info", "me@example.com")).Status.ToString());
+                Equal("another tailnet user does not", "401", (await Get("/api/info", "friend@example.com")).Status.ToString());
+                Equal("but does with the code", "200", (await Get("/api/info", "friend@example.com", code: true)).Status.ToString());
+                Equal("and the iPhone app's code still works as before", "200", (await Get("/api/drives", code: true)).Status.ToString());
+
+                // The web app asks for details under a name tracker blockers leave alone.
+                var probe = Path.Combine(Path.GetTempPath(), $"en-details-{Guid.NewGuid():N}.txt");
+                File.WriteAllText(probe, "hello");
+                try
+                {
+                    var (dStatus, _, dBody) = await Get("/api/details?path=" + Uri.EscapeDataString(probe), "me@example.com");
+                    Check("/api/details answers like /api/stat", dStatus == 200 && dBody.Contains(Path.GetFileName(probe)), $"{dStatus} {dBody[..Math.Min(80, dBody.Length)]}");
+                }
+                finally { try { File.Delete(probe); } catch { } }
+
+                var (_, _, who) = await Get("/api/whoami", "me@example.com");
+                Check("whoami tells the owner no code is needed", who.Contains("\"needsCode\":false"), who);
+                (_, _, who) = await Get("/api/whoami");
+                Check("and anybody else that one is", who.Contains("\"needsCode\":true") && who.Contains("\"codeOk\":false"), who);
+                (_, _, who) = await Get("/api/whoami", code: true);
+                Check("and checks a code without opening anything", who.Contains("\"codeOk\":true"), who);
+            }
+            finally
+            {
+                server.Dispose();
+            }
         }
 
         private static async Task PingTests()

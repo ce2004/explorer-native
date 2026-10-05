@@ -124,6 +124,14 @@ namespace ExplorerNative
                 _drive.Unmount();
             };
 
+            // Preferences, Web app: Tailscale Serve on or off, from a worker.
+            SettingsForm.WebAppApply = on =>
+            {
+                if (on) return TailscaleWeb.Enable();
+                TailscaleWeb.Disable();
+                return new TailscaleWeb.EnableResult(true, null, null);
+            };
+
             // The folder monitor: pairs live in settings, saved at once when the
             // monitor dialog changes them.
             _monitor = new DriveMonitor(_drive,
@@ -404,7 +412,9 @@ namespace ExplorerNative
         public void ApplySettings(Settings settings, bool reload = false)
         {
             bool driveWasOn = _settings.GoogleDriveEnabled;
+            bool webWasOn = _settings.WebAppEnabled;
             _settings = settings;
+            if (webWasOn != settings.WebAppEnabled) ReconcileWebApp();
 
             // Switched back on in Preferences since: that choice stands over a
             // release still waiting for the file to open — that one setting,
@@ -1828,6 +1838,28 @@ namespace ExplorerNative
                 remote: path => _drive.Owns(path) ? streams.Lease(path) : null,
                 clipboard: _connectClipboard);
             _connect.Start();
+            ReconcileWebApp();
+        }
+
+        /// <summary>
+        /// Makes Tailscale Serve match the Web app setting, on a worker: on puts the
+        /// web app's handler on 443 if it is not there, off takes only ours away.
+        /// Run at start and whenever the setting changes.
+        /// </summary>
+        private void ReconcileWebApp()
+        {
+            bool on = _settings.WebAppEnabled;
+            _ = System.Threading.Tasks.Task.Run(() =>
+            {
+                try
+                {
+                    if (!TailscaleWeb.Installed) return;
+                    var serve = TailscaleWeb.ReadServe();
+                    if (on && serve != TailscaleWeb.ServeState.Ours) TailscaleWeb.Enable();
+                    else if (!on && serve == TailscaleWeb.ServeState.Ours) TailscaleWeb.Disable();
+                }
+                catch { }
+            });
         }
 
         private void ShowConnectDetails()
