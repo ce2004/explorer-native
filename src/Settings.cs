@@ -833,6 +833,7 @@ namespace ExplorerNative
             failed = false;
             string? json = null;
             bool present = false;
+            bool wasPlain = false;
 
             for (int attempt = 0; attempt < 5; attempt++)
             {
@@ -845,11 +846,18 @@ namespace ExplorerNative
                     // still swap its file in while this one is reading.
                     using var stream = new FileStream(SettingsPath, FileMode.Open, FileAccess.Read,
                         FileShare.ReadWrite | FileShare.Delete);
-                    using var reader = new StreamReader(stream);
-                    json = reader.ReadToEnd();
+                    using var buffer = new MemoryStream();
+                    stream.CopyTo(buffer);
+                    // Encrypted for this Windows account; see ProtectedFile.
+                    var bytes = buffer.ToArray();
+                    json = ProtectedFile.Decode(bytes);
+                    wasPlain = !ProtectedFile.IsProtected(bytes);
                     break;
                 }
                 catch (FileNotFoundException) { present = false; break; }
+                // Encrypted for another Windows account, or damaged: unreadable,
+                // and kept rather than overwritten, like any other.
+                catch (System.Security.Cryptography.CryptographicException) { break; }
                 catch (IOException) { System.Threading.Thread.Sleep(20 * (attempt + 1)); }
                 catch (UnauthorizedAccessException) { System.Threading.Thread.Sleep(20 * (attempt + 1)); }
             }
@@ -867,7 +875,23 @@ namespace ExplorerNative
             RememberDisk(json);
 
             Settings? loaded;
-            try { loaded = JsonSerializer.Deserialize<Settings>(json, ReadFormat); }
+            try
+            {
+                loaded = JsonSerializer.Deserialize<Settings>(json, ReadFormat);
+
+                // Left in the clear by an older build — the one an update
+                // replaced saves on its way out. Encrypted now, same content.
+                if (wasPlain && loaded != null)
+                {
+                    try
+                    {
+                        var temp = $"{SettingsPath}.{Environment.ProcessId}.enc.tmp";
+                        ProtectedFile.WriteAllText(temp, json);
+                        File.Move(temp, SettingsPath, overwrite: true);
+                    }
+                    catch { }
+                }
+            }
             catch (Exception)
             {
                 loaded = Salvage(json);
@@ -1344,7 +1368,7 @@ namespace ExplorerNative
                 var temp = $"{SettingsPath}.{Environment.ProcessId}.tmp";
                 try
                 {
-                    File.WriteAllText(temp, json);
+                    ProtectedFile.WriteAllText(temp, json);
 
                     // The swap is refused while another process has the file open
                     // without delete sharing — a reader in the moment of reading —

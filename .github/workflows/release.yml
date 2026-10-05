@@ -28,24 +28,6 @@ jobs:
           if ($v -notmatch '^v\d+\.\d+\.\d+$') { $v = 'v0.0.0' }
           "version=$($v.Substring(1))" >> $env:GITHUB_OUTPUT
 
-      - name: Google credentials
-        shell: pwsh
-        env:
-          CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
-          CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
-        run: |
-          if (-not $env:CLIENT_ID) { Write-Host 'No credentials secret; building without built-in Google client.'; exit 0 }
-          @"
-          namespace ExplorerNative
-          {
-              internal static partial class BuiltInCredentials
-              {
-                  public const string ClientId = "$env:CLIENT_ID";
-                  public const string ClientSecret = "$env:CLIENT_SECRET";
-              }
-          }
-          "@ | Set-Content -Encoding utf8 src/BuiltInCredentials.Values.cs
-
       - name: Publish
         shell: pwsh
         run: |

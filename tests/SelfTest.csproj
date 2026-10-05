@@ -31,8 +31,7 @@
     <Compile Include="..\src\Equaliser.cs" /><Compile Include="..\src\EqualiserForm.cs" />
     <Compile Include="..\src\TimeStretch.cs" />
     <Compile Include="..\src\SilenceReduction.cs" /><Compile Include="..\src\SilenceForm.cs" />
-    <Compile Include="..\src\Resampler.cs" /><Compile Include="..\src\PitchForm.cs" /><Compile Include="..\src\BuiltInCredentials.cs" /><Compile Include="..\src\BuiltInCredentials.Values.cs" Condition="Exists('..\src\BuiltInCredentials.Values.cs')" /><Compile Include="..\build\BuiltInCredentials.Placeholder.cs" Condition="!Exists('..\src\BuiltInCredentials.Values.cs')" />
-    <Compile Include="..\src\AudioDecoder.cs" /><Compile Include="..\src\TrackDecoder.cs" /><Compile Include="..\src\LocalByteStream.cs" /><Compile Include="..\src\OggDecoder.cs" /><Compile Include="..\src\OggOpusReader.cs" /><Compile Include="..\src\OggPages.cs" /><Compile Include="..\src\OggVorbisPackets.cs" /><Compile Include="..\src\ExactSeek.cs" /><Compile Include="..\src\VirtualStream.cs" /><Compile Include="..\src\FlacSeek.cs" /><Compile Include="..\src\Mp3Seek.cs" /><Compile Include="..\src\AiffStream.cs" /><Compile Include="..\src\CdTrackStream.cs" />
+    <Compile Include="..\src\Resampler.cs" /><Compile Include="..\src\PitchForm.cs" />    <Compile Include="..\src\AudioDecoder.cs" /><Compile Include="..\src\TrackDecoder.cs" /><Compile Include="..\src\LocalByteStream.cs" /><Compile Include="..\src\OggDecoder.cs" /><Compile Include="..\src\OggOpusReader.cs" /><Compile Include="..\src\OggPages.cs" /><Compile Include="..\src\OggVorbisPackets.cs" /><Compile Include="..\src\ExactSeek.cs" /><Compile Include="..\src\VirtualStream.cs" /><Compile Include="..\src\FlacSeek.cs" /><Compile Include="..\src\Mp3Seek.cs" /><Compile Include="..\src\AiffStream.cs" /><Compile Include="..\src\CdTrackStream.cs" />
     <Compile Include="..\src\WasapiPlayback.cs" />
     <Compile Include="..\src\AudioTags.cs" />
     <Compile Include="..\src\AudioPrefetch.cs" />
@@ -69,7 +68,7 @@
     <Compile Include="..\src\SingleInstance.cs" />
     <Compile Include="..\src\CfApi.cs" />
     <Compile Include="..\src\DriveLetter.cs" />
-    <Compile Include="..\src\GoogleAuth.cs" />
+    <Compile Include="..\src\GoogleAuth.cs" /><Compile Include="..\src\ProtectedFile.cs" />
     <Compile Include="..\src\DriveClient.cs" /><Compile Include="..\src\DriveWrites.cs" /><Compile Include="..\src\DriveHealth.cs" />
     <Compile Include="..\src\DriveFileCache.cs" />
     <Compile Include="..\src\DriveMount.cs" />

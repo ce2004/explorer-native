@@ -182,7 +182,7 @@ namespace ExplorerNative
         /// </summary>
         public static Process StartInstall(string exe, Release release)
         {
-            try { File.WriteAllText(MarkerPath, Text(release.Version)); } catch { }
+            try { ProtectedFile.WriteAllText(MarkerPath, Text(release.Version)); } catch { }
 
             return Process.Start(new ProcessStartInfo(exe, "--update --quiet") { UseShellExecute = true })
                 ?? throw new InvalidOperationException("The installer did not start.");
@@ -197,7 +197,7 @@ namespace ExplorerNative
             try
             {
                 if (!File.Exists(MarkerPath)) return null;
-                var text = File.ReadAllText(MarkerPath).Trim();
+                var text = ProtectedFile.ReadAllText(MarkerPath).Trim();
                 File.Delete(MarkerPath);
                 return TryParseVersion(text, out var wanted) && Current >= wanted
                     ? $"Explorer Native updated to version {CurrentText}"

@@ -198,7 +198,7 @@ namespace ExplorerNative
         /// </summary>
         internal static readonly string[] CommandLineSwitches =
         {
-            "--licence", "--license", "--install", "--install-only", "--update", "--uninstall",
+            "--licence", "--license", "--install", "--install-only", "--update", "--uninstall", "--read-log",
             "--register-default", "--unregister-default", "--unregister-all",
         };
 
@@ -223,6 +223,24 @@ namespace ExplorerNative
                         // to keep it in any more, so it rides inside and comes back
                         // out on request.
                         WriteLicenceBeside();
+                        return true;
+                    }
+
+                    case "--read-log":
+                    {
+                        // Logs under AppData are encrypted for this Windows
+                        // account. Prints one back: --read-log crash.log, or a
+                        // full path. install.log when no name is given.
+                        var name = args.SkipWhile(a => !a.Trim().Equals("--read-log", StringComparison.OrdinalIgnoreCase))
+                                       .Skip(1).FirstOrDefault() ?? "install.log";
+                        var path = Path.IsPathRooted(name) ? name : Path.Combine(Settings.AppDataDir, name);
+                        try
+                        {
+                            var text = string.Join(Environment.NewLine, ProtectedFile.ReadLog(path));
+                            if (_console) Console.Out.WriteLine(text);
+                            else ShowNotice(Path.GetFileName(path), text);
+                        }
+                        catch (Exception ex) { Fail("Could not read the log", ex.Message); }
                         return true;
                     }
 
@@ -720,9 +738,10 @@ namespace ExplorerNative
                 var folder = Path.GetDirectoryName(LogPath);
                 if (!string.IsNullOrEmpty(folder)) System.IO.Directory.CreateDirectory(folder);
 
-                File.AppendAllText(LogPath,
+                // Encrypted a line at a time; --read-log prints it back.
+                ProtectedFile.AppendLine(LogPath,
                     $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {title}: " +
-                    message.Replace("\r", " ").Replace("\n", " ") + Environment.NewLine);
+                    message.Replace("\r", " ").Replace("\n", " "));
             }
             catch
             {
@@ -988,6 +1007,12 @@ namespace ExplorerNative
                 // The installer an update ran, now that it has finished, and the
                 // one sentence saying the update took.
                 Updater.SweepDownloads();
+
+                // Logs an older build wrote in the clear. Settings and the
+                // Google client file are encrypted the next time they are saved
+                // or read; see ProtectedFile.
+                ProtectedFile.EncryptLogInPlace(LogPath);
+                ProtectedFile.EncryptLogInPlace(Path.Combine(Settings.AppDataDir, "crash.log"));
                 var updated = Updater.TakeJustUpdatedMessage();
                 if (updated != null)
                 {
@@ -1030,7 +1055,7 @@ namespace ExplorerNative
             {
                 var path = Path.Combine(Settings.AppDataDir, "crash.log");
                 Directory.CreateDirectory(Settings.AppDataDir);
-                File.AppendAllText(path, $"[{DateTime.Now:u}] {ex}{Environment.NewLine}{Environment.NewLine}");
+                ProtectedFile.AppendLine(path, $"[{DateTime.Now:u}] {ex}");
                 Speech.Speak("Explorer Native hit an error. Details were written to the crash log.");
                 MessageBox.Show($"{ex.Message}\n\nWritten to:\n{path}", DisplayTitle,
                     MessageBoxButtons.OK, MessageBoxIcon.Error);

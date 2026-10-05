@@ -74,7 +74,7 @@ $p.WaitForExit(120000)
 "exit code $($p.ExitCode)"          # 0 installed, 1 did not
 
 # 4. And what it did, which it has already written down.
-Get-Content "$env:APPDATA\ExplorerNative\install.log" -Tail 3
+& bin\app\ExplorerNative.exe --read-log | Select-Object -Last 3   # logs are DPAPI-encrypted
 ```
 
 Two PowerShell traps in those four lines, both of which look like the install

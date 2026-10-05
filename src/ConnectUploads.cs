@@ -44,7 +44,7 @@ namespace ExplorerNative
             var id = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(8)).ToLowerInvariant();
             var dir = Directory.CreateDirectory(Dir(id));
             try { dir.Attributes |= FileAttributes.Hidden; } catch { }
-            File.WriteAllText(Path.Combine(dir.FullName, MetaName), JsonSerializer.Serialize(meta));
+            ProtectedFile.WriteAllText(Path.Combine(dir.FullName, MetaName), JsonSerializer.Serialize(meta));
             using (File.Create(DataPath(id))) { }
             return id;
         }
@@ -52,7 +52,7 @@ namespace ExplorerNative
         public Meta? Find(string? id)
         {
             if (!Wellformed(id)) return null;
-            try { return JsonSerializer.Deserialize<Meta>(File.ReadAllText(Path.Combine(Dir(id!), MetaName))); }
+            try { return JsonSerializer.Deserialize<Meta>(ProtectedFile.ReadAllText(Path.Combine(Dir(id!), MetaName))); }
             catch { return null; }
         }
 

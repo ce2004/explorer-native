@@ -42,13 +42,6 @@
 
   <ItemGroup>
     <Compile Include="src\**\*.cs" />
-
-    <!-- The Google client ID and secret are not in the repository. A local
-         src\BuiltInCredentials.Values.cs (git-ignored, written by CI from
-         repository secrets) supplies them; without it the build gets empty
-         placeholders and Drive asks for a client file instead. -->
-    <Compile Include="build\BuiltInCredentials.Placeholder.cs"
-             Condition="!Exists('src\BuiltInCredentials.Values.cs')" />
   </ItemGroup>
 
   <!-- Ogg Vorbis and Ogg Opus, which Windows will not decode for us.

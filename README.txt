@@ -22,6 +22,14 @@ says so on first launch and offers the download. Get the one that matches your
 computer, x64 or Arm64, from https://dotnet.microsoft.com/download/dotnet/8.0
 
 
+Google Drive
+
+No Google credentials ship with the app. In Google Cloud console, create an
+OAuth client of type Desktop app and download its JSON. Then in Explorer Native
+open Preferences (Ctrl+P), Google Drive, press Choose credentials file, pick
+that JSON, and press Connect Google Drive to sign in in your browser.
+
+
 Updates
 
 Help menu (Alt, then H), Check for updates. It asks GitHub whether a newer
@@ -39,9 +47,6 @@ dotnet publish ExplorerNative.csproj -c Release -r win-arm64 -o out\arm64
 
 Tests: dotnet run --project tests\SelfTest.csproj
 
-The built-in Google Drive client ID and secret are not in the repository. A
-build without them still works; connecting Google Drive then asks for your own
-OAuth client file.
 
 
 Releasing

@@ -474,10 +474,10 @@ namespace ExplorerNative
         /// The page used to say "sign-in needs a client_secret.json from your
         /// own Google Cloud project" and name a folder — which is an accurate
         /// instruction and a hopeless one for anybody who was handed this
-        /// application. The client is compiled in now (see
-        /// <see cref="BuiltInCredentials"/>), so the honest content of this
-        /// section is one line saying whether an account is connected and a
-        /// button for each direction.
+        /// application. So the file is a button now: Choose credentials file
+        /// takes the JSON exactly as the Cloud console downloads it, checks it
+        /// and copies it into place. Nothing is compiled in; the published
+        /// build ships with no Google client of its own.
         ///
         /// Signing in is deliberately *not* done from here. It opens a browser
         /// and waits on consent, which is a thing to do from the main window
@@ -489,6 +489,18 @@ namespace ExplorerNative
         private void AddGoogleAccountControls(FlowLayoutPanel panel, CheckBox driveBox)
         {
             bool signedIn = GoogleDrive.HasSavedSignIn;
+
+            var credentialsInfo = AddInfo(panel, CredentialsSummary());
+            var choose = new Button
+            {
+                Text = "Choose credentials &file…",
+                AutoSize = true,
+                Margin = new Padding(0, 4, 0, 10),
+            };
+            // The summary rides on the button too: a label is never focused, so
+            // NVDA would otherwise only read it by reviewing the window.
+            choose.AccessibleDescription = credentialsInfo.Text;
+            panel.Controls.Add(choose);
 
             AddInfo(panel, signedIn
                 ? "Signed in to Google. The sign-in is remembered, so this will not be asked for again."
@@ -515,6 +527,15 @@ namespace ExplorerNative
                 + "file list rather than behind this window.";
             connect.Click += (_, _) =>
             {
+                if (GoogleAuth.Credentials(GoogleDrive.CredentialsDirectory) == null)
+                {
+                    MessageBox.Show(this,
+                        "Choose your Google credentials file first, with Choose credentials file.",
+                        "Connect Google Drive", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    choose.Focus();
+                    return;
+                }
+
                 // Closing with OK means the caller saves and says "Preferences
                 // saved", so this has to do what OK does before it leaves.
                 // Without it every other change on every other page — the font
@@ -566,6 +587,42 @@ namespace ExplorerNative
                           + "or immediately if Google Drive was switched off just now."
                         : "There was no saved sign-in to remove.",
                     "Sign out of Google", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            };
+
+            choose.Click += (_, _) =>
+            {
+                using var dialog = new OpenFileDialog
+                {
+                    Title = "Choose Google credentials file",
+                    Filter = "OAuth client file (*.json)|*.json|All files (*.*)|*.*",
+                    InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile) + "\\Downloads",
+                };
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+                var problem = GoogleAuth.ImportClientJson(dialog.FileName, GoogleDrive.CredentialsDirectory,
+                    out bool changed);
+                if (problem != null)
+                {
+                    MessageBox.Show(this, problem, "Choose credentials file",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // A saved sign-in was granted to the previous client and
+                // Google will refuse it for this one.
+                if (changed && GoogleDrive.HasSavedSignIn)
+                {
+                    GoogleDrive.ForgetSignIn();
+                    signOut.Enabled = false;
+                    connect.Text = "&Connect Google Drive";
+                }
+
+                credentialsInfo.Text = CredentialsSummary();
+                choose.AccessibleDescription = credentialsInfo.Text;
+                MessageBox.Show(this,
+                    "Credentials saved. Press Connect Google Drive to sign in.",
+                    "Choose credentials file", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                connect.Focus();
             };
 
             row.Controls.Add(connect);
@@ -963,16 +1020,45 @@ namespace ExplorerNative
             parent.Controls.Add(row);
         }
 
-        private static void AddInfo(Control parent, string text)
+        private static Label AddInfo(Control parent, string text)
         {
-            parent.Controls.Add(new Label
+            var label = new Label
             {
                 Text = text,
                 AutoSize = true,
                 MaximumSize = new Size(540, 0),
                 Margin = new Padding(3, 12, 3, 4),
                 ForeColor = SystemColors.GrayText,
-            });
+            };
+            parent.Controls.Add(label);
+            return label;
+        }
+
+        /// <summary>Whether a Google client file is in place, and which project it is for.</summary>
+        private static string CredentialsSummary()
+        {
+            try
+            {
+                var path = System.IO.Path.Combine(GoogleDrive.CredentialsDirectory, GoogleAuth.ClientFileName);
+                if (GoogleAuth.Credentials(GoogleDrive.CredentialsDirectory) == null)
+                    return "No Google credentials file yet. Choose the OAuth client JSON for a Desktop app " +
+                           "from your Google Cloud project, then connect.";
+
+                string project = "";
+                if (System.IO.File.Exists(path))
+                {
+                    using var doc = System.Text.Json.JsonDocument.Parse(ProtectedFile.ReadAllText(path));
+                    if (doc.RootElement.GetProperty("installed").TryGetProperty("project_id", out var p))
+                        project = p.GetString() ?? "";
+                }
+                return project.Length > 0
+                    ? $"Google credentials loaded, for project {project}."
+                    : "Google credentials loaded.";
+            }
+            catch
+            {
+                return "Google credentials loaded.";
+            }
         }
 
         /// <summary>"AutoRename" -> "Auto rename", so the combo reads as words.</summary>

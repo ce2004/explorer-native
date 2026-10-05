@@ -467,17 +467,15 @@ namespace ExplorerNative
             _units = settings.SizeUnits;
             Say("drive.mounting", "Connecting to Google Drive");
 
-            // A file if there is one, otherwise the client built into the
-            // application — which for anybody handed this is the ordinary case,
-            // and is what makes connecting Drive one button rather than a trip
-            // to the Google Cloud console.
+            // The client file chosen in Preferences. Nothing is compiled in.
             var client = GoogleAuth.Credentials(SafeDirectory());
             if (client == null)
             {
-                Status = $"No client_secret json in {CredentialsDirectory}, " +
-                         "and this build has no client compiled into it.";
+                Status = "No Google credentials yet. In Preferences, Google Drive, choose your " +
+                         "credentials file, then connect.";
 
-                Say("drive.credentials.missing", $"No client_secret json in {CredentialsDirectory}");
+                Say("drive.credentials.missing",
+                    "No Google credentials. Choose your credentials file in Preferences, Google Drive");
                 return false;
             }
 

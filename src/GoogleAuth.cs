@@ -190,25 +190,79 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// The credentials to sign in with: a file if there is one, otherwise
-        /// the client compiled into the application.
-        ///
-        /// The file wins, and that ordering is the point of having both. The
-        /// built-in client makes connecting Drive one button for somebody handed
-        /// this application, and the file is how anybody who would rather use
-        /// their own Cloud project does so without rebuilding — including the
-        /// author, whose own setup is therefore unchanged by the built-in
-        /// existing. See <see cref="BuiltInCredentials"/> for what embedding one
-        /// does and does not cost.
+        /// The credentials to sign in with: the client file chosen in
+        /// Preferences, Google Drive. Nothing is compiled into the application —
+        /// the published build ships without any Google client, and each person
+        /// brings the desktop-client JSON from their own Cloud project.
         /// </summary>
-        public static (string ClientId, string ClientSecret)? Credentials(string directory)
-        {
-            var file = ReadClientJson(directory);
-            if (file != null) return file;
+        public static (string ClientId, string ClientSecret)? Credentials(string directory) =>
+            ReadClientJson(directory);
 
-            return BuiltInCredentials.Present
-                ? (BuiltInCredentials.ClientId, BuiltInCredentials.ClientSecret)
-                : null;
+        /// <summary>The name an imported client file is saved under.</summary>
+        public const string ClientFileName = "client_secret.json";
+
+        /// <summary>
+        /// Copies a desktop-client JSON, as the Cloud console downloads it, into
+        /// <paramref name="directory"/> as <see cref="ClientFileName"/>, replacing
+        /// any client file already there. Returns null on success, otherwise what
+        /// is wrong with the file. <paramref name="clientChanged"/> is true when
+        /// it names a different client from the one before, which means a saved
+        /// sign-in belongs to the old one and has to be made again.
+        /// </summary>
+        public static string? ImportClientJson(string sourcePath, string directory, out bool clientChanged)
+        {
+            clientChanged = false;
+
+            string text;
+            try { text = ProtectedFile.ReadAllText(sourcePath); }
+            catch (Exception ex) { return "The file could not be read: " + ex.Message; }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(text);
+                if (!doc.RootElement.TryGetProperty("installed", out var node))
+                    return doc.RootElement.TryGetProperty("web", out _)
+                        ? "This is a web application client. Create a Desktop app client in the Google " +
+                          "Cloud console and download that one."
+                        : "This is not a Google OAuth client file.";
+                if (!node.TryGetProperty("client_id", out var id) || string.IsNullOrWhiteSpace(id.GetString()) ||
+                    !node.TryGetProperty("client_secret", out var secret) || string.IsNullOrWhiteSpace(secret.GetString()))
+                    return "The file has no client ID or client secret in it.";
+            }
+            catch (JsonException)
+            {
+                return "This is not a Google OAuth client file.";
+            }
+
+            try
+            {
+                Directory.CreateDirectory(directory);
+                var before = ReadClientJson(directory);
+
+                // Every other client file goes, so there is never a question of
+                // which of two the folder means.
+                foreach (var path in Directory.EnumerateFiles(directory, "*.json"))
+                {
+                    if (Path.GetFileName(path).Equals(ClientFileName, StringComparison.OrdinalIgnoreCase)) continue;
+                    try
+                    {
+                        using var other = JsonDocument.Parse(ProtectedFile.ReadAllText(path));
+                        if (other.RootElement.TryGetProperty("installed", out _)) File.Delete(path);
+                    }
+                    catch { }
+                }
+
+                // Encrypted for this Windows account, like everything else saved here.
+                ProtectedFile.WriteAllText(Path.Combine(directory, ClientFileName), text);
+
+                var after = ReadClientJson(directory);
+                clientChanged = before == null || after == null || before.Value.ClientId != after.Value.ClientId;
+                return after == null ? "The file was copied but could not be read back." : null;
+            }
+            catch (Exception ex)
+            {
+                return "The file could not be saved: " + ex.Message;
+            }
         }
 
         /// <summary>
@@ -218,16 +272,23 @@ namespace ExplorerNative
         /// </summary>
         public static (string ClientId, string ClientSecret)? ReadClientJson(string directory)
         {
+            // A fresh machine has no settings folder yet; that is "no file".
+            if (!Directory.Exists(directory)) return null;
+
             foreach (var path in Directory.EnumerateFiles(directory, "*.json"))
             {
                 try
                 {
-                    using var doc = JsonDocument.Parse(File.ReadAllText(path));
+                    var bytes = File.ReadAllBytes(path);
+                    using var doc = JsonDocument.Parse(ProtectedFile.Decode(bytes));
                     // Google writes the payload under "installed" for a desktop
                     // client and "web" for the other kind. Only the first is ours.
                     if (!doc.RootElement.TryGetProperty("installed", out var node)) continue;
                     if (!node.TryGetProperty("client_id", out var id)) continue;
                     if (!node.TryGetProperty("client_secret", out var secret)) continue;
+                    // One an older build left in the clear is encrypted now.
+                    if (!ProtectedFile.IsProtected(bytes))
+                        try { ProtectedFile.WriteAllText(path, ProtectedFile.Decode(bytes)); } catch { }
                     return (id.GetString() ?? "", secret.GetString() ?? "");
                 }
                 catch

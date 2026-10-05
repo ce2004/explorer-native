@@ -3551,6 +3551,36 @@ namespace ExplorerNative
                 Check("a desktop client is read", found != null);
                 Equal("the id comes back", "abc.apps.googleusercontent.com", found?.ClientId ?? "");
                 Equal("and the secret", "GOCSPX-xyz", found?.ClientSecret ?? "");
+
+                // Preferences, Choose credentials file.
+                var into = Path.Combine(dir, "settings");
+                Check("a web client is refused on import",
+                    GoogleAuth.ImportClientJson(Path.Combine(dir, "web.json"), into, out _) != null);
+                Check("junk is refused on import",
+                    GoogleAuth.ImportClientJson(Path.Combine(dir, "unrelated.json"), into, out _) != null);
+                Check("nothing was written for either", GoogleAuth.ReadClientJson(into) == null);
+
+                Directory.CreateDirectory(into);
+                File.WriteAllText(Path.Combine(into, "old-client.json"),
+                    "{\"installed\":{\"client_id\":\"old\",\"client_secret\":\"s\"}}");
+                Check("a desktop client imports",
+                    GoogleAuth.ImportClientJson(Path.Combine(dir, "client_secret.json"), into, out bool changed) == null);
+                Check("a different client is reported as a change", changed);
+                Check("the old client file is gone", !File.Exists(Path.Combine(into, "old-client.json")));
+                Equal("and the new one is what is read", "abc.apps.googleusercontent.com",
+                    GoogleAuth.ReadClientJson(into)?.ClientId ?? "");
+                GoogleAuth.ImportClientJson(Path.Combine(dir, "client_secret.json"), into, out changed);
+                Check("the same client again is not a change", !changed);
+                Check("the saved client file is not readable as text",
+                    !File.ReadAllText(Path.Combine(into, GoogleAuth.ClientFileName)).Contains("GOCSPX"));
+
+                var log = Path.Combine(into, "test.log");
+                File.WriteAllText(log, "an old plain line" + Environment.NewLine);
+                ProtectedFile.AppendLine(log, "a secret line");
+                ProtectedFile.EncryptLogInPlace(log);
+                Check("a log has no plain text left", !File.ReadAllText(log).Contains("line"));
+                Equal("and reads back in order", "an old plain line|a secret line",
+                    string.Join("|", ProtectedFile.ReadLog(log)));
             }
             finally
             {
@@ -4014,7 +4044,7 @@ namespace ExplorerNative
                 // And saving it here keeps both: the stamp, so the newer build does
                 // not run its migrations again, and the settings only it knows.
                 forward.Save();
-                var saved = File.ReadAllText(Path.Combine(sandbox, "settings.json"));
+                var saved = ProtectedFile.ReadAllText(Path.Combine(sandbox, "settings.json"));
                 var roundTripped = Settings.Load();
                 Check("a newer build's stamp survives this build saving the file",
                     roundTripped.SettingsVersion == 99, roundTripped.SettingsVersion.ToString());
@@ -4027,7 +4057,7 @@ namespace ExplorerNative
                     Settings.CurrentSettingsVersion + " }");
                 Settings.Load().Save();
                 Check("a setting this build removed is dropped on the next save",
-                    !File.ReadAllText(Path.Combine(sandbox, "settings.json")).Contains("RemovedLongAgo"));
+                    !ProtectedFile.ReadAllText(Path.Combine(sandbox, "settings.json")).Contains("RemovedLongAgo"));
 
                 // ---- a damaged file costs the damage, not the file ----
                 DeleteSettingsCopies(sandbox);
@@ -4431,7 +4461,7 @@ namespace ExplorerNative
                 Settings.OverrideAppDataDir = scratch;
 
                 new Settings { WindowTitle = "a" }.Save();
-                var written = File.ReadAllText(Path.Combine(scratch, "settings.json"));
+                var written = ProtectedFile.ReadAllText(Path.Combine(scratch, "settings.json"));
 
                 Check("the derived title is not written to settings.json",
                     !written.Contains("DisplayTitle", StringComparison.Ordinal));
@@ -11806,7 +11836,7 @@ namespace ExplorerNative
             try
             {
                 new Settings().Save();
-                var raw = File.ReadAllText(Path.Combine(sandbox, "settings.json"));
+                var raw = ProtectedFile.ReadAllText(Path.Combine(sandbox, "settings.json"));
                 Check("shortcuts are readable in settings.json",
                     raw.Contains("\"Ctrl+Alt+P\""),
                     raw.Split('\n').FirstOrDefault(l => l.Contains("PlayPause"))?.Trim());
