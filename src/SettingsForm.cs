@@ -6,6 +6,19 @@ using System.Windows.Forms;
 
 namespace ExplorerNative
 {
+    /// <summary>What the Google Drive account button offers, from the live drive.</summary>
+    public enum DriveAccountState
+    {
+        /// <summary>No saved sign-in, or Drive switched off: the button connects.</summary>
+        NotConnected,
+
+        /// <summary>Mounted and working: the button disconnects.</summary>
+        Connected,
+
+        /// <summary>Signed in, but Google wants the sign-in again: the button reconnects.</summary>
+        NeedsSignIn,
+    }
+
     /// <summary>
     /// Preferences (Ctrl+P).
     ///
@@ -19,6 +32,15 @@ namespace ExplorerNative
     {
         private readonly Settings _working;
         private readonly List<Action> _applies = new();
+
+        /// <summary>
+        /// The live Google Drive's state, for the account button. Set by the
+        /// tray, which owns the drive; null (and so Connect) in tests.
+        /// </summary>
+        internal static Func<DriveAccountState>? AccountState;
+
+        /// <summary>Takes the live drive off its letter, keeping the sign-in. Set by the tray.</summary>
+        internal static Action? DisconnectDrive;
 
         /// <summary>Checked before OK closes the dialog; false keeps it open.</summary>
         private Func<System.Threading.Tasks.Task<bool>>? _beforeOk;
@@ -450,6 +472,15 @@ namespace ExplorerNative
 
             AddGoogleAccountControls(panel, driveBox);
 
+            AddButton(panel, "Configure Google Drive &monitor...", () =>
+            {
+                using var dialog = new DriveMonitorForm(_working.DriveSyncPairs);
+                dialog.ShowDialog(this);
+            });
+            AddInfo(panel,
+                "The monitor keeps folders on this PC in step with folders in Google Drive: upload only " +
+                "as a backup, download only, or two-way. Deletes are only copied if you ask for it.");
+
             // This said the opposite until the scope changed under it: "nothing
             // this application does can change or delete anything in your Drive".
             // Copy, move and delete were added, the scope became full Drive
@@ -526,15 +557,42 @@ namespace ExplorerNative
 
             var connect = new Button
             {
-                Text = signedIn ? "&Reconnect Google Drive" : "&Connect Google Drive",
                 AutoSize = true,
                 Margin = new Padding(0, 0, 10, 0),
             };
-            connect.AccessibleDescription =
-                "Switches Google Drive on and closes Preferences, so the browser opens over the "
-                + "file list rather than behind this window.";
+
+            // The button says what pressing it will do, from the live drive's
+            // state: Disconnect while it is working, Reconnect when Google wants
+            // the sign-in again, Connect otherwise.
+            var state = AccountState?.Invoke() ?? DriveAccountState.NotConnected;
+            void Show(DriveAccountState now)
+            {
+                state = now;
+                (connect.Text, connect.AccessibleDescription) = now switch
+                {
+                    DriveAccountState.Connected =>
+                        ("&Disconnect Google Drive", "Takes Google Drive off its drive letter. You stay signed in."),
+                    DriveAccountState.NeedsSignIn =>
+                        ("&Reconnect Google Drive", "Google needs you to sign in again."),
+                    _ => ("&Connect Google Drive", "Puts Google Drive on its drive letter."),
+                };
+            }
+            Show(state);
+
             connect.Click += async (_, _) =>
             {
+                if (state == DriveAccountState.Connected)
+                {
+                    // Off its letter and switched off, signed in still, so
+                    // connecting again later needs no browser. Preferences stays
+                    // open; the drive says "Google Drive disconnected" itself.
+                    DisconnectDrive?.Invoke();
+                    driveBox.Checked = false;
+                    _working.GoogleDriveEnabled = false;
+                    Show(DriveAccountState.NotConnected);
+                    return;
+                }
+
                 if (!await _beforeOk!()) return;
                 if (GoogleAuth.Credentials(GoogleDrive.CredentialsDirectory) == null)
                 {
@@ -588,7 +646,7 @@ namespace ExplorerNative
                 driveBox.Checked = false;
                 _working.GoogleDriveEnabled = false;
                 signOut.Enabled = false;
-                connect.Text = "&Connect Google Drive";
+                Show(DriveAccountState.NotConnected);
 
                 MessageBox.Show(this,
                     gone
@@ -649,7 +707,7 @@ namespace ExplorerNative
                 {
                     GoogleDrive.ForgetSignIn();
                     signOut.Enabled = false;
-                    connect.Text = "&Connect Google Drive";
+                    Show(DriveAccountState.NotConnected);
                 }
 
                 savedId = id;

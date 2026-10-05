@@ -32,6 +32,7 @@ namespace ExplorerNative
         /// letter must not.
         /// </summary>
         private readonly GoogleDrive _drive = new();
+        private readonly DriveMonitor _monitor;
         private ConnectServer? _connect;
         private ConnectStreams? _connectStreams;
         private ConnectClipboard? _connectClipboard;
@@ -109,6 +110,32 @@ namespace ExplorerNative
             _browsePrefetch.Notify = OnPlayerNotification;
             AudioTags.Notify = OnPlayerNotification;
             _drive.Notification += (id, message) => PostUi(() => Notify(id, message));
+
+            // Preferences' account button says Connect, Disconnect or Reconnect
+            // from the drive itself, and Disconnect acts on it directly.
+            SettingsForm.AccountState = () =>
+                !_settings.GoogleDriveEnabled || !GoogleDrive.HasSavedSignIn ? DriveAccountState.NotConnected
+                : _drive.Mounted && !_drive.NeedsSignIn ? DriveAccountState.Connected
+                : DriveAccountState.NeedsSignIn;
+            SettingsForm.DisconnectDrive = () =>
+            {
+                _settings.GoogleDriveEnabled = false;
+                _settings.Save();
+                _drive.Unmount();
+            };
+
+            // The folder monitor: pairs live in settings, saved at once when the
+            // monitor dialog changes them.
+            _monitor = new DriveMonitor(_drive,
+                (id, message) => PostUi(() => Notify(id, message)),
+                pairs => PostUi(() =>
+                {
+                    _settings.DriveSyncPairs = pairs;
+                    _settings.Save();
+                    DriveMonitor.ForgetRemovedPairs(pairs);
+                }));
+            _monitor.Reload(_settings.DriveSyncPairs);
+            DrivePairForm.DriveMonitorClient = () => _drive.Client;
 
             // A track on the Drive letter downloads straight from Google.
             AudioPlayer.RangeSourceFor = path => _drive.OpenRange(path);
@@ -349,6 +376,7 @@ namespace ExplorerNative
                     if (ok)
                     {
                         Notify("drive.mounted", $"Google Drive is on {_drive.Letter}");
+                        _monitor.SyncNow();
 
                         // The pane may already be showing the letter from a
                         // previous session's position memory, in which case it is
@@ -436,6 +464,7 @@ namespace ExplorerNative
                 _drive.Unmount();
             }
 
+            _monitor.Reload(_settings.DriveSyncPairs);
             _form?.ApplyNewSettings(settings);
         }
 
@@ -1958,6 +1987,7 @@ namespace ExplorerNative
                 _connect?.Dispose();
                 _connectStreams?.Dispose();
                 _connectClipboard?.Dispose();
+                _monitor.Dispose();
                 _drive.Dispose();
 
                 _tray.Visible = false;

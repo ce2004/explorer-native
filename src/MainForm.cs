@@ -2092,13 +2092,21 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// What a drive's row says first: the letter, its name if it has one, and
-        /// how much room is left — "E: Backup, 12 GB free". That is what anybody
-        /// arrowing through the drive list is there to find out, so it is said
-        /// first. The total follows in the size column.
+        /// A drive's whole row, as Conner asked for it: the letter, its name if it
+        /// has one, and how full it is — "D, Google Drive, 1 terabyte of 5
+        /// terabytes used". All of it is in the name, and the size column is
+        /// left empty, so nothing is said twice.
         /// </summary>
-        internal static string DriveRowName(string root, string free) =>
-            root.TrimEnd(Path.DirectorySeparatorChar) + " " + free;
+        internal static string DriveRowName(string root, string detail) =>
+            root.TrimEnd(Path.DirectorySeparatorChar).TrimEnd(':') + ", " + detail;
+
+        /// <summary>
+        /// "1 terabyte of 5 terabytes used", always in words: a drive's size is
+        /// read out, and "TB" is read as two letters.
+        /// </summary>
+        internal static string UsedOf(long used, long total) =>
+            $"{SizeFormatter.Format(Math.Max(0, used), SizeUnitStyle.FullWords)} of " +
+            $"{SizeFormatter.Format(total, SizeUnitStyle.FullWords)} used";
 
         private async Task FillDriveDetailsAsync(Pane pane, DriveInfo drive, CancellationToken token)
         {
@@ -2113,9 +2121,7 @@ namespace ExplorerNative
             // response that proved the token at mount.
             if (DriveQuotaFor(drive) is (long used, long limit) && limit > 0)
             {
-                var freeInDrive = SizeFormatter.Format(Math.Max(0, limit - used), _settings.SizeUnits);
-                var totalInDrive = SizeFormatter.Format(limit, _settings.SizeUnits);
-                ApplyDetails(pane, drive, $"Google Drive, {freeInDrive} free", $"of {totalInDrive}", token);
+                ApplyDetails(pane, drive, "Google Drive, " + UsedOf(used, limit), "", token);
                 return;
             }
 
@@ -2124,12 +2130,11 @@ namespace ExplorerNative
                 var probe = Task.Run(() =>
                 {
                     if (!drive.IsReady) return ("not ready", "");
-                    var room = SizeFormatter.Format(drive.AvailableFreeSpace, _settings.SizeUnits);
-                    var total = SizeFormatter.Format(drive.TotalSize, _settings.SizeUnits);
+                    long total = drive.TotalSize;
                     // The volume's name, so two USB sticks are told apart by
                     // more than their letter: "E: Backup, 12 GB free".
                     var label = string.IsNullOrWhiteSpace(drive.VolumeLabel) ? "" : drive.VolumeLabel.Trim() + ", ";
-                    return ($"{label}{room} free", $"of {total}");
+                    return (label + UsedOf(total - drive.TotalFreeSpace, total), "");
                 }, token);
 
                 var finished = await Task.WhenAny(probe, Task.Delay(TimeSpan.FromSeconds(8), token));

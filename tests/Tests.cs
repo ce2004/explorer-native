@@ -509,6 +509,365 @@ namespace ExplorerNative
             HeldKeyDistanceTests();
             FixedBehaviourTests();
             DriveLetterMoveTests();
+            DriveMonitorTests();
+            DriveMonitorResilienceTests();
+            AccountButtonTests();
+        }
+
+        /// <summary>
+        /// Offline, interrupted and out-of-room: the monitor has to pick up
+        /// everything it missed, never do anything twice, and never fill a disk.
+        /// </summary>
+        private static void DriveMonitorResilienceTests()
+        {
+            var t0 = new DateTime(2026, 10, 1, 12, 0, 0, DateTimeKind.Utc);
+            var t1 = t0.AddHours(1);
+            var t2 = t0.AddHours(2);
+            Dictionary<string, SyncFile> Files(params (string Path, SyncFile File)[] items) =>
+                items.ToDictionary(i => i.Path, i => i.File, StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, SyncBase> Base(params (string Path, SyncBase Base)[] items) =>
+                items.ToDictionary(i => i.Path, i => i.Base, StringComparer.OrdinalIgnoreCase);
+            SyncBase B(long size, DateTime when, string id, string? md5 = null) => new(size, when, size, when, id, md5);
+            string Plan(SyncRules rules, Dictionary<string, SyncFile> l, Dictionary<string, SyncFile> r,
+                Dictionary<string, SyncBase> b) =>
+                string.Join(",", SyncPlanner.Plan(rules, l, r, b).Select(a => a.Kind + ":" + a.Path));
+            var twoWay = new SyncRules(SyncMode.TwoWay, false);
+
+            // Offline on both sides: found by comparing with the last sync, not by events.
+            var last = Base(("a.txt", B(1, t0, "A")), ("b.txt", B(2, t0, "B")));
+            Equal("edits made offline on both sides, to different files, both go across",
+                "Upload:a.txt,Download:b.txt",
+                Plan(twoWay, Files(("a.txt", new SyncFile(5, t1)), ("b.txt", new SyncFile(2, t0))),
+                    Files(("a.txt", new SyncFile(1, t0, "A")), ("b.txt", new SyncFile(9, t1, "B"))), last));
+            Equal("the same file edited on both sides while offline keeps both",
+                "KeepBothRemoteWins:a.txt",
+                Plan(twoWay, Files(("a.txt", new SyncFile(5, t1))), Files(("a.txt", new SyncFile(7, t2, "A"))),
+                    Base(("a.txt", B(1, t0, "A")))));
+
+            // Interrupted part way, with nothing saved: the rerun does not do anything twice.
+            var local = Files(("new1.txt", new SyncFile(3, t1)), ("new2.txt", new SyncFile(4, t1)));
+            var remote = Files(("down1.txt", new SyncFile(5, t1, "D1")), ("down2.txt", new SyncFile(6, t1, "D2")));
+            var none = Base();
+            var first = SyncPlanner.Plan(twoWay, local, remote, none);
+            // The first two actions completed on the wire, then the connection
+            // dropped before the state was written.
+            foreach (var done in first.Take(2))
+            {
+                if (done.Kind == SyncActionKind.Upload)
+                    remote[done.Path] = new SyncFile(local[done.Path].Size, local[done.Path].ModifiedUtc, "new-" + done.Path);
+                if (done.Kind == SyncActionKind.Download)
+                    local[done.Path] = new SyncFile(remote[done.Path].Size, remote[done.Path].ModifiedUtc);
+            }
+            var rerun = SyncPlanner.Plan(twoWay, local, remote, none);
+            Check("after an interruption the finished files are only remembered, not copied again",
+                first.Take(2).All(d => rerun.Any(a => a.Path == d.Path && a.Kind == SyncActionKind.Record)),
+                string.Join(",", rerun.Select(a => a.Kind + ":" + a.Path)));
+            Check("and the unfinished ones are still to do, once each",
+                first.Skip(2).All(d => rerun.Count(a => a.Path == d.Path && a.Kind == d.Kind) == 1));
+            Check("and nothing is turned into a conflict copy",
+                !rerun.Any(a => a.Kind is SyncActionKind.KeepBothLocalWins or SyncActionKind.KeepBothRemoteWins));
+
+            // Drive's checksum decides when it is there.
+            var md5Base = Base(("a.txt", B(5, t0, "A", "aaa")));
+            Equal("a Drive file with a new checksum is a change even at the same size and time",
+                "Download:a.txt", Plan(twoWay, Files(("a.txt", new SyncFile(5, t0))),
+                    Files(("a.txt", new SyncFile(5, t0, "A", "bbb"))), md5Base));
+            Equal("and the same checksum with only a new time is not",
+                "", Plan(twoWay, Files(("a.txt", new SyncFile(5, t0))),
+                    Files(("a.txt", new SyncFile(5, t2, "A", "aaa"))), md5Base));
+
+            // The options.
+            Equal("subfolders off leaves anything in a subfolder alone",
+                "Upload:top.txt", Plan(new SyncRules(SyncMode.TwoWay, false, IncludeSubfolders: false),
+                    Files(("top.txt", new SyncFile(1, t0)), ("sub/inner.txt", new SyncFile(1, t0))), Files(), Base()));
+            Equal("skipped file types are left alone, written with or without the dot",
+                "Upload:keep.txt", Plan(new SyncRules(SyncMode.TwoWay, false, SkipExtensions: "iso, .MKV"),
+                    Files(("keep.txt", new SyncFile(1, t0)), ("disc.iso", new SyncFile(1, t0)), ("film.mkv", new SyncFile(1, t0))),
+                    Files(), Base()));
+            const long mb = 1024 * 1024;
+            Equal("files larger than the limit are left alone",
+                "Upload:small.txt", Plan(new SyncRules(SyncMode.TwoWay, false, MaxBytes: 100 * mb),
+                    Files(("small.txt", new SyncFile(mb, t0)), ("big.bin", new SyncFile(200 * mb, t0))), Files(), Base()));
+            Equal("a file over the limit on one side only is not read as deleted on the other",
+                "", Plan(new SyncRules(SyncMode.TwoWay, true, MaxBytes: 100 * mb),
+                    Files(("grew.bin", new SyncFile(200 * mb, t1))), Files(),
+                    Base(("grew.bin", B(50 * mb, t0, "G")))));
+            Equal("PC wins: the PC's copy replaces Drive's",
+                "Upload:a.txt", Plan(new SyncRules(SyncMode.TwoWay, false, ConflictChoice.PcWins),
+                    Files(("a.txt", new SyncFile(5, t1))), Files(("a.txt", new SyncFile(7, t2, "A"))), Base(("a.txt", B(1, t0, "A")))));
+            Equal("Drive wins: Drive's copy replaces the PC's",
+                "Download:a.txt", Plan(new SyncRules(SyncMode.TwoWay, false, ConflictChoice.DriveWins),
+                    Files(("a.txt", new SyncFile(5, t2))), Files(("a.txt", new SyncFile(7, t1, "A"))), Base(("a.txt", B(1, t0, "A")))));
+            var pairRules = SyncRules.For(new DriveSyncPair { MaxFileMegabytes = 500, SkipExtensions = ".iso", IncludeSubfolders = false });
+            Check("a pair's options become its rules",
+                pairRules.MaxBytes == 500 * mb && pairRules.SkipsType("x.ISO") && !pairRules.IncludeSubfolders);
+
+            // Small files first.
+            var ordered = SyncPlanner.Ordered(
+                new List<SyncAction>
+                {
+                    new(SyncActionKind.Download, "huge.mkv"), new(SyncActionKind.Upload, "tiny.txt"),
+                    new(SyncActionKind.Forget, "gone.txt"),
+                },
+                Files(("tiny.txt", new SyncFile(10, t0))), Files(("huge.mkv", new SyncFile(10_000_000, t0, "H"))));
+            Equal("bookkeeping first, then the smallest transfer, the huge one last",
+                "gone.txt,tiny.txt,huge.mkv", string.Join(",", ordered.Select(a => a.Path)));
+
+            // Disk space.
+            const long gb = 1024L * 1024 * 1024;
+            Equal("the margin is 2 gigabytes on a small disk", (2 * gb).ToString(), SyncSpace.Margin(20 * gb).ToString());
+            Equal("and 5 percent on a big one", (50 * gb).ToString(), SyncSpace.Margin(1000 * gb).ToString());
+            Check("something that leaves the margin fits", SyncSpace.Fits(7 * gb, 13 * gb, 100 * gb));
+            Check("something that would eat into it does not", !SyncSpace.Fits(9 * gb, 13 * gb, 100 * gb));
+            Equal("and says how much more room it needs", (7 * gb).ToString(),
+                SyncSpace.Shortfall(15 * gb, 13 * gb, 100 * gb).ToString());
+            Check("a disk already inside its margin has no room at all", SyncSpace.Room(gb, 100 * gb) == 0);
+            Equal("a pass stops cleanly at the file that would cross the margin", "2",
+                SyncSpace.HowManyFit(new[] { 3 * gb, 4 * gb, 5 * gb, gb }, 12 * gb, 100 * gb).ToString());
+            Equal("nothing is written to a full disk", "0",
+                SyncSpace.HowManyFit(new[] { 1L }, gb, 100 * gb).ToString());
+
+            // Resuming a download.
+            Equal("an interrupted download carries on from what is on disk", "4096",
+                SyncSpace.ResumeOffset(4096, 10_000, sameFile: true).ToString());
+            Equal("not if the Drive file changed meanwhile", "0", SyncSpace.ResumeOffset(4096, 10_000, sameFile: false).ToString());
+            Equal("not if what is on disk is longer than the file", "0", SyncSpace.ResumeOffset(20_000, 10_000, sameFile: true).ToString());
+            var part = new DriveMonitor.PartialDownload("F", 100, t0, "abc");
+            Check("the same Drive file, by checksum", DriveMonitor.SameDriveFile(part, new SyncFile(100, t1, "F", "abc")));
+            Check("a changed checksum is a different file", !DriveMonitor.SameDriveFile(part, new SyncFile(100, t0, "F", "xyz")));
+            Check("so is a different file id", !DriveMonitor.SameDriveFile(part, new SyncFile(100, t0, "G", "abc")));
+
+            // Progress said along the way.
+            Equal("crossing a quarter is said", "25", SyncSpace.QuarterPassed(20, 30, 100).ToString());
+            Equal("staying inside one is not", "0", SyncSpace.QuarterPassed(30, 40, 100).ToString());
+            Equal("finishing is said as done, not as a quarter", "0", SyncSpace.QuarterPassed(90, 100, 100).ToString());
+            Check("a pass over a gigabyte is big", SyncSpace.IsBig(2 * gb, 3));
+            Check("so is one of more than 200 files", SyncSpace.IsBig(1, 201));
+            Check("an ordinary one is not", !SyncSpace.IsBig(10 * mb, 20));
+            Equal("the start of a big pass says how much", "214 gigabytes to download, 3 gigabytes to upload",
+                DriveMonitor.Amounts(214 * gb, 3 * gb));
+
+            var pair = new DriveSyncPair { Name = "Music", LocalFolder = @"C:\Music", DriveFolderPath = "My Drive/Music" };
+            Check("the monitor window shows live progress",
+                DriveMonitorForm.Describe(pair, new DriveMonitor.PairStatus(null, null, true, 40 * gb, 214 * gb), t0)
+                    .EndsWith("syncing, 40 gigabytes of 214 gigabytes"));
+            Check("and says plainly when it is paused for space",
+                DriveMonitorForm.Describe(pair, new DriveMonitor.PairStatus(null, "paused: C: is out of space, needs 30 gigabytes more", false), t0)
+                    .EndsWith("paused: C: is out of space, needs 30 gigabytes more"));
+            pair.CheckMinutes = 0;
+            Check("a pair checked only on request says so",
+                DriveMonitorForm.Describe(pair, null, t0).Contains("Drive checked only on Sync now"));
+        }
+
+        /// <summary>
+        /// The Google Drive monitor's decisions, which are the part that can
+        /// lose somebody's files, checked rule by rule with no network.
+        /// </summary>
+        private static void DriveMonitorTests()
+        {
+            var t0 = new DateTime(2026, 10, 1, 12, 0, 0, DateTimeKind.Utc);
+            var t1 = t0.AddHours(1);
+            var t2 = t0.AddHours(2);
+            SyncFile F(long size, DateTime when, string? id = null) => new(size, when, id);
+            Dictionary<string, SyncFile> Files(params (string Path, SyncFile File)[] items) =>
+                items.ToDictionary(i => i.Path, i => i.File, StringComparer.OrdinalIgnoreCase);
+            Dictionary<string, SyncBase> Base(params (string Path, SyncBase Base)[] items) =>
+                items.ToDictionary(i => i.Path, i => i.Base, StringComparer.OrdinalIgnoreCase);
+            SyncBase B(long size, DateTime when, string id) => new(size, when, size, when, id);
+            string Plan(SyncMode mode, bool deletes, Dictionary<string, SyncFile> l, Dictionary<string, SyncFile> r,
+                Dictionary<string, SyncBase> b) =>
+                string.Join(",", SyncPlanner.Plan(mode, deletes, l, r, b).Select(a => a.Kind + ":" + a.Path));
+            var none = Base();
+
+            // New files.
+            Equal("upload only: a new PC file goes up",
+                "Upload:a.txt", Plan(SyncMode.UploadOnly, false, Files(("a.txt", F(5, t0))), Files(), none));
+            Equal("upload only: a new Drive file is never downloaded",
+                "", Plan(SyncMode.UploadOnly, true, Files(), Files(("a.txt", F(5, t0, "x"))), none));
+            Equal("download only: a new Drive file comes down",
+                "Download:a.txt", Plan(SyncMode.DownloadOnly, false, Files(), Files(("a.txt", F(5, t0, "x"))), none));
+            Equal("download only: a new PC file is never uploaded",
+                "", Plan(SyncMode.DownloadOnly, true, Files(("a.txt", F(5, t0))), Files(), none));
+            Equal("two-way: new files go both ways",
+                "Upload:a.txt,Download:b.txt",
+                Plan(SyncMode.TwoWay, false, Files(("a.txt", F(5, t0))), Files(("b.txt", F(6, t0, "y"))), none));
+
+            // First sync with files on both sides: nothing is deleted.
+            var firstL = Files(("same.txt", F(5, t0)), ("onlypc.txt", F(1, t0)), ("diff.txt", F(9, t2)));
+            var firstR = Files(("same.txt", F(5, t0, "s")), ("onlydrive.txt", F(2, t0, "o")), ("diff.txt", F(3, t1, "d")));
+            foreach (var mode in new[] { SyncMode.TwoWay, SyncMode.UploadOnly, SyncMode.DownloadOnly })
+            {
+                var kinds = SyncPlanner.Plan(mode, true, firstL, firstR, none).Select(a => a.Kind).ToList();
+                Check($"first sync ({mode}) deletes nothing even with deletes on",
+                    !kinds.Contains(SyncActionKind.DeleteLocal) && !kinds.Contains(SyncActionKind.DeleteRemote));
+            }
+            Equal("first sync two-way: identical files are just remembered, a difference keeps both",
+                "KeepBothLocalWins:diff.txt,Download:onlydrive.txt,Upload:onlypc.txt,Record:same.txt",
+                Plan(SyncMode.TwoWay, true, firstL, firstR, none));
+
+            // Changes after a sync.
+            var synced = Base(("a.txt", B(5, t0, "x")));
+            Equal("two-way: a PC edit goes up",
+                "Upload:a.txt", Plan(SyncMode.TwoWay, false, Files(("a.txt", F(7, t1))), Files(("a.txt", F(5, t0, "x"))), synced));
+            Equal("two-way: a Drive edit comes down",
+                "Download:a.txt", Plan(SyncMode.TwoWay, false, Files(("a.txt", F(5, t0))), Files(("a.txt", F(8, t1, "x"))), synced));
+            Equal("two-way: edited in both places keeps both, the newer keeps the name",
+                "KeepBothRemoteWins:a.txt",
+                Plan(SyncMode.TwoWay, false, Files(("a.txt", F(7, t1))), Files(("a.txt", F(8, t2, "x"))), synced));
+            Equal("download only: a PC edit is left alone, never overwritten",
+                "", Plan(SyncMode.DownloadOnly, false, Files(("a.txt", F(7, t1))), Files(("a.txt", F(5, t0, "x"))), synced));
+            Equal("upload only: a Drive edit is not downloaded",
+                "", Plan(SyncMode.UploadOnly, false, Files(("a.txt", F(5, t0))), Files(("a.txt", F(8, t1, "x"))), synced));
+            Equal("nothing changed, nothing done",
+                "", Plan(SyncMode.TwoWay, true, Files(("a.txt", F(5, t0))), Files(("a.txt", F(5, t0, "x"))), synced));
+
+            // Deletes.
+            Equal("two-way, deletes off: a file deleted on the PC comes back from Drive",
+                "Download:a.txt", Plan(SyncMode.TwoWay, false, Files(), Files(("a.txt", F(5, t0, "x"))), synced));
+            Equal("two-way, deletes on: a file deleted on the PC goes to the Drive trash",
+                "DeleteRemote:a.txt", Plan(SyncMode.TwoWay, true, Files(), Files(("a.txt", F(5, t0, "x"))), synced));
+            Equal("two-way, deletes on: a file deleted in Drive goes to the Recycle Bin",
+                "DeleteLocal:a.txt", Plan(SyncMode.TwoWay, true, Files(("a.txt", F(5, t0))), Files(), synced));
+            Equal("upload only, deletes on: a Drive delete is never copied to the PC; the backup is put back",
+                "Upload:a.txt", Plan(SyncMode.UploadOnly, true, Files(("a.txt", F(5, t0))), Files(), synced));
+            Equal("upload only, deletes off: a PC delete leaves Drive alone",
+                "Forget:a.txt", Plan(SyncMode.UploadOnly, false, Files(), Files(("a.txt", F(5, t0, "x"))), synced));
+            Equal("download only, deletes on: a PC delete never touches Drive; it comes back",
+                "Download:a.txt", Plan(SyncMode.DownloadOnly, true, Files(), Files(("a.txt", F(5, t0, "x"))), synced));
+            Equal("deletes on, but edited on the other side since: the edit wins over the delete",
+                "Upload:a.txt", Plan(SyncMode.TwoWay, true, Files(("a.txt", F(9, t1))), Files(), synced));
+            Equal("gone from both: forgotten",
+                "Forget:a.txt", Plan(SyncMode.TwoWay, true, Files(), Files(), synced));
+
+            // A rename is a delete and an add.
+            Equal("rename, deletes off: the new name is copied and the old one kept",
+                "Download:a.txt,Upload:b.txt",
+                Plan(SyncMode.TwoWay, false, Files(("b.txt", F(5, t0))), Files(("a.txt", F(5, t0, "x"))), synced));
+            Equal("rename, deletes on: the new name is copied and the old one trashed",
+                "DeleteRemote:a.txt,Upload:b.txt",
+                Plan(SyncMode.TwoWay, true, Files(("b.txt", F(5, t0))), Files(("a.txt", F(5, t0, "x"))), synced));
+
+            // Skipped names.
+            foreach (var name in new[] { "desktop.ini", "Thumbs.db", "~$report.docx", "x.tmp", "song.flac.partial" })
+                Check($"{name} is never synced", SyncPlanner.IsSkipped(name));
+            Check("an ordinary file is synced", !SyncPlanner.IsSkipped("report.docx"));
+            Equal("skipped files and folders are left out of the plan", "",
+                Plan(SyncMode.TwoWay, true, Files(("Thumbs.db", F(1, t0)), ("~$a.docx", F(1, t0))), Files(), none));
+            Equal("a two-second clock difference is not a change", "",
+                Plan(SyncMode.TwoWay, false, Files(("a.txt", F(5, t0.AddSeconds(2)))), Files(("a.txt", F(5, t0, "x"))), synced));
+
+            Equal("the copy that loses the name is marked as a conflict",
+                "notes/report (conflict 2026-10-05).docx",
+                SyncPlanner.ConflictName("notes/report.docx", new DateTime(2026, 10, 5), _ => false));
+            Equal("and never over another file",
+                "report (conflict 2026-10-05 2).docx",
+                SyncPlanner.ConflictName("report.docx", new DateTime(2026, 10, 5), p => p == "report (conflict 2026-10-05).docx"));
+
+            // How a pair reads out.
+            var pair = new DriveSyncPair
+            {
+                Name = "Music", LocalFolder = @"C:\Users\Conner\Music", DriveFolderPath = "My Drive/Music",
+                Mode = SyncMode.TwoWay,
+            };
+            Equal("a pair is one sentence",
+                @"Music: C:\Users\Conner\Music and Drive folder My Drive/Music, two-way, deletes not copied, last synced 2 minutes ago",
+                DriveMonitorForm.Describe(pair, new DriveMonitor.PairStatus(t0, null, false), t0.AddMinutes(2)));
+            pair.Mode = SyncMode.UploadOnly;
+            pair.CopyDeletes = true;
+            pair.Paused = true;
+            Check("paused and upload only read as such",
+                DriveMonitorForm.Describe(pair, null, t0).EndsWith("upload only, PC to Drive, deletes copied, paused"));
+            Equal("the tally counts only what happened", "3 uploaded, 1 deleted", DriveMonitor.Tally(3, 0, 1));
+
+            // The monitor never touches the app's own folder, which holds Drive's sync root.
+            Check("the settings folder cannot be monitored", DriveMonitor.Refusal(Settings.AppDataDir) != null);
+            Check("a missing folder cannot be monitored",
+                DriveMonitor.Refusal(Path.Combine(Path.GetTempPath(), "no-such-" + Guid.NewGuid().ToString("N"))) != null);
+            Check("an ordinary folder can", DriveMonitor.Refusal(Path.GetTempPath()) == null);
+
+            // Pairs survive a save, encrypted with everything else.
+            var previous = Settings.OverrideAppDataDir;
+            var dir = NewTempDir();
+            try
+            {
+                Settings.OverrideAppDataDir = dir;
+                var settings = new Settings();
+                settings.DriveSyncPairs.Add(new DriveSyncPair
+                {
+                    Name = "Docs", LocalFolder = @"D:\Docs", DriveFolderId = "abc", DriveFolderPath = "My Drive/Docs",
+                    Mode = SyncMode.DownloadOnly, CopyDeletes = true,
+                });
+                settings.Save();
+                var back = Settings.Load().DriveSyncPairs.SingleOrDefault();
+                Check("a pair is saved and read back",
+                    back != null && back.Name == "Docs" && back.DriveFolderId == "abc" &&
+                    back.Mode == SyncMode.DownloadOnly && back.CopyDeletes && !back.Paused);
+                Check("and settings.json still gives nothing away",
+                    !File.ReadAllText(Path.Combine(dir, "settings.json")).Contains("Docs"));
+            }
+            finally
+            {
+                Settings.OverrideAppDataDir = previous;
+                try { Directory.Delete(dir, true); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// The Google Drive account button says what pressing it will do:
+        /// Connect, Disconnect while Drive is working, Reconnect when Google
+        /// wants the sign-in again.
+        /// </summary>
+        private static void AccountButtonTests()
+        {
+            var previous = Settings.OverrideAppDataDir;
+            var hook = SettingsForm.AccountState;
+            var dir = NewTempDir();
+            Settings.OverrideAppDataDir = dir;
+            try
+            {
+                foreach (var (state, wanted) in new[]
+                         {
+                             (DriveAccountState.NotConnected, "&Connect Google Drive"),
+                             (DriveAccountState.Connected, "&Disconnect Google Drive"),
+                             (DriveAccountState.NeedsSignIn, "&Reconnect Google Drive"),
+                         })
+                {
+                    SettingsForm.AccountState = () => state;
+                    string error = "";
+                    var texts = new List<string>();
+                    var descriptions = new List<string>();
+                    var thread = new Thread(() =>
+                    {
+                        try
+                        {
+                            using var window = new SettingsForm(new Settings(), null);
+                            foreach (var b in FindAll<Button>(window))
+                            {
+                                texts.Add(b.Text);
+                                if (b.Text.Contains("Google Drive", StringComparison.Ordinal) && !b.Text.Contains("monitor"))
+                                    descriptions.Add(b.AccessibleDescription ?? "");
+                            }
+                        }
+                        catch (Exception ex) { error = ex.GetType().Name + ": " + ex.Message; }
+                    });
+                    thread.SetApartmentState(ApartmentState.STA);
+                    thread.Start();
+                    thread.Join(TimeSpan.FromSeconds(30));
+
+                    Equal($"Preferences builds with Drive {state}", "", error);
+                    Check($"Drive {state}: the button says {wanted.Replace("&", "")}", texts.Contains(wanted),
+                        string.Join(" | ", texts.Where(t => t.Contains("Google"))));
+                    Check($"Drive {state}: its description is short",
+                        descriptions.All(d => d.Length < 70 && !d.Contains("closes Preferences")),
+                        string.Join(" | ", descriptions));
+                }
+            }
+            finally
+            {
+                SettingsForm.AccountState = hook;
+                Settings.OverrideAppDataDir = previous;
+                try { Directory.Delete(dir, true); } catch { }
+            }
         }
 
         /// <summary>
@@ -4128,6 +4487,10 @@ namespace ExplorerNative
                         // all — which is the exact failure this whole test is
                         // for. Filled with something no clamp will touch.
                         var t when t == typeof(int[]) => DistinctIntArray(current as int[]),
+                        var t when t == typeof(List<DriveSyncPair>) => new List<DriveSyncPair>
+                        {
+                            new() { Name = "round-trip", LocalFolder = @"C:\x", DriveFolderId = "id", Mode = SyncMode.UploadOnly },
+                        },
                         _ => null,
                     };
 
@@ -4315,6 +4678,9 @@ namespace ExplorerNative
                 for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
                 return true;
             }
+
+            if (wanted is List<DriveSyncPair> || got is List<DriveSyncPair>)
+                return System.Text.Json.JsonSerializer.Serialize(wanted) == System.Text.Json.JsonSerializer.Serialize(got);
 
             return Equals(wanted, got);
         }

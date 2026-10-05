@@ -734,7 +734,8 @@ namespace ExplorerNative
         /// </summary>
         public async Task<string> Upload(
             string localPath, string name, string parentId,
-            Action<UploadProgress>? progress, CancellationToken token)
+            Action<UploadProgress>? progress, CancellationToken token,
+            string? resumeSession = null, Action<string>? sessionStarted = null)
         {
             long total;
             try { total = new FileInfo(localPath).Length; }
@@ -746,7 +747,8 @@ namespace ExplorerNative
             if (total <= SmallUploadBytes)
                 return await UploadWhole(localPath, name, parentId, total, progress, token);
 
-            return await UploadResumable(localPath, name, parentId, total, progress, token);
+            return await UploadResumable(localPath, name, parentId, total, progress, token,
+                resumeSession, sessionStarted);
         }
 
         /// <summary>
@@ -966,9 +968,14 @@ namespace ExplorerNative
         /// </summary>
         private async Task<string> UploadResumable(
             string localPath, string name, string parentId, long total,
-            Action<UploadProgress>? progress, CancellationToken token)
+            Action<UploadProgress>? progress, CancellationToken token,
+            string? resumeSession = null, Action<string>? sessionStarted = null)
         {
-            var session = await BeginUpload(name, parentId, total, UploadStamp(localPath), token);
+            // A session saved by the folder monitor before the connection went
+            // (or the app closed) is picked up where Google says it stopped;
+            // every new session is handed back so it can be saved the same way.
+            var session = resumeSession ?? await BeginUpload(name, parentId, total, UploadStamp(localPath), token);
+            if (resumeSession == null) sessionStarted?.Invoke(session);
 
             using var source = OpenRead(localPath);
             long sent = 0;
@@ -978,7 +985,7 @@ namespace ExplorerNative
             // Whether Google's count has to be asked for before anything more is
             // sent: after a request broke and the question itself could not be
             // answered, carrying on from our own figure is the one thing not to do.
-            bool askFirst = false;
+            bool askFirst = resumeSession != null;
 
             for (int attempt = 0; attempt < MaxUploadAttempts; attempt++)
             {
@@ -1010,7 +1017,7 @@ namespace ExplorerNative
                     catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
                     catch (UploadRefusedException refused) when (refused.SessionGone)
                     {
-                        session = await BeginUpload(name, parentId, total, UploadStamp(localPath), token);
+                        session = await BeginUpload(name, parentId, total, UploadStamp(localPath), token); sessionStarted?.Invoke(session);
                         sent = 0;
                         askFirst = false;
                         lastProblem = "the upload session expired and was started again";
@@ -1050,7 +1057,7 @@ namespace ExplorerNative
                     catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
                     catch (UploadRefusedException refused) when (refused.SessionGone)
                     {
-                        session = await BeginUpload(name, parentId, total, UploadStamp(localPath), token);
+                        session = await BeginUpload(name, parentId, total, UploadStamp(localPath), token); sessionStarted?.Invoke(session);
                         sent = 0;
                         lastProblem = "the upload session expired and was started again";
                     }
@@ -1104,7 +1111,7 @@ namespace ExplorerNative
                     // bytes Google had are gone with it; a new session starts from
                     // nothing, which is the only offset it can agree to.
                     lastProblem = refused.Message;
-                    session = await BeginUpload(name, parentId, total, UploadStamp(localPath), token);
+                    session = await BeginUpload(name, parentId, total, UploadStamp(localPath), token); sessionStarted?.Invoke(session);
                     sent = 0;
                     continue;
                 }

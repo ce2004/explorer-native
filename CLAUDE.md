@@ -354,6 +354,27 @@ Conner removed these from Preferences and they are constants, not settings, at h
 
 Everything under %APPDATA%\ExplorerNative is DPAPI-encrypted (`ProtectedFile`). Read a log or settings.json with `ExplorerNative.exe --read-log <name>`.
 
+## Google Drive monitor (folder sync, 1.0.5)
+
+Pairs of a PC folder and a Drive folder, each with a mode (UploadOnly, DownloadOnly or TwoWay), a CopyDeletes box (off by default) and Paused.
+- **Files:** `DriveSync.cs` has the model and the pure `SyncPlanner` (all the rules, unit tested). `DriveMonitor.cs` is the engine, owned by the tray, and `DriveMonitor.Current` points at it. `DriveMonitorForm.cs` holds the list, the add/edit dialog and the Drive folder picker.
+- **Where things are stored:** pairs live in `Settings.DriveSyncPairs`. Per-pair last-sync state is in `%APPDATA%\ExplorerNative\drive-monitor\<id>.json`, written through ProtectedFile.
+- **When it runs:** only while `GoogleDrive.Client` is non-null, which means mounted. It runs on a FileSystemWatcher (3 s debounce), on Sync now, when Drive mounts, and every 60 s.
+- **How it works:** one pair at a time, through the API only. It never walks the drive letter or the sync root, and `DriveMonitor.Refusal` rejects those folders.
+- **Replacing a Drive file:** it uploads the new copy, then trashes the old one. Downloads go to `name.partial` and then move into place with Drive's modified time. Uploads are stamped with the local modified time, so size plus time (with 2 s slack) is the change test.
+- **Conflicts:** the newer copy keeps the name. The other is renamed `name (conflict yyyy-MM-dd).ext` on its own side, and the next pass copies it across.
+- **Saving:** monitor dialog changes are saved at once through `DriveMonitor.SetPairs`, and Preferences' working copy is kept in step.
+
+Resilience rules, at Conner's request, for syncs of hundreds of gigabytes:
+- **Detection never depends on events.** Every pass lists both sides and compares them with the state, so changes made offline or while the app was closed are found. Watcher events and overflows only make a pass due. The pass is due on Sync now, at start, when Drive mounts, when `GoogleDrive.ConnectionChanged` reports Online, and on each pair's CheckMinutes timer.
+- **State is saved as work completes** (every 2 s and in a finally). The planner is idempotent: a transfer finished but not yet recorded comes back as Record, not as a copy or a conflict.
+- **Downloads resume.** They go to `name.partial`, `PairState.Partials` records which Drive file the part belongs to, and the download continues by ranged read when `SameDriveFile` (id, size, md5 or time) still holds. Before the rename into place, the size and md5 are verified.
+- **Uploads resume.** The resumable session URI goes into `PairState.Uploads` through the `Upload(..., resumeSession, sessionStarted)` hook in DriveWrites. Sessions older than 6 days are dropped and started fresh.
+- **Space is checked.** The PC's disk keeps `SyncSpace.Margin` (2 GB or 5%) before each download, and Drive's quota is checked before each upload. Running out stops the pass with a "paused: ..." problem, said once through sync.space, and the pair carries on by itself later. The add/edit dialog totals what would copy (`DriveMonitor.NeedsAsync`) and offers to save the pair paused if it does not fit.
+- **Big passes announce progress.** Over 1 GB or 200 files, sync.start is said at the start and sync.progress at 25, 50 and 75 percent.
+
+The account button reads `SettingsForm.AccountState`, which the tray sets: Connect, Disconnect (Connected) or Reconnect (NeedsSignIn). Disconnect unmounts and switches Drive off, but keeps the sign-in.
+
 ## Rules this codebase lives by
 
 **A setting with one right answer is not a setting.** Preferences is walked one

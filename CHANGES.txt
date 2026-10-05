@@ -1,3 +1,17 @@
+1.0.5
+The drive list reads each drive as its letter, its name and how full it is, for example D, Google Drive, 1 terabyte of 5 terabytes used. Sizes are always in words: megabytes, gigabytes, terabytes.
+New Google Drive monitor: Preferences, Google Drive, Configure Google Drive monitor. Choose folders on this PC to keep in step with folders in Google Drive.
+Each monitored folder is two-way, upload only (a backup from the PC to Drive) or download only (Drive to the PC).
+Deletes are only copied to the other side if you tick Also delete on the other side, and then they go to the Recycle Bin or the Drive trash.
+A file changed in both places keeps both copies: the newer keeps the name, the other is renamed with the word conflict and the date.
+Folders sync while Explorer Native is running and Google Drive is connected: a moment after anything changes on the PC, and every minute for changes in Drive. Sync now syncs straight away.
+Each monitored folder can include or leave out its subfolders, skip file types you list, skip files over a size, choose what happens when a file changed in both places (keep both, this PC wins, or Google Drive wins), and choose how often Drive is checked, from every minute to only when you press Sync now.
+Changes made while offline, or while Explorer Native was closed, are found and synced as soon as Google Drive is back, on either side.
+Big transfers carry on where they stopped after the connection drops, instead of starting again. Downloads are checked against Google Drive's copy before they replace anything.
+Before adding a folder, and before each file, the monitor checks there is room: it never fills the PC's disk past a margin, the larger of 2 gigabytes or 5 percent of the disk, and never asks for more than Google Drive has free. When a folder runs out of room it pauses, says so, and carries on by itself when there is space again.
+A big sync says how much there is to do when it starts and again at a quarter, half and three quarters, and the monitor window shows how far each folder has got.
+The Google Drive account button in Preferences says what it will do: Connect, Disconnect while Drive is working, or Reconnect when Google needs you to sign in again. Disconnect keeps you signed in.
+
 1.0.4
 Help, Changelog shows every version from GitHub. Tab moves between versions, the arrow keys read each one's changes, and Escape or Back closes it.
 Changing the Google Drive letter in Preferences moves the drive straight away, instead of only after a restart. A folder open on the old letter follows it to the new one.

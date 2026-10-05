@@ -21,7 +21,8 @@ namespace ExplorerNative
         bool CanMoveWithinDrive, bool CanMoveOutOfDrive, bool CanAddChildren);
 
     internal sealed record DriveEntry(
-        string Id, string Name, string MimeType, long Size, DateTime Modified, string? DriveId = null)
+        string Id, string Name, string MimeType, long Size, DateTime Modified, string? DriveId = null,
+        string? Md5 = null)
     {
         public bool IsFolder => MimeType == "application/vnd.google-apps.folder";
 
@@ -541,7 +542,7 @@ namespace ExplorerNative
             {
                 string query = Uri.EscapeDataString($"'{folderId}' in parents and trashed = false");
                 string fields = Uri.EscapeDataString(
-                    "nextPageToken,files(id,name,mimeType,size,modifiedTime,driveId)");
+                    "nextPageToken,files(id,name,mimeType,size,modifiedTime,driveId,md5Checksum)");
                 // The first page small when somebody is waiting to see it: Drive
                 // takes seconds over a thousand sorted rows, and the first screenful
                 // is what makes a folder feel open.
@@ -584,7 +585,8 @@ namespace ExplorerNative
                         f.GetProperty("mimeType").GetString() ?? "",
                         size,
                         f.TryGetProperty("modifiedTime", out var m) && m.GetDateTime() is var d ? d : default,
-                        f.TryGetProperty("driveId", out var dr) ? dr.GetString() : driveId));
+                        f.TryGetProperty("driveId", out var dr) ? dr.GetString() : driveId,
+                        f.TryGetProperty("md5Checksum", out var md5) ? md5.GetString() : null));
 
                     if (results.Count >= max)
                     {

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -473,6 +474,12 @@ namespace ExplorerNative
 
         /// <summary>The letter to try first. The next free one is used if it is taken.</summary>
         public string GoogleDriveLetter { get; set; } = "G";
+
+        /// <summary>
+        /// Folders kept in step with Google Drive by the monitor (Preferences,
+        /// Google Drive, Configure Google Drive monitor). Empty by default.
+        /// </summary>
+        public List<DriveSyncPair> DriveSyncPairs { get; set; } = new();
 
         /// <summary>
         /// The pairing code Explorer Native Connect on the iPhone has to send with every request. Made on first
@@ -1106,6 +1113,8 @@ namespace ExplorerNative
             // Before Migrate, which reads several of these and would throw on a
             // null — taking the whole settings file with it. See NoNullStrings.
             NoNullStrings();
+            DriveSyncPairs ??= new();
+            DriveSyncPairs.RemoveAll(p => p == null);
 
             Migrate();
 
@@ -1466,6 +1475,8 @@ namespace ExplorerNative
         private static bool SameValue(object? a, object? b)
         {
             if (a is int[] x && b is int[] y) return x.AsSpan().SequenceEqual(y);
+            if (a is List<DriveSyncPair> || b is List<DriveSyncPair>)
+                return JsonSerializer.Serialize(a) == JsonSerializer.Serialize(b);
             if (a is System.Collections.Generic.Dictionary<string, JsonElement> da &&
                 b is System.Collections.Generic.Dictionary<string, JsonElement> db)
             {

@@ -233,6 +233,13 @@ namespace ExplorerNative
             Live("drive.ratelimited", "Google is throttling", DriveConnection, Bar, "Google is rate limiting; slowing down"),
 
             // ---- Google Drive: files -------------------------------------------
+            Live("sync.done", "Monitored folder synced", DriveOperations, Say, "{0} synced: {1}", "Music", "3 uploaded, 1 downloaded"),
+            Live("sync.conflict", "Changed in both places", DriveOperations, Say, "{0}: {1} changed in both places; both copies kept", "Music", "notes.txt"),
+            Live("sync.error", "Monitored folder could not sync", DriveOperations, Loud, "{0} could not sync: {1}", "Music", "access denied"),
+            Live("sync.offline", "Drive monitor offline", DriveOperations, Say, "Drive monitor paused, offline"),
+            Live("sync.start", "A big sync starting", DriveOperations, Say, "{0}: {1}, {2} files", "Music", "214 gigabytes to download", "3,120"),
+            Live("sync.progress", "Big sync progress", DriveOperations, Say, "{0}: {1} percent synced", "Music", 50),
+            Live("sync.space", "Monitored folder out of space", DriveOperations, Loud, "{0} paused: {1} is out of space, needs {2} more", "Music", "C:", "30 gigabytes"),
             Live("drive.folder.loading", "Fetching a folder", DriveOperations, Bar, "Fetching {0} from Google Drive", "artists"),
             Live("drive.folder.loaded", "Folder fetched", DriveOperations, Off, "{0}: {1} items", "artists", 2118),
             Live("drive.folder.slow", "Folder is taking a while", DriveOperations, Bar, "{0} is large; still fetching", "artists"),

@@ -105,6 +105,12 @@ namespace ExplorerNative
         private DriveClient? _client;
 
         /// <summary>
+        /// The Drive API while Drive is mounted, otherwise null. The folder
+        /// monitor talks to Drive through this, never through the letter.
+        /// </summary>
+        internal DriveClient? Client { get { lock (_gate) return _mount != null ? _client : null; } }
+
+        /// <summary>
         /// Raised when the stored sign-in has expired and something tried to use
         /// it. Roughly weekly, by Google's design — see
         /// <see cref="GoogleSignInRequiredException"/>.
