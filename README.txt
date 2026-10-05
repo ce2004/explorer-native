@@ -55,7 +55,9 @@ Tests: dotnet run --project tests\SelfTest.csproj
 
 Releasing
 
-Set the version in ExplorerNative.csproj, then push a tag of the same number:
+Add the version and its changes to CHANGES.txt (the version on its own line,
+then one change per line, plain text). Set the version in ExplorerNative.csproj,
+then push a tag of the same number:
 
 git tag v1.0.1
 git push origin v1.0.1

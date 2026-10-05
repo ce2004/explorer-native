@@ -444,15 +444,10 @@ namespace ExplorerNative
                     return;
                 }
 
-                var notes = release.Notes.Length > 800 ? release.Notes[..800] + "…" : release.Notes;
-                var question =
-                    $"Version {Updater.Text(release.Version)} is available. You have {Updater.CurrentText}.\n\n" +
-                    (notes.Length > 0 ? notes + "\n\n" : "") +
-                    "Download and install it now? Explorer Native will restart.";
-
-                if (MessageBox.Show(this, question, "Update available",
-                        MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
-                    return;
+                using (var ask = new UpdateForm(release))
+                {
+                    if (ask.ShowDialog(this) != DialogResult.OK) return;
+                }
 
                 if (!ConfirmAbandonTransfers("Update")) return;
 

@@ -1,0 +1,15 @@
+1.0.2
+The update window lists every change on its own line. Tab to the list and read it with the arrow keys, then Tab to Update or Cancel.
+Release notes are plain text, with no symbols for the screen reader to read out.
+
+1.0.1
+Google Drive takes your client ID and client secret in two fields in Preferences, instead of a JSON file.
+Pressing OK checks the ID and secret with Google. If Google refuses them, Preferences stays open on the field to fix.
+When Google accepts them, they are saved encrypted, Drive turns on and the browser opens to sign in.
+
+1.0.0
+First release on GitHub, for x64 and ARM64 PCs.
+Help menu with Check for updates and About.
+Updates install over the running copy and restart it on the new version.
+No Google credentials ship with the app.
+Everything saved in AppData is encrypted for your Windows account: settings, the Google client, the sign-in and the logs.
