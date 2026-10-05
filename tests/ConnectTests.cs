@@ -223,7 +223,7 @@ namespace ExplorerNative
 
         private static byte[] U(uint id, ulong v) => Ebml(id, Be32((uint)(v >> 32)).Concat(Be32((uint)v)).ToArray());
         private static byte[] S(uint id, string v) => Ebml(id, Encoding.UTF8.GetBytes(v));
-        private static byte[] F(uint id, double v) => Ebml(id, BitConverter.GetBytes(v).Reverse().ToArray());
+        private static byte[] F(uint id, double v) => Ebml(id, Enumerable.Reverse(BitConverter.GetBytes(v)).ToArray());
 
         /// <summary>A Matroska header, info, two tracks, chapters and tags; no clusters, which the details never read.</summary>
         private static void WriteMkv(string path)

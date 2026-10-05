@@ -8870,7 +8870,7 @@ namespace ExplorerNative
             var names = new[] { "b.txt", "A.txt", "a.txt", "B.TXT", "c", "C" };
             var first = names.OrderBy(n => n, Comparer<string>.Create(
                 (x, y) => NameRules.CompareNames(x, "root/" + x, y, "root/" + y))).ToArray();
-            var second = names.Reverse().OrderBy(n => n, Comparer<string>.Create(
+            var second = Enumerable.Reverse(names).OrderBy(n => n, Comparer<string>.Create(
                 (x, y) => NameRules.CompareNames(x, "root/" + x, y, "root/" + y))).ToArray();
             Check("the same folder sorts the same way regardless of enumeration order",
                 first.SequenceEqual(second), string.Join(",", first) + " vs " + string.Join(",", second));
