@@ -517,7 +517,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Morgan's case: a library already on both sides is adopted, not copied
+        /// A library already on both sides is adopted, not copied
         /// again; the pair keeps what it remembers; Google saying "not now" is
         /// waited out; and the configurator is on File while Drive is on.
         /// </summary>
