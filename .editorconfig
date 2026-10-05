@@ -1,0 +1,26 @@
+root = true
+
+# Dead code is a build warning, so it cannot accumulate again.
+#
+# These are diagnostics rather than house style — no formatting or naming rules
+# are turned on here, deliberately. Everything below answers one question the
+# compiler can answer better than a person reading: is this still used?
+[*.cs]
+dotnet_diagnostic.IDE0051.severity = warning   # unused private member
+dotnet_diagnostic.IDE0052.severity = warning   # private member written, never read
+dotnet_diagnostic.CS0169.severity  = warning   # field never used
+dotnet_diagnostic.CS0414.severity  = warning   # field assigned, never used
+dotnet_diagnostic.CS0649.severity  = warning   # field never assigned
+dotnet_diagnostic.CS0162.severity  = warning   # unreachable code
+dotnet_diagnostic.CS0219.severity  = warning   # variable assigned, never used
+
+# IDE0005 (unnecessary using) is deliberately NOT set here. It only runs when
+# GenerateDocumentationFile is true, and enabling it without that makes every
+# build print a warning asking for the property. Run it on demand instead:
+#
+#   dotnet build ExplorerNative.csproj -t:Rebuild -p:EnforceCodeStyleInBuild=true `
+#     -p:GenerateDocumentationFile=true -p:NoWarn=1591%3B1573 `
+#     -p:BaseOutputPath=obj\dead\ -p:OutputPath=obj\dead\
+#
+# That form also surfaces stale XML doc comments — a cref that no longer
+# resolves is a comment describing code that has gone.

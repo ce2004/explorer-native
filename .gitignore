@@ -1,0 +1,16 @@
+bin/
+obj/
+tests/bin/
+tests/obj/
+
+# Google OAuth client values; CI writes this from repository secrets.
+src/BuiltInCredentials.Values.cs
+
+# Leftovers from test runs and old experiments.
+/%1 %I %D/
+/;;;;;;/
+/emoji*/
+/CfSpike.csproj
+/Program.cs
+/site/
+/set-github-secrets.py

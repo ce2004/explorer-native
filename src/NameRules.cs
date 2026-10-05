@@ -1,0 +1,248 @@
+using System;
+using System.IO;
+
+namespace ExplorerNative
+{
+    /// <summary>
+    /// The rules for what a file name may be, and for what order a list of them
+    /// comes out in.
+    ///
+    /// Kept away from the window deliberately: both are pure decisions about
+    /// strings with no UI in them, and both are the sort of thing that is worth
+    /// being able to test directly rather than by driving a list control.
+    /// </summary>
+    public static class NameRules
+    {
+        /// <summary>
+        /// An action and how many things it happened to, said the way somebody
+        /// listening to it wants to hear it.
+        ///
+        /// **One is just the verb.** "Copied file" names the thing a second time:
+        /// the row was read out a moment ago, name and all, so the type is the
+        /// least informative word available and it is in the way of the one word
+        /// that matters. This is the same rule the Type column failed — is this
+        /// worth hearing every single time? — applied to a sentence.
+        ///
+        /// **Above one, the number is the whole message.** A selection is the one
+        /// thing that cannot be seen by listening: the rows were read as they were
+        /// picked, but nothing ever says how many there are now. "Copied 12 items"
+        /// is the only confirmation that the twelve you meant were the twelve you
+        /// got, and it is the difference between noticing a wrong selection here
+        /// and noticing it after the paste.
+        /// </summary>
+        public static string SayCount(string verb, int count, string noun = "item") =>
+            count == 1 ? verb : $"{verb} {count} {noun}s";
+
+        /// <summary>
+        /// A count and its noun, agreeing: "1 item", "7 items", "no items".
+        ///
+        /// Different from <see cref="SayCount"/>, which drops the number at one
+        /// because "Copied" already says everything. Here the number *is* the
+        /// message — the status bar and the tab announcement exist to say how
+        /// many — so one has to be spelled out rather than left implied.
+        ///
+        /// It is a rule rather than an interpolation at each site because the
+        /// sites that matter are spoken. "Tab 1, Documents, 1 items" was read out
+        /// on every tab switch, and "1 items" on the status bar on every folder
+        /// with one thing in it, in an application where every word said aloud is
+        /// argued over.
+        /// </summary>
+        /// <summary>
+        /// Whether an entry is a link — a junction or a symbolic link — as
+        /// against any other reparse point.
+        ///
+        /// Walks here decline to follow links, and used to decline every reparse
+        /// point to do it. A cloud placeholder is one — every file and folder
+        /// under OneDrive's Files On-Demand, and everything on the Drive letter —
+        /// and so is a deduplicated file, so a copy, an upload, an archive, a
+        /// search or a size of such a folder quietly left out what was in it.
+        /// </summary>
+        public static bool IsLink(FileSystemInfo entry)
+        {
+            try
+            {
+                if ((entry.Attributes & FileAttributes.ReparsePoint) == 0) return false;
+                return entry.LinkTarget != null;
+            }
+            catch { return true; }
+        }
+
+        public static string Items(int count, string noun = "item") =>
+            $"{count} {noun}{(count == 1 ? "" : "s")}";
+
+        /// <summary>
+        /// A name nothing has already claimed, by adding " (2)", " (3)" and so on.
+        ///
+        /// The rule rather than the filesystem, because there is more than one
+        /// place a name can already be taken. On disk it is File.Exists; on the
+        /// Drive letter it is the listing the folder was populated from, which is
+        /// the only cheap answer there — enumerating placeholders to find out is
+        /// fifteen milliseconds each and the reason browsing Drive used to be
+        /// slow. Both want the same arithmetic and neither should own it.
+        ///
+        /// <paramref name="folder"/> matters and is not a nicety. A folder has no
+        /// extension whatever the dots in its name say, and splitting at the last
+        /// one turned a second copy of "Backup.2024" into "Backup (2).2024" — then
+        /// announced it, naming something nobody would recognise as their folder.
+        /// </summary>
+        /// <summary>
+        /// Whether a path's last name ends in a dot or a space — which Windows
+        /// quietly strips from an ordinary path, so "report." is taken to mean
+        /// "report" and a delete or a rename acts on a different file.
+        /// </summary>
+        public static bool NeedsLiteralPath(string path)
+        {
+            var name = Path.GetFileName(path.TrimEnd('\\', '/'));
+            return name.Length > 0 && (name[^1] == '.' || name[^1] == ' ');
+        }
+
+        /// <summary>
+        /// The path in the form Windows takes exactly as written: "\\?\C:\x." or
+        /// "\\?\UNC\server\share\x.".
+        /// </summary>
+        public static string LiteralPath(string path)
+        {
+            if (path.StartsWith(@"\\?\", StringComparison.Ordinal)) return path;
+            if (path.StartsWith(@"\\", StringComparison.Ordinal)) return @"\\?\UNC\" + path[2..];
+            return @"\\?\" + path;
+        }
+
+        public static string UniqueAmong(string desired, Func<string, bool> taken, bool folder)
+        {
+            if (!taken(desired)) return desired;
+
+            // A name that starts with its only dot — ".gitignore", ".env" — is
+            // all stem. Split as an extension it numbered as " (2).gitignore",
+            // with a leading space.
+            int dot = desired.LastIndexOf('.');
+            bool whole = folder || dot <= 0;
+            var stem = whole ? desired : desired[..dot];
+            var extension = whole ? "" : desired[dot..];
+
+            for (int i = 2; i < int.MaxValue; i++)
+            {
+                var candidate = $"{stem} ({i}){extension}";
+                if (!taken(candidate)) return candidate;
+            }
+            throw new IOException("Could not find an unused name.");
+        }
+
+        /// <summary>
+        /// Windows refuses these as a file name anywhere on the disk, with or
+        /// without an extension.
+        /// </summary>
+        private static readonly string[] ReservedDeviceNames =
+        {
+            "CON", "PRN", "AUX", "NUL",
+            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+            "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+        };
+
+        /// <summary>
+        /// Says what is wrong with a typed file or folder name, or null if it is
+        /// usable.
+        ///
+        /// Path.Combine takes its second argument as a path, not as a name, so a
+        /// typed "..\..\thing" or "C:\Windows\thing" walked straight out of the
+        /// folder the user was looking at — a rename could land anywhere on the
+        /// disk, and "New folder" created in a directory nobody had opened. Names
+        /// are checked before they are ever combined with a directory.
+        /// </summary>
+        public static string? DescribeBadName(string? name)
+        {
+            if (string.IsNullOrWhiteSpace(name)) return "That name is empty";
+
+            if (name.IndexOfAny(new[] { Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar }) >= 0)
+                return "A name cannot contain a slash";
+
+            // Not covered by GetInvalidFileNameChars on every runtime, and it is
+            // how "C:whatever" reaches a different drive's current directory.
+            if (name.Contains(':')) return "A name cannot contain a colon";
+
+            if (name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                return "That name contains a character Windows does not allow";
+
+            if (name == "." || name == "..") return "That name is reserved";
+
+            var stem = name;
+            int dot = stem.IndexOf('.');
+            if (dot > 0) stem = stem[..dot];
+
+            foreach (var reserved in ReservedDeviceNames)
+                if (string.Equals(stem, reserved, StringComparison.OrdinalIgnoreCase))
+                    return $"\"{reserved}\" is a name Windows reserves for a device";
+
+            // A trailing dot or space is silently stripped by the filesystem, so
+            // what appears afterwards is not the name that was asked for.
+            if (name.EndsWith('.') || name.EndsWith(' '))
+                return "A name cannot end with a dot or a space";
+
+            return null;
+        }
+
+        /// <summary>Convenience for callers that only want a yes or no.</summary>
+        public static bool IsUsableName(string? name) => DescribeBadName(name) == null;
+
+        /// <summary>
+        /// Repairs a path as it arrives from a command line.
+        ///
+        /// Two traps, and the shell walks into both when this app is the handler
+        /// for folders.
+        ///
+        /// The registered command is `"app.exe" "%1"`, and for a drive the shell
+        /// substitutes `D:\`, producing `"app.exe" "D:\"` on the command line.
+        /// Windows parses a backslash before a quote as an escape, so the closing
+        /// quote is swallowed and the argument actually delivered is `D:"`.
+        ///
+        /// Trimming that quote leaves `D:`, which is not the drive. A bare drive
+        /// letter means "the current directory on D", and the current directory is
+        /// wherever the process happened to be started from — so opening a drive
+        /// showed the contents of the application's own folder instead. (This is
+        /// the same trap RoboCopyEngine.QuoteDir guards against from the other
+        /// direction, when writing a path out to a command line.)
+        /// </summary>
+        public static string NormaliseLaunchPath(string? raw)
+        {
+            if (string.IsNullOrWhiteSpace(raw)) return "";
+
+            var path = raw.Trim().Trim('"').Trim();
+            if (path.Length == 0) return "";
+
+            // "D:" -> "D:\". A filename can never contain a colon, so a two
+            // character path ending in one is unambiguously a drive.
+            if (path.Length == 2 && path[1] == ':' && char.IsLetter(path[0]))
+                return path + Path.DirectorySeparatorChar;
+
+            return path;
+        }
+
+        /// <summary>
+        /// Orders two entries by name, falling back to the full path.
+        ///
+        /// The fallback is what makes the order total. List.Sort is unstable, so
+        /// without a decisive tie-break two names differing only in case — which
+        /// are genuinely two different files — swapped places between refreshes of
+        /// the same unchanged folder.
+        /// </summary>
+        public static int CompareNames(string aName, string aPath, string bName, string bPath)
+        {
+            int c = string.Compare(aName, bName, StringComparison.OrdinalIgnoreCase);
+            return c != 0 ? c : string.CompareOrdinal(aPath, bPath);
+        }
+
+        /// <summary>
+        /// Orders two names by their extension.
+        ///
+        /// Compared as spans over the original strings rather than as the rendered
+        /// "FLAC file" label. Sorting is n log n comparisons, and building two
+        /// strings inside each one meant sorting a twenty-thousand file folder by
+        /// type allocated over half a million strings for an answer that the
+        /// extension alone already gives.
+        /// </summary>
+        public static int CompareExtensions(string aName, string bName) =>
+            MemoryExtensions.CompareTo(
+                Path.GetExtension(aName.AsSpan()),
+                Path.GetExtension(bName.AsSpan()),
+                StringComparison.OrdinalIgnoreCase);
+    }
+}

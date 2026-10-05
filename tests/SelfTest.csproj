@@ -1,0 +1,117 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-arm64</RuntimeIdentifier>
+    <SelfContained>false</SelfContained>
+    <AssemblyName>SelfTest</AssemblyName>
+    <RootNamespace>ExplorerNative</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+
+  <!-- Exercises the real production sources, not copies of them. UI-only files
+       are excluded because they need a message loop, not because they are
+       untested: their behaviour is driven by the settings verified here. -->
+  <ItemGroup>
+    <Compile Include="..\src\SizeFormatter.cs" />
+    <Compile Include="..\src\TimeFormatter.cs" />
+    <Compile Include="..\src\FileLauncher.cs" />
+    <Compile Include="..\src\Settings.cs" /><Compile Include="..\src\Notifications.cs" /><Compile Include="..\src\Speech.cs" /><Compile Include="..\src\SpeechForm.cs" /><Compile Include="..\src\SettingChoices.cs" /><Compile Include="..\src\LimiterForm.cs" /><Compile Include="..\src\SpeedForm.cs" /><Compile Include="..\src\AudioReport.cs" /><Compile Include="..\src\ShortcutBox.cs" /><Compile Include="..\src\ShortcutsForm.cs" /><Compile Include="..\src\SettingsForm.cs" />
+    <Compile Include="..\src\HotkeyManager.cs" />
+    <Compile Include="..\src\Shortcut.cs" />
+    <Compile Include="..\src\ReservedShortcuts.cs" />
+    <Compile Include="..\src\AudioActions.cs" />
+    <Compile Include="..\src\AudioPlayer.cs" />
+    <Compile Include="..\src\WasapiRenderer.cs" />
+    <Compile Include="..\src\Equaliser.cs" /><Compile Include="..\src\EqualiserForm.cs" />
+    <Compile Include="..\src\TimeStretch.cs" />
+    <Compile Include="..\src\SilenceReduction.cs" /><Compile Include="..\src\SilenceForm.cs" />
+    <Compile Include="..\src\Resampler.cs" /><Compile Include="..\src\PitchForm.cs" /><Compile Include="..\src\BuiltInCredentials.cs" /><Compile Include="..\src\BuiltInCredentials.Values.cs" Condition="Exists('..\src\BuiltInCredentials.Values.cs')" /><Compile Include="..\build\BuiltInCredentials.Placeholder.cs" Condition="!Exists('..\src\BuiltInCredentials.Values.cs')" />
+    <Compile Include="..\src\AudioDecoder.cs" /><Compile Include="..\src\TrackDecoder.cs" /><Compile Include="..\src\LocalByteStream.cs" /><Compile Include="..\src\OggDecoder.cs" /><Compile Include="..\src\OggOpusReader.cs" /><Compile Include="..\src\OggPages.cs" /><Compile Include="..\src\OggVorbisPackets.cs" /><Compile Include="..\src\ExactSeek.cs" /><Compile Include="..\src\VirtualStream.cs" /><Compile Include="..\src\FlacSeek.cs" /><Compile Include="..\src\Mp3Seek.cs" /><Compile Include="..\src\AiffStream.cs" /><Compile Include="..\src\CdTrackStream.cs" />
+    <Compile Include="..\src\WasapiPlayback.cs" />
+    <Compile Include="..\src\AudioTags.cs" />
+    <Compile Include="..\src\AudioPrefetch.cs" />
+    <Compile Include="..\src\StreamingSource.cs" />
+    <Compile Include="..\src\HoldRepeat.cs" />
+    <Compile Include="..\src\FileOperations.cs" />
+    <Compile Include="..\src\ShellLink.cs" />
+    <Compile Include="..\src\RoboCopyEngine.cs" />
+
+    <!-- Compressing and extracting. The whole of it is here rather than the pure
+         parts, because the parts that can be wrong are the ones that touch a
+         disk: a zip whose central directory disagrees with its local headers is
+         readable by the code that wrote it and by nothing else, and the only
+         check worth having is a real archive written, read back, and handed to
+         the tar Windows ships to see whether it agrees. -->
+    <Compile Include="..\src\Crc32.cs" />
+    <Compile Include="..\src\ArchiveFormats.cs" />
+    <Compile Include="..\src\ParallelGZip.cs" />
+    <Compile Include="..\src\ArchiveEngine.cs" />
+    <Compile Include="..\src\ExtractionRules.cs" />
+    <Compile Include="..\src\ZipEngine.cs" />
+    <Compile Include="..\src\TarEngine.cs" />
+    <Compile Include="..\src\BsdTar.cs" />
+    <Compile Include="..\src\ArchiveForm.cs" />
+    <Compile Include="..\src\ProgressForm.cs" />
+    <Compile Include="..\src\ConflictForm.cs" />
+    <Compile Include="..\src\ShellContextMenu.cs" /><Compile Include="..\src\ShellDelete.cs" />
+    <Compile Include="..\src\FolderSizeCalculator.cs" />
+    <Compile Include="..\src\NameRules.cs" />
+    <Compile Include="..\src\TypeAhead.cs" />
+    <Compile Include="..\src\NavigationHistory.cs" />
+    <Compile Include="..\src\ShellRegistration.cs" />
+    <Compile Include="..\src\AppInstall.cs" />
+    <Compile Include="..\src\SingleInstance.cs" />
+    <Compile Include="..\src\CfApi.cs" />
+    <Compile Include="..\src\DriveLetter.cs" />
+    <Compile Include="..\src\GoogleAuth.cs" />
+    <Compile Include="..\src\DriveClient.cs" /><Compile Include="..\src\DriveWrites.cs" /><Compile Include="..\src\DriveHealth.cs" />
+    <Compile Include="..\src\DriveFileCache.cs" />
+    <Compile Include="..\src\DriveMount.cs" />
+    <Compile Include="..\src\GoogleSignInRequiredException.cs" />
+    <Compile Include="..\src\DriveQuotaException.cs" />
+    <Compile Include="..\src\DriveSearch.cs" />
+    <Compile Include="..\src\GoogleDrive.cs" />
+    <Compile Include="..\src\DriveUpload.cs" />
+    <Compile Include="..\src\FileSearch.cs" />
+    <Compile Include="..\src\ConnectServer.cs" /><Compile Include="..\src\ConnectFiles.cs" /><Compile Include="..\src\ConnectAudio.cs" /><Compile Include="..\src\ConnectUploads.cs" /><Compile Include="..\src\ConnectClipboard.cs" /><Compile Include="..\src\ClipboardInterop.cs" /><Compile Include="..\src\ConnectDetails.cs" />
+    <Compile Include="SearchTests.cs" />
+    <Compile Include="ConnectTests.cs" />
+    <Compile Include="SeekTests.cs" />
+    <Compile Include="Tests.cs" />
+    <Compile Include="ArchiveTests.cs" />
+    <Compile Include="InstallTests.cs" />
+    <Compile Include="DriveCopyTests.cs" />
+    <Compile Include="EdgeCaseTests.cs" />
+    <Compile Include="VideoContainerTests.cs" />
+  </ItemGroup>
+
+  <!-- The managed Ogg Vorbis and Opus decoders, which the suite exercises the
+       same way the application uses them. See ExplorerNative.csproj for why
+       they exist at all. -->
+  <!-- Two formats nothing on this machine can write: Ogg Vorbis, and MP3
+       with a Xing header. Twelve seconds each of noise, clicks and a tone,
+       made once with libsndfile; the clicks are what make Vorbis switch
+       block sizes, which is where its seeking went wrong. See SeekTests. -->
+  <ItemGroup>
+    <None Include="Fixtures\clicks.ogg" CopyToOutputDirectory="PreserveNewest" LinkBase="Fixtures" />
+    <None Include="Fixtures\clicks-vbr.mp3" CopyToOutputDirectory="PreserveNewest" LinkBase="Fixtures" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="NVorbis" Version="0.10.5" />
+    <PackageReference Include="Concentus" Version="2.2.2" />
+    <PackageReference Include="Concentus.OggFile" Version="1.0.7" />
+  </ItemGroup>
+
+</Project>
+
+
+
+
+

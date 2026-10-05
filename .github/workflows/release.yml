@@ -1,0 +1,78 @@
+name: release
+
+# Push a tag like v1.0.1 to build both architectures and publish a release.
+# Help, Check for updates in the app reads the latest release from here.
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Version from tag
+        id: ver
+        shell: pwsh
+        run: |
+          $v = '${{ github.ref_name }}'
+          if ($v -notmatch '^v\d+\.\d+\.\d+$') { $v = 'v0.0.0' }
+          "version=$($v.Substring(1))" >> $env:GITHUB_OUTPUT
+
+      - name: Google credentials
+        shell: pwsh
+        env:
+          CLIENT_ID: ${{ secrets.GOOGLE_CLIENT_ID }}
+          CLIENT_SECRET: ${{ secrets.GOOGLE_CLIENT_SECRET }}
+        run: |
+          if (-not $env:CLIENT_ID) { Write-Host 'No credentials secret; building without built-in Google client.'; exit 0 }
+          @"
+          namespace ExplorerNative
+          {
+              internal static partial class BuiltInCredentials
+              {
+                  public const string ClientId = "$env:CLIENT_ID";
+                  public const string ClientSecret = "$env:CLIENT_SECRET";
+              }
+          }
+          "@ | Set-Content -Encoding utf8 src/BuiltInCredentials.Values.cs
+
+      - name: Publish
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          foreach ($arch in 'arm64', 'x64') {
+            dotnet publish ExplorerNative.csproj -c Release -r "win-$arch" -o "out/$arch" `
+              -p:Version=${{ steps.ver.outputs.version }}
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+            Copy-Item "out/$arch/ExplorerNative.exe" "dist/ExplorerNative-$arch.exe"
+          }
+          Get-ChildItem dist
+
+      # Runs natively on x64. Informational: some sections need audio hardware
+      # or a desktop session the runner does not have.
+      - name: Self-test (x64)
+        continue-on-error: true
+        shell: pwsh
+        run: dotnet run --project tests/SelfTest.csproj -c Release -r win-x64
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ExplorerNative
+          path: dist/*.exe
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create '${{ github.ref_name }}' dist/ExplorerNative-arm64.exe dist/ExplorerNative-x64.exe --title "Explorer Native ${{ steps.ver.outputs.version }}" --generate-notes

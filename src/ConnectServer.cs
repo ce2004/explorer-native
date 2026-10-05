@@ -1,0 +1,1852 @@
+using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.NetworkInformation;
+using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using System.Threading;
+using System.Threading.Tasks;
+
+namespace ExplorerNative
+{
+    /// <summary>One row of a folder, as the phone sees it.</summary>
+    public sealed record ConnectEntry(string Name, bool Folder, long Size, DateTime Modified);
+
+    /// <summary>A folder's size, and whether the walk finished inside its budget.</summary>
+    public sealed record ConnectSize(string Path, long Bytes, int Files, int Folders, bool Complete);
+
+    /// <summary>One file or folder's details. <c>Tags</c> only for audio that has any.</summary>
+    public sealed record ConnectStat(string Path, string Name, bool Folder, long Size, DateTime Modified,
+        DateTime Created, bool ReadOnly, bool OnDrive,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] SongSummary? Tags = null);
+
+    public sealed record ConnectFailure(string Path, string Error);
+
+    public sealed record ConnectDeleted(int Deleted, IReadOnlyList<ConnectFailure> Failed);
+
+    /// <summary>
+    /// A refusal with the HTTP status it deserves: 404 gone, 409 name taken, 403 not allowed, 503 Drive away.
+    /// Anything else thrown out of an action is a 500.
+    /// </summary>
+    public sealed class ConnectException : Exception
+    {
+        public ConnectException(int status, string message, long? received = null) : base(message)
+        {
+            Status = status;
+            Received = received;
+        }
+
+        public int Status { get; }
+
+        /// <summary>For a resumable upload: how many bytes are held, so the phone can carry on from there.</summary>
+        public long? Received { get; }
+    }
+
+    /// <summary>
+    /// What the phone may do to files, as the application does it. The server parses, validates and routes;
+    /// this does the work, through the same machinery the window uses (Drive trash and rename, the Recycle Bin,
+    /// robocopy, DriveUpload). An interface so the server can be tested with a fake and no Drive at all.
+    /// </summary>
+    public interface IConnectFiles
+    {
+        /// <summary>Why a path on the Drive letter cannot be answered now, or null. The server says 503.</summary>
+        string? Unavailable(string path);
+
+        /// <summary>The Drive account's bytes used and limit (0 = no limit), or null when not mounted.</summary>
+        (long Used, long Limit)? DriveQuota();
+
+        Task<ConnectSize> SizeAsync(string folder, CancellationToken token);
+        Task<ConnectStat> StatAsync(string path, CancellationToken token);
+
+        /// <summary>Returns the new full path.</summary>
+        Task<string> RenameAsync(string path, string newName, CancellationToken token);
+
+        /// <summary>Returns the new folder's full path. A name already taken is a 409.</summary>
+        Task<string> CreateFolderAsync(string parent, string name, CancellationToken token);
+
+        Task<ConnectDeleted> DeleteAsync(IReadOnlyList<string> paths, CancellationToken token);
+
+        /// <summary>Refusals cheap enough to give before a job exists: throws a <see cref="ConnectException"/>.</summary>
+        void CheckTransfer(IReadOnlyList<string> paths, string destination, bool move);
+
+        /// <summary>Runs a copy or move, reporting into <paramref name="job"/> and stopping on its token.</summary>
+        Task TransferAsync(ConnectJob job, IReadOnlyList<string> paths, string destination, bool move,
+            PasteConflictPolicy conflict);
+
+        /// <summary>Writes <paramref name="body"/> as a file in <paramref name="folder"/>; returns its full path.
+        /// May return without reading the body (a skipped clash).</summary>
+        Task<string> UploadAsync(string folder, string name, PasteConflictPolicy conflict, Stream body,
+            CancellationToken token);
+
+        /// <summary>Whether a path is on the Drive letter.</summary>
+        bool OnDrive(string path);
+
+        /// <summary>
+        /// Puts a finished resumable upload in place under the conflict policy: moved into a local folder, or sent
+        /// up to Drive with <paramref name="progress"/> in bytes. <paramref name="file"/> is taken (moved or deleted
+        /// by the caller afterwards). Returns the full path it landed at.
+        /// </summary>
+        Task<string> PlaceFileAsync(string file, string folder, string name, PasteConflictPolicy conflict,
+            Action<long, long>? progress, CancellationToken token);
+
+        /// <summary>The application's own audio extension list, as in settings.</summary>
+        IReadOnlyList<string> AudioExtensions();
+
+        /// <summary>
+        /// Everything else worth knowing about a path, as <c>/api/stat</c>'s sections (file, folder, text, media,
+        /// image, archive), inside the budget <paramref name="token"/> carries; <c>partial</c> when it ran out.
+        /// </summary>
+        Task<Dictionary<string, object?>> DetailsAsync(string path, ConnectStat stat, bool hash, CancellationToken token);
+    }
+
+    /// <summary>A copy or move the phone started, polled with <c>/api/job</c>.</summary>
+    public sealed class ConnectJob
+    {
+        private readonly object _gate = new();
+        private readonly CancellationTokenSource _cts = new();
+        private readonly List<ConnectFailure> _failed = new();
+        private string _state = "running";
+        private int _items, _itemsDone;
+        private long _bytes, _bytesDone;
+        private string _current = "";
+        private string _message = "";
+
+        public ConnectJob(string id, string kind) { Id = id; Kind = kind; }
+
+        public string Id { get; }
+        public string Kind { get; }
+        public CancellationToken Token => _cts.Token;
+        public DateTime FinishedAt { get; private set; } = DateTime.MaxValue;
+
+        public string State { get { lock (_gate) return _state; } }
+        public int ItemsDone { get { lock (_gate) return _itemsDone; } }
+        public IReadOnlyList<ConnectFailure> Failed { get { lock (_gate) return _failed.ToArray(); } }
+
+        public void Report(int itemsDone, int items, long bytesDone, long bytes, string? current)
+        {
+            lock (_gate)
+            {
+                _itemsDone = Math.Max(0, itemsDone);
+                _items = Math.Max(Math.Max(0, items), _itemsDone);
+                _bytesDone = Math.Max(0, bytesDone);
+                _bytes = Math.Max(Math.Max(0, bytes), _bytesDone);
+                if (current != null) _current = current;
+            }
+        }
+
+        public void Current(string current) { lock (_gate) _current = current; }
+
+        private string? _path;
+
+        /// <summary>Where an upload job's file landed; carried in the job as <c>path</c> once known.</summary>
+        public void Landed(string path) { lock (_gate) _path = path; }
+
+        public void Fail(string path, string error) { lock (_gate) _failed.Add(new ConnectFailure(path, error)); }
+
+        /// <summary>A sentence about the job as a whole; the last one said wins.</summary>
+        public void Say(string message) { lock (_gate) _message = message; }
+
+        public void Cancel() { try { _cts.Cancel(); } catch { } }
+
+        public void Finish(string state, string? message = null)
+        {
+            lock (_gate)
+            {
+                _state = state;
+                if (message != null) _message = message;
+                // Done with nothing failed is all of it, whatever the engine last got round to reporting: a copy
+                // under keep both goes by another route in robocopy and says nothing on the way.
+                if (state == "done" && _failed.Count == 0)
+                {
+                    _itemsDone = _items;
+                    _bytesDone = _bytes;
+                }
+                _current = "";
+                FinishedAt = DateTime.UtcNow;
+            }
+        }
+
+        public object Snapshot()
+        {
+            lock (_gate)
+                return new
+                {
+                    id = Id, kind = Kind, state = _state, items = _items, itemsDone = _itemsDone,
+                    bytes = _bytes, bytesDone = _bytesDone, current = _current, message = _message,
+                    failed = _failed.ToArray(), path = _path,
+                };
+        }
+    }
+
+    /// <summary>
+    /// Remote files for the phone, one open download per path shared by every request for it.
+    ///
+    /// A phone scrubbing through a track sends a new Range request per drag, and AVPlayer keeps two
+    /// connections to one file. Opened per request, each would start its own download from Google and throw
+    /// it away a moment later. Instead each path gets one <see cref="StreamingSource"/> (the player's own
+    /// window: head first, 4MB pieces following the reader, direct reads for what is not there yet), leased
+    /// to requests and kept for <see cref="IdleFor"/> after the last one lets go.
+    /// </summary>
+    public sealed class ConnectStreams : IDisposable
+    {
+        public static readonly TimeSpan IdleFor = TimeSpan.FromSeconds(60);
+
+        /// <summary>Open at once. The pool of the mount holds three files; so does this.</summary>
+        public const int MostOpen = 3;
+
+        private readonly Func<string, IRangeSource?> _open;
+        private readonly long _budget;
+        private readonly object _gate = new();
+        private readonly Dictionary<string, Entry> _streams = new(StringComparer.OrdinalIgnoreCase);
+        private readonly Timer _sweep;
+
+        private sealed class Entry
+        {
+            public required StreamingSource Stream;
+            public int Leases;
+            public DateTime LastUsed;
+        }
+
+        /// <param name="open">The remote source for a path, or null when it is not remote.</param>
+        /// <param name="budget">Memory per file; a file within it is downloaded whole.</param>
+        public ConnectStreams(Func<string, IRangeSource?> open, long budget = 256L << 20)
+        {
+            _open = open;
+            _budget = budget;
+            _sweep = new Timer(_ => Sweep(DateTime.UtcNow), null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+        }
+
+        /// <summary>How many files are held open, for tests.</summary>
+        public int Count { get { lock (_gate) return _streams.Count; } }
+
+        /// <summary>A lease on the shared download for <paramref name="path"/>, or null when it is not remote.
+        /// Disposing the lease does not stop the download.</summary>
+        public IRangeSource? Lease(string path)
+        {
+            lock (_gate)
+            {
+                if (_streams.TryGetValue(path, out var held))
+                {
+                    held.Leases++;
+                    held.LastUsed = DateTime.UtcNow;
+                    return new Leased(this, path, held.Stream);
+                }
+            }
+
+            var source = _open(path);
+            if (source == null) return null;
+            var stream = new StreamingSource(source, _budget);
+
+            StreamingSource? loser = null, evicted = null;
+            Leased lease;
+            lock (_gate)
+            {
+                // Somebody else opened it while this one was being made: use theirs.
+                if (_streams.TryGetValue(path, out var raced)) { loser = stream; stream = raced.Stream; raced.Leases++; raced.LastUsed = DateTime.UtcNow; }
+                else
+                {
+                    if (_streams.Count >= MostOpen)
+                    {
+                        var idle = _streams.Where(e => e.Value.Leases == 0).OrderBy(e => e.Value.LastUsed).FirstOrDefault();
+                        if (idle.Value != null) { evicted = idle.Value.Stream; _streams.Remove(idle.Key); }
+                    }
+                    _streams[path] = new Entry { Stream = stream, Leases = 1, LastUsed = DateTime.UtcNow };
+                }
+                lease = new Leased(this, path, stream);
+            }
+            loser?.Dispose();
+            evicted?.Dispose();
+            return lease;
+        }
+
+        private void Return(string path, StreamingSource stream)
+        {
+            lock (_gate)
+                if (_streams.TryGetValue(path, out var e) && ReferenceEquals(e.Stream, stream))
+                {
+                    e.Leases = Math.Max(0, e.Leases - 1);
+                    e.LastUsed = DateTime.UtcNow;
+                }
+        }
+
+        /// <summary>Lets go of anything nobody has read for <see cref="IdleFor"/>.</summary>
+        public void Sweep(DateTime now)
+        {
+            List<StreamingSource> done;
+            lock (_gate)
+            {
+                var idle = _streams.Where(e => e.Value.Leases == 0 && now - e.Value.LastUsed >= IdleFor).ToList();
+                foreach (var e in idle) _streams.Remove(e.Key);
+                done = idle.Select(e => e.Value.Stream).ToList();
+            }
+            foreach (var s in done) s.Dispose();
+        }
+
+        public void Dispose()
+        {
+            _sweep.Dispose();
+            List<StreamingSource> all;
+            lock (_gate) { all = _streams.Values.Select(e => e.Stream).ToList(); _streams.Clear(); }
+            foreach (var s in all) s.Dispose();
+        }
+
+        private sealed class Leased : IRangeSource
+        {
+            private readonly ConnectStreams _owner;
+            private readonly string _path;
+            private readonly StreamingSource _stream;
+            private int _returned;
+
+            public Leased(ConnectStreams owner, string path, StreamingSource stream)
+            {
+                _owner = owner;
+                _path = path;
+                _stream = stream;
+            }
+
+            public long Length => _stream.Length;
+            public int Streams => 1;
+
+            /// <summary>
+            /// <see cref="StreamingSource.ReadAt"/> blocks, so it runs on a worker; the caller stops waiting the
+            /// moment its token fires, and the read, if it was going to Google, lands in the window for the next.
+            /// </summary>
+            public Task<int> ReadAsync(long offset, Memory<byte> into, CancellationToken token)
+            {
+                if (token.IsCancellationRequested) return Task.FromCanceled<int>(token);
+                var stream = _stream;
+                return Task.Run(() => stream.ReadAt(offset, into.Span), CancellationToken.None).WaitAsync(token);
+            }
+
+            public void Dispose()
+            {
+                if (Interlocked.Exchange(ref _returned, 1) == 0) _owner.Return(_path, _stream);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Explorer Native Connect: the drives, folders and files of this machine, for the iPhone app.
+    ///
+    /// Plain HTTP on port 47810, listening only on the Tailscale address (and loopback), so nothing outside
+    /// Conner's own tailnet can reach it, and every request must carry the pairing code as well. The contract
+    /// is Documents\explorer_native_connect\API.md (v2): reading (<c>info</c>, <c>drives</c>, <c>list</c>,
+    /// <c>file</c> with byte ranges, <c>size</c>, <c>stat</c>) and writing (<c>rename</c>, <c>delete</c>,
+    /// <c>mkdir</c>, <c>copy</c>/<c>move</c> as polled jobs, <c>upload</c>). The writing is done by an
+    /// <see cref="IConnectFiles"/>; this class is HTTP, validation, the size cache and the job table.
+    ///
+    /// It is its own small HTTP server rather than HttpListener because HttpListener on any address but
+    /// localhost needs an administrator to reserve the URL first, and rather than ASP.NET because this
+    /// codebase ships no packages.
+    ///
+    /// Everything here runs on thread-pool workers. The listing hooks are how Drive stays fast: a Drive folder
+    /// is answered from the listing the mount already holds instead of walking placeholders at fifteen
+    /// milliseconds each.
+    /// </summary>
+    public sealed class ConnectServer : IDisposable
+    {
+        public const int Port = 47810;
+
+        private readonly Func<string, IReadOnlyList<ConnectEntry>?> _tryListing;
+        private readonly Func<string, IRangeSource> _open;
+        private readonly Func<string> _code;
+        private readonly Func<string, bool>? _isDrive;
+        private readonly IConnectFiles? _files;
+        private readonly Func<string, IRangeSource?>? _remote;
+        private readonly ConnectUploads _uploads;
+        private readonly IConnectClipboard? _clipboard;
+        private readonly string _clipboardSends;
+
+        /// <summary>Files sent from the phone to the clipboard are kept this long, then swept on start.</summary>
+        public static readonly TimeSpan ClipboardSendsKeptFor = TimeSpan.FromDays(7);
+
+        public static string DefaultClipboardSends => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ExplorerNative", "connect-clipboard");
+        private readonly Action<string>? _log;
+
+        /// <summary>What the phone plays straight from <c>/api/file</c>. Everything else in the audio list goes
+        /// through <c>/api/audio</c>; video containers always do, so only sound crosses the network.</summary>
+        public static readonly string[] NativeFormats = { ".mp3", ".m4a", ".aac", ".flac", ".wav", ".aif", ".aiff", ".caf", ".alac" };
+
+        /// <summary>Resumable uploads nobody has touched for this long are swept when the server starts.</summary>
+        public static readonly TimeSpan UploadsKeptFor = TimeSpan.FromHours(24);
+        private readonly bool _loopbackOnly;
+        private readonly CancellationTokenSource _stop = new();
+        private readonly Dictionary<IPAddress, TcpListener> _listeners = new();
+        private readonly object _gate = new();
+
+        /// <summary>How long a folder size is remembered, and the local walk's budget.</summary>
+        public static readonly TimeSpan SizeCacheFor = TimeSpan.FromSeconds(60);
+
+        /// <summary>A JSON body bigger than this is not a request this API makes.</summary>
+        private const int MaxJsonBody = 1 << 20;
+
+        /// <summary>An upload refused before its body was read is drained, up to this, so the connection
+        /// stays usable and the phone hears the answer instead of a reset.</summary>
+        private const long MaxDrain = 256L << 20;
+
+        private readonly ConcurrentDictionary<string, (Task<ConnectSize> Task, DateTime At)> _sizes =
+            new(StringComparer.OrdinalIgnoreCase);
+        private readonly ConcurrentDictionary<string, ConnectJob> _jobs = new(StringComparer.Ordinal);
+
+        /// <param name="tryListing">A folder's entries without touching the disk, when something already holds
+        /// them (Drive); null to list it from the file system.</param>
+        /// <param name="open">Bytes of a file at any offset.</param>
+        /// <param name="code">The pairing code requests must carry.</param>
+        /// <param name="loopbackOnly">Tests: listen on 127.0.0.1 only, on <paramref name="port"/>.</param>
+        /// <param name="isDrive">Whether a drive root is Google Drive. Windows reports the Drive letter as a
+        /// "Local Disk" with C:'s space, because it is a subst of a folder there.</param>
+        /// <param name="files">The file actions and Drive's quota; without it those routes answer 503.</param>
+        /// <param name="remote">A shared download for a path that is not a local file (Drive), or null: what
+        /// <c>/api/audio</c> decodes from instead of the letter.</param>
+        /// <param name="uploads">Where resumable uploads are kept; <see cref="ConnectUploads.DefaultRoot"/> if null.</param>
+        public ConnectServer(Func<string, IReadOnlyList<ConnectEntry>?> tryListing, Func<string, IRangeSource> open,
+            Func<string> code, Action<string>? log = null, bool loopbackOnly = false, int port = Port,
+            Func<string, bool>? isDrive = null, IConnectFiles? files = null,
+            Func<string, IRangeSource?>? remote = null, string? uploads = null,
+            IConnectClipboard? clipboard = null, string? clipboardSends = null, Func<string?>? tailscaleStatus = null)
+        {
+            _isDrive = isDrive;
+            _files = files;
+            _remote = remote;
+            _uploads = new ConnectUploads(uploads ?? ConnectUploads.DefaultRoot);
+            _clipboard = clipboard;
+            _tailscaleStatus = tailscaleStatus ?? (loopbackOnly ? () => null : RunTailscaleStatus);
+            _clipboardSends = clipboardSends ?? DefaultClipboardSends;
+            _tryListing = tryListing;
+            _open = open;
+            _code = code;
+            _log = log;
+            _loopbackOnly = loopbackOnly;
+            ListenPort = port;
+        }
+
+        public int ListenPort { get; }
+
+        /// <summary>The Tailscale address being listened on, if any.</summary>
+        public IPAddress? TailscaleAddress { get; private set; }
+
+        public void Start()
+        {
+            RefreshPaths();
+            _ = Task.Run(() =>
+            {
+                int swept = _uploads.Sweep(UploadsKeptFor);
+                swept += SweepClipboardSends(ClipboardSendsKeptFor);
+                if (swept > 0) _log?.Invoke($"Connect: swept {swept} abandoned upload(s)");
+            });
+
+            // Tailscale can start after this does, or get a new address; look again every thirty seconds.
+            _ = Task.Run(async () =>
+            {
+                while (!_stop.IsCancellationRequested)
+                {
+                    try { Rebind(); } catch (Exception e) { _log?.Invoke("Connect: " + e.Message); }
+                    try { await Task.Delay(TimeSpan.FromSeconds(30), _stop.Token); } catch { break; }
+                }
+            });
+        }
+
+        /// <summary>A new pairing code: eight digits, shown as two groups of four.</summary>
+        public static string NewCode()
+        {
+            Span<byte> b = stackalloc byte[4];
+            RandomNumberGenerator.Fill(b);
+            uint n = BitConverter.ToUInt32(b) % 100_000_000;
+            return n.ToString("00000000");
+        }
+
+        /// <summary>An address in 100.64.0.0/10, the range Tailscale hands out.</summary>
+        public static bool IsTailscale(IPAddress a)
+        {
+            if (a.AddressFamily != AddressFamily.InterNetwork) return false;
+            var b = a.GetAddressBytes();
+            return b[0] == 100 && (b[1] & 0xC0) == 64;
+        }
+
+        /// <summary>The Tailscale virtual adapter (Wintun), by its name or description.</summary>
+        public static bool IsTailscaleAdapter(NetworkInterface ni) =>
+            ni.Name.Contains("Tailscale", StringComparison.OrdinalIgnoreCase)
+            || ni.Description.Contains("Tailscale", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Who may talk to the server at all: this machine, or a tailnet peer
+        /// (100.64.0.0/10, or Tailscale's IPv6 range fd7a:115c:a1e0::/48). Checked on
+        /// every connection, on top of listening only on loopback and the Tailscale
+        /// adapter, so nothing else on any network reaches it even by mistake.
+        /// </summary>
+        public static bool IsAllowedPeer(IPAddress a)
+        {
+            if (a.IsIPv4MappedToIPv6) a = a.MapToIPv4();
+            if (IPAddress.IsLoopback(a) || IsTailscale(a)) return true;
+            if (a.AddressFamily != AddressFamily.InterNetworkV6) return false;
+            var b = a.GetAddressBytes();
+            return b[0] == 0xfd && b[1] == 0x7a && b[2] == 0x11 && b[3] == 0x5c && b[4] == 0xa1 && b[5] == 0xe0;
+        }
+
+        private void Rebind()
+        {
+            var want = new HashSet<IPAddress> { IPAddress.Loopback };
+            IPAddress? tailscale = null;
+            if (!_loopbackOnly)
+            {
+                foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus != OperationalStatus.Up) continue;
+                    // 100.64.0.0/10 is also carrier-grade NAT: a phone hotspot or an ISP can
+                    // hand one out on an ordinary adapter. Only Tailscale's own adapter counts.
+                    if (!IsTailscaleAdapter(ni)) continue;
+                    foreach (var ua in ni.GetIPProperties().UnicastAddresses)
+                        if (IsTailscale(ua.Address)) { tailscale = ua.Address; want.Add(ua.Address); }
+                }
+            }
+            lock (_gate)
+            {
+                if (_stop.IsCancellationRequested) return; // disposed while the interfaces were being asked
+                foreach (var gone in _listeners.Keys.Where(a => !want.Contains(a)).ToList())
+                {
+                    try { _listeners[gone].Stop(); } catch { }
+                    _listeners.Remove(gone);
+                }
+                foreach (var address in want.Where(a => !_listeners.ContainsKey(a)))
+                {
+                    var listener = new TcpListener(address, ListenPort);
+                    try { listener.Start(); }
+                    catch (SocketException e) { _log?.Invoke($"Connect: can't listen on {address}: {e.Message}"); continue; }
+                    _listeners[address] = listener;
+                    _ = AcceptLoop(listener);
+                    if (!IPAddress.IsLoopback(address)) _log?.Invoke($"Connect: listening on {address}:{ListenPort}");
+                }
+            }
+            TailscaleAddress = tailscale;
+        }
+
+        private async Task AcceptLoop(TcpListener listener)
+        {
+            while (!_stop.IsCancellationRequested)
+            {
+                TcpClient client;
+                try { client = await listener.AcceptTcpClientAsync(_stop.Token); }
+                catch { return; }
+                if (client.Client.RemoteEndPoint is not IPEndPoint peer || !IsAllowedPeer(peer.Address))
+                {
+                    _log?.Invoke($"Connect: refused {client.Client.RemoteEndPoint}");
+                    client.Dispose();
+                    continue;
+                }
+                client.NoDelay = true;
+                _ = Serve(client);
+            }
+        }
+
+        // MARK: HTTP
+
+        private sealed record Request(string Method, string Path, Dictionary<string, string> Query,
+            Dictionary<string, string> Headers)
+        {
+            /// <summary>The body, which a GET does not have: empty unless Content-Length or chunked says so.</summary>
+            public RequestBody Body { get; set; } = null!;
+
+            /// <summary>The connection's socket, to notice the client hanging up mid-response.</summary>
+            public Socket? Socket { get; set; }
+        }
+
+        private async Task Serve(TcpClient client)
+        {
+            using var _ = client;
+            using var connection = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
+            var stream = client.GetStream();
+            var reader = new HeaderReader(stream);
+            try
+            {
+                while (!connection.IsCancellationRequested)
+                {
+                    var request = await reader.ReadAsync(connection.Token);
+                    if (request == null) return;
+                    bool keepAlive = !(request.Headers.TryGetValue("connection", out var c) && c.Equals("close", StringComparison.OrdinalIgnoreCase));
+                    request.Body = RequestBody.For(request.Headers, reader, stream);
+                    request.Socket = client.Client;
+                    if (request.Body.Invalid)
+                    {
+                        await Error(stream, 400, "The request's length could not be understood.", false, connection.Token);
+                        return;
+                    }
+                    await Handle(request, stream, connection.Token);
+
+                    // Whatever of the body the route did not want has to be off the wire: before the next request
+                    // head can be read, and before closing too, because closing a socket with unread bytes in it
+                    // is a reset, and a reset can reach the client before the answer it was sent after does.
+                    // Too much to drain, or a client still waiting for 100 Continue, and it is simply closed.
+                    if (!request.Body.Finished)
+                    {
+                        if (!request.Body.Started && request.Body.ExpectsContinue) return;
+                        if (!await request.Body.DrainAsync(MaxDrain, connection.Token)) return;
+                    }
+                    if (!keepAlive)
+                    {
+                        try { client.Client.Shutdown(SocketShutdown.Send); } catch { }
+                        return;
+                    }
+                }
+            }
+            catch (Exception e) when (e is IOException or SocketException or OperationCanceledException or ObjectDisposedException)
+            {
+                // The phone went away mid-response: nothing to report.
+            }
+            catch (Exception e)
+            {
+                // Anything else would end up as an unobserved task nobody ever hears about.
+                _log?.Invoke("Connect: " + e.Message);
+            }
+        }
+
+        private async Task Handle(Request r, NetworkStream s, CancellationToken token)
+        {
+            // A HEAD answer carries the GET answer's headers and no body; sending the body anyway would be read
+            // as the start of the next response on a kept-alive connection.
+            bool head = r.Method == "HEAD";
+            bool post = r.Method == "POST", put = r.Method == "PUT";
+            if (r.Method != "GET" && !head && !post && !put) { await Error(s, 405, "Only GET, HEAD, POST and PUT.", false, token); return; }
+            if (!Authorised(r)) { await Error(s, 401, "Wrong or missing pairing code.", head, token); return; }
+            string path = r.Query.TryGetValue("path", out var p) ? p : "";
+
+            string wants = MethodFor(r.Path);
+            if (wants.Length > 0 && !wants.Split('|').Contains(head ? "GET" : r.Method))
+            {
+                await Error(s, 405, $"That needs a {wants}.", head, token);
+                return;
+            }
+
+            try
+            {
+                switch (r.Path)
+                {
+                    case "/api/info":
+                        await Json(s, 200, new { name = Environment.MachineName, app = "Explorer Native", version = 1, apiVersion = 4 }, head, token);
+                        break;
+                    case "/api/drives":
+                        await Json(s, 200, await Drives(), head, token);
+                        break;
+                    case "/api/list":
+                        var entries = await List(path);
+                        if (entries == null) await Error(s, 404, "That folder can't be opened.", head, token);
+                        else await Json(s, 200, entries, head, token);
+                        break;
+                    case "/api/file":
+                        await File(r, s, path, token);
+                        break;
+                    case "/api/size":
+                        await Json(s, 200, await Size(path, token), head, token);
+                        break;
+                    case "/api/stat":
+                        await Json(s, 200, await Stat(path, r.Query.TryGetValue("hash", out var hv) && hv == "1", token), head, token);
+                        break;
+                    case "/api/job":
+                        var job = FindJob(r.Query.TryGetValue("id", out var id) ? id : "");
+                        await Json(s, 200, job.Snapshot(), head, token);
+                        break;
+                    case "/api/rename":
+                        await Json(s, 200, await Rename(await ReadJson(r, token), token), false, token);
+                        break;
+                    case "/api/delete":
+                        await Json(s, 200, await Delete(await ReadJson(r, token), token), false, token);
+                        break;
+                    case "/api/mkdir":
+                        await Json(s, 200, await Mkdir(await ReadJson(r, token), token), false, token);
+                        break;
+                    case "/api/copy":
+                    case "/api/move":
+                        await Json(s, 202, StartTransfer(await ReadJson(r, token), r.Path == "/api/move"), false, token);
+                        break;
+                    case "/api/job/cancel":
+                        await Json(s, 200, CancelJob(await ReadJson(r, token)), false, token);
+                        break;
+                    case "/api/upload":
+                        await Json(s, 200, await Upload(r, token), false, token);
+                        break;
+                    case "/api/upload/start":
+                        await Json(s, 200, await UploadStart(await ReadJson(r, token), token), false, token);
+                        break;
+                    case "/api/upload/chunk":
+                        await Json(s, 200, await UploadChunk(r, token), false, token);
+                        break;
+                    case "/api/upload/status":
+                        await Json(s, 200, UploadStatus(r.Query.TryGetValue("id", out var uid) ? uid : ""), head, token);
+                        break;
+                    case "/api/upload/finish":
+                        var (finishStatus, finished) = await UploadFinish(await ReadJson(r, token), token);
+                        await Json(s, finishStatus, finished, false, token);
+                        break;
+                    case "/api/upload/cancel":
+                        await Json(s, 200, UploadCancel(await ReadJson(r, token)), false, token);
+                        break;
+                    case "/api/clipboard":
+                        if (post) await Json(s, 200, new { ok = true, seq = await Clip.SetTextAsync(Str(await ReadJson(r, token), "text") ?? throw new ConnectException(400, "The body needs text.")) }, false, token);
+                        else await Json(s, 200, Clip.Current, head, token);
+                        break;
+                    case "/api/clipboard/wait":
+                        long since = r.Query.TryGetValue("since", out var sv) && long.TryParse(sv, out var sl) ? sl : -1;
+                        await Json(s, 200, await Clip.WaitAsync(since, ClipboardWait, token), head, token);
+                        break;
+                    case "/api/clipboard/image":
+                        if (post) await Json(s, 200, new { ok = true, seq = await Clip.SetImageAsync(await ReadAll(r, MaxClipboardImage, token)) }, false, token);
+                        else await Png(s, Clip.Png() ?? throw new ConnectException(404, "The clipboard holds no image."), head, token);
+                        break;
+                    case "/api/clipboard/files":
+                        await Json(s, 200, await ClipFiles(await ReadJson(r, token), token), false, token);
+                        break;
+                    case "/api/clipboard/send":
+                        await Json(s, 200, await ClipSend(r, token), false, token);
+                        break;
+                    case "/api/clipboard/send/commit":
+                        await Json(s, 200, await ClipCommit(await ReadJson(r, token), token), false, token);
+                        break;
+                    case "/api/clipboard/history":
+                        await Json(s, 200, Clip.History(), head, token);
+                        break;
+                    case "/api/clipboard/history/clear":
+                        if (r.Body.HasBody) await r.Body.DrainAsync(MaxJsonBody, token);
+                        Clip.ClearHistory();
+                        await Json(s, 200, new { ok = true }, false, token);
+                        break;
+                    case "/api/ping":
+                        var peerAddress = (r.Socket?.RemoteEndPoint as IPEndPoint)?.Address;
+                        await Json(s, 200, new { time = DateTime.UtcNow, path = TailscalePath(peerAddress) }, head, token);
+                        break;
+                    case "/api/formats":
+                        await Json(s, 200, new { audio = Files.AudioExtensions(), native = NativeFormats }, head, token);
+                        break;
+                    case "/api/audio":
+                        await Audio(r, s, path, token);
+                        break;
+                    default:
+                        await Error(s, 404, "Not found.", head, token);
+                        break;
+                }
+            }
+            catch (ResponseStartedException)
+            {
+                // Headers are out: an error now cannot be an answer, only a closed connection.
+                throw;
+            }
+            catch (ConnectException e)
+            {
+                if (e.Received is long received)
+                    await Json(s, e.Status, new { error = e.Message, received }, head, token);
+                else
+                    await Error(s, e.Status, e.Message, head, token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception e) when (e is not IOException || !token.IsCancellationRequested)
+            {
+                _log?.Invoke($"Connect: {r.Method} {r.Path} failed: {e.Message}");
+                await Error(s, 500, Sentence(e.Message), head, token);
+            }
+        }
+
+        /// <summary>A failure after a response's headers were sent, which can only end the connection.</summary>
+        private sealed class ResponseStartedException : IOException
+        {
+            public ResponseStartedException(Exception inner) : base(inner.Message, inner) { }
+        }
+
+        /// <summary>The one method a route answers (HEAD goes with GET), or "" for no such route.</summary>
+        private static string MethodFor(string path) => path switch
+        {
+            "/api/info" or "/api/drives" or "/api/list" or "/api/file" or "/api/size" or "/api/stat" or "/api/job"
+                or "/api/upload/status" or "/api/formats" or "/api/audio" => "GET",
+            "/api/rename" or "/api/delete" or "/api/mkdir" or "/api/copy" or "/api/move" or "/api/job/cancel"
+                or "/api/upload" or "/api/upload/start" or "/api/upload/finish" or "/api/upload/cancel" => "POST",
+            "/api/upload/chunk" => "PUT",
+            "/api/ping" => "GET",
+            "/api/clipboard/wait" or "/api/clipboard/history" => "GET",
+            "/api/clipboard/files" or "/api/clipboard/send" or "/api/clipboard/send/commit" or "/api/clipboard/history/clear" => "POST",
+            "/api/clipboard" or "/api/clipboard/image" => "GET|POST",
+            _ => "",
+        };
+
+        /// <summary>An exception's message as something a person can read: capitalised, full stop.</summary>
+        internal static string Sentence(string? message)
+        {
+            var m = (message ?? "").Trim();
+            if (m.Length == 0) return "That didn't work.";
+            if (m.Length > 400) m = m[..400] + "…";
+            m = char.ToUpperInvariant(m[0]) + m[1..];
+            return m.EndsWith('.') || m.EndsWith('?') || m.EndsWith('!') || m.EndsWith('…') ? m : m + ".";
+        }
+
+        // MARK: Actions
+
+        /// <summary>A path the phone sent, checked for shape and for Drive being there to answer it.</summary>
+        private string CheckPath(string? path, string what = "path")
+        {
+            if (string.IsNullOrWhiteSpace(path)) throw new ConnectException(400, $"No {what} was given.");
+            if (!Path.IsPathFullyQualified(path)) throw new ConnectException(400, $"The {what} has to be a full path, such as C:\\Music.");
+            if (_files == null) throw new ConnectException(503, "This computer can't do that yet.");
+            var away = _files.Unavailable(path);
+            if (away != null) throw new ConnectException(503, Sentence(away));
+            return path;
+        }
+
+        private static void CheckName(string? name)
+        {
+            var bad = NameRules.DescribeBadName(name);
+            if (bad != null) throw new ConnectException(400, Sentence(bad));
+        }
+
+        private static bool IsRoot(string path) =>
+            string.Equals(Path.TrimEndingDirectorySeparator(path), Path.TrimEndingDirectorySeparator(Path.GetPathRoot(path) ?? ""),
+                StringComparison.OrdinalIgnoreCase);
+
+        private IConnectFiles Files => _files ?? throw new ConnectException(503, "This computer can't do that yet.");
+
+        /// <summary>Anything written may have changed a size somebody has cached; the cache is cheap to lose.</summary>
+        private void Changed() => _sizes.Clear();
+
+        private async Task<ConnectSize> Size(string path, CancellationToken token)
+        {
+            CheckPath(path);
+            var now = DateTime.UtcNow;
+            foreach (var stale in _sizes.Where(e => now - e.Value.At > SizeCacheFor).Select(e => e.Key).ToList())
+                _sizes.TryRemove(stale, out _);
+
+            // One walk per folder however many ask at once: the entry is the task, stored before it finishes.
+            var key = Path.TrimEndingDirectorySeparator(path);
+            if (IsRoot(path)) key = path;
+            var entry = _sizes.GetOrAdd(key, _ => (Files.SizeAsync(path, _stop.Token), now));
+            try
+            {
+                return await entry.Task.WaitAsync(token);
+            }
+            catch
+            {
+                // A failure is not an answer worth keeping for a minute.
+                _sizes.TryRemove(new KeyValuePair<string, (Task<ConnectSize>, DateTime)>(key, entry));
+                throw;
+            }
+        }
+
+        /// <summary>How long a whole /api/stat may take; what is known by then goes back with partial.</summary>
+        public static readonly TimeSpan StatBudget = TimeSpan.FromSeconds(15);
+
+        /// <summary>
+        /// The v2 fields as they always were, then every section the files can give inside the budget
+        /// (<see cref="IConnectFiles.DetailsAsync"/>). A section that fails is simply absent.
+        /// </summary>
+        private async Task<Dictionary<string, object?>> Stat(string path, bool hash, CancellationToken token)
+        {
+            CheckPath(path);
+            using var budget = CancellationTokenSource.CreateLinkedTokenSource(token);
+            budget.CancelAfter(StatBudget);
+            var stat = await Files.StatAsync(path, budget.Token);
+            var result = new Dictionary<string, object?>
+            {
+                ["path"] = stat.Path, ["name"] = stat.Name, ["folder"] = stat.Folder, ["size"] = stat.Size,
+                ["modified"] = stat.Modified, ["created"] = stat.Created, ["readOnly"] = stat.ReadOnly, ["onDrive"] = stat.OnDrive,
+            };
+            Dictionary<string, object?> details;
+            try { details = await Files.DetailsAsync(stat.Path, stat, hash, budget.Token); }
+            catch (OperationCanceledException) when (!token.IsCancellationRequested) { details = new() { ["partial"] = true }; }
+            catch (Exception e) { _log?.Invoke($"Connect: details of {path} failed: {e.Message}"); details = new(); }
+            foreach (var (key, value) in details) result[key] = value;
+
+            // The v2 tags object, for a client that reads it, from the media section when the basics had none.
+            var tags = stat.Tags;
+            if (tags == null && details.TryGetValue("media", out var m) && m is Dictionary<string, object?> media &&
+                media.TryGetValue("tags", out var t) && t is List<NameValue> list)
+            {
+                string? Get(string n) => list.FirstOrDefault(x => x.Name == n)?.Value;
+                int? Number(string n) => int.TryParse((Get(n) ?? "").Split(' ')[0], out var v) ? v : null;
+                tags = new SongSummary(Get("Title"), Get("Artist"), Get("Album"), Number("Year"), Number("Track"),
+                    media.TryGetValue("durationSeconds", out var d) && d is double seconds ? seconds : null);
+            }
+            if (tags != null) result["tags"] = tags;
+            return result;
+        }
+
+        // MARK: Ping
+
+        private readonly Func<string?> _tailscaleStatus;
+        private readonly object _pathsGate = new();
+        private Dictionary<string, string> _paths = new();
+        private DateTime _pathsAt = DateTime.MinValue;
+        private int _refreshingPaths;
+
+        /// <summary>How long a Tailscale path is believed before it is asked again.</summary>
+        public static readonly TimeSpan PathsFor = TimeSpan.FromSeconds(10);
+
+        /// <summary>How Tailscale reaches <paramref name="peer"/>, from the cache; a stale cache is refreshed behind the answer.</summary>
+        private string TailscalePath(IPAddress? peer)
+        {
+            if (DateTime.UtcNow - _pathsAt > PathsFor) RefreshPaths();
+            if (peer == null) return "unknown";
+            if (peer.IsIPv4MappedToIPv6) peer = peer.MapToIPv4();
+            lock (_pathsGate) return _paths.TryGetValue(peer.ToString(), out var p) ? p : "unknown";
+        }
+
+        /// <summary>For tests: waits for a refresh already under way.</summary>
+        internal async Task PathsSettled()
+        {
+            for (int i = 0; i < 100 && Volatile.Read(ref _refreshingPaths) == 1; i++) await Task.Delay(20);
+        }
+
+        private void RefreshPaths()
+        {
+            if (Interlocked.Exchange(ref _refreshingPaths, 1) == 1) return;
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    var json = _tailscaleStatus();
+                    if (json != null)
+                    {
+                        var paths = ParseTailscalePaths(json);
+                        lock (_pathsGate) _paths = paths;
+                    }
+                }
+                catch (Exception e) { _log?.Invoke("Connect: tailscale status: " + e.Message); }
+                finally
+                {
+                    _pathsAt = DateTime.UtcNow;
+                    Volatile.Write(ref _refreshingPaths, 0);
+                }
+            });
+        }
+
+        /// <summary>
+        /// Every Tailscale address in <c>tailscale status --json</c> and how it is reached: a peer with a
+        /// current address is direct, one without it goes through its DERP relay, and this machine's own
+        /// addresses (and loopback) are direct.
+        /// </summary>
+        public static Dictionary<string, string> ParseTailscalePaths(string json)
+        {
+            var paths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["127.0.0.1"] = "direct", ["::1"] = "direct" };
+            using var doc = JsonDocument.Parse(json);
+            void Add(JsonElement node, string path)
+            {
+                if (node.TryGetProperty("TailscaleIPs", out var ips) && ips.ValueKind == JsonValueKind.Array)
+                    foreach (var ip in ips.EnumerateArray())
+                        if (ip.GetString() is { Length: > 0 } a) paths[a] = path;
+            }
+            if (doc.RootElement.TryGetProperty("Self", out var self)) Add(self, "direct");
+            if (doc.RootElement.TryGetProperty("Peer", out var peers) && peers.ValueKind == JsonValueKind.Object)
+                foreach (var peer in peers.EnumerateObject())
+                {
+                    var p = peer.Value;
+                    string cur = p.TryGetProperty("CurAddr", out var c) ? c.GetString() ?? "" : "";
+                    string relay = p.TryGetProperty("Relay", out var r) ? r.GetString() ?? "" : "";
+                    Add(p, cur.Length > 0 ? "direct" : relay.Length > 0 ? "relay " + relay : "unknown");
+                }
+            return paths;
+        }
+
+        /// <summary><c>tailscale status --json</c>, or null. Five seconds at most; nothing inherited, no window.</summary>
+        public static string? RunTailscaleStatus()
+        {
+            var exe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Tailscale", "tailscale.exe");
+            if (!System.IO.File.Exists(exe)) exe = "tailscale.exe";
+            var start = new System.Diagnostics.ProcessStartInfo(exe, "status --json")
+            {
+                UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
+                RedirectStandardInput = true, StandardOutputEncoding = Encoding.UTF8,
+            };
+            using var process = System.Diagnostics.Process.Start(start);
+            if (process == null) return null;
+            process.StandardInput.Close();
+            var output = process.StandardOutput.ReadToEndAsync();
+            _ = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(5000)) { try { process.Kill(); } catch { } return null; }
+            return output.Wait(1000) ? output.Result : null;
+        }
+
+        private async Task<object> Rename(JsonElement body, CancellationToken token)
+        {
+            var path = CheckPath(Str(body, "path"));
+            var newName = Str(body, "newName");
+            CheckName(newName);
+            if (IsRoot(path)) throw new ConnectException(400, "A drive can't be renamed.");
+            var renamed = await Files.RenameAsync(path, newName!, token);
+            Changed();
+            return new { ok = true, path = renamed };
+        }
+
+        private async Task<object> Delete(JsonElement body, CancellationToken token)
+        {
+            var paths = Strs(body, "paths");
+            if (paths.Count == 0) throw new ConnectException(400, "No paths were given.");
+            foreach (var path in paths)
+            {
+                CheckPath(path);
+                if (IsRoot(path)) throw new ConnectException(400, "A drive can't be deleted.");
+            }
+            var result = await Files.DeleteAsync(paths, token);
+            Changed();
+            return new { ok = true, deleted = result.Deleted, failed = result.Failed };
+        }
+
+        private async Task<object> Mkdir(JsonElement body, CancellationToken token)
+        {
+            var parent = CheckPath(Str(body, "parent"), "parent folder");
+            var name = Str(body, "name");
+            CheckName(name);
+            var made = await Files.CreateFolderAsync(parent, name!, token);
+            Changed();
+            return new { ok = true, path = made };
+        }
+
+        private static PasteConflictPolicy Conflict(string? given) => (given ?? "rename").ToLowerInvariant() switch
+        {
+            "" or "rename" => PasteConflictPolicy.AutoRename,
+            "skip" => PasteConflictPolicy.Skip,
+            "overwrite" => PasteConflictPolicy.Overwrite,
+            _ => throw new ConnectException(400, "Conflict has to be rename, skip or overwrite."),
+        };
+
+        private object StartTransfer(JsonElement body, bool move)
+        {
+            var paths = Strs(body, "paths");
+            if (paths.Count == 0) throw new ConnectException(400, "No paths were given.");
+            var destination = CheckPath(Str(body, "destination"), "destination");
+            var conflict = Conflict(Str(body, "conflict"));
+            foreach (var path in paths)
+            {
+                CheckPath(path);
+                if (IsRoot(path)) throw new ConnectException(400, $"A whole drive can't be {(move ? "moved" : "copied")}; open it and pick what is in it.");
+            }
+            Files.CheckTransfer(paths, destination, move);
+
+            var job = NewJob(move ? "move" : "copy");
+            job.Report(0, paths.Count, 0, 0, "");
+            _ = Task.Run(() => RunJob(job, paths, destination, move, conflict));
+            return new { ok = true, job = job.Id };
+        }
+
+        private ConnectJob NewJob(string kind)
+        {
+            // Finished jobs are kept an hour, for a phone that was asleep when one ended.
+            foreach (var old in _jobs.Values.Where(j => DateTime.UtcNow - j.FinishedAt > TimeSpan.FromHours(1)).ToList())
+                _jobs.TryRemove(old.Id, out _);
+            var job = new ConnectJob(Convert.ToHexString(RandomNumberGenerator.GetBytes(6)).ToLowerInvariant(), kind);
+            _jobs[job.Id] = job;
+            return job;
+        }
+
+        private async Task RunJob(ConnectJob job, IReadOnlyList<string> paths, string destination, bool move,
+            PasteConflictPolicy conflict)
+        {
+            try
+            {
+                await Files.TransferAsync(job, paths, destination, move, conflict);
+                if (job.Token.IsCancellationRequested) job.Finish("cancelled", "Cancelled.");
+                else if (job.Failed.Count > 0 && job.ItemsDone == 0) job.Finish("failed", Sentence(job.Failed[0].Error));
+                else job.Finish("done");
+            }
+            catch (OperationCanceledException) when (job.Token.IsCancellationRequested)
+            {
+                job.Finish("cancelled", "Cancelled.");
+            }
+            catch (Exception e)
+            {
+                _log?.Invoke($"Connect: {job.Kind} job failed: {e.Message}");
+                job.Finish("failed", Sentence(e.Message));
+            }
+            finally
+            {
+                Changed();
+            }
+        }
+
+        private ConnectJob FindJob(string id) =>
+            !string.IsNullOrEmpty(id) && _jobs.TryGetValue(id, out var job)
+                ? job
+                : throw new ConnectException(404, "There is no job with that id.");
+
+        private object CancelJob(JsonElement body)
+        {
+            var job = FindJob(Str(body, "id") ?? "");
+            job.Cancel();
+            return new { ok = true };
+        }
+
+        private async Task<object> Upload(Request r, CancellationToken token)
+        {
+            var folder = CheckPath(r.Query.TryGetValue("folder", out var f) ? f : "", "folder");
+            var name = r.Query.TryGetValue("name", out var n) ? n : "";
+            CheckName(name);
+            var conflict = Conflict(r.Query.TryGetValue("conflict", out var c) ? c : null);
+            if (!r.Body.HasBody) throw new ConnectException(400, "The file's bytes go in the body, with a Content-Length.");
+            var path = await Files.UploadAsync(folder, name, conflict, r.Body, token);
+            Changed();
+            return new { ok = true, path };
+        }
+
+        // MARK: Clipboard
+
+        /// <summary>How long a long poll on the clipboard waits before answering with no change.</summary>
+        public static readonly TimeSpan ClipboardWait = TimeSpan.FromSeconds(25);
+
+        private const int MaxClipboardImage = 64 << 20;
+
+        private IConnectClipboard Clip => _clipboard ?? throw new ConnectException(503, "The clipboard isn't available on this computer.");
+
+        private static async Task Png(NetworkStream s, byte[] png, bool head, CancellationToken token)
+        {
+            await Write(s, $"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {png.Length}\r\nCache-Control: no-store\r\n\r\n", token);
+            if (!head) await s.WriteAsync(png, token);
+        }
+
+        private static async Task<byte[]> ReadAll(Request r, int most, CancellationToken token)
+        {
+            if (!r.Body.HasBody) throw new ConnectException(400, "The image goes in the body.");
+            if (r.Body.Length > most) throw new ConnectException(400, "That image is too big.");
+            var buffer = new MemoryStream();
+            var chunk = new byte[64 * 1024];
+            int got;
+            while ((got = await r.Body.ReadAsync(chunk, token)) > 0)
+            {
+                buffer.Write(chunk, 0, got);
+                if (buffer.Length > most) throw new ConnectException(400, "That image is too big.");
+            }
+            return buffer.ToArray();
+        }
+
+        private async Task<object> ClipFiles(JsonElement body, CancellationToken token)
+        {
+            var paths = Strs(body, "paths");
+            if (paths.Count == 0) throw new ConnectException(400, "No paths were given.");
+            foreach (var path in paths) CheckPath(path);
+            var missing = await Task.Run(() => paths.FirstOrDefault(p => !System.IO.File.Exists(p) && !Directory.Exists(p)), token);
+            if (missing != null) throw new ConnectException(404, $"{Path.GetFileName(missing)} is not there any more.");
+            return new { ok = true, seq = await Clip.SetFilesAsync(paths) };
+        }
+
+        /// <summary>A batch id the phone chose: letters, digits and dashes, and nothing that can walk a path.</summary>
+        private static bool BatchId(string? id) =>
+            id is { Length: > 0 and <= 64 } && id.All(c => char.IsAsciiLetterOrDigit(c) || c == '-');
+
+        /// <summary>
+        /// A phone file onto the clipboard: streamed to <c>connect-clipboard\&lt;folder&gt;\&lt;name&gt;</c>, then put
+        /// on as a copied file. With a batch it waits in the batch's folder for the commit.
+        /// </summary>
+        private async Task<object> ClipSend(Request r, CancellationToken token)
+        {
+            var clip = Clip;
+            var name = r.Query.TryGetValue("name", out var n) ? n : "";
+            CheckName(name);
+            if (!r.Body.HasBody) throw new ConnectException(400, "The file's bytes go in the body.");
+            string? batch = r.Query.TryGetValue("batch", out var b) && b.Length > 0 ? b : null;
+            if (batch != null && !BatchId(batch)) throw new ConnectException(400, "A batch id is letters, digits and dashes.");
+
+            // Named after the seq the clipboard is at when it arrives, and made unique: two sends can arrive
+            // before the clipboard has moved.
+            var folder = Path.Combine(_clipboardSends, batch != null ? "batch-" + batch
+                : $"{clip.Current.Seq + 1}-{Convert.ToHexString(RandomNumberGenerator.GetBytes(3)).ToLowerInvariant()}");
+            Directory.CreateDirectory(folder);
+            var target = Path.Combine(folder, name);
+            var partial = target + ".partial";
+            try
+            {
+                await using (var file = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20, useAsync: true))
+                    await r.Body.CopyToAsync(file, 1 << 20, token);
+                System.IO.File.Move(partial, target, overwrite: true);
+            }
+            catch
+            {
+                try { System.IO.File.Delete(partial); } catch { }
+                if (batch == null) try { Directory.Delete(folder, true); } catch { }
+                throw;
+            }
+            if (batch != null) return new { ok = true, path = target };
+            return new { ok = true, seq = await clip.SetFilesAsync(new[] { target }), path = target };
+        }
+
+        private async Task<object> ClipCommit(JsonElement body, CancellationToken token)
+        {
+            var batch = Str(body, "batch");
+            if (!BatchId(batch)) throw new ConnectException(400, "A batch id is letters, digits and dashes.");
+            var folder = Path.Combine(_clipboardSends, "batch-" + batch);
+            var files = await Task.Run(() => Directory.Exists(folder)
+                ? Directory.GetFiles(folder).Where(f => !f.EndsWith(".partial", StringComparison.OrdinalIgnoreCase)).OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToArray()
+                : Array.Empty<string>(), token);
+            if (files.Length == 0) throw new ConnectException(404, "Nothing has been sent in that batch.");
+            return new { ok = true, seq = await Clip.SetFilesAsync(files), files };
+        }
+
+        /// <summary>Folders of sent files older than <paramref name="olderThan"/>; one level, ours only.</summary>
+        internal int SweepClipboardSends(TimeSpan olderThan)
+        {
+            int swept = 0;
+            try
+            {
+                if (!Directory.Exists(_clipboardSends)) return 0;
+                foreach (var dir in Directory.EnumerateDirectories(_clipboardSends))
+                {
+                    try
+                    {
+                        if (DateTime.UtcNow - Directory.GetLastWriteTimeUtc(dir) < olderThan) continue;
+                        Directory.Delete(dir, recursive: true);
+                        swept++;
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+            return swept;
+        }
+
+        // MARK: Resumable uploads
+
+        private async Task<object> UploadStart(JsonElement body, CancellationToken token)
+        {
+            var folder = CheckPath(Str(body, "folder"), "folder");
+            var name = Str(body, "name");
+            CheckName(name);
+            var conflict = Str(body, "conflict") ?? "rename";
+            Conflict(conflict);
+            if (!body.TryGetProperty("size", out var sizeValue) || !sizeValue.TryGetInt64(out long size) || size < 0)
+                throw new ConnectException(400, "The upload has to say its size in bytes.");
+
+            var stat = await Files.StatAsync(folder, token);
+            if (!stat.Folder) throw new ConnectException(400, "That is a file, not a folder.");
+
+            var id = await Task.Run(() => _uploads.Start(new ConnectUploads.Meta(folder, name!, size, conflict.ToLowerInvariant(), DateTime.UtcNow)), token);
+            return new { ok = true, id };
+        }
+
+        private ConnectUploads.Meta FindUpload(string? id) =>
+            _uploads.Find(id) ?? throw new ConnectException(404, "There is no upload with that id.");
+
+        private async Task<object> UploadChunk(Request r, CancellationToken token)
+        {
+            var id = r.Query.TryGetValue("id", out var i) ? i : "";
+            FindUpload(id);
+            if (!r.Query.TryGetValue("offset", out var o) || !long.TryParse(o, out long offset) || offset < 0)
+                throw new ConnectException(400, "The chunk has to say its offset.");
+            long received = await _uploads.AppendAsync(id, offset, r.Body, token);
+            return new { ok = true, received };
+        }
+
+        private object UploadStatus(string id)
+        {
+            var meta = FindUpload(id);
+            return new { received = _uploads.Received(id), size = meta.Size };
+        }
+
+        /// <summary>
+        /// A local folder: moved into place now, 200 with the path. A Drive folder: 202 with a job that sends it
+        /// up, in bytes, and throws the partial away when done.
+        /// </summary>
+        private async Task<(int Status, object Body)> UploadFinish(JsonElement body, CancellationToken token)
+        {
+            var id = Str(body, "id") ?? "";
+            var meta = FindUpload(id);
+            long received = _uploads.Received(id);
+            if (received != meta.Size)
+                throw new ConnectException(409, $"Only {received} of {meta.Size} bytes have arrived.", received);
+            CheckPath(meta.Folder, "folder");
+            var conflict = Conflict(meta.Conflict);
+            var data = _uploads.DataPath(id);
+
+            if (!Files.OnDrive(meta.Folder))
+            {
+                var placed = await Files.PlaceFileAsync(data, meta.Folder, meta.Name, conflict, null, token);
+                _uploads.Delete(id);
+                Changed();
+                return (200, new { ok = true, path = placed });
+            }
+
+            var job = NewJob("upload");
+            job.Report(0, 1, 0, meta.Size, meta.Name);
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    var placed = await Files.PlaceFileAsync(data, meta.Folder, meta.Name, conflict,
+                        (sent, total) => job.Report(0, 1, sent, total, meta.Name), job.Token);
+                    job.Landed(placed);
+                    job.Report(1, 1, meta.Size, meta.Size, "");
+                    _uploads.Delete(id);
+                    job.Finish("done");
+                }
+                catch (OperationCanceledException) when (job.Token.IsCancellationRequested) { job.Finish("cancelled", "Cancelled."); }
+                catch (Exception e)
+                {
+                    // The partial is kept: the bytes are all here, and finishing again is one request.
+                    _log?.Invoke($"Connect: upload to Drive failed: {e.Message}");
+                    job.Fail(Path.Combine(meta.Folder, meta.Name), Sentence(e.Message));
+                    job.Finish("failed", Sentence(e.Message));
+                }
+                finally { Changed(); }
+            });
+            return (202, new { ok = true, job = job.Id });
+        }
+
+        private object UploadCancel(JsonElement body)
+        {
+            var id = Str(body, "id") ?? "";
+            FindUpload(id);
+            _uploads.Delete(id);
+            return new { ok = true };
+        }
+
+        // MARK: Audio
+
+        /// <summary>
+        /// Any file the application plays, decoded to 24-bit WAV (<see cref="ConnectAudio"/>), with ranges mapped
+        /// onto sample frames. The decoder runs on a worker and the bytes go out as they are made.
+        /// </summary>
+        private async Task Audio(Request r, NetworkStream s, string path, CancellationToken token)
+        {
+            bool headOnly = r.Method == "HEAD";
+            CheckPath(path);
+
+            var remote = await Task.Run(() => _remote?.Invoke(path), token);
+            string why = "";
+            var audio = await Task.Run(() =>
+            {
+                long bytes = remote?.Length ?? 0;
+                if (remote == null)
+                {
+                    try { bytes = new FileInfo(path).Length; }
+                    catch { bytes = 0; }
+                }
+                return ConnectAudio.Open(path, remote, bytes, out why);
+            }, token);
+            if (audio == null)
+            {
+                bool exists = remote != null || await Task.Run(() => System.IO.File.Exists(path), token);
+                throw new ConnectException(exists ? 500 : 404, exists
+                    ? Sentence($"Explorer Native can't decode that: {why}")
+                    : "No such file.");
+            }
+
+            using var _ = audio;
+            long length = audio.Plan.TotalBytes;
+            long from = 0, to = length - 1;
+            int status = 200;
+            if (r.Headers.TryGetValue("range", out var range) && TryParseRange(range, length, out from, out to))
+                status = 206;
+            else if (r.Headers.ContainsKey("range"))
+            {
+                await Write(s, $"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{length}\r\nContent-Length: 0\r\n\r\n", token);
+                return;
+            }
+
+            var head = new StringBuilder();
+            head.Append(status == 206 ? "HTTP/1.1 206 Partial Content\r\n" : "HTTP/1.1 200 OK\r\n");
+            head.Append("Content-Type: audio/wav\r\nAccept-Ranges: bytes\r\n");
+            head.Append("Content-Length: ").Append(to - from + 1).Append("\r\n");
+            if (status == 206) head.Append($"Content-Range: bytes {from}-{to}/{length}\r\n");
+            head.Append("\r\n");
+            await Write(s, head.ToString(), token);
+            if (headOnly) return;
+
+            using var gone = CancellationTokenSource.CreateLinkedTokenSource(token);
+            var watch = WatchForHangUp(r.Socket, gone);
+            try
+            {
+                await Task.Run(() => audio.WriteRange(from, to, s, gone.Token), gone.Token);
+            }
+            catch (Exception e) { throw new ResponseStartedException(e); }
+            finally
+            {
+                gone.Cancel();
+                try { await watch; } catch { }
+            }
+        }
+
+        /// <summary>The request's JSON body. Anything else is a 400.</summary>
+        private static async Task<JsonElement> ReadJson(Request r, CancellationToken token)
+        {
+            if (r.Body.Length > MaxJsonBody) throw new ConnectException(400, "That request is too big.");
+            var buffer = new MemoryStream();
+            var chunk = new byte[16 * 1024];
+            int got;
+            while ((got = await r.Body.ReadAsync(chunk, token)) > 0)
+            {
+                buffer.Write(chunk, 0, got);
+                if (buffer.Length > MaxJsonBody) throw new ConnectException(400, "That request is too big.");
+            }
+            if (buffer.Length == 0) throw new ConnectException(400, "The request needs a JSON body.");
+            try
+            {
+                using var doc = JsonDocument.Parse(buffer.ToArray());
+                if (doc.RootElement.ValueKind != JsonValueKind.Object) throw new ConnectException(400, "The body has to be a JSON object.");
+                return doc.RootElement.Clone();
+            }
+            catch (JsonException) { throw new ConnectException(400, "The body is not JSON."); }
+        }
+
+        private static string? Str(JsonElement body, string name) =>
+            body.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+        private static List<string> Strs(JsonElement body, string name)
+        {
+            if (!body.TryGetProperty(name, out var v) || v.ValueKind != JsonValueKind.Array)
+                throw new ConnectException(400, $"{name} has to be a list of paths.");
+            var list = new List<string>();
+            foreach (var item in v.EnumerateArray())
+            {
+                if (item.ValueKind != JsonValueKind.String || string.IsNullOrWhiteSpace(item.GetString()))
+                    throw new ConnectException(400, $"{name} has to be a list of paths.");
+                list.Add(item.GetString()!);
+            }
+            return list;
+        }
+
+        private bool Authorised(Request r)
+        {
+            string given = r.Headers.TryGetValue("x-connect-code", out var h) ? h
+                : r.Query.TryGetValue("code", out var q) ? q : "";
+            var a = Encoding.UTF8.GetBytes(given.Replace(" ", "").Replace("-", ""));
+            var b = Encoding.UTF8.GetBytes(_code());
+            return b.Length > 0 && CryptographicOperations.FixedTimeEquals(a, b);
+        }
+
+        // MARK: Drives and folders
+
+        /// <summary>Every drive that answers within two seconds. A network drive whose server is asleep is left
+        /// out rather than holding up the list.</summary>
+        private async Task<List<object>> Drives()
+        {
+            var probes = DriveInfo.GetDrives().Select(d => (Drive: d, Task: Task.Run(() =>
+            {
+                try
+                {
+                    // The Drive letter is a subst of a folder on C:, so what Windows says about its space is C:'s.
+                    // The account's quota is the truth; no limit reads as unlimited, with what is used still said.
+                    if (_isDrive?.Invoke(d.Name) == true)
+                    {
+                        var (used, limit) = _files?.DriveQuota() ?? (0, 0);
+                        return limit > 0
+                            ? (object)new { name = d.Name, label = "Google Drive", kind = "GoogleDrive", size = limit, free = Math.Max(0, limit - used), used = Math.Min(used, limit), unlimited = false }
+                            : new { name = d.Name, label = "Google Drive", kind = "GoogleDrive", size = 0L, free = 0L, used, unlimited = true };
+                    }
+                    if (!d.IsReady) return null;
+                    long size = d.TotalSize, free = d.AvailableFreeSpace;
+                    return new { name = d.Name, label = d.VolumeLabel, kind = d.DriveType.ToString(), size, free, used = Math.Max(0, size - free), unlimited = false };
+                }
+                catch { return null; }
+            }))).ToList();
+            await Task.WhenAny(Task.WhenAll(probes.Select(p => p.Task)), Task.Delay(2000));
+            return probes.Where(p => p.Task.IsCompletedSuccessfully && p.Task.Result != null).Select(p => p.Task.Result!).ToList();
+        }
+
+        /// <summary>A folder's entries, folders first then by name, or null if it can't be read in ten seconds.</summary>
+        public async Task<List<ConnectEntry>?> List(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path)) return null;
+            var listing = Task.Run(() =>
+            {
+                var held = _tryListing(path);
+                if (held != null) return held.ToList();
+                var dir = new DirectoryInfo(path);
+                if (!dir.Exists) return null;
+                var list = new List<ConnectEntry>();
+                foreach (var info in dir.EnumerateFileSystemInfos("*", new EnumerationOptions { IgnoreInaccessible = true, AttributesToSkip = FileAttributes.System | FileAttributes.Hidden }))
+                {
+                    bool folder = info is DirectoryInfo;
+                    list.Add(new ConnectEntry(info.Name, folder, folder ? 0 : ((FileInfo)info).Length, info.LastWriteTimeUtc));
+                }
+                return list;
+            });
+            if (await Task.WhenAny(listing, Task.Delay(45_000)) != listing || !listing.IsCompletedSuccessfully) return null;
+            var entries = listing.Result;
+            entries?.Sort((a, b) => a.Folder != b.Folder ? (a.Folder ? -1 : 1) : NameRules.CompareNames(a.Name, a.Name, b.Name, b.Name));
+            return entries;
+        }
+
+        // MARK: Files
+
+        private async Task File(Request r, NetworkStream s, string path, CancellationToken token)
+        {
+            bool headOnly = r.Method == "HEAD";
+            if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path)) { await Error(s, 404, "No such file.", headOnly, token); return; }
+            var away = _files?.Unavailable(path);
+            if (away != null) { await Error(s, 503, Sentence(away), headOnly, token); return; }
+            IRangeSource source;
+            // On a worker: opening a Drive file can be a listing of its folder.
+            try { source = await Task.Run(() => _open(path), token); }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch { await Error(s, 404, "That file can't be opened.", headOnly, token); return; }
+            using var _ = source;
+
+            long length = source.Length;
+            long from = 0, to = length - 1;
+            int status = 200;
+            if (r.Headers.TryGetValue("range", out var range) && TryParseRange(range, length, out from, out to))
+                status = 206;
+            else if (r.Headers.ContainsKey("range") && length > 0)
+            {
+                await Write(s, $"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{length}\r\nContent-Length: 0\r\n\r\n", token);
+                return;
+            }
+            long count = length == 0 ? 0 : to - from + 1;
+            var head = new StringBuilder();
+            head.Append(status == 206 ? "HTTP/1.1 206 Partial Content\r\n" : "HTTP/1.1 200 OK\r\n");
+            head.Append("Content-Type: ").Append(ContentType(path)).Append("\r\n");
+            head.Append("Accept-Ranges: bytes\r\n");
+            head.Append("Content-Length: ").Append(count).Append("\r\n");
+            if (status == 206) head.Append($"Content-Range: bytes {from}-{to}/{length}\r\n");
+            head.Append("\r\n");
+            await Write(s, head.ToString(), token);
+            if (headOnly || count == 0) return;
+
+            // A phone scrubbing through a track drops a request the moment the finger moves on. Noticing only
+            // when the next write fails would leave a Drive read running for nothing, so the socket is watched
+            // while the body goes out and the reads are called off as soon as the other end has gone.
+            using var gone = CancellationTokenSource.CreateLinkedTokenSource(token);
+            var watch = WatchForHangUp(r.Socket, gone);
+
+            try
+            {
+                // The first piece small, so the phone has bytes to decode as soon as there are any; then big.
+                var buffer = new byte[256 * 1024];
+                long offset = from, remaining = count;
+                int piece = 64 * 1024;
+                while (remaining > 0)
+                {
+                    int want = (int)Math.Min(piece, remaining);
+                    int got = await source.ReadAsync(offset, buffer.AsMemory(0, want), gone.Token);
+                    if (got <= 0) throw new IOException("the file ended early");
+                    await s.WriteAsync(buffer.AsMemory(0, got), gone.Token);
+                    offset += got;
+                    remaining -= got;
+                    piece = buffer.Length;
+                }
+            }
+            catch (Exception e) { throw new ResponseStartedException(e); }
+            finally
+            {
+                gone.Cancel();
+                try { await watch; } catch { }
+            }
+        }
+
+        /// <summary>Cancels <paramref name="gone"/> when the client closes its end, checking five times a second.</summary>
+        private static async Task WatchForHangUp(Socket? socket, CancellationTokenSource gone)
+        {
+            if (socket == null) return;
+            try
+            {
+                while (!gone.IsCancellationRequested)
+                {
+                    await Task.Delay(200, gone.Token);
+                    // Readable with nothing to read is how a closed connection looks from this side.
+                    if (socket.Poll(0, SelectMode.SelectRead) && socket.Available == 0) { gone.Cancel(); return; }
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>One byte range: "bytes=a-b", "bytes=a-" or "bytes=-n".</summary>
+        public static bool TryParseRange(string header, long length, out long from, out long to)
+        {
+            from = 0; to = length - 1;
+            if (length <= 0 || !header.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase)) return false;
+            var spec = header[6..].Split(',')[0].Trim();
+            int dash = spec.IndexOf('-');
+            if (dash < 0) return false;
+            string a = spec[..dash].Trim(), b = spec[(dash + 1)..].Trim();
+            if (a.Length == 0)
+            {
+                if (!long.TryParse(b, out long suffix) || suffix <= 0) return false;
+                from = Math.Max(0, length - suffix);
+                return true;
+            }
+            if (!long.TryParse(a, out from) || from >= length) return false;
+            if (b.Length > 0)
+            {
+                if (!long.TryParse(b, out to) || to < from) return false;
+                to = Math.Min(to, length - 1);
+            }
+            return true;
+        }
+
+        public static string ContentType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
+        {
+            ".mp3" => "audio/mpeg",
+            ".m4a" or ".m4b" or ".aac" or ".alac" => "audio/mp4",
+            ".flac" => "audio/flac",
+            ".wav" => "audio/wav",
+            ".aif" or ".aiff" or ".aifc" => "audio/aiff",
+            ".ogg" or ".oga" => "audio/ogg",
+            ".opus" => "audio/ogg",
+            ".caf" => "audio/x-caf",
+            ".mp4" or ".m4v" => "video/mp4",
+            ".mov" => "video/quicktime",
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".png" => "image/png",
+            ".gif" => "image/gif",
+            ".heic" => "image/heic",
+            ".webp" => "image/webp",
+            ".pdf" => "application/pdf",
+            ".txt" or ".log" or ".md" or ".csv" or ".ini" or ".json" or ".xml" => "text/plain; charset=utf-8",
+            ".htm" or ".html" => "text/html; charset=utf-8",
+            ".docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ".xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ".pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            _ => "application/octet-stream",
+        };
+
+        private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
+
+        private static async Task Json(NetworkStream s, int status, object value, bool head, CancellationToken token)
+        {
+            var body = JsonSerializer.SerializeToUtf8Bytes(value, JsonOptions);
+            await Write(s, $"HTTP/1.1 {status} {Reason(status)}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {body.Length}\r\nCache-Control: no-store\r\n\r\n", token);
+            if (!head) await s.WriteAsync(body, token);
+        }
+
+        /// <summary>Every error is <c>{ "error": "a sentence" }</c> with a real status.</summary>
+        private static Task Error(NetworkStream s, int status, string message, bool head, CancellationToken token) =>
+            Json(s, status, new { error = message }, head, token);
+
+        private static string Reason(int status) => status switch
+        {
+            200 => "OK", 202 => "Accepted", 400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden",
+            404 => "Not Found", 405 => "Method Not Allowed", 409 => "Conflict", 503 => "Service Unavailable",
+            _ => "Internal Server Error",
+        };
+
+        private static Task Write(NetworkStream s, string text, CancellationToken token) =>
+            s.WriteAsync(Encoding.ASCII.GetBytes(text), token).AsTask();
+
+        /// <summary>
+        /// Reads request heads off a keep-alive connection, and the raw bytes after them for a body: whatever
+        /// arrived with the head is in the buffer and has to be handed out before the socket is read again.
+        /// </summary>
+        private sealed class HeaderReader
+        {
+            private readonly NetworkStream _stream;
+            private readonly byte[] _buffer = new byte[16 * 1024];
+            private int _count;
+
+            public HeaderReader(NetworkStream stream) => _stream = stream;
+
+            /// <summary>Body bytes: the buffered ones first, then the socket. 0 when the connection closed.</summary>
+            public async ValueTask<int> ReadRawAsync(Memory<byte> into, CancellationToken token)
+            {
+                if (into.Length == 0) return 0;
+                if (_count > 0)
+                {
+                    int take = Math.Min(_count, into.Length);
+                    _buffer.AsSpan(0, take).CopyTo(into.Span);
+                    Buffer.BlockCopy(_buffer, take, _buffer, 0, _count - take);
+                    _count -= take;
+                    return take;
+                }
+                return await _stream.ReadAsync(into, token);
+            }
+
+            /// <summary>One CRLF-terminated line, for chunk sizes. Null when the connection closed.</summary>
+            public async Task<string?> ReadLineAsync(CancellationToken token)
+            {
+                while (true)
+                {
+                    for (int i = 1; i < _count; i++)
+                        if (_buffer[i - 1] == '\r' && _buffer[i] == '\n')
+                        {
+                            string line = Encoding.ASCII.GetString(_buffer, 0, i - 1);
+                            Buffer.BlockCopy(_buffer, i + 1, _buffer, 0, _count - i - 1);
+                            _count -= i + 1;
+                            return line;
+                        }
+                    if (_count == _buffer.Length) return null;
+                    int n = await _stream.ReadAsync(_buffer.AsMemory(_count), token);
+                    if (n <= 0) return null;
+                    _count += n;
+                }
+            }
+
+            public async Task<Request?> ReadAsync(CancellationToken token)
+            {
+                while (true)
+                {
+                    int end = IndexOfHeadEnd();
+                    if (end >= 0)
+                    {
+                        string head = Encoding.ASCII.GetString(_buffer, 0, end);
+                        int consumed = end + 4;
+                        Buffer.BlockCopy(_buffer, consumed, _buffer, 0, _count - consumed);
+                        _count -= consumed;
+                        return Parse(head);
+                    }
+                    if (_count == _buffer.Length) return null; // a head this big isn't ours
+                    int n = await _stream.ReadAsync(_buffer.AsMemory(_count), token);
+                    if (n <= 0) return null;
+                    _count += n;
+                }
+            }
+
+            private int IndexOfHeadEnd()
+            {
+                for (int i = 3; i < _count; i++)
+                    if (_buffer[i - 3] == '\r' && _buffer[i - 2] == '\n' && _buffer[i - 1] == '\r' && _buffer[i] == '\n') return i - 3;
+                return -1;
+            }
+
+            private static Request? Parse(string head)
+            {
+                var lines = head.Split("\r\n");
+                var first = lines[0].Split(' ');
+                if (first.Length < 2) return null;
+                string target = first[1];
+                int q = target.IndexOf('?');
+                string path = q < 0 ? target : target[..q];
+                var query = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                if (q >= 0)
+                {
+                    foreach (var pair in target[(q + 1)..].Split('&', StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        int eq = pair.IndexOf('=');
+                        // No '+' to space: file names contain plus signs, and the phone encodes spaces as %20.
+                        string k = Uri.UnescapeDataString(eq < 0 ? pair : pair[..eq]);
+                        string v = eq < 0 ? "" : Uri.UnescapeDataString(pair[(eq + 1)..]);
+                        query[k] = v;
+                    }
+                }
+                var headers = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var line in lines.Skip(1))
+                {
+                    int colon = line.IndexOf(':');
+                    if (colon > 0) headers[line[..colon].Trim().ToLowerInvariant()] = line[(colon + 1)..].Trim();
+                }
+                return new Request(first[0].ToUpperInvariant(), Uri.UnescapeDataString(path), query, headers);
+            }
+        }
+
+        /// <summary>
+        /// A request's body as a read-only stream: <c>Content-Length</c> bytes, or chunked, or nothing. Sends
+        /// <c>100 Continue</c> on the first read when the client asked for it, so a refusal before reading costs
+        /// the phone nothing.
+        /// </summary>
+        private sealed class RequestBody : Stream
+        {
+            private readonly HeaderReader _reader;
+            private readonly NetworkStream _socket;
+            private readonly bool _chunked;
+            private long _remaining;     // fixed length: what is left; chunked: what is left of this chunk
+            private bool _chunkStarted;
+
+            private RequestBody(HeaderReader reader, NetworkStream socket, long length, bool chunked, bool expects)
+            {
+                _reader = reader;
+                _socket = socket;
+                _chunked = chunked;
+                _remaining = chunked ? 0 : length;
+                Length = chunked ? -1 : length;
+                ExpectsContinue = expects;
+                Finished = !chunked && length == 0;
+            }
+
+            public static RequestBody For(Dictionary<string, string> headers, HeaderReader reader, NetworkStream socket)
+            {
+                bool expects = headers.TryGetValue("expect", out var e) && e.Equals("100-continue", StringComparison.OrdinalIgnoreCase);
+                if (headers.TryGetValue("transfer-encoding", out var te) && te.Contains("chunked", StringComparison.OrdinalIgnoreCase))
+                    return new RequestBody(reader, socket, -1, true, expects);
+                if (!headers.TryGetValue("content-length", out var cl)) return new RequestBody(reader, socket, 0, false, false);
+                return long.TryParse(cl, out long n) && n >= 0
+                    ? new RequestBody(reader, socket, n, false, expects)
+                    : new RequestBody(reader, socket, 0, false, false) { Invalid = true };
+            }
+
+            public bool Invalid { get; private init; }
+            public bool ExpectsContinue { get; }
+            public bool Started { get; private set; }
+            public bool Finished { get; private set; }
+            public bool HasBody => _chunked || Length > 0;
+
+            /// <summary>The declared length, or -1 when chunked.</summary>
+            public override long Length { get; }
+
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken token = default)
+            {
+                if (Finished || buffer.Length == 0) return 0;
+                if (!Started)
+                {
+                    Started = true;
+                    if (ExpectsContinue) await ConnectServer.Write(_socket, "HTTP/1.1 100 Continue\r\n\r\n", token);
+                }
+
+                if (_chunked && _remaining == 0)
+                {
+                    // Each chunk after the first follows the CRLF that ended the one before.
+                    if (_chunkStarted && await _reader.ReadLineAsync(token) == null) throw new IOException("the upload ended mid-chunk");
+                    var line = await _reader.ReadLineAsync(token) ?? throw new IOException("the upload ended mid-chunk");
+                    int semi = line.IndexOf(';');
+                    if (!long.TryParse(semi < 0 ? line.Trim() : line[..semi].Trim(), System.Globalization.NumberStyles.HexNumber, null, out long size) || size < 0)
+                        throw new ConnectException(400, "The upload's chunks could not be read.");
+                    _chunkStarted = true;
+                    if (size == 0)
+                    {
+                        // Trailers, then the blank line.
+                        while (!string.IsNullOrEmpty(await _reader.ReadLineAsync(token))) { }
+                        Finished = true;
+                        return 0;
+                    }
+                    _remaining = size;
+                }
+
+                int want = (int)Math.Min(buffer.Length, _remaining);
+                int got = await _reader.ReadRawAsync(buffer[..want], token);
+                if (got <= 0) throw new IOException("the upload ended early");
+                _remaining -= got;
+                if (!_chunked && _remaining == 0) Finished = true;
+                return got;
+            }
+
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken token) =>
+                ReadAsync(buffer.AsMemory(offset, count), token).AsTask();
+
+            public override int Read(byte[] buffer, int offset, int count) =>
+                ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+
+            /// <summary>Reads and discards the rest, if there is no more than <paramref name="most"/> of it.</summary>
+            public async Task<bool> DrainAsync(long most, CancellationToken token)
+            {
+                if (!_chunked && _remaining > most) return false;
+                var scratch = new byte[64 * 1024];
+                long drained = 0;
+                try
+                {
+                    int got;
+                    while ((got = await ReadAsync(scratch, token)) > 0)
+                        if ((drained += got) > most) return false;
+                    return true;
+                }
+                catch { return false; }
+            }
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        }
+
+        public void Dispose()
+        {
+            _stop.Cancel();
+            // A copy still running is stopped with the server: robocopy is stood down from Drive's reads first.
+            foreach (var job in _jobs.Values) job.Cancel();
+            lock (_gate)
+            {
+                foreach (var l in _listeners.Values) try { l.Stop(); } catch { }
+                _listeners.Clear();
+            }
+        }
+    }
+}

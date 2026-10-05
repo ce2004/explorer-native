@@ -1,0 +1,111 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <AssemblyName>ExplorerNative</AssemblyName>
+    <RootNamespace>ExplorerNative</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <!-- ARM64 by default; "dotnet publish -r win-x64" builds the x64 copy.
+         Release builds stamp Version from the git tag (see .github\workflows). -->
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-arm64</RuntimeIdentifier>
+    <Version>1.0.0</Version>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+
+    <!-- One file, and nothing beside it.
+         The application's own code, the two decoders and the native NVDA
+         controller client are bundled into the executable. The registry names
+         one path, and one path is the whole application.
+
+         Not self-contained. The .NET 8 Desktop Runtime is used from where
+         Windows has it installed, which makes the file about 2MB instead of
+         152MB. Startup measured the same either way (medians 183ms and 180ms).
+         If the runtime is missing, the launcher itself says so and offers the
+         download — for every folder opened, since this is the folder handler.
+         RollForward Major: a newer .NET is used when 8 has been removed.
+
+         Not trimmed. Trimming and WinForms disagree about reflection. -->
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <RollForward>Major</RollForward>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <DebugType>embedded</DebugType>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Include="src\**\*.cs" />
+
+    <!-- The Google client ID and secret are not in the repository. A local
+         src\BuiltInCredentials.Values.cs (git-ignored, written by CI from
+         repository secrets) supplies them; without it the build gets empty
+         placeholders and Drive asks for a client file instead. -->
+    <Compile Include="build\BuiltInCredentials.Placeholder.cs"
+             Condition="!Exists('src\BuiltInCredentials.Values.cs')" />
+  </ItemGroup>
+
+  <!-- Ogg Vorbis and Ogg Opus, which Windows will not decode for us.
+
+       This is the one exception to "no third-party packages", and it is here
+       because there is no other way. Media Foundation has no byte-stream
+       handler for .ogg, .oga or .opus in a desktop process: measured, a real
+       Opus file fails with MF_E_UNSUPPORTED_BYTESTREAM_TYPE in 33ms. The
+       documented answer is the Web Media Extensions, which are installed on
+       this machine and do not help, because that package registers its handlers
+       inside the package where only other *packaged* applications can see them.
+
+       Both of these are pure IL — no native binary, nothing per-architecture,
+       nothing to go wrong on ARM64, and they bundle into the single file like
+       any other managed assembly. Together they are about 530KB against a 160MB
+       executable. That is the smallest thing that works; the alternatives are
+       shipping native codec DLLs per architecture, or making this an MSIX app.
+
+       Concentus is a managed port of libopus (Xiph/BSD); NVorbis is MIT. -->
+  <ItemGroup>
+    <PackageReference Include="NVorbis" Version="0.10.5" />
+    <PackageReference Include="Concentus" Version="2.2.2" />
+    <PackageReference Include="Concentus.OggFile" Version="1.0.7" />
+  </ItemGroup>
+
+  <!-- The NVDA controller client must match THIS process's architecture
+       (ARM64), not NVDA's. It sits beside the exe so a newer client can be
+       dropped in without a rebuild. -->
+  <ItemGroup>
+    <!-- Bundled into the single file and extracted beside the runtime's own
+         native libraries at startup, where the default loader finds it by name. -->
+    <None Include="native\win-arm64\nvdaControllerClientArm64.dll" Condition="'$(RuntimeIdentifier)' == 'win-arm64'">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>nvdaControllerClientArm64.dll</Link>
+    </None>
+    <None Include="native\win-x64\nvdaControllerClient64.dll" Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>nvdaControllerClient64.dll</Link>
+    </None>
+
+    <!-- The client is LGPL, so its licence travels with it. With no folder left
+         to put it in, the text is embedded in the executable instead, and the
+         "licence" command-line switch writes it back out. -->
+    <EmbeddedResource Include="native\NVDA-controllerClient-LICENSE.txt">
+      <LogicalName>NVDA-controllerClient-LICENSE.txt</LogicalName>
+    </EmbeddedResource>
+
+    <!-- The same obligation, for the two decoders. Concentus carries the Xiph
+         BSD licence it was ported under and NVorbis is MIT; both require the
+         notice to travel with the binary, and there is no folder beside the
+         executable to keep it in. The licence switch writes all three back out. -->
+    <EmbeddedResource Include="native\Concentus-LICENSE.txt">
+      <LogicalName>Concentus-LICENSE.txt</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="native\NVorbis-LICENSE.txt">
+      <LogicalName>NVorbis-LICENSE.txt</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
+</Project>
