@@ -11,6 +11,8 @@ The web app browses every drive including Google Drive, opens, renames, deletes,
 It plays music and audiobooks with a queue, skip back and forward, speed, repeat, shuffle and a sleep timer, with lock screen and headphone controls, and remembers where you were in each track.
 It sends text and files to the PC clipboard and shows what is on it, with the clipboard history.
 The web app has no equalizer.
+Connecting Google Drive waits up to 30 minutes for you to finish signing in, instead of 3. Taking longer used to end on a browser page saying 127.0.0.1 refused to connect.
+If the sign-in still takes too long, Explorer Native now says so: Google sign-in timed out, press Connect Google Drive again.
 
 1.0.5
 The drive list reads each drive as its letter, its name and how full it is, for example D, Google Drive, 1 terabyte of 5 terabytes used. Sizes are always in words: megabytes, gigabytes, terabytes.

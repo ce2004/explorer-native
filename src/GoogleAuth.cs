@@ -494,12 +494,27 @@ namespace ExplorerNative
 
             // Said here rather than by the caller, because this is the moment the
             // application stops being the thing you are looking at and starts
-            // waiting on a browser tab somewhere else — for up to the three
+            // waiting on a browser tab somewhere else — for up to the thirty
             // minutes below, with nothing else to explain the pause.
             try { Notify?.Invoke("drive.signin.opened", "Waiting for you to allow access in the browser"); }
             catch { }
 
-            var context = await listener.GetContextAsync().WaitAsync(TimeSpan.FromMinutes(3), token);
+            // Thirty minutes, not three. A first sign-in on a new PC is account
+            // choice, two-step verification, the "unverified app" warning and
+            // the permission page, all through a screen reader; three minutes
+            // ran out first, the listener closed, and Google's redirect landed
+            // on "127.0.0.1 refused to connect" with nothing said here at all.
+            HttpListenerContext context;
+            try
+            {
+                context = await listener.GetContextAsync().WaitAsync(TimeSpan.FromMinutes(30), token);
+            }
+            catch (TimeoutException)
+            {
+                try { Notify?.Invoke("drive.signin.timeout", "Google sign-in timed out. Press Connect Google Drive again."); }
+                catch { }
+                throw;
+            }
             var query = context.Request.QueryString;
 
             // Everything that can make this a failure, decided before the page
