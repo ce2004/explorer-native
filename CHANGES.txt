@@ -1,3 +1,7 @@
+1.0.6
+Connecting Google Drive waits up to 30 minutes for you to finish signing in, instead of 3. Taking longer used to end on a browser page saying 127.0.0.1 refused to connect.
+If the sign-in still takes too long, Explorer Native now says so: Google sign-in timed out, press Connect Google Drive again.
+
 1.0.5
 The drive list reads each drive as its letter, its name and how full it is, for example D, Google Drive, 1 terabyte of 5 terabytes used. Sizes are always in words: megabytes, gigabytes, terabytes.
 New Google Drive monitor: Preferences, Google Drive, Configure Google Drive monitor. Choose folders on this PC to keep in step with folders in Google Drive.

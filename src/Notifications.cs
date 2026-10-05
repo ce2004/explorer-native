@@ -224,6 +224,7 @@ namespace ExplorerNative
             Live("drive.signin.opened", "Consent page opened", DriveConnection, Bar, "Waiting for you to allow access in the browser"),
             Live("drive.signin.done", "Signed in", DriveConnection, Pop, "Signed in to Google Drive as {0}", "you@example.com"),
             Live("drive.signin.refused", "Sign-in refused", DriveConnection, Loud, "Google Drive sign-in was refused: {0}", "access_denied"),
+            Live("drive.signin.timeout", "Sign-in timed out", DriveConnection, Loud, "Google sign-in timed out. Press Connect Google Drive again."),
             Live("drive.credentials.missing", "No credentials", DriveConnection, Loud, "No client_secret json in {0}", "%APPDATA%\\ExplorerNative"),
             Live("drive.letter.taken", "Preferred letter unavailable", DriveConnection, Bar, "{0} was taken, using {1}", "G:", "H:"),
             Live("drive.letter.none", "No drive letter free", DriveConnection, Loud, "No drive letter is free for Google Drive"),
