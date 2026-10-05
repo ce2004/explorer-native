@@ -507,6 +507,81 @@ namespace ExplorerNative
             PreferencesWindowTests();
             UnplayableFormatTests();
             HeldKeyDistanceTests();
+            FixedBehaviourTests();
+        }
+
+        /// <summary>
+        /// The settings removed on 2026-10-05 are now code, and the code has to
+        /// do exactly what Conner's own settings did: Name, Size and Modified
+        /// columns and no Type; nothing said on entering a folder or selecting a
+        /// row; volume one percent a press on the perceptual curve; held keys
+        /// repeat; Drive keeps a gigabyte, lets a file go after two idle
+        /// minutes, and starts downloading a file the moment it is copied.
+        /// </summary>
+        private static void FixedBehaviourTests()
+        {
+            var main = SourceFile("MainForm.cs") ?? "";
+            var tray = SourceFile("TrayApplicationContext.cs") ?? "";
+            var drive = SourceFile("GoogleDrive.cs") ?? "";
+            Check("the sources are there to check", main.Length > 0 && tray.Length > 0 && drive.Length > 0);
+
+            Check("the list has a Size column",  main.Contains("pane.List.Columns.Add(\"Size\", 150);"));
+            Check("and a Modified column", main.Contains("pane.List.Columns.Add(\"Modified\", 160);"));
+            Check("and no Type column", !main.Contains("Columns.Add(\"Type\""));
+            Check("entering a folder says nothing", !main.Contains("\"nav.entered\"") && !main.Contains("\"nav.drives\""));
+            Check("selecting a row says nothing extra", !main.Contains("SpeakSelectionExtras"));
+            Check("copying a Drive file starts it downloading", main.Contains("if (!cut) Drive?.Warm(paths);"));
+
+            Check("volume moves one percent a press", tray.Contains("private const int VolumeStepPercent = 1;"));
+            Check("on the perceptual curve", tray.Contains("_audio.Curve = VolumeCurve.Perceptual;"));
+            Check("held keys repeat", tray.Contains("if (action.AllowRepeat)"));
+
+            Check("Drive keeps a gigabyte in memory", drive.Contains("private const int CacheMegabytes = 1024;"));
+            Check("and lets a file go after two idle minutes", drive.Contains("private const int CacheIdleSeconds = 120;"));
+
+            // And Preferences no longer offers any of them.
+            string error = "";
+            var labels = new List<string>();
+            int formats = 0, checkedFormats = 0;
+            var thread = new Thread(() =>
+            {
+                try
+                {
+                    using var window = new SettingsForm(new Settings(), null);
+                    foreach (var c in FindAll<Control>(window)) labels.Add(c.Text ?? "");
+                    using var picker = new FormatsForm(".mp3;.flac");
+                    foreach (var list in FindAll<CheckedListBox>(picker))
+                    {
+                        formats = list.Items.Count;
+                        checkedFormats = list.CheckedItems.Count;
+                    }
+                }
+                catch (Exception ex) { error = ex.GetType().Name + ": " + ex.Message; }
+            });
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
+            thread.Join(TimeSpan.FromSeconds(30));
+
+            Equal("Preferences builds", "", error);
+            foreach (var gone in new[]
+                     {
+                         "Announce folder when navigating", "Announce item count when navigating",
+                         "Announce full path when navigating", "Announce size when selecting an item",
+                         "Announce type when selecting an item", "Show the Size column", "Show the Type column",
+                         "Show the Modified column", "Volume step (percent)", "Volume curve",
+                         "Holding a shortcut keeps repeating it", "Playback speed (percent)",
+                         "Put Google Drive on a drive letter", "Keep in memory (MB)",
+                         "Forget a file after (seconds idle)", "Start downloading when a Drive file is copied",
+                         "Audio file extensions",
+                     })
+                Check($"Preferences no longer offers \"{gone}\"", !labels.Any(l => l.StartsWith(gone, StringComparison.Ordinal)));
+
+            Check("Preferences offers Choose formats to play", labels.Contains("Choose &formats to play..."));
+            Equal("the format picker lists every supported format",
+                AudioFiles.DefaultExtensions.Split(';').Length.ToString(), formats.ToString());
+            Equal("with the chosen ones checked", "2", checkedFormats.ToString());
+            Equal("read ahead stops at one gigabyte", "1048576",
+                SettingsForm.ReadAheadKilobytes.Max().ToString());
         }
 
         /// <summary>
@@ -3066,7 +3141,6 @@ namespace ExplorerNative
                     {
                         SortBy = (SortColumn)99,
                         SizeUnits = (SizeUnitStyle)99,
-                        AudioVolumeCurve = (VolumeCurve)99,
                     };
                     wild.Save();
                     var back = Settings.Load();
@@ -3075,10 +3149,6 @@ namespace ExplorerNative
                     var size = SizeFormatter.Format(123456789, back.SizeUnits);
                     Check("an unknown size unit still formats something",
                         !string.IsNullOrWhiteSpace(size), size);
-
-                    double level = AudioPlayer.EngineVolume(70, back.AudioVolumeCurve);
-                    Check("an unknown volume curve stays inside 0 to 1",
-                        !double.IsNaN(level) && level >= 0 && level <= 1, level.ToString());
                 }
                 catch (Exception ex)
                 {
@@ -3285,9 +3355,7 @@ namespace ExplorerNative
                 var wild = new Settings
                 {
                     AudioVolumePercent = int.MaxValue,
-                    AudioVolumeStepPercent = -9999,
                     AudioSeekSeconds = 0,
-                    GoogleDriveCacheMegabytes = -1,
                     AudioPlaybackRatePercent = int.MaxValue,
                 };
                 wild.Save();
@@ -3296,12 +3364,8 @@ namespace ExplorerNative
                 Check("volume is inside its range after loading",
                     back.AudioVolumePercent is >= 0 and <= AudioPlayer.LoudestPercent,
                     back.AudioVolumePercent.ToString());
-                Check("the volume step is usable", back.AudioVolumeStepPercent > 0,
-                    back.AudioVolumeStepPercent.ToString());
                 Check("the seek is usable", back.AudioSeekSeconds > 0,
                     back.AudioSeekSeconds.ToString());
-                Check("the Drive cache is usable", back.GoogleDriveCacheMegabytes > 0,
-                    back.GoogleDriveCacheMegabytes.ToString());
                 Check("the playback rate is usable",
                     back.AudioPlaybackRatePercent >= AudioPlayer.SlowestPercent &&
                     back.AudioPlaybackRatePercent <= AudioPlayer.FastestPercent,
@@ -3806,21 +3870,10 @@ namespace ExplorerNative
             Check("paste conflict defaults to auto rename", defaults.PasteConflict == PasteConflictPolicy.AutoRename);
             Check("speech on by default", defaults.SpeakEnabled);
             Check("operations announced by default", defaults.SpeakOperations);
-            Check("selection extras off by default (no double-speak)",
-                !defaults.SpeakSizeOnSelect && !defaults.SpeakTypeOnSelect);
             Check("\"Opening\" announcement off by default", !defaults.SpeakOnOpen);
             Check("shell registration off by default (stays portable)",
                 !defaults.RegisterContextMenu);
 
-            // Both of these existed only to talk over the screen reader. The Type
-            // column made every arrow press read "Type Folder" or "Type FLAC
-            // file" to repeat what the name already said, and the navigation
-            // announcement spoke the folder name across the row that had just
-            // been focused.
-            Check("the Type column is off by default", !defaults.ShowTypeColumn);
-            Check("entering a folder announces nothing by default", !defaults.SpeakNavigation);
-            Check("the Size and Modified columns are still on",
-                defaults.ShowSizeColumn && defaults.ShowModifiedColumn);
             Check("no exe path recorded until registration happens",
                 defaults.RegisteredExePath.Length == 0);
 
@@ -3916,24 +3969,15 @@ namespace ExplorerNative
                     """);
 
                 var migrated = Settings.Load();
-                Check("an old file has the Type column turned off", !migrated.ShowTypeColumn);
-                Check("an old file has the navigation announcement turned off", !migrated.SpeakNavigation);
+                Check("an old file with removed settings in it still loads", migrated.SpeakEnabled);
                 Check("migrating leaves unrelated settings alone",
-                    migrated.FontSize == 11 && migrated.SortBy == SortColumn.Type && migrated.ShowSizeColumn);
+                    migrated.FontSize == 11 && migrated.SortBy == SortColumn.Type);
                 Check("a migrated file is stamped with the current version",
                     migrated.SettingsVersion == Settings.CurrentSettingsVersion,
                     migrated.SettingsVersion.ToString());
 
-                // Once migrated, a deliberate choice must survive. Turning the
-                // column back on and reloading has to keep it on — a migration
-                // that reapplies itself is just a setting the user cannot change.
-                migrated.ShowTypeColumn = true;
-                migrated.SpeakNavigation = true;
                 migrated.Save();
-
                 var reloaded = Settings.Load();
-                Check("turning the Type column back on sticks", reloaded.ShowTypeColumn);
-                Check("turning navigation announcements back on sticks", reloaded.SpeakNavigation);
 
                 // A file already at the current version is never migrated again.
                 Check("an up-to-date file is left alone",
@@ -4230,8 +4274,6 @@ namespace ExplorerNative
                     """);
 
                 var loaded = Settings.Load();
-                Check("an older file is moved onto the perceptual curve",
-                    loaded.AudioVolumeCurve == VolumeCurve.Perceptual, loaded.AudioVolumeCurve.ToString());
                 Check("an older file stops announcing the volume", !loaded.AudioAnnounceVolume);
                 Check("and the position", !loaded.AudioAnnounceSeek);
                 Check("and play, pause and stop", !loaded.AudioAnnounceTransport);
@@ -9959,7 +10001,6 @@ namespace ExplorerNative
                 WindowHeight = int.MaxValue,
                 ActiveTab = 99,
                 AudioVolumePercent = int.MaxValue,
-                AudioVolumeStepPercent = 0,
                 AudioSeekSeconds = -100,
                 AudioLongSeekSeconds = int.MaxValue,
                 AudioPlaybackRatePercent = 0,
@@ -9968,8 +10009,6 @@ namespace ExplorerNative
                 AudioRewindOnResumeSeconds = -1,
                 AudioPrefetchKilobytes = int.MinValue,
                 AudioReleaseAfterMinutes = -1,
-                GoogleDriveCacheMegabytes = int.MinValue,
-                GoogleDriveCacheIdleSeconds = int.MinValue,
                 AudioExtensions = "   ",
                 WindowTitle = "   ",
             };
@@ -9989,26 +10028,14 @@ namespace ExplorerNative
                 Check("the volume cannot exceed what the player offers",
                     back.AudioVolumePercent is >= 0 and <= AudioPlayer.LoudestPercent,
                     back.AudioVolumePercent.ToString());
-                Check("a volume step of nothing becomes a step",
-                    back.AudioVolumeStepPercent >= 1, back.AudioVolumeStepPercent.ToString());
                 Check("the repeat rate stays above the timer floor",
                     HoldRepeat.Interval >= HoldRepeat.FastestRepeatMilliseconds,
                     HoldRepeat.Interval.ToString());
                 Check("and a hold takes longer to start than a tap lasts",
                     HoldRepeat.Delay > 100, HoldRepeat.Delay.ToString());
                 Check("the read-ahead cannot ask for more than a read-ahead",
-                    back.AudioPrefetchKilobytes is >= 0 and <= 262144,
+                    back.AudioPrefetchKilobytes is >= 0 and <= 1048576,
                     back.AudioPrefetchKilobytes.ToString());
-                Check("the Drive cache is clamped too",
-                    back.GoogleDriveCacheMegabytes is >= 64 and <= 8192,
-                    back.GoogleDriveCacheMegabytes.ToString());
-
-                // Zero is meaningful here — "never on a timer" — so the floor is
-                // zero rather than the smallest useful interval, and a negative
-                // must land on it rather than being read as "immediately".
-                Check("and so is how long a warmed file is held",
-                    back.GoogleDriveCacheIdleSeconds is >= 0 and <= 86400,
-                    back.GoogleDriveCacheIdleSeconds.ToString());
                 Check("an emptied extension list goes back to the defaults",
                     back.AudioExtensions == AudioFiles.DefaultExtensions);
                 Check("a blank window title gets a name back",
@@ -12498,7 +12525,6 @@ namespace ExplorerNative
 
             // The quiet end has to actually be quiet, which is the whole reason
             // this is the shipped default.
-            Equal("perceptual is the default", "Perceptual", new Settings().AudioVolumeCurve.ToString());
             Check("twenty percent is a twenty-fifth of full volume",
                 Math.Abs(AudioPlayer.EngineVolume(20, VolumeCurve.Perceptual) - 0.04) < 0.0001);
             Check("and full volume is untouched by the curve",

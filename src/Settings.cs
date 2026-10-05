@@ -67,17 +67,6 @@ namespace ExplorerNative
         public bool SpeakEnabled { get; set; } = true;
         public bool SpeakOperations { get; set; } = true;          // "copied file", "cut 3 items"
 
-        /// <summary>
-        /// Speak the folder's name on entering it.
-        ///
-        /// Off. Entering a folder immediately focuses a row, which the screen
-        /// reader reads out — announcing the folder as well talks over that, and
-        /// the name is nearly always one you just read on the row you activated.
-        /// Ctrl+Shift+A says where you are on request.
-        /// </summary>
-        public bool SpeakNavigation { get; set; } = false;
-        public bool SpeakItemCount { get; set; } = true;           // "47 items"
-
         // There is no SpeakPositionInList. It existed, defaulted to false, was
         // offered nowhere in the dialog and read nowhere in the app — a switch
         // that did nothing whichever way it was set. Position is NVDA's to
@@ -85,9 +74,6 @@ namespace ExplorerNative
         // ever produced an echo, so the setting is gone rather than left lying
         // in the file implying otherwise.
 
-        public bool SpeakSizeOnSelect { get; set; } = false;
-        public bool SpeakTypeOnSelect { get; set; } = false;
-        public bool SpeakFullPathOnNavigate { get; set; } = false;
         public bool InterruptSpeech { get; set; } = true;
         public bool SpeakErrors { get; set; } = true;
         public bool SpeakProgress { get; set; } = true;            // long copy progress milestones
@@ -110,18 +96,6 @@ namespace ExplorerNative
         /// <summary>On: exact date and time. Off: "today", "3 days ago", "a long time ago".</summary>
         public bool VerboseModifiedInfo { get; set; } = true;
 
-        /// <summary>
-        /// Off. A screen reader reads every column of a row, so this column cost
-        /// a spoken "Type Folder" or "Type FLAC file" on every single arrow press
-        /// to say what the name had already said — the extension is right there
-        /// in it. Turning it off is the difference between hearing
-        /// "Local, modified 4 September" and "Local, blank, Type Folder,
-        /// modified 4 September".
-        /// </summary>
-        public bool ShowTypeColumn { get; set; } = false;
-
-        public bool ShowSizeColumn { get; set; } = true;
-        public bool ShowModifiedColumn { get; set; } = true;
         public int FontSize { get; set; } = 9;
 
         /// <summary>
@@ -249,17 +223,6 @@ namespace ExplorerNative
 
         /// <summary>Persisted, because there is no window to set it in on the next run.</summary>
         public int AudioVolumePercent { get; set; } = 70;
-
-        public int AudioVolumeStepPercent { get; set; } = 5;
-
-        /// <summary>
-        /// Perceptual. Loudness is not heard on a straight line: on the linear
-        /// curve the bottom of the dial is not quiet, because halving the
-        /// amplitude is nothing like halving what you hear. Squaring it gives the
-        /// quiet end somewhere to go — 20 percent is a twenty-fifth of full
-        /// rather than a fifth — while full volume stays exactly where it was.
-        /// </summary>
-        public VolumeCurve AudioVolumeCurve { get; set; } = VolumeCurve.Perceptual;
 
         /// <summary>Milliseconds to come up from silence when a track starts or resumes. 0 for none.</summary>
         public int AudioFadeInMilliseconds { get; set; }
@@ -426,13 +389,6 @@ namespace ExplorerNative
 
         // ---- Holding a key down ----
 
-        /// <summary>
-        /// Holding a shortcut keeps firing it. Windows will do this by itself,
-        /// but only at the keyboard's typing rate; this drives it directly, so
-        /// holding the volume key sweeps rather than crawls.
-        /// </summary>
-        public bool AudioHoldRepeats { get; set; } = true;
-
         // The three numbers that used to sit here — the wait before repeating,
         // the rate, and whether a hold accelerates — are now HoldRepeat.Delay,
         // HoldRepeat.Interval and an unconditional yes. They were measured into
@@ -523,39 +479,6 @@ namespace ExplorerNative
         /// run; the tray's Phone connection item shows it. Not in Preferences: there is nothing to choose.
         /// </summary>
         public string ConnectCode { get; set; } = "";
-
-        /// <summary>
-        /// How much downloaded audio is held in memory, across every file.
-        ///
-        /// A Drive request costs about 700ms whatever is in it, so the callbacks
-        /// are served from here rather than from the network — 40 of 45 from
-        /// memory on a measured FLAC.
-        /// </summary>
-        public int GoogleDriveCacheMegabytes { get; set; } = 1024;
-
-        /// <summary>
-        /// Whether copying a Drive file starts downloading it straight away.
-        ///
-        /// On, because the application it is about to be pasted into reads it on
-        /// the thread that paints its window and freezes until Drive has
-        /// delivered — 3.9 seconds for a 16.8MB track against 111ms once this has
-        /// had it. Off is for the case this cannot tell apart: a copy that is
-        /// going to be pasted straight back into Drive, which the application
-        /// does as one request without reading a byte, and which this turns into
-        /// a download of the whole file for nothing.
-        /// </summary>
-        public bool GoogleDriveWarmOnCopy { get; set; } = true;
-
-        /// <summary>
-        /// How long a Drive file may sit unread before its download and the
-        /// memory holding it are given back. Zero keeps them until the memory
-        /// budget above forces them out.
-        ///
-        /// Two minutes is long enough to copy something, find the other
-        /// application and paste it, and short enough that a file warmed and then
-        /// forgotten is not still being held an hour later.
-        /// </summary>
-        public int GoogleDriveCacheIdleSeconds { get; set; } = 120;
 
         // ---------- What is spoken ----------
 
@@ -1000,16 +923,6 @@ namespace ExplorerNative
             // An older file: anything unrecognised is a setting since removed.
             UnknownSettings = null;
 
-            if (SettingsVersion < 2)
-            {
-                // Both of these existed only to talk over the screen reader: the
-                // Type column repeated what the file name already said on every
-                // arrow press, and the navigation announcement spoke the folder
-                // name across the row that had just been focused.
-                ShowTypeColumn = false;
-                SpeakNavigation = false;
-            }
-
             if (SettingsVersion < 3)
             {
                 // The audio player first shipped with Ctrl+Alt and the four arrow
@@ -1046,15 +959,6 @@ namespace ExplorerNative
                 AudioAnnounceVolume = false;
                 AudioAnnounceSeek = false;
                 AudioAnnounceTransport = false;
-            }
-
-            if (SettingsVersion < 6)
-            {
-                // The linear curve shipped first only because it was what the
-                // player already did. It leaves the bottom of the dial not
-                // actually quiet, which is the one thing a volume control has to
-                // be able to do.
-                AudioVolumeCurve = VolumeCurve.Perceptual;
             }
 
             // Version 7 corrected the hold-repeat rate and forced acceleration
@@ -1219,26 +1123,11 @@ namespace ExplorerNative
 
             AudioVolumePercent = Math.Clamp(AudioVolumePercent, 0, AudioPlayer.LoudestPercent);
 
-            // The Google Drive settings were added and then never validated,
-            // which is the whole reason this method exists. A negative cache
-            // budget was saved and loaded back unchanged; the mount clamped it at
-            // the point of use and so nothing broke, but a setting that survives
-            // as nonsense is a setting the Preferences list cannot show and the
-            // next reader has to remember to defend against.
-            GoogleDriveCacheMegabytes = Math.Clamp(GoogleDriveCacheMegabytes, 64, 8192);
-
-            // Zero is meaningful — "never on a timer" — so the floor is zero and
-            // not the smallest useful interval.
-            GoogleDriveCacheIdleSeconds = Math.Clamp(GoogleDriveCacheIdleSeconds, 0, 86400);
-
             // GoogleDriveLetter is deliberately left alone, like the shortcuts.
             // Validating strings here breaks the round-trip guarantee the whole
             // settings file rests on — a value written must come back — and
             // GoogleDrive.PreferredLetter already falls back to G for anything it
             // cannot use. Rubbish costs a different letter, not a failure.
-            // A step of nothing is a volume key that does nothing; half the range
-            // in one press is not a step.
-            AudioVolumeStepPercent = Math.Clamp(AudioVolumeStepPercent, 1, 50);
             AudioSeekSeconds = Math.Clamp(AudioSeekSeconds, 1, 300);
             AudioLongSeekSeconds = Math.Clamp(AudioLongSeekSeconds, 1, 3600);
 
@@ -1297,9 +1186,9 @@ namespace ExplorerNative
             AudioFadeOutMilliseconds = Math.Clamp(AudioFadeOutMilliseconds, 0, 10000);
             AudioRewindOnResumeSeconds = Math.Clamp(AudioRewindOnResumeSeconds, 0, 30);
 
-            // Zero is "do not read ahead"; the ceiling is a quarter of a gigabyte,
+            // Zero is "do not read ahead"; the ceiling is one gigabyte,
             // past which this stops being a read-ahead and starts being a copy.
-            AudioPrefetchKilobytes = Math.Clamp(AudioPrefetchKilobytes, 0, 262144);
+            AudioPrefetchKilobytes = Math.Clamp(AudioPrefetchKilobytes, 0, 1048576);
 
             AudioReleaseAfterMinutes = Math.Clamp(AudioReleaseAfterMinutes, 0, 1440);
 

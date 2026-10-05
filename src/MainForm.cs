@@ -17,7 +17,6 @@ namespace ExplorerNative
         private sealed record Entry(string Path, string Name, bool IsDir, long Size, DateTime Modified)
         {
             public string? SizeOverride { get; set; }
-            public string? TypeOverride { get; set; }
 
             /// <summary>
             /// What the Name column says, when that is not simply the file's
@@ -237,7 +236,7 @@ namespace ExplorerNative
                     // Results under the letter are not the folder, and
                     // re-navigating threw them away.
                     if (pane.SearchTerm != null || pane.Searching) pane.NeedsRefresh = true;
-                    else if (pane == Active) Navigate(pane.CurrentPath, speak: false);
+                    else if (pane == Active) Navigate(pane.CurrentPath);
                     else { pane.NeedsRefresh = true; pane.ReloadQuietly = true; }
                 }
         }
@@ -314,12 +313,12 @@ namespace ExplorerNative
                 // to afterwards, so startup settles on one row instead of
                 // announcing the first one on the way past.
                 _activeIndex = 1;
-                await NavigateAsync(tab2, speak: false, preferPath: NullIfBlank(_settings.FocusedPathTab2));
+                await NavigateAsync(tab2, preferPath: NullIfBlank(_settings.FocusedPathTab2));
                 if (IsDisposed) return;
 
                 _activeIndex = 0;
                 ShowActivePane();
-                await NavigateAsync(tab1, speak: false, preferPath: NullIfBlank(_settings.FocusedPathTab1));
+                await NavigateAsync(tab1, preferPath: NullIfBlank(_settings.FocusedPathTab1));
                 if (IsDisposed) return;
 
                 // Whichever tab was in front last time comes back in front —
@@ -1100,7 +1099,7 @@ namespace ExplorerNative
                 }
 
                 var root = Path.GetPathRoot(first);
-                if (root != null) _ = NavigateAsync(root, speak: false, preferPath: first);
+                if (root != null) _ = NavigateAsync(root, preferPath: first);
 
                 if (!_settings.PlayAudioInApp || !Program.PlayAudioFile(first))
                     _ = Task.Run(() => { try { FileLauncher.Open(first); } catch { } });
@@ -1159,9 +1158,8 @@ namespace ExplorerNative
 
                 pane.List.Columns.Clear();
                 pane.List.Columns.Add("Name", 420);
-                if (_settings.ShowSizeColumn) pane.List.Columns.Add("Size", 150);
-                if (_settings.ShowTypeColumn) pane.List.Columns.Add("Type", 130);
-                if (_settings.ShowModifiedColumn) pane.List.Columns.Add("Modified", 160);
+                pane.List.Columns.Add("Size", 150);
+                pane.List.Columns.Add("Modified", 160);
                 InvalidateItemCache(pane);
             }
         }
@@ -1235,15 +1233,10 @@ namespace ExplorerNative
             // Must match the column order set in ApplySettingsToUi.
             var cells = new List<string>(4) { DisplayNameOf(entry) };
 
-            if (_settings.ShowSizeColumn)
-                cells.Add(entry.SizeOverride
-                    ?? (entry.IsDir ? "" : SizeFormatter.Format(entry.Size, _settings.SizeUnits)));
+            cells.Add(entry.SizeOverride
+                ?? (entry.IsDir ? "" : SizeFormatter.Format(entry.Size, _settings.SizeUnits)));
 
-            if (_settings.ShowTypeColumn)
-                cells.Add(entry.TypeOverride ?? TypeOf(entry));
-
-            if (_settings.ShowModifiedColumn)
-                cells.Add(entry.Modified == default
+            cells.Add(entry.Modified == default
                     ? ""
                     : TimeFormatter.Format(entry.Modified, _settings.VerboseModifiedInfo));
 
@@ -1358,11 +1351,6 @@ namespace ExplorerNative
 
             if (pane == Active) UpdateStatus();
         }
-
-        private static string TypeOf(Entry e) =>
-            e.IsDir ? "Folder"
-            : string.IsNullOrEmpty(Path.GetExtension(e.Name)) ? "File"
-            : Path.GetExtension(e.Name).TrimStart('.').ToUpperInvariant() + " file";
 
         // ---------- Tabs ----------
 
@@ -1493,7 +1481,7 @@ namespace ExplorerNative
 
         // ---------- Navigation ----------
 
-        private void Navigate(string path, bool speak = true) => _ = NavigateAsync(path, speak);
+        private void Navigate(string path) => _ = NavigateAsync(path);
 
         /// <summary>
         /// Retires everything the pane had in flight and hands back the token for
@@ -1544,7 +1532,7 @@ namespace ExplorerNative
         private static string? PreferredRowFor(Pane pane, string destination, string? cameFrom) =>
             NavigationHistory.ChildOnPathTo(destination, cameFrom) ?? pane.Positions.Recall(destination);
 
-        private async Task NavigateAsync(string path, bool speak = true, string? preferPath = null,
+        private async Task NavigateAsync(string path, string? preferPath = null,
             Pane? onPane = null, bool quiet = false, bool keepFocus = false)
         {
             // The pane is fixed at the start. "Whichever tab is in front" was
@@ -1600,13 +1588,6 @@ namespace ExplorerNative
                 LoadDrivesInto(pane, driveToken,
                     preferPath ?? (cameFrom == DrivesPath ? FocusedPathOf(pane) : SafePathRoot(cameFrom)));
 
-                // The old per-category switch stays in front of the catalogue, as
-                // CLAUDE.md describes: SpeakNavigation silences the whole group and
-                // the id silences this one message inside a group that is otherwise
-                // on. Both are off by default, so this says nothing until asked.
-                if (speak && _settings.SpeakNavigation)
-                    AnnounceOperation("nav.drives",
-                        $"Drives, {pane.Entries.Count} item{(pane.Entries.Count == 1 ? "" : "s")}");
                 return;
             }
 
@@ -1640,7 +1621,7 @@ namespace ExplorerNative
 
                     // Back to the drive list on the drive that was not ready, not on A:.
                     if (fallback != full)
-                        await NavigateAsync(fallback, speak: false,
+                        await NavigateAsync(fallback,
                             preferPath: fallback == DrivesPath ? Path.GetPathRoot(full) : null, onPane: pane);
                     return;
                 }
@@ -1653,11 +1634,6 @@ namespace ExplorerNative
 
                 pane.CurrentPath = full;
                 if (pane == Active) _pathLabel.Text = full;
-
-                // "Up" means the folder we are going to contains the one we came
-                // from — the Backspace case, and equally Alt+Up or typing a
-                // shorter path.
-                bool wentUp = NavigationHistory.ChildOnPathTo(full, cameFrom) != null;
 
                 bool arrived = await LoadEntriesAsync(
                     pane, full, token, preferPath ?? PreferredRowFor(pane, full, cameFrom), quiet, keepFocus);
@@ -1695,20 +1671,6 @@ namespace ExplorerNative
                     return;
                 }
 
-                if (speak && _settings.SpeakNavigation)
-                {
-                    var name = _settings.SpeakFullPathOnNavigate ? full : FolderDisplayName(full);
-                    var message = name;
-                    if (_settings.SpeakItemCount)
-                        message += $", {pane.Entries.Count} item{(pane.Entries.Count == 1 ? "" : "s")}";
-
-                    // One sentence, two ids. wentUp is already worked out for the
-                    // row that gets read aloud, and the two directions are worth
-                    // separating because only one of them is a case the screen
-                    // reader announces for itself: going in produces a focus event
-                    // and NVDA reads the row, going up produces none.
-                    AnnounceOperation(wentUp ? "nav.up" : "nav.entered", message);
-                }
             }
             catch (Exception ex)
             {
@@ -2060,7 +2022,7 @@ namespace ExplorerNative
                 if (IsDisposed || Active.CurrentPath != path) return;
 
                 Announce($"{FolderDisplayName(path)} is no longer available, going to {DescribePath(fallback)}", isError: true);
-                await NavigateAsync(fallback, speak: false);
+                await NavigateAsync(fallback);
             }
             finally { _availabilityCheckRunning = false; }
         }
@@ -2083,7 +2045,6 @@ namespace ExplorerNative
                 .Select(d => new Entry(d.Name, d.Name.TrimEnd(Path.DirectorySeparatorChar), true, 0, default)
                 {
                     SizeOverride = "",
-                    TypeOverride = "Drive",
                     DisplayOverride = DriveRowName(d.Name, "checking"),
                 })
                 .ToList();
@@ -2106,7 +2067,7 @@ namespace ExplorerNative
         /// is left — "C: 431 GB free". That is the one thing anybody arrowing
         /// through the drive list is there to find out, so it is the first thing
         /// said rather than the fourth. The total follows in the size column and
-        /// the volume's label in the type column, where they are still one
+        /// where it is still one
         /// column away.
         /// </summary>
         internal static string DriveRowName(string root, string free) =>
@@ -2114,7 +2075,7 @@ namespace ExplorerNative
 
         private async Task FillDriveDetailsAsync(Pane pane, DriveInfo drive, CancellationToken token)
         {
-            string type = "Drive", size = "", label = "", free;
+            string size = "", free;
 
             // Google Drive answers for itself, because Windows cannot answer for
             // it. The letter is `subst` onto a directory and a subst drive is not
@@ -2127,8 +2088,7 @@ namespace ExplorerNative
             {
                 var freeInDrive = SizeFormatter.Format(Math.Max(0, limit - used), _settings.SizeUnits);
                 var totalInDrive = SizeFormatter.Format(limit, _settings.SizeUnits);
-                ApplyDetails(pane, drive, $"{freeInDrive} free", "Google Drive",
-                    $"of {totalInDrive}", token);
+                ApplyDetails(pane, drive, $"{freeInDrive} free", $"of {totalInDrive}", token);
                 return;
             }
 
@@ -2136,35 +2096,21 @@ namespace ExplorerNative
             {
                 var probe = Task.Run(() =>
                 {
-                    var t = DriveTypeName(drive.DriveType);
-                    if (!drive.IsReady) return (t, "not ready", "", "");
+                    if (!drive.IsReady) return ("not ready", "");
                     var room = SizeFormatter.Format(drive.AvailableFreeSpace, _settings.SizeUnits);
                     var total = SizeFormatter.Format(drive.TotalSize, _settings.SizeUnits);
-                    return (t, $"{room} free", $"of {total}", drive.VolumeLabel ?? "");
+                    return ($"{room} free", $"of {total}");
                 }, token);
 
                 var finished = await Task.WhenAny(probe, Task.Delay(TimeSpan.FromSeconds(8), token));
                 if (finished != probe) free = "not responding";
-                else (type, free, size, label) = await probe;
+                else (free, size) = await probe;
             }
             catch (OperationCanceledException) { return; }
             catch (Exception ex) { free = ex.Message; }
 
-            // The label, when there is one, is the more useful word for the type
-            // column: "Music" says more than "Fixed".
-            ApplyDetails(pane, drive, free,
-                string.IsNullOrWhiteSpace(label) ? type : $"{label}, {type}", size, token);
+            ApplyDetails(pane, drive, free, size, token);
         }
-
-        private static string DriveTypeName(DriveType type) => type switch
-        {
-            DriveType.Fixed => "local disk",
-            DriveType.Removable => "removable",
-            DriveType.Network => "network",
-            DriveType.CDRom => "disc drive",
-            DriveType.Ram => "RAM disk",
-            _ => "drive",
-        };
 
         /// <summary>
         /// Drive's own used and total bytes when this letter is the Drive mount,
@@ -2190,7 +2136,7 @@ namespace ExplorerNative
 
         /// <summary>Writes one drive's details into the row, on the UI thread.</summary>
         private void ApplyDetails(Pane pane, DriveInfo drive,
-            string free, string type, string size, CancellationToken token)
+            string free, string size, CancellationToken token)
         {
             if (token.IsCancellationRequested || IsDisposed) return;
 
@@ -2203,7 +2149,6 @@ namespace ExplorerNative
 
                     pane.Entries[i].DisplayOverride = DriveRowName(drive.Name, free);
                     pane.Entries[i].SizeOverride = size;
-                    pane.Entries[i].TypeOverride = type;
 
                     EvictItem(pane, i);
                     if (pane.List.IsHandleCreated) pane.List.RedrawItems(i, i, true);
@@ -2304,7 +2249,7 @@ namespace ExplorerNative
                 if (IsDisposed || token.IsCancellationRequested) return false;
                 AnnounceOperation("nav.gone",
                     $"{FolderDisplayName(path)} disappeared, going to {DescribePath(fallback)}");
-                await NavigateAsync(fallback, speak: false, onPane: pane);
+                await NavigateAsync(fallback, onPane: pane);
 
                 // True because we did end up somewhere, and the caller must not
                 // overwrite the path that the fallback navigation just set.
@@ -2315,7 +2260,7 @@ namespace ExplorerNative
                 var fallback = await NearestExistingAncestorAsync(path);
                 if (IsDisposed || token.IsCancellationRequested) return false;
                 Announce($"{FolderDisplayName(path)} is unreadable ({ex.Message}), going to {DescribePath(fallback)}", isError: true);
-                await NavigateAsync(fallback, speak: false, onPane: pane);
+                await NavigateAsync(fallback, onPane: pane);
                 return true;
             }
             catch (UnauthorizedAccessException)
@@ -3069,7 +3014,7 @@ namespace ExplorerNative
         {
             if (IsDisposed || pane.SearchTerm != null) return;
             if (string.Equals(pane.LastLoadedPath, pane.CurrentPath, StringComparison.OrdinalIgnoreCase)) return;
-            _ = NavigateAsync(pane.CurrentPath, speak: false, onPane: pane);
+            _ = NavigateAsync(pane.CurrentPath, onPane: pane);
         }
 
         private async Task RunSearchAsync(string term)
@@ -3255,7 +3200,7 @@ namespace ExplorerNative
             // NavigateAsync clears SearchTerm, so the folder it lands in is an
             // ordinary folder again — including for the watcher, which is held
             // off for exactly as long as results are showing.
-            _ = NavigateAsync(pane.CurrentPath, speak: false,
+            _ = NavigateAsync(pane.CurrentPath,
                               preferPath: pane.Positions.Recall(pane.CurrentPath));
             return true;
         }
@@ -3318,7 +3263,7 @@ namespace ExplorerNative
             // search's folder cache too.
             if (!quiet) Drive?.Forget(pane.CurrentPath);
 
-            await NavigateAsync(pane.CurrentPath, speak: false, preferPath: selectAfter,
+            await NavigateAsync(pane.CurrentPath, preferPath: selectAfter,
                 onPane: pane, quiet: quiet, keepFocus: selectAfter == null);
         }
 
@@ -3639,25 +3584,8 @@ namespace ExplorerNative
             PerfCounters.SelectionChange();
             ScheduleStatusUpdate();
             SchedulePrefetch();
-            if (!_settings.SpeakEnabled) return;
-            if (!_settings.SpeakTypeOnSelect && !_settings.SpeakSizeOnSelect) return;
-
-            // Debounced, for two reasons. Arrowing quickly through a folder would
-            // otherwise queue one announcement per row and leave NVDA reading a
-            // backlog long after you stopped. And speaking immediately races
-            // NVDA's own announcement of the row, which is exactly what puts the
-            // position in front of the name instead of after it.
-            if (_extrasTimer == null)
-            {
-                _extrasTimer = new System.Windows.Forms.Timer { Interval = 300 };
-                _extrasTimer.Tick += SpeakSelectionExtras;
-            }
-
-            _extrasTimer.Stop();
-            _extrasTimer.Start();
         }
 
-        private System.Windows.Forms.Timer? _extrasTimer;
         private System.Windows.Forms.Timer? _selectionSpeechTimer;
 
         /// <summary>
@@ -3705,37 +3633,6 @@ namespace ExplorerNative
 
             AnnounceOperation("select.count",
                 $"{name} {(isIn ? "selected" : "not selected")}, {selected} selected");
-        }
-
-        private void SpeakSelectionExtras(object? sender, EventArgs e)
-        {
-            _extrasTimer?.Stop();
-            if (IsDisposed || !_settings.SpeakEnabled) return;
-
-            // Read once. This runs 300ms after the selection changed, and the tab
-            // can have been switched in between — reading Active twice would
-            // otherwise match one pane's index against the other pane's rows and
-            // announce the size of a file in a folder nobody is looking at.
-            var pane = Active;
-            var list = pane.List;
-            if (!list.Focused) return;
-
-            if (list.SelectedIndices.Count != 1) return;
-            int index = list.SelectedIndices[0];
-            if (index < 0 || index >= pane.Entries.Count) return;
-            var entry = pane.Entries[index];
-
-            var extras = new List<string>();
-            if (_settings.SpeakTypeOnSelect) extras.Add(entry.IsDir ? "folder" : "file");
-            if (_settings.SpeakSizeOnSelect && !entry.IsDir)
-                extras.Add(SizeFormatter.Format(entry.Size, _settings.SizeUnits));
-
-            // No position announcement here on purpose: NVDA already reports it
-            // at the end of the row, and a second copy is only ever an echo.
-
-            // Never interrupts: interrupting would cut off the row NVDA is
-            // currently reading, which is the thing this is meant to follow.
-            if (extras.Count > 0) Speech.Speak(string.Join(", ", extras), interrupt: false);
         }
 
         private void List_ColumnClick(object? sender, ColumnClickEventArgs e)
@@ -4031,10 +3928,10 @@ namespace ExplorerNative
             var entry = pane.Entries[index];
             var parts = new List<string>(3) { DisplayNameOf(entry) };
 
-            if (_settings.ShowSizeColumn && !entry.IsDir && entry.Size >= 0)
+            if (!entry.IsDir && entry.Size >= 0)
                 parts.Add(SizeFormatter.Format(entry.Size, _settings.SizeUnits));
 
-            if (_settings.ShowModifiedColumn && entry.Modified != default)
+            if (entry.Modified != default)
                 parts.Add(TimeFormatter.Format(entry.Modified, _settings.VerboseModifiedInfo));
 
             PerfCounters.RowSpoken();
@@ -4088,7 +3985,7 @@ namespace ExplorerNative
                 var folder = Path.GetDirectoryName(entry.Path);
                 if (!string.IsNullOrEmpty(folder))
                 {
-                    _ = NavigateAsync(folder, speak: false, preferPath: entry.Path);
+                    _ = NavigateAsync(folder, preferPath: entry.Path);
                     return;
                 }
             }
@@ -4217,7 +4114,7 @@ namespace ExplorerNative
             // Drive is a move, which the application does as one metadata request
             // without reading a byte; warming it would download the whole file to
             // throw it away.
-            if (!cut && _settings.GoogleDriveWarmOnCopy) Drive?.Warm(paths);
+            if (!cut) Drive?.Warm(paths);
 
             // One item is just "Copied". It used to be "Copied file" or "Copied
             // folder", which said what the row that had *just been read out* had
@@ -6469,8 +6366,6 @@ namespace ExplorerNative
         /// </summary>
         private async Task CalculateAllFolderSizesAsync(Pane pane, CancellationToken token)
         {
-            if (!_settings.ShowSizeColumn) return;
-
             // Snapshot the paths: the entry list is replaced wholesale on the
             // next navigation, and iterating the live one would walk the new
             // folder's contents under the old folder's token.
@@ -6901,8 +6796,6 @@ namespace ExplorerNative
             {
                 _availabilityTimer?.Stop();
                 _availabilityTimer?.Dispose();
-                _extrasTimer?.Stop();
-                _extrasTimer?.Dispose();
                 _statusTimer?.Stop();
                 _statusTimer?.Dispose();
                 _prefetchTimer?.Stop();

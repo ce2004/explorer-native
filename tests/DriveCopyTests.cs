@@ -510,7 +510,7 @@ namespace ExplorerNative
             // would download the whole file only to throw it away.
             Check("but a cut does not, because a cut inside Drive reads nothing",
                 clipboardCopy != null &&
-                clipboardCopy.Contains("if (!cut && _settings.GoogleDriveWarmOnCopy) Drive?.Warm(paths);",
+                clipboardCopy.Contains("if (!cut) Drive?.Warm(paths);",
                     StringComparison.Ordinal));
 
             // Both bounds on what gets warmed, for real rather than by reading

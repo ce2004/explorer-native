@@ -331,9 +331,6 @@ namespace ExplorerNative
             N("path.toolong", "Path too long", FileOperations, Loud, "That path is too long for Windows"),
 
             // ---- Navigation -------------------------------------------------------
-            Live("nav.entered", "Entered a folder", Navigation, Off, "{0}, {1} items", "Documents", 42),
-            Live("nav.up", "Went up", Navigation, Off, "{0}", "Users"),
-            Live("nav.drives", "Drive list", Navigation, Off, "Drives, {0} items", 4),
             Live("nav.empty", "Folder is empty", Navigation, Say, "{0} is empty", "Downloads"),
             Live("nav.gone", "Folder disappeared", Navigation, Loud, "{0} disappeared, going to {1}", "Old", "Documents"),
             Live("nav.denied", "Folder cannot be opened", Navigation, Loud, "Cannot open {0}: {1}", "System Volume Information", "access denied"),

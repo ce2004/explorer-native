@@ -13,6 +13,9 @@ namespace ExplorerNative
     /// </summary>
     public sealed class TrayApplicationContext : ApplicationContext
     {
+        /// <summary>One percent a press, always; holding the key speeds it up.</summary>
+        private const int VolumeStepPercent = 1;
+
         private readonly NotifyIcon _tray;
         private readonly HotkeyManager _hotkeys = new();
         private readonly AudioPlayer _audio = new();
@@ -417,11 +420,6 @@ namespace ExplorerNative
             {
                 if ((!reload || !driveWasOn) && (!_drive.Mounted || _drive.NeedsSignIn)) MountGoogleDrive();
 
-                // A mount that is already up takes this without being rebuilt.
-                // The memory *budget* cannot be changed that way — the pool is
-                // built with it — but how long a file is held is only ever read,
-                // so making it need a remount would be gratuitous.
-                _drive.SetCacheIdleSeconds(_settings.GoogleDriveCacheIdleSeconds);
             }
             else
             {
@@ -778,7 +776,7 @@ namespace ExplorerNative
 
             // Every hotkey is registered with MOD_NOREPEAT, so this press is the
             // only message Windows will send. Holding the key repeats from here.
-            if (_settings.AudioHoldRepeats && action.AllowRepeat)
+            if (action.AllowRepeat)
             {
                 _hold.Start(
                     Shortcut.Parse(action.Get(_settings)),
@@ -869,8 +867,8 @@ namespace ExplorerNative
             {
                 AudioAction.PlayPause => _audio.TogglePlayPause(),
                 AudioAction.Stop => _audio.Stop(),
-                AudioAction.VolumeUp => ChangeVolume(Step(action, _settings.AudioVolumeStepPercent, repeat)),
-                AudioAction.VolumeDown => ChangeVolume(-Step(action, _settings.AudioVolumeStepPercent, repeat)),
+                AudioAction.VolumeUp => ChangeVolume(Step(action, VolumeStepPercent, repeat)),
+                AudioAction.VolumeDown => ChangeVolume(-Step(action, VolumeStepPercent, repeat)),
                 AudioAction.Mute => _audio.ToggleMute(),
                 AudioAction.SeekBackward => _audio.Seek(-Step(action, _settings.AudioSeekSeconds, repeat)),
                 AudioAction.SeekForward => _audio.Seek(Step(action, _settings.AudioSeekSeconds, repeat)),
@@ -1376,7 +1374,7 @@ namespace ExplorerNative
             // it now.
 
             _audio.VolumePercent = _settings.AudioVolumePercent;
-            _audio.Curve = _settings.AudioVolumeCurve;
+            _audio.Curve = VolumeCurve.Perceptual;
             _audio.FadeInMilliseconds = _settings.AudioFadeInMilliseconds;
             _audio.FadeOutMilliseconds = _settings.AudioFadeOutMilliseconds;
             _audio.RewindOnResumeSeconds = _settings.AudioRewindOnResumeSeconds;

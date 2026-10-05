@@ -80,6 +80,19 @@ namespace ExplorerNative
 
     public sealed class GoogleDrive : IDisposable
     {
+        /// <summary>
+        /// Downloaded Drive audio held in memory, across every file. A request
+        /// to Google costs about 700ms whatever is in it, so reads are served
+        /// from here rather than the network.
+        /// </summary>
+        private const int CacheMegabytes = 1024;
+
+        /// <summary>
+        /// How long a Drive file may sit unread before its download and memory
+        /// are given back: long enough to copy, switch windows and paste.
+        /// </summary>
+        private const int CacheIdleSeconds = 120;
+
         private readonly object _gate = new();
         private DriveMount? _mount;
         private GoogleAuth? _auth;
@@ -549,7 +562,7 @@ namespace ExplorerNative
                 // Worked out before the root is chosen, because reclaiming a
                 // stuck one stands a real provider up over it and that provider
                 // wants the same budget as the mount which follows.
-                long budget = Math.Max(64, settings.GoogleDriveCacheMegabytes) * 1024L * 1024;
+                long budget = CacheMegabytes * 1024L * 1024;
 
                 var root = PickRoot(drive, budget);
                 Note($"mounting at {root}");
@@ -565,7 +578,7 @@ namespace ExplorerNative
                 var mount = new DriveMount(drive, root, budget, Note)
                 {
                     Notify = Forward,
-                    IdleRelease = TimeSpan.FromSeconds(settings.GoogleDriveCacheIdleSeconds),
+                    IdleRelease = TimeSpan.FromSeconds(CacheIdleSeconds),
                 };
 
                 // Start registers a sync root, populates it and then takes a
@@ -1099,18 +1112,6 @@ namespace ExplorerNative
                     || string.Equals(full, mount.Root.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase);
             }
             catch { return false; }
-        }
-
-        /// <summary>
-        /// How long a warmed file may sit unread before it is let go. Applied to
-        /// a mount that is already up, so Preferences takes effect without a
-        /// remount.
-        /// </summary>
-        public void SetCacheIdleSeconds(int seconds)
-        {
-            DriveMount? mount;
-            lock (_gate) mount = _mount;
-            if (mount != null) mount.IdleRelease = TimeSpan.FromSeconds(Math.Max(0, seconds));
         }
 
         /// <summary>

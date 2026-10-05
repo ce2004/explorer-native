@@ -168,15 +168,10 @@ namespace ExplorerNative
             // was to hand-edit settings.json.
             AddCheck(panel, "Enable spoken announcements", _working.SpeakEnabled, v => _working.SpeakEnabled = v);
             AddCheck(panel, "Announce operations (copied, cut, pasted, deleted)", _working.SpeakOperations, v => _working.SpeakOperations = v);
-            AddCheck(panel, "Announce folder when navigating", _working.SpeakNavigation, v => _working.SpeakNavigation = v);
-            AddCheck(panel, "Announce item count when navigating", _working.SpeakItemCount, v => _working.SpeakItemCount = v);
-            AddCheck(panel, "Announce full path when navigating", _working.SpeakFullPathOnNavigate, v => _working.SpeakFullPathOnNavigate = v);
             AddInfo(panel,
                 "Position in the list (\"69 of 2170\") is announced by NVDA itself, at the end of the row. " +
                 "This app deliberately does not announce it too — doing so only ever produced an echo. " +
                 "Control it in NVDA: Preferences, Settings, Object Presentation, \"Report object position information\".");
-            AddCheck(panel, "Announce size when selecting an item", _working.SpeakSizeOnSelect, v => _working.SpeakSizeOnSelect = v);
-            AddCheck(panel, "Announce type when selecting an item", _working.SpeakTypeOnSelect, v => _working.SpeakTypeOnSelect = v);
             AddCheck(panel, "Interrupt current speech for new announcements", _working.InterruptSpeech, v => _working.InterruptSpeech = v);
             AddCheck(panel, "Announce errors", _working.SpeakErrors, v => _working.SpeakErrors = v);
             AddCheck(panel, "Announce progress during long operations", _working.SpeakProgress, v => _working.SpeakProgress = v);
@@ -243,12 +238,6 @@ namespace ExplorerNative
 
             AddEnum<SortColumn>(panel, "Sort by", _working.SortBy, v => _working.SortBy = v);
             AddCheck(panel, "Sort ascending", _working.SortAscending, v => _working.SortAscending = v);
-
-            // Which columns exist. These drove the whole list layout — and the
-            // order a screen reader reads a row in — with no way to change them.
-            AddCheck(panel, "Show the Size column", _working.ShowSizeColumn, v => _working.ShowSizeColumn = v);
-            AddCheck(panel, "Show the Type column", _working.ShowTypeColumn, v => _working.ShowTypeColumn = v);
-            AddCheck(panel, "Show the Modified column", _working.ShowModifiedColumn, v => _working.ShowModifiedColumn = v);
 
             AddText(panel, "Window title", _working.WindowTitle, v => _working.WindowTitle = v);
             AddInfo(panel, "What the window is called in its title bar, the taskbar and the tray. " +
@@ -429,42 +418,13 @@ namespace ExplorerNative
         {
             var panel = NewPage();
 
-            // Kept, because the two buttons below change the same thing this box
-            // does, and every control on this dialog is applied on OK from the
-            // box's own state — so anything that sets the field without moving
-            // the box is undone the moment OK is pressed.
-            var driveBox = AddCheck(panel, "Put Google Drive on a drive letter", _working.GoogleDriveEnabled,
-                v => _working.GoogleDriveEnabled = v);
-            AddInfo(panel,
-                "Your Drive appears as an ordinary drive, browsed and played like any other folder. " +
-                "Nothing is downloaded until something reads it, and nothing is written to disk. " +
-                "Off by default because it signs in over the network on the way in.");
+            // No switch: Drive is on whenever you are signed in. Connect and OK
+            // (with an accepted client ID and secret) turn it on, Sign out turns
+            // it off. The box is never shown; it carries that state to OK.
+            var driveBox = new CheckBox { Checked = _working.GoogleDriveEnabled };
+            _applies.Add(() => _working.GoogleDriveEnabled = driveBox.Checked);
 
-            AddText(panel, "Preferred drive letter", _working.GoogleDriveLetter,
-                v => _working.GoogleDriveLetter = v);
-            AddInfo(panel, "The next free letter is used if this one is taken.");
-
-            AddNumber(panel, "Keep in memory (MB)", _working.GoogleDriveCacheMegabytes, 64, 8192,
-                v => _working.GoogleDriveCacheMegabytes = v);
-            AddInfo(panel,
-                "A request to Google costs about seven tenths of a second whatever is in it, so a " +
-                "track is pulled down in the background and read from memory instead. On a measured " +
-                "FLAC, 40 of 45 reads never touched the network, and skipping cost nothing.");
-
-            AddNumber(panel, "Forget a file after (seconds idle)", _working.GoogleDriveCacheIdleSeconds, 0, 86400,
-                v => _working.GoogleDriveCacheIdleSeconds = v);
-            AddInfo(panel,
-                "A file nothing has read for this long gives its memory back and stops downloading. " +
-                "Zero keeps files until the memory limit above forces them out.");
-
-            AddCheck(panel, "Start downloading when a Drive file is copied", _working.GoogleDriveWarmOnCopy,
-                v => _working.GoogleDriveWarmOnCopy = v);
-            AddInfo(panel,
-                "Programs you paste into read the file on the thread that draws their window, so they " +
-                "freeze until Google has delivered — 3.9 seconds for a 16.8MB track, and longer the " +
-                "bigger the file. Downloading while you switch windows makes the same paste take 111 " +
-                "milliseconds. Turn it off if you mostly copy files from Drive back into Drive, which " +
-                "is one request and reads nothing.");
+            AddDriveLetter(panel);
 
             AddGoogleAccountControls(panel, driveBox);
 
@@ -692,10 +652,11 @@ namespace ExplorerNative
                 "whatever normally owns it. Anything Windows turns out not to be able to decode is " +
                 "handed to that application automatically, so the extension list below can be generous.");
 
-            AddText(panel, "Audio file extensions", _working.AudioExtensions,
-                v => _working.AudioExtensions = v);
-            AddInfo(panel, "Separated by semicolons. Left empty this goes back to: " +
-                           AudioFiles.DefaultExtensions);
+            AddButton(panel, "Choose &formats to play...", () =>
+            {
+                using var dialog = new FormatsForm(_working.AudioExtensions);
+                if (dialog.ShowDialog(this) == DialogResult.OK) _working.AudioExtensions = dialog.Extensions;
+            });
 
             AddCheck(panel, "Repeat the track when it ends", _working.AudioRepeatTrack,
                 v => _working.AudioRepeatTrack = v);
@@ -731,31 +692,7 @@ namespace ExplorerNative
             AddInfo(panel, "The long skip has its own pair of shortcuts, for moving through " +
                            "something an hour long without holding a key down.");
 
-            AddCheck(panel, "Holding a shortcut keeps repeating it", _working.AudioHoldRepeats,
-                v => _working.AudioHoldRepeats = v);
-            AddInfo(panel,
-                "Volume, skipping, speed and play/pause repeat while their key is held; stop, mute, " +
-                "repeat and \"what is playing\" fire once however long you hold them. A hold takes a " +
-                "fifth of a second to start, which is what separates a press from a hold — a finger " +
-                "is on a key for about a tenth of a second, so without that wait a single press of " +
-                "play would play, pause, play and pause again.");
-            AddInfo(panel,
-                "A held key takes bigger steps the longer it is held, which is what makes a hold " +
-                "quick rather than the rate: one percent of volume fifty times a second still takes " +
-                "two seconds to cross the dial. The step grows every third repeat, so a press is " +
-                "always exactly one step and a hold sweeps the range in about half a second. " +
-                "Skipping runs on a slower clock of its own — eight a second — because fifty " +
-                "five-second skips a second is four minutes of track per second held.");
-
-            AddNumber(panel, "Playback speed (percent)", _working.AudioPlaybackRatePercent, 25, 400,
-                v => _working.AudioPlaybackRatePercent = v);
-            AddInfo(panel, "100 is normal. Pitch is preserved, so speech stays intelligible a good " +
-                           "way up — which is what the speed shortcuts are for. Those step through a " +
-                           "fixed list of speeds, close together near normal where a few percent is " +
-                           "audible and wide apart past double where it is not.");
-
-            AddNumber(panel, "Read ahead from the selected file (kilobytes)",
-                _working.AudioPrefetchKilobytes, 0, 262144, v => _working.AudioPrefetchKilobytes = v);
+            AddReadAhead(panel);
             AddNumber(panel, "Give the memory back after paused (minutes)",
                 _working.AudioReleaseAfterMinutes, 0, 1440, v => _working.AudioReleaseAfterMinutes = v);
             AddInfo(panel,
@@ -838,17 +775,6 @@ namespace ExplorerNative
 
             AddNumber(panel, "Volume (percent)", _working.AudioVolumePercent, 0, AudioPlayer.LoudestPercent,
                 v => _working.AudioVolumePercent = v);
-            AddNumber(panel, "Volume step (percent)", _working.AudioVolumeStepPercent, 1, 50,
-                v => _working.AudioVolumeStepPercent = v);
-
-            AddEnum<VolumeCurve>(panel, "Volume curve", _working.AudioVolumeCurve,
-                v => _working.AudioVolumeCurve = v);
-            AddInfo(panel,
-                "Loudness is not heard on a straight line, which is why the linear curve has a bottom " +
-                "end that is not actually quiet — halving the amplitude is nothing like halving what " +
-                "you hear. Perceptual squares it, so 20 percent is a twenty-fifth of full volume " +
-                "rather than a fifth, and the quiet end of the dial has somewhere to go. Full volume " +
-                "is identical either way.");
 
             AddNumber(panel, "Fade in (milliseconds)", _working.AudioFadeInMilliseconds, 0, 10000,
                 v => _working.AudioFadeInMilliseconds = v);
@@ -1046,6 +972,69 @@ namespace ExplorerNative
 
             AddLabelled(parent, label, combo);
             _applies.Add(() => apply(Enum.GetValues<T>()[combo.SelectedIndex]));
+        }
+
+        /// <summary>
+        /// The drive letter for Google Drive, as a list of the letters nothing
+        /// else is using. The one already chosen stays in the list, since the
+        /// mounted drive itself is what is using it.
+        /// </summary>
+        private void AddDriveLetter(Control parent)
+        {
+            var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 80 };
+            combo.AccessibleName = "Google Drive letter";
+
+            var current = (_working.GoogleDriveLetter ?? "").Trim().TrimEnd(':').ToUpperInvariant();
+            var used = new HashSet<char>();
+            try
+            {
+                foreach (var d in System.IO.DriveInfo.GetDrives())
+                    if (d.Name.Length > 0) used.Add(char.ToUpperInvariant(d.Name[0]));
+            }
+            catch { }
+
+            var letters = new List<string>();
+            for (char c = 'D'; c <= 'Z'; c++)
+                if (!used.Contains(c) || current == c.ToString()) letters.Add(c.ToString());
+            if (letters.Count == 0 && current.Length == 1) letters.Add(current);
+
+            foreach (var l in letters) combo.Items.Add(l + ":");
+            int at = letters.IndexOf(current);
+            combo.SelectedIndex = at >= 0 ? at : (letters.Count > 0 ? 0 : -1);
+
+            AddLabelled(parent, "Google Drive letter", combo);
+            _applies.Add(() =>
+            {
+                if (combo.SelectedIndex >= 0) _working.GoogleDriveLetter = letters[combo.SelectedIndex];
+            });
+        }
+
+        /// <summary>Read-ahead sizes offered, in kilobytes, up to one gigabyte.</summary>
+        internal static readonly int[] ReadAheadKilobytes =
+            { 0, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144, 524288, 1048576 };
+
+        internal static string ReadAheadText(int kilobytes) =>
+            kilobytes == 0 ? "Off"
+            : kilobytes >= 1048576 ? (kilobytes / 1048576) + " gigabyte"
+            : (kilobytes / 1024) + " megabytes";
+
+        private void AddReadAhead(Control parent)
+        {
+            const string label = "Read ahead from the selected file";
+            var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
+            combo.AccessibleName = label;
+            foreach (var kb in ReadAheadKilobytes)
+                combo.Items.Add(kb == 1024 ? "1 megabyte" : ReadAheadText(kb));
+
+            // The nearest offered size to whatever was set before.
+            int best = 0;
+            for (int i = 0; i < ReadAheadKilobytes.Length; i++)
+                if (Math.Abs(ReadAheadKilobytes[i] - _working.AudioPrefetchKilobytes) <
+                    Math.Abs(ReadAheadKilobytes[best] - _working.AudioPrefetchKilobytes)) best = i;
+            combo.SelectedIndex = best;
+
+            AddLabelled(parent, label, combo);
+            _applies.Add(() => _working.AudioPrefetchKilobytes = ReadAheadKilobytes[Math.Max(0, combo.SelectedIndex)]);
         }
 
         private static void AddLabelled(Control parent, string label, Control control)

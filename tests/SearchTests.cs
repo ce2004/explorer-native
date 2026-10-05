@@ -371,7 +371,7 @@ namespace ExplorerNative
             // the one that was asked for.
             Check("Enter on a result goes to the folder it lives in",
                 main.Contains("if (Active.SearchTerm != null)", StringComparison.Ordinal) &&
-                main.Contains("_ = NavigateAsync(folder, speak: false, preferPath: entry.Path);",
+                main.Contains("_ = NavigateAsync(folder, preferPath: entry.Path);",
                     StringComparison.Ordinal));
 
             // The results are not a folder, and two things would quietly replace

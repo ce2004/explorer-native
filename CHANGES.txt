@@ -1,3 +1,11 @@
+1.0.3
+Preferences is shorter. These are no longer settings, and always work this way: the folder name, full path, size and type are not announced when navigating or selecting; the list shows the Size and Modified columns and no Type column; volume moves one percent a press on the perceptual curve; holding a shortcut repeats it.
+Playback speed is no longer in Preferences. Change it from the speed window.
+Choose formats to play replaces the list of audio file extensions: a checklist of every format the player supports.
+Read ahead is a list of sizes from 1 megabyte to 1 gigabyte, or off.
+Google Drive has no on and off switch: it is on whenever you are signed in. It keeps up to 1 gigabyte of audio in memory, lets a file go after two idle minutes, and always starts downloading a file as soon as you copy it.
+The Google Drive letter is a list of the letters not already in use.
+
 1.0.2
 The update window lists every change on its own line. Tab to the list and read it with the arrow keys, then Tab to Update or Cancel.
 Release notes are plain text, with no symbols for the screen reader to read out.
