@@ -1,3 +1,14 @@
+1.0.4
+Help, Changelog shows every version from GitHub. Tab moves between versions, the arrow keys read each one's changes, and Escape or Back closes it.
+Changing the Google Drive letter in Preferences moves the drive straight away, instead of only after a restart. A folder open on the old letter follows it to the new one.
+The drive list says each drive's name again, for example E: Backup, 12 gigabytes free.
+Preferences can no longer be closed while it is checking the Google client ID and secret, which could sign you out or show an error after you had cancelled. Connect and OK no longer run two checks at once.
+If Google refuses the client ID and secret, Preferences goes to the Google Drive page and puts you on the field to fix, from whichever page you pressed OK on.
+Choose formats to play keeps formats you added yourself, and reads lists separated by commas or spaces.
+A settings file that cannot be decrypted, such as one copied from another computer, no longer stops settings from ever saving again. A copy of it is kept and new settings are saved.
+An update download that stalls gives up after five minutes instead of waiting for ever.
+Release notes keep words like C# and track #3 intact.
+
 1.0.3
 Preferences is shorter. These are no longer settings, and always work this way: the folder name, full path, size and type are not announced when navigating or selecting; the list shows the Size and Modified columns and no Type column; volume moves one percent a press on the perceptual curve; holding a shortcut repeats it.
 Playback speed is no longer in Preferences. Change it from the speed window.

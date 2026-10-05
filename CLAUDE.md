@@ -343,6 +343,17 @@ startup.
 together are 0.51 MB, and writing an Opus decoder by hand would save little and
 cost a codec's worth of correctness risk.
 
+## Settings that are code now (2026-10-05)
+
+Conner removed these from Preferences and they are constants, not settings, at his request ("just hard code these values"). Do not bring them back as settings:
+- No navigation announcements, and no size or type spoken on select.
+- Name, Size and Modified columns. There is no Type column.
+- Volume step 1, `VolumeCurve.Perceptual`, and holding a key repeats.
+- Drive keeps 1024 MB, lets a file go after 120 s idle, and always warms a copied file.
+- Drive is on whenever signed in; there is no checkbox.
+
+Everything under %APPDATA%\ExplorerNative is DPAPI-encrypted (`ProtectedFile`). Read a log or settings.json with `ExplorerNative.exe --read-log <name>`.
+
 ## Rules this codebase lives by
 
 **A setting with one right answer is not a setting.** Preferences is walked one
@@ -511,7 +522,7 @@ there in it. Anything added to a row has to clear the same bar.
 **Say less, not more.** Three separate things already speak when you move: the
 row itself (NVDA), its position (NVDA), and anything the app announces. Entering
 a folder used to announce its name over the top of the row that had just been
-focused, which is why `SpeakNavigation` is off by default. Ctrl+Shift+A says
+focused, which is why entering a folder announces nothing (it is no longer a setting). Ctrl+Shift+A says
 where you are on request. The same reasoning keeps position-in-list off: NVDA
 already says "3 of 47" at the end of a row, and a second copy is only an echo.
 
@@ -521,7 +532,7 @@ it is not an announcement the application can be seen making. The panes are
 named after the folder they show, and navigation set that name on the way into
 every folder — while the list was already focused, every time — so opening a
 folder spoke the folder's name over the row that had just been focused. Which
-is the thing `SpeakNavigation` is off by default to prevent: the setting was
+is the thing the navigation announcement (now removed) used to cause: the setting was
 working and something else was talking, for the second time in this file. The
 name is held in `Pane.PendingName` and applied on the list's `Leave`, where
 changing it is silent, and a tab switch still names the pane *before* moving
@@ -2993,7 +3004,7 @@ track actually being played. These callbacks arrive on filter-driver workers,
 several at once, so it is not a theoretical race. The value overload is used
 instead, and whichever thread loses disposes the instance it made.
 
-**Memory is chunks under one budget** (`DriveCachePool`, `GoogleDriveCacheMegabytes`,
+**Memory is chunks under one budget** (`DriveCachePool`, `GoogleDrive.CacheMegabytes` = 1024, fixed,
 1GB), not a buffer per file. A whole-file buffer lets the largest thing ever
 opened decide the ceiling, and there is a 232MB track in this very Drive. Chunks
 also let a file bigger than the whole budget still stream: the beginning is
@@ -3247,7 +3258,7 @@ because the pump had already pulled all four of its chunks.
 
 **Only on a copy, never on a cut.** A cut pasted back inside Drive is a move,
 which is one metadata request that reads no bytes. Copy has the same ambiguity —
-`DriveClient.Copy` is server-side — which is what `GoogleDriveWarmOnCopy` is for.
+`DriveClient.Copy` is server-side — which is why a copy always warms the file (`if (!cut) Drive?.Warm(paths)`; no longer a setting).
 
 **Both bounds on it are about the thread that took the copy**, and this
 application has already had a thirteen-second window freeze out of doing a
@@ -3261,7 +3272,7 @@ everything warmed beside it and still arrive cold.
 
 **And a byte budget only gives memory back when something else wants it.** A
 file warmed and then walked away from sat there for as long as the mount was up,
-so `SweepIdle` releases anything nothing has read for `GoogleDriveCacheIdleSeconds`
+so `SweepIdle` releases anything nothing has read for `GoogleDrive.CacheIdleSeconds` (120, fixed)
 (120). It refuses to run while any callback is in flight: releasing a cache
 cancels its downloads, and a sweep landing inside a fetch callback would fail the
 read that callback is answering, which is the copy that stops dead for no visible

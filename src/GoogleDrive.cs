@@ -649,6 +649,32 @@ namespace ExplorerNative
             }
         }
 
+        /// <summary>
+        /// Moves a mounted Drive to the letter Preferences now names, without
+        /// unmounting. Returns the old and new letters when it moved, otherwise
+        /// null — not mounted, already there, or no letter free.
+        /// </summary>
+        public (string From, string To)? MoveLetter(string configured)
+        {
+            DriveMount? mount;
+            lock (_gate) mount = _mount;
+            var before = mount?.Letter;
+            if (mount == null || before == null) return null;
+
+            try { mount.MoveLetter(PreferredLetter(configured)); }
+            catch (Exception ex)
+            {
+                Note("moving the drive letter failed: " + ex.Message);
+                return null;
+            }
+
+            var after = mount.Letter;
+            if (after == null || string.Equals(before, after, StringComparison.OrdinalIgnoreCase)) return null;
+
+            Status = Status.Replace(before, after, StringComparison.OrdinalIgnoreCase);
+            return (before, after);
+        }
+
         private static char PreferredLetter(string configured) =>
             string.IsNullOrWhiteSpace(configured)
                 ? 'G'

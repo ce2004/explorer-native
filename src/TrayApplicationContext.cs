@@ -420,6 +420,14 @@ namespace ExplorerNative
             {
                 if ((!reload || !driveWasOn) && (!_drive.Mounted || _drive.NeedsSignIn)) MountGoogleDrive();
 
+                // A new letter in Preferences moves a mounted drive straight
+                // away. It used to wait for the next start, so changing it
+                // appeared to do nothing.
+                if (_drive.MoveLetter(_settings.GoogleDriveLetter) is (string from, string to))
+                {
+                    _form?.DriveLetterMoved(from, to);
+                    Notify("drive.mounted", $"Google Drive is on {to}");
+                }
             }
             else
             {

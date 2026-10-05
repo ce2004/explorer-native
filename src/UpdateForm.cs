@@ -113,7 +113,11 @@ namespace ExplorerNative
 
                 line = Regex.Replace(line, @"\[([^\]]*)\]\([^)]*\)", "$1");   // [text](url) -> text
                 line = Regex.Replace(line, @"^(#+|[-*+]|\d+\.)\s+", "");       // headings, list markers
-                line = line.Replace("**", "").Replace("__", "").Replace("`", "").Replace("*", "").Replace("#", "");
+                // Only Markdown pairs, so "C#" and "track #3" survive.
+                line = Regex.Replace(line, @"\*\*(.+?)\*\*", "$1");
+                line = Regex.Replace(line, @"__(.+?)__", "$1");
+                line = Regex.Replace(line, @"`([^`]*)`", "$1");
+                line = Regex.Replace(line, @"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", "$1");
                 line = line.Trim();
                 if (line.Length == 0) continue;
                 if (line.Equals("What's Changed", StringComparison.OrdinalIgnoreCase)) continue;

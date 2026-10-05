@@ -385,8 +385,12 @@ namespace ExplorerNative
             }
 
             // The files are installed either way; only what is recorded about
-            // them waits for a settings file that can be read.
+            // them waits for a settings file that can be read. An unreadable one
+            // is logged, but the install itself worked: the exit code says so,
+            // or the updater reports "could not be installed" for an install
+            // that is already in place.
             var settings = LoadForChange(out bool readable);
+            if (!readable) Environment.ExitCode = 0;
             if (readable)
             {
                 if (register)

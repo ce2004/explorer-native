@@ -393,6 +393,12 @@ namespace ExplorerNative
         /// The replacement is started with --restart so it waits for this
         /// process to release the single-instance lock instead of bailing out.
         /// </summary>
+        private void ShowChangelog()
+        {
+            using (var log = new ChangelogForm()) log.ShowDialog(this);
+            RestoreListFocus();
+        }
+
         private void ShowAbout()
         {
             MessageBox.Show(this,
@@ -568,6 +574,28 @@ namespace ExplorerNative
                 if (await ProbeDirectoryAsync(c, StartupProbeMs) == FolderProbe.Present) return c!;
             }
             return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        }
+
+        /// <summary>
+        /// Google Drive has moved from one letter to another. A tab showing a
+        /// folder on the old letter follows it to the same folder on the new
+        /// one, on the same row, rather than finding its folder gone.
+        /// </summary>
+        public void DriveLetterMoved(string from, string to)
+        {
+            static string? Moved(string? path, string from, string to) =>
+                path != null && path.StartsWith(from, StringComparison.OrdinalIgnoreCase)
+                    ? to + path[from.Length..]
+                    : null;
+
+            foreach (var pane in _panes)
+            {
+                if (pane == null) continue;
+                var folder = Moved(pane.CurrentPath, from, to);
+                if (folder == null) continue;
+                var row = Moved(FocusedPathOf(pane), from, to);
+                _ = NavigateAsync(folder, preferPath: row, onPane: pane, quiet: true, keepFocus: pane != Active);
+            }
         }
 
         public void ApplyNewSettings(Settings settings)
@@ -769,6 +797,7 @@ namespace ExplorerNative
             // automatic check and no setting for one.
             var help = new ToolStripMenuItem("&Help");
             help.DropDownItems.Add(Item("Check for &updates…", Keys.None, CheckForUpdates));
+            help.DropDownItems.Add(Item("&Changelog", Keys.None, ShowChangelog));
             help.DropDownItems.Add(Item("&About Explorer Native", Keys.None, ShowAbout));
             menu.Items.Add(help);
 
@@ -2063,12 +2092,10 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// What a drive's row says first: the letter, a space, and how much room
-        /// is left — "C: 431 GB free". That is the one thing anybody arrowing
-        /// through the drive list is there to find out, so it is the first thing
-        /// said rather than the fourth. The total follows in the size column and
-        /// where it is still one
-        /// column away.
+        /// What a drive's row says first: the letter, its name if it has one, and
+        /// how much room is left — "E: Backup, 12 GB free". That is what anybody
+        /// arrowing through the drive list is there to find out, so it is said
+        /// first. The total follows in the size column.
         /// </summary>
         internal static string DriveRowName(string root, string free) =>
             root.TrimEnd(Path.DirectorySeparatorChar) + " " + free;
@@ -2088,7 +2115,7 @@ namespace ExplorerNative
             {
                 var freeInDrive = SizeFormatter.Format(Math.Max(0, limit - used), _settings.SizeUnits);
                 var totalInDrive = SizeFormatter.Format(limit, _settings.SizeUnits);
-                ApplyDetails(pane, drive, $"{freeInDrive} free", $"of {totalInDrive}", token);
+                ApplyDetails(pane, drive, $"Google Drive, {freeInDrive} free", $"of {totalInDrive}", token);
                 return;
             }
 
@@ -2099,7 +2126,10 @@ namespace ExplorerNative
                     if (!drive.IsReady) return ("not ready", "");
                     var room = SizeFormatter.Format(drive.AvailableFreeSpace, _settings.SizeUnits);
                     var total = SizeFormatter.Format(drive.TotalSize, _settings.SizeUnits);
-                    return ($"{room} free", $"of {total}");
+                    // The volume's name, so two USB sticks are told apart by
+                    // more than their letter: "E: Backup, 12 GB free".
+                    var label = string.IsNullOrWhiteSpace(drive.VolumeLabel) ? "" : drive.VolumeLabel.Trim() + ", ";
+                    return ($"{label}{room} free", $"of {total}");
                 }, token);
 
                 var finished = await Task.WhenAny(probe, Task.Delay(TimeSpan.FromSeconds(8), token));

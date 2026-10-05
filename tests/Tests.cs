@@ -508,6 +508,47 @@ namespace ExplorerNative
             UnplayableFormatTests();
             HeldKeyDistanceTests();
             FixedBehaviourTests();
+            DriveLetterMoveTests();
+        }
+
+        /// <summary>
+        /// Changing the Drive letter in Preferences moves the mounted drive at
+        /// once. Done for real on a scratch folder with two free letters, the
+        /// same way DriveMount.MoveLetter does it: the new letter first, then
+        /// the old one removed.
+        /// </summary>
+        private static void DriveLetterMoveTests()
+        {
+            var free = new List<char>();
+            for (char c = 'Z'; c >= 'M' && free.Count < 2; c--)
+                if (!DriveLetter.InUse(c)) free.Add(c);
+            if (free.Count < 2) { Check("two free letters to test moving with", false); return; }
+
+            var dir = NewTempDir();
+            DriveLetter? first = null, second = null;
+            try
+            {
+                File.WriteAllText(Path.Combine(dir, "marker.txt"), "here");
+                first = DriveLetter.Assign(dir, free[0]);
+                Equal("the drive starts on the first letter", free[0] + ":", first.Letter);
+
+                second = DriveLetter.Assign(dir, free[1]);
+                first.Dispose();
+
+                Equal("and moves to the one asked for", free[1] + ":", second.Letter);
+                Check("the files are there on the new letter", File.Exists(second.Letter + "\\marker.txt"));
+                Check("and the old letter is free again", !DriveLetter.InUse(free[0]));
+
+                var source = SourceFile("TrayApplicationContext.cs") ?? "";
+                Check("OK in Preferences moves a mounted drive",
+                    source.Contains("_drive.MoveLetter(_settings.GoogleDriveLetter)"));
+            }
+            finally
+            {
+                try { second?.Dispose(); } catch { }
+                try { first?.Dispose(); } catch { }
+                try { Directory.Delete(dir, true); } catch { }
+            }
         }
 
         /// <summary>
@@ -542,7 +583,11 @@ namespace ExplorerNative
             // And Preferences no longer offers any of them.
             string error = "";
             var labels = new List<string>();
-            int formats = 0, checkedFormats = 0;
+            int formats = 0, checkedFormats = 0, mixedItems = 0, mixedChecked = 0;
+            // A scratch settings folder: the Google page reads the client file
+            // from it, and must never touch the real one.
+            var previous = Settings.OverrideAppDataDir;
+            Settings.OverrideAppDataDir = NewTempDir();
             var thread = new Thread(() =>
             {
                 try
@@ -555,12 +600,48 @@ namespace ExplorerNative
                         formats = list.Items.Count;
                         checkedFormats = list.CheckedItems.Count;
                     }
+
+                    // Commas and spaces, as the player accepts, and a format
+                    // added by hand that the picker must not drop.
+                    using var mixed = new FormatsForm(".mp3, .flac .xyz");
+                    foreach (var list in FindAll<CheckedListBox>(mixed))
+                    {
+                        mixedItems = list.Items.Count;
+                        mixedChecked = list.CheckedItems.Count;
+                    }
                 }
                 catch (Exception ex) { error = ex.GetType().Name + ": " + ex.Message; }
             });
             thread.SetApartmentState(ApartmentState.STA);
             thread.Start();
             thread.Join(TimeSpan.FromSeconds(30));
+            try { Directory.Delete(Settings.OverrideAppDataDir!, true); } catch { }
+            Settings.OverrideAppDataDir = previous;
+
+            // Release notes in the update window: Markdown out, real text kept.
+            var notes = UpdateForm.Changes(
+                "## What's Changed\n* **Faster** C# build, fixes track #3\n- `code` stays readable\n" +
+                "**Full Changelog**: https://example/compare\n");
+            Equal("release notes keep C# and #3 and drop the Markdown",
+                "Faster C# build, fixes track #3|code stays readable", string.Join("|", notes));
+
+            // Help, Changelog: every release, from GitHub itself when it answers.
+            try
+            {
+                var all = Updater.AllReleasesAsync().GetAwaiter().GetResult();
+                Check("the changelog lists the published versions", all.Count >= 4, all.Count.ToString());
+                Check("newest first", all.Zip(all.Skip(1)).All(p => p.First.Version > p.Second.Version));
+                Check("each with its own plain list of changes",
+                    all.Where(r => r.Version >= new Version(1, 0, 2)).All(r => UpdateForm.Changes(r.Notes).Count > 0));
+            }
+            catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or TaskCanceledException)
+            {
+                // Offline: nothing to check against.
+            }
+
+            Check("a list with commas and spaces reads all three", mixedChecked == 3, mixedChecked.ToString());
+            Check("and a hand-added format is kept as its own row",
+                mixedItems == AudioFiles.DefaultExtensions.Split(';').Length + 1, mixedItems.ToString());
 
             Equal("Preferences builds", "", error);
             foreach (var gone in new[]
@@ -3638,7 +3719,10 @@ namespace ExplorerNative
                 // Google itself, when it can be reached: a made-up client is refused.
                 var verdict = GoogleAuth.CheckClientAsync("123-made-up.apps.googleusercontent.com", "GOCSPX-made-up",
                     CancellationToken.None).GetAwaiter().GetResult();
-                Check("Google refuses a made-up client ID and secret", verdict != null);
+                // Offline, "could not be reached" is not a refusal and proves nothing.
+                if (verdict == null || !verdict.Contains("could not be reached"))
+                    Check("Google refuses a made-up client ID and secret",
+                        verdict != null && verdict.Contains("does not accept"), verdict ?? "accepted");
                 Check("the saved client file is not readable as text",
                     !File.ReadAllText(Path.Combine(into, GoogleAuth.ClientFileName)).Contains("GOCSPX"));
 

@@ -22,6 +22,12 @@ namespace ExplorerNative
 
         /// <summary>Checked before OK closes the dialog; false keeps it open.</summary>
         private Func<System.Threading.Tasks.Task<bool>>? _beforeOk;
+
+        /// <summary>True while Google is being asked; one check at a time, and no closing.</summary>
+        private bool _checkingGoogle;
+
+        /// <summary>Switches to a category page by name.</summary>
+        private Action<string>? _showCategory;
         private readonly List<Control> _panels = new();
 
         public Settings Result => _working;
@@ -81,6 +87,22 @@ namespace ExplorerNative
                 : Array.FindIndex(categories, c =>
                     string.Equals(c.Name, startCategory, StringComparison.OrdinalIgnoreCase));
             list.SelectedIndex = start >= 0 ? start : 0;
+
+            _showCategory = name =>
+            {
+                int at = Array.FindIndex(categories, c => c.Name == name);
+                if (at >= 0) list.SelectedIndex = at;
+            };
+
+            // Nothing closes the dialog while Google is being asked about the
+            // client ID and secret: closing mid-check saved (or refused) them
+            // after the person had cancelled, on a form already disposed.
+            FormClosing += (_, e) =>
+            {
+                if (!_checkingGoogle) return;
+                e.Cancel = true;
+                Say("Still checking with Google");
+            };
 
             var buttons = new FlowLayoutPanel
             {
@@ -591,21 +613,32 @@ namespace ExplorerNative
                 {
                     MessageBox.Show(this, "Enter both the Google client ID and the client secret.",
                         "Google Drive", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    _showCategory?.Invoke("Google Drive");
                     (id.Length == 0 ? idBox : secretBox).Focus();
                     return false;
                 }
 
+                // One check at a time: OK and Connect both come through here.
+                if (_checkingGoogle) return false;
+                _checkingGoogle = true;
                 Say("Checking with Google");
                 UseWaitCursor = true;
                 string? problem;
                 try { problem = await GoogleAuth.CheckClientAsync(id, secret, System.Threading.CancellationToken.None); }
-                finally { UseWaitCursor = false; }
+                finally
+                {
+                    _checkingGoogle = false;
+                    UseWaitCursor = false;
+                }
+                if (IsDisposed) return false;
 
                 bool changed = false;
                 problem ??= GoogleAuth.SaveClient(id, secret, GoogleDrive.CredentialsDirectory, out changed);
                 if (problem != null)
                 {
                     MessageBox.Show(this, problem, "Google Drive", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    // On the page with the field, or Focus does nothing.
+                    _showCategory?.Invoke("Google Drive");
                     idBox.Focus();
                     return false;
                 }

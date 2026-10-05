@@ -92,6 +92,15 @@ namespace ExplorerNative
         /// <summary>A log's lines in the clear; older plain lines come through as they are.</summary>
         public static IEnumerable<string> ReadLog(string path)
         {
+            // A whole encrypted file — settings.json, or a copy of a damaged one
+            // kept beside it — rather than a log of encrypted lines.
+            var bytes = File.ReadAllBytes(path);
+            if (IsProtected(bytes))
+            {
+                foreach (var line in Decode(bytes).Replace("\r", "").Split('\n')) yield return line;
+                yield break;
+            }
+
             foreach (var line in File.ReadLines(path))
             {
                 if (!line.StartsWith(LinePrefix, StringComparison.Ordinal))

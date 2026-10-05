@@ -64,7 +64,7 @@
     <Compile Include="..\src\TypeAhead.cs" />
     <Compile Include="..\src\NavigationHistory.cs" />
     <Compile Include="..\src\ShellRegistration.cs" />
-    <Compile Include="..\src\AppInstall.cs" />
+    <Compile Include="..\src\AppInstall.cs" /><Compile Include="..\src\Updater.cs" /><Compile Include="..\src\UpdateForm.cs" /><Compile Include="..\src\ChangelogForm.cs" />
     <Compile Include="..\src\SingleInstance.cs" />
     <Compile Include="..\src\CfApi.cs" />
     <Compile Include="..\src\DriveLetter.cs" />

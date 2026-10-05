@@ -778,9 +778,16 @@ namespace ExplorerNative
                     break;
                 }
                 catch (FileNotFoundException) { present = false; break; }
-                // Encrypted for another Windows account, or damaged: unreadable,
-                // and kept rather than overwritten, like any other.
-                catch (System.Security.Cryptography.CryptographicException) { break; }
+                // Encrypted for another Windows account, or the blob is damaged.
+                // Retrying cannot help, so it is damage, not a locked file: a
+                // copy is kept and the next save is allowed to replace it.
+                // Treated as locked, it was never saved over again.
+                catch (System.Security.Cryptography.CryptographicException)
+                {
+                    KeepCopy("undecryptable");
+                    present = false;
+                    break;
+                }
                 catch (IOException) { System.Threading.Thread.Sleep(20 * (attempt + 1)); }
                 catch (UnauthorizedAccessException) { System.Threading.Thread.Sleep(20 * (attempt + 1)); }
             }

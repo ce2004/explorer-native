@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -130,6 +133,47 @@ namespace ExplorerNative
                 $"Version {Text(latest)} is out, but it has no {AssetName} for this computer yet.");
         }
 
+        /// <summary>One published version and its notes, for Help, Changelog.</summary>
+        public sealed record ReleaseNotes(Version Version, DateTime? Published, string Notes);
+
+        /// <summary>
+        /// Every published release, newest first. Drafts, pre-releases and tags
+        /// that are not version numbers are left out.
+        /// </summary>
+        public static async Task<List<ReleaseNotes>> AllReleasesAsync(CancellationToken cancel = default)
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+            timeout.CancelAfter(TimeSpan.FromSeconds(20));
+
+            using var response = await Http.GetAsync(
+                $"https://api.github.com/repos/{Repository}/releases?per_page=100", timeout.Token).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+
+            await using var body = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+            using var json = await JsonDocument.ParseAsync(body, cancellationToken: timeout.Token).ConfigureAwait(false);
+
+            var result = new List<ReleaseNotes>();
+            foreach (var release in json.RootElement.EnumerateArray())
+            {
+                if (release.TryGetProperty("draft", out var draft) && draft.GetBoolean()) continue;
+                if (release.TryGetProperty("prerelease", out var pre) && pre.GetBoolean()) continue;
+                if (!TryParseVersion(release.GetProperty("tag_name").GetString() ?? "", out var version)) continue;
+
+                DateTime? published = null;
+                if (release.TryGetProperty("published_at", out var at) && at.ValueKind == JsonValueKind.String &&
+                    DateTime.TryParse(at.GetString(), CultureInfo.InvariantCulture,
+                        DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var when))
+                    published = DateTime.SpecifyKind(when, DateTimeKind.Utc);
+
+                var notes = release.TryGetProperty("body", out var b) && b.ValueKind == JsonValueKind.String
+                    ? b.GetString() ?? ""
+                    : "";
+                result.Add(new ReleaseNotes(version, published, notes));
+            }
+
+            return result.OrderByDescending(r => r.Version).ToList();
+        }
+
         /// <summary>
         /// Downloads the release and returns the path of the verified executable.
         /// It is named ExplorerNative.exe in a folder of its own because the
@@ -144,13 +188,18 @@ namespace ExplorerNative
             var target = Path.Combine(folder, AppInstall.ProductName + ".exe");
             var partial = target + ".download";
 
-            using (var response = await Http.GetAsync(release.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, cancel)
+            // HttpClient's own timeout stops at the headers once the body is
+            // streamed, so a stalled download would otherwise never end.
+            using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+            limit.CancelAfter(TimeSpan.FromMinutes(5));
+
+            using (var response = await Http.GetAsync(release.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, limit.Token)
                        .ConfigureAwait(false))
             {
                 response.EnsureSuccessStatusCode();
-                await using var source = await response.Content.ReadAsStreamAsync(cancel).ConfigureAwait(false);
+                await using var source = await response.Content.ReadAsStreamAsync(limit.Token).ConfigureAwait(false);
                 await using var file = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None);
-                await source.CopyToAsync(file, cancel).ConfigureAwait(false);
+                await source.CopyToAsync(file, limit.Token).ConfigureAwait(false);
             }
 
             var length = new FileInfo(partial).Length;

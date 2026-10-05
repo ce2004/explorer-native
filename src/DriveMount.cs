@@ -426,6 +426,25 @@ namespace ExplorerNative
         public string Root { get; }
         public string? Letter => _letter?.Letter;
 
+        /// <summary>
+        /// Puts the mounted drive on another letter without unmounting. The new
+        /// letter is defined on the same folder before the old one is removed,
+        /// so Drive is never off a letter in between and nothing is re-listed.
+        /// Does nothing when it is already on <paramref name="preferred"/>.
+        /// Falls back to the next free letter, as a first mount does.
+        /// </summary>
+        public void MoveLetter(char preferred)
+        {
+            var current = _letter;
+            if (current == null) return;
+            if (char.ToUpperInvariant(current.Letter[0]) == char.ToUpperInvariant(preferred)) return;
+
+            var next = DriveLetter.Assign(Root, preferred, Notify);
+            _letter = next;
+            current.Dispose();
+            _log($"drive letter {current.Letter} -> {next.Letter}");
+        }
+
         public ConcurrentQueue<(long Offset, long Length, long Milliseconds, bool FromMemory)> Fetches { get; } = new();
 
         /// <summary>How many of those to keep. Enough for a whole track, not a whole day.</summary>
