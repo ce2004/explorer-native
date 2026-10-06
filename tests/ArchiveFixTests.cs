@@ -48,6 +48,8 @@ namespace ExplorerNative
             if (!BsdTar.Available) return;
 
             await ManyLockedFilesTests();
+            await LookalikeNamesThroughBsdTarTests();
+            await LockedUpFrontTests();
 
             await TarDiesWithTheAppTests();
 
@@ -756,6 +758,130 @@ namespace ExplorerNative
                     Check($"{format.Id}: and the files after it in the same folder are still in it",
                         File.Exists(Path.Combine(into, "top", "a.txt")) && File.Exists(Path.Combine(into, "top", "z.txt")) &&
                         !File.Exists(Path.Combine(into, "top", "locked.txt")));
+                }
+            }
+            finally { Cleanup(dir); }
+        }
+
+        private static readonly string[] Lookalikes =
+        {
+            "plain.txt", "aāb.txt", "œuvre.txt", "x’y.txt", "日本語.txt",
+            "café.txt", "Δelta.txt", "smile\U0001F600.txt",
+        };
+
+        /// <summary>
+        /// bsdtar prints a name its code page cannot hold as a best-fit lookalike,
+        /// and for "aāb.txt" that is the plain-ASCII "aab.txt" — which was taken
+        /// as some other entry, so the file was said not to be in an archive that
+        /// held it.
+        /// </summary>
+        private static async Task LookalikeNamesThroughBsdTarTests()
+        {
+            var dir = NewDir("lookalike");
+            try
+            {
+                var top = Path.Combine(dir, "src", "top");
+                Directory.CreateDirectory(top);
+                foreach (var n in Lookalikes) File.WriteAllText(Path.Combine(top, n), "contents of " + n);
+
+                foreach (var format in new[] { ArchiveFormats.SevenZip, ArchiveFormats.TarXz, ArchiveFormats.TarBz2, ArchiveFormats.TarZst })
+                {
+                    var archive = Path.Combine(dir, "names" + format.Extension);
+                    var made = await ArchiveEngine.CompressAsync(new[] { top }, archive, format, ArchiveLevel.Fastest, 2,
+                        null, CancellationToken.None);
+                    Check($"{format.Id}: eight names a code page cannot all hold give no failures",
+                        made.Failed == 0 && made.Errors.Count == 0, Said(made));
+
+                    var into = Path.Combine(dir, "out-" + format.Id);
+                    await Extract(archive, into);
+                    var got = Directory.Exists(Path.Combine(into, "top"))
+                        ? Directory.GetFiles(Path.Combine(into, "top")).Select(Path.GetFileName).ToList()
+                        : new List<string?>();
+                    Check($"{format.Id}: and every one of them is in it",
+                        Lookalikes.All(n => got.Contains(n)), string.Join(", ", got));
+                }
+
+                // The arithmetic on its own, against the lines bsdtar printed.
+                var plan = new List<ArchiveItem>
+                {
+                    new("x", "top", 0, true, DateTime.Now, FileAttributes.Directory),
+                    new("x", "top/aāb.txt", 1, false, DateTime.Now, FileAttributes.Normal),
+                    new("x", "top/aab.txt", 1, false, DateTime.Now, FileAttributes.Normal),
+                    new("x", "top/Δelta.txt", 1, false, DateTime.Now, FileAttributes.Normal),
+                    new("x", "top/goneā.txt", 1, false, DateTime.Now, FileAttributes.Normal),
+                };
+                var fit = BsdTar.PrintedForm("aāb.txt");
+                Check("ā is printed as its plain lookalike", fit == "aab.txt", fit);
+                var missing = BsdTar.NotAdded(plan, new[] { "top", "top/aab.txt", "top/aab.txt", "top/?elta.txt", "top/other.txt" });
+                Check("a lookalike line accounts for its file, and an unrelated ASCII line for nothing",
+                    missing.Count == 1 && missing[0].Name == "top/goneā.txt",
+                    string.Join(",", missing.Select(p => p.Name)));
+                Check("a locked file's message is matched by its lookalike",
+                    BsdTar.MatchPlan("top/aab.txt", plan.Where(p => p.Name != "top/aab.txt").ToList())?.Name == "top/aāb.txt");
+            }
+            finally { Cleanup(dir); }
+        }
+
+        /// <summary>
+        /// Locked files are found before bsdtar runs, so one run makes the
+        /// archive. Each run found one more and made it all again: five locked
+        /// files out of fifty were six compressions.
+        /// </summary>
+        private static async Task LockedUpFrontTests()
+        {
+            var dir = NewDir("lockedfront");
+            try
+            {
+                var top = Path.Combine(dir, "src", "top");
+                Directory.CreateDirectory(top);
+                foreach (var n in new[] { "a.txt", "aāb.txt", "z.txt" }) File.WriteAllText(Path.Combine(top, n), n);
+
+                var archive = Path.Combine(dir, "one.7z");
+                ArchiveResult made;
+                using (new FileStream(Path.Combine(top, "aāb.txt"), FileMode.Open, FileAccess.Read, FileShare.None))
+                    made = await ArchiveEngine.CompressAsync(new[] { top }, archive, ArchiveFormats.SevenZip, ArchiveLevel.Fastest, 2,
+                        null, CancellationToken.None);
+                Check("a locked ā file is said to be in use, by its real name",
+                    made.Failed == 1 && made.Errors.Count == 1 &&
+                    made.Errors[0].Contains("top/aāb.txt") && made.Errors[0].Contains("in use"), Said(made));
+                var into = Path.Combine(dir, "out-one");
+                await Extract(archive, into);
+                Check("and the other files are in the archive",
+                    File.Exists(Path.Combine(into, "top", "a.txt")) && File.Exists(Path.Combine(into, "top", "z.txt")) &&
+                    !File.Exists(Path.Combine(into, "top", "aāb.txt")));
+
+                var many = Path.Combine(dir, "src2", "top");
+                Directory.CreateDirectory(many);
+                var names = Enumerable.Range(1, 50).Select(i => $"f{i:00}.txt").ToList();
+                foreach (var n in names) File.WriteAllText(Path.Combine(many, n), "contents of " + n);
+                var locked = new[] { 3, 11, 24, 37, 49 }.Select(i => names[i]).ToList();
+
+                foreach (var format in new[] { ArchiveFormats.SevenZip, ArchiveFormats.TarXz })
+                {
+                    var path = Path.Combine(dir, "fifty" + format.Extension);
+                    var holds = locked.Select(n => new FileStream(Path.Combine(many, n), FileMode.Open, FileAccess.Read,
+                        FileShare.None)).ToList();
+                    int before = BsdTar.CreateRuns;
+                    ArchiveResult result;
+                    try
+                    {
+                        result = await ArchiveEngine.CompressAsync(new[] { many }, path, format, ArchiveLevel.Fastest, 2,
+                            null, CancellationToken.None);
+                    }
+                    finally { foreach (var h in holds) h.Dispose(); }
+                    int runs = BsdTar.CreateRuns - before;
+
+                    Check($"{format.Id}: five locked files out of fifty take one tar run", runs == 1, $"{runs} runs");
+                    Check($"{format.Id}: and each locked file is said to be in use",
+                        result.Failed == 5 && locked.All(n => result.Errors.Any(e => e.Contains("top/" + n) && e.Contains("in use"))),
+                        Said(result));
+                    var back = Path.Combine(dir, "out-fifty-" + format.Id);
+                    await Extract(path, back);
+                    var got = Directory.Exists(Path.Combine(back, "top"))
+                        ? Directory.GetFiles(Path.Combine(back, "top")).Select(Path.GetFileName).ToList()
+                        : new List<string?>();
+                    Check($"{format.Id}: and the other forty-five are in it",
+                        got.Count == 45 && names.Except(locked).All(n => got.Contains(n)), $"{got.Count} files");
                 }
             }
             finally { Cleanup(dir); }

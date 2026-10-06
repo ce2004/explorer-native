@@ -348,6 +348,18 @@ namespace ExplorerNative
                 var excluded = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 var unexplained = new List<string>();
 
+                // Every file is opened first, the way bsdtar opens it, and one in
+                // use is left out before the first run. Each run makes the whole
+                // archive again and finds one more locked file at most, so five
+                // locked files out of fifty were six whole compressions; now the
+                // common case is one. The retries stay for a file locked mid-run.
+                foreach (var item in plan)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (item.IsDirectory) continue;
+                    if (InUse(item.Source) is { } why) excluded.TryAdd(item.Name, why);
+                }
+
                 // What this attempt's archive holds: every attempt makes the
                 // archive again from nothing, so only the last one's lines count.
                 var inThisRun = new List<string>();
@@ -363,6 +375,7 @@ namespace ExplorerNative
                 {
                     lock (gate) inThisRun.Clear();
                     unexplained.Clear();
+                    Interlocked.Increment(ref _createRuns);
                     var start = NewStartInfo();
                     foreach (var flag in FormatFlags(format)) start.ArgumentList.Add(flag);
                     start.ArgumentList.Add("-c");
@@ -532,21 +545,32 @@ namespace ExplorerNative
             }
         }
 
-        /// <summary>The plan item a printed name stands for: by name, or by the mangled pattern.</summary>
-        private static ArchiveItem? MatchPlan(string printed, IReadOnlyList<ArchiveItem> plan)
+        /// <summary>
+        /// The plan item a printed name stands for: by name, by the name as
+        /// bsdtar would print it, or by the mangled pattern. The second is what
+        /// finds "top/aab.txt" for "top/aāb.txt": best fit prints a plain-ASCII
+        /// lookalike, which has nothing in it to say it was ever anything else.
+        /// </summary>
+        internal static ArchiveItem? MatchPlan(string printed, IReadOnlyList<ArchiveItem> plan)
         {
             var exact = plan.FirstOrDefault(p => string.Equals(p.Name, printed, StringComparison.OrdinalIgnoreCase));
-            if (exact != null || printed.All(c => c < 128 && c != '?')) return exact;
+            if (exact != null) return exact;
+            var fitted = plan.FirstOrDefault(p => !p.Name.All(c => c < 128) &&
+                string.Equals(PrintedForm(p.Name), printed, StringComparison.OrdinalIgnoreCase));
+            if (fitted != null || printed.All(c => c < 128 && c != '?')) return fitted;
             var pattern = MangledPattern(printed);
             return plan.FirstOrDefault(p => pattern.IsMatch(p.Name));
         }
 
         /// <summary>
         /// The files of the plan that no "a" line of the final attempt accounts
-        /// for. A line is matched by name, then by the mangled pattern; a
-        /// non-ASCII line that matches no pattern still accounts for one
-        /// non-ASCII item, so a name printed in another code page is never
-        /// reported missing when it went in.
+        /// for. A line is matched by name; every line that is not a plan name is
+        /// a stray, ASCII or not, and is matched to an open non-ASCII item by
+        /// that item's printed form, then by the mangled pattern. A stray that
+        /// still looks mangled and matches nothing accounts for one non-ASCII
+        /// item, so a name printed in another code page is never reported
+        /// missing when it went in. A plain-ASCII stray that matches nothing is
+        /// some other entry and accounts for nothing.
         /// </summary>
         internal static List<ArchiveItem> NotAdded(IReadOnlyList<ArchiveItem> plan, IReadOnlyCollection<string> printed)
         {
@@ -555,18 +579,32 @@ namespace ExplorerNative
 
             var accounted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var strays = new List<string>();
+            // A name printed twice is two entries: "aab.txt" and the lookalike
+            // "aāb.txt" prints, side by side in one folder.
             foreach (var name in printed)
-            {
-                if (byName.ContainsKey(name)) accounted.Add(name);
-                else if (!name.All(c => c < 128 && c != '?')) strays.Add(name);
-            }
+                if (!byName.ContainsKey(name) || !accounted.Add(name)) strays.Add(name);
 
             if (strays.Count > 0)
             {
                 var open = plan.Where(p => !accounted.Contains(p.Name) && !p.Name.All(c => c < 128)).ToList();
+                var forms = open.Select(p => PrintedForm(p.Name)).ToList();
                 var unclaimed = 0;
+
+                // The exact printed form first, across every stray, so a loose
+                // pattern cannot take the item an exact form belongs to.
+                var left = new List<string>();
                 foreach (var stray in strays)
                 {
+                    int at = forms.FindIndex(f => string.Equals(f, stray, StringComparison.OrdinalIgnoreCase));
+                    if (at < 0) { left.Add(stray); continue; }
+                    accounted.Add(open[at].Name);
+                    open.RemoveAt(at);
+                    forms.RemoveAt(at);
+                }
+
+                foreach (var stray in left)
+                {
+                    if (stray.All(c => c < 128 && c != '?')) continue;
                     var pattern = MangledPattern(stray);
                     int at = open.FindIndex(p => pattern.IsMatch(p.Name));
                     if (at < 0) { unclaimed++; continue; }
@@ -590,17 +628,52 @@ namespace ExplorerNative
             return slash < 0 ? arg : arg + planName[slash..];
         }
 
-        /// <summary>A name as an --exclude pattern that matches only itself.</summary>
+        /// <summary>
+        /// A name as an --exclude pattern that matches itself.
+        ///
+        /// A character outside ASCII is written as "[! -~]", one per UTF-16
+        /// unit. Measured on bsdtar 3.8.4: the name itself as the pattern is
+        /// matched only after the file has been opened, so a locked "aāb.txt"
+        /// was still opened, refused, and took the rest of its folder with it;
+        /// the class is matched before, as an ASCII name is. It does not match
+        /// "axb.txt". The cost is that another name of the same shape in the
+        /// same folder — "aéb.txt" — is left out too, and is then said.
+        /// </summary>
         internal static string Pattern(string name)
         {
             var sb = new StringBuilder(name.Length + 8);
             foreach (var c in name)
             {
                 if (c is '*' or '?' or '[') sb.Append('[').Append(c).Append(']');
+                else if (c >= 128) sb.Append("[! -~]");
                 else sb.Append(c);
             }
             return sb.ToString();
         }
+
+        /// <summary>
+        /// Why a file cannot be read the way bsdtar reads it, when the reason is
+        /// another program holding it; null otherwise. Anything else — gone,
+        /// denied — is left for bsdtar to say, as before.
+        /// </summary>
+        private static string? InUse(string path)
+        {
+            try
+            {
+                using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete);
+                return null;
+            }
+            catch (IOException ex) when ((ex.HResult & 0xFFFF) is 32 or 33)
+            {
+                return "in use by another program";
+            }
+            catch { return null; }
+        }
+
+        /// <summary>How many times bsdtar has been started to create an archive. For the tests.</summary>
+        internal static int CreateRuns => Volatile.Read(ref _createRuns);
+        private static int _createRuns;
 
         /// <summary>One of bsdtar's own lines, without its name on the front.</summary>
         private static string Plain(string message) =>
@@ -1411,7 +1484,56 @@ namespace ExplorerNative
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardError = true,
+            StandardErrorEncoding = ErrorEncoding.Value,
         };
+
+        /// <summary>
+        /// The code page bsdtar writes its lines in: the ANSI page, not the
+        /// console's. Measured with bytes: "café" is E9, "x’y" is 92 and "œuvre"
+        /// 9C, which is 1252 on this machine, and the hidden console's OEM page
+        /// would have printed "x'y". Left unset, the decoding was whatever the
+        /// parent's console happened to be — UTF-8 in one process, 437 in another.
+        /// </summary>
+        internal static readonly Lazy<Encoding> ErrorEncoding = new(() =>
+        {
+            try
+            {
+                Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+                return Encoding.GetEncoding((int)GetACP());
+            }
+            catch { return Encoding.Latin1; }
+        });
+
+        /// <summary>
+        /// A name as bsdtar prints it: through the ANSI page with Windows' own
+        /// best fit, so "aāb.txt" is "aab.txt" and "Δelta.txt" is "?elta.txt",
+        /// read back the way <see cref="ErrorEncoding"/> reads it. The same
+        /// arithmetic as <see cref="RoboCopyEngine.OemForm"/>, in the other page.
+        /// </summary>
+        internal static string PrintedForm(string name)
+        {
+            if (name.Length == 0) return name;
+            try
+            {
+                int length = WideCharToMultiByte(CP_ACP, 0, name, name.Length, null, 0, IntPtr.Zero, IntPtr.Zero);
+                if (length <= 0) return name;
+                var bytes = new byte[length];
+                length = WideCharToMultiByte(CP_ACP, 0, name, name.Length, bytes, bytes.Length, IntPtr.Zero, IntPtr.Zero);
+                if (length <= 0) return name;
+                return ErrorEncoding.Value.GetString(bytes, 0, length);
+            }
+            catch { return name; }
+        }
+
+        private const uint CP_ACP = 0;
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetACP();
+
+        [DllImport("kernel32.dll")]
+        private static extern int WideCharToMultiByte(uint codePage, uint flags,
+            [MarshalAs(UnmanagedType.LPWStr)] string wide, int wideLength,
+            byte[]? multi, int multiLength, IntPtr defaultChar, IntPtr usedDefaultChar);
 
         private sealed class Run : IDisposable
         {
