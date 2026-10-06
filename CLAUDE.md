@@ -230,7 +230,9 @@ header), not a row; count from index 1.
 | `TrayApplicationContext.cs` | Tray icon, global hotkeys, the audio player, owns the form's lifetime |
 | `MainForm.cs` | The window: two panes, virtual `ListView`, navigation, file actions |
 | `NameRules.cs` | Pure rules — typed-name validation, list ordering, command-line path repair |
-| `TypeAhead.cs` | Multi-letter jump-to-name: the accumulating buffer and the match rule |
+| `TypeAhead.cs` | Multi-letter jump-to-name: the accumulating buffer, the match rule and accent folding |
+| `WatchDebounce.cs` | When the folder watcher re-reads a folder, and which rows it updates in place instead |
+| `SettingsReset.cs` | What Reset to defaults keeps |
 | `NavigationHistory.cs` | Which row to land on — the folder you stepped out of, or where you left off |
 | `Settings.cs` | Persisted preferences, clamping, atomic save |
 | `SettingsForm.cs` | Preferences dialog (category list + panels, deliberately not a `TabControl`) |
@@ -786,7 +788,15 @@ time. What remains is the WinForms accessibility bridge serving the screen
 reader, which cannot be reduced without replacing the list control.
 
 **The folder on screen is watched, not polled.** A `FileSystemWatcher` per pane
-marks it dirty and a 600ms settle timer re-reads it. The app's own commands
+feeds a `WatchDebounce`, and a one-shot timer re-reads the folder half a second
+after a burst of changes stops, or three seconds after it started if it never
+does. A file the list already shows being written to is not a reload at all: its
+row gets its new size and date in place (`UpdateRowsInPlace`), with the cursor,
+the selection and the order untouched and nothing read aloud, unless the list is
+sorted by size or date. Measured with a real watcher: a download written every
+100ms for 6.6 seconds was 12 reloads under the old 600ms poll and is now one, plus
+two row updates; 5,000 files over 16 seconds was 26 and is now 6. The timer runs
+only while something is waiting. The app's own commands
 already refreshed when they finished, which covered its own commands and nothing
 else: anything done through the Windows context menu completes *after* the shell
 hands control back, so refreshing there was always a moment too early, and a file
@@ -819,6 +829,19 @@ Three things the design depends on:
 - `ArmWatcher` returns early when already watching that path. A refresh
   re-navigates to the same folder, so rebuilding the watcher each time would
   churn a directory handle per refresh and leave a gap where changes are missed.
+- **Hidden in the tray, nothing runs.** `OnVisibleChanged` stops the 4-second
+  availability poll (a `Directory.Exists` on a share each time), the watch timer,
+  and both watchers; showing the window arms them again and quietly re-reads the
+  folder in front. The poll is not started in the constructor, so a copy started
+  minimised does none of it until it is shown.
+- **A watcher must not stop a USB drive being ejected.** Its directory handle
+  makes "Safely remove" fail with "in use", and Windows only asks applications
+  that registered a handle. `RemovalWatch` opens one of its own on the folder and
+  registers it with `RegisterDeviceNotificationW`; `WM_DEVICECHANGE` with
+  `DBT_DEVICEQUERYREMOVE` closes the watcher and that handle and keeps the drive
+  unwatched (`_releasedRoots`) until the removal fails (`QUERYREMOVEFAILED`
+  watches it again), completes, or thirty seconds pass. Not for a share or the
+  Drive letter. Not yet tried with a real USB stick.
 
 **A directory''s last-write time does not see into its subtree.** The folder-size
 cache was keyed on it with a comment claiming "a folder whose tree changed since
@@ -853,6 +876,27 @@ control does not also act on the keystroke. A lone letter (or the same one
 repeated) cycles; a growing prefix refines and stays put while the current row
 still matches. Both are what a Windows list has always done and what hands
 already expect.
+
+**Names sort the way File Explorer sorts them, and type-ahead agrees.**
+`NameRules.CompareNames` is `StrCmpLogicalW`, Explorer's own comparison, with
+an ordinal tie-break on the path so the order stays total: "Track 2" before
+"Track 10", "file (2)" before "file (10)", and "Éclair" among the E names rather
+than after "Zebra" and "~tilde" as an ordinal comparison put it. 100,000 names
+sort in about 190ms on the worker, against 70 for the ordinal one. `TypeAhead.Fold`
+takes accents off both the typed prefix and each name, so "e" lands on the first
+E name in that order whether it has an accent or not. It decomposes through
+Windows' `NormalizeString`: the application runs with `InvariantGlobalization`,
+where `string.Normalize` leaves everything above ASCII untouched (measured). A
+repeated emoji cycles like a repeated letter, because a character is a code
+point, not a UTF-16 unit. Sort by Type is gone with the Type column
+(`NameRules.SortsAs`); a settings file still saying Type sorts by name.
+
+**A folder that fills in progressively is sorted on the worker.** Each batch is
+sorted where it is produced, and the UI thread merges it into what is shown by
+binary search (`MainForm.MergeSorted`), m log n comparisons rather than a full
+re-sort per tick. Measured for 100,000 names with the logical comparison: 4.4
+seconds of UI thread over the load, 202ms on the last tick, became 0.35 seconds
+and 19ms at worst.
 
 **A menu entry that can only ever say no is not on the menu.** A menu here is
 read out one item at a time, so every entry on it is paid for on the way past
@@ -4331,8 +4375,9 @@ non-ASCII .7z with System32's tar. If that fails, it tries a copy of tar.exe
 beside each WinSxS `archiveint.dll`, newest first, in
 `%LOCALAPPDATA%\ExplorerNative\tar\<version>\`. That works because the
 application directory is searched before System32. The choice is saved in
-`choice.txt`, keyed on System32's DLL version, so the next Windows update is
-measured again and a fixed System32 is used on its own. Writing an LZMA encoder by
+`choice.txt`, keyed on System32's DLL version, size and date, so the next Windows
+update is measured again even when it keeps the version number, and a fixed
+System32 is used on its own. Writing an LZMA encoder by
 hand would be thousands of lines that have to be exactly right or they silently
 produce an archive nobody else can read.
 
@@ -4343,6 +4388,35 @@ compressed stream is not an archive and libarchive will not open it as one:
 table knows what they are anyway, so the message can say *"a bare .xz holds one
 compressed stream with no name in it… a .tar.xz opens normally"* rather than
 "not an archive". The gzip one is different because that one is ours.
+
+How bsdtar is driven, each one a fix:
+
+- **The format is passed outright** (`BsdTar.FormatFlags`), never `-a`, which
+  matches the extension case-sensitively: "BACKUP.7Z" got no format and failed
+  with "Unknown module name: 7zip".
+- **It extracts with `-k`**, so of two entries with one name the first is kept
+  and the rest are reported, as the zip and tar readers do. Without it the last
+  one silently won.
+- **Extracting skips the listing pass.** `tar -tvf` for the totals was a whole
+  decompression of a .tar.xz before the real one; progress now comes from how
+  much of the archive bsdtar has read and the entries from its own lines. About
+  twice as fast.
+- **Paths over 260 characters go through a short junction** under
+  `%LOCALAPPDATA%\ExplorerNative\tarlinks`, so only the folder bsdtar starts in
+  has to be short (8.3 names are off on this volume). Not in Temp, where
+  something cleaning up might follow it; removed as a link, never recursively,
+  and any left by a crash are swept.
+
+Two things our own readers do:
+
+- **GNU sparse files are rebuilt** for PAX formats 1.0 and 0.1, with their real
+  name and size; Windows' tar writes a mostly-empty file that way, and read
+  plainly a 64MB file came out as "GNUSparseFile.0/holes.bin" of 262KB. Format
+  0.0 is refused, because its map does not fit the extended attributes.
+- **A zip name without the UTF-8 flag is read in the OEM code page**, which is
+  what Windows' tar, "Send to compressed folder" and older 7-Zip write. Read as
+  UTF-8 it came out with replacement characters. Bytes that are valid UTF-8 are
+  still read as UTF-8.
 
 ### The encoding table, which decided the shape of `BsdTar.cs`
 
@@ -4732,12 +4806,20 @@ bites in two directions:
 - Outgoing: the same shape breaks a robocopy command line, which is what
   `RoboCopyEngine.QuoteDir` is for. A root is written `D:\.`.
 
-**The Windows context menu costs milliseconds *per selected item*.** Building it
-is `SHParseDisplayName` plus `SHBindToParent` for every path, and those are not
-cheap: measured on this machine at **4.4ms each**, consistently, warm or cold. So
-three thousand selected files is thirteen seconds of the window not responding
-before anything appears, and a real folder is very much worse. There was no limit
-at all.
+**The Windows context menu used to cost milliseconds *per selected item*.**
+Building it was `SHParseDisplayName` plus `SHBindToParent` for every path,
+measured at 1 to 4.4ms each, so three thousand selected files was seconds of the
+window not responding. Now the parent is bound once, from the first item, and
+every other item is its name parsed by that folder (`IShellFolder.ParseDisplayName`):
+**0.016ms against 1.04ms**, measured over a thousand files. Those child PIDLs are
+separate allocations and are freed with the rest; a name the folder cannot take,
+such as a drive root, still goes the long way. There was no limit at all.
+
+**Escape is not a command.** `Show` returns `Dismissed` when nothing was chosen,
+and the window does nothing for it. It used to come back as `Shown` and the window
+refreshed, which in search results ran the whole search again and announced it.
+A chosen command does not refresh either: it finishes after the shell hands back,
+so the folder watcher is what sees its effect.
 
 `ShellContextMenu.BuildBudgetMilliseconds` bounds it, and it is a *time* budget
 rather than a count because the per-item cost belongs to the machine and to
@@ -4800,12 +4882,42 @@ size as the source, sitting in the folder — nothing to look at would tell you,
 short of reading it. The worst case is somebody deleting the original because the
 copy obviously worked.
 
-`RemoveHalfWritten` runs on every cancelled exit, and it is deliberately narrow:
-only files under a destination that **did not exist** before the transfer
-(`newRoots`), because once a destination already existed there is no telling our
-half-written bytes from somebody else's file. It also keeps anything whose source
-is *gone* — that is a move which already finished that file, and deleting the
-destination would destroy the only copy there is.
+`RemoveHalfWritten` runs on every cancelled exit, and after a failure for the
+files robocopy said it could not copy. It covers **every file this transfer
+created**, wherever it landed: everything under a destination that did not exist
+before (`newRootSources`), every file the destination watcher saw created
+(`created`), and, when that watcher overflowed or Overwrite wrote over files
+without creating them, whatever in the destinations was written during the
+transfer. Only new roots was the old rule, and it missed the case that mattered:
+Fill gaps resumed into a folder that was already there, was cancelled again, and
+left a part-written file dated now, which every later Fill gaps skipped as
+"newer". A file that was there before and not written by this transfer is never
+touched. It also keeps anything whose source is *gone*: that is a move which
+already finished that file, and deleting the destination would destroy the only
+copy there is.
+
+Five more things a transfer does that are easy to undo by accident:
+
+- **A junction is moved as a link**, never followed. Robocopy gets `/XJ`; a
+  selected junction is renamed as itself on one volume and made again on the
+  other (`FileOperations.MoveLink`, `ReparseLinks`), because following it moved,
+  and so deleted, whatever it pointed at.
+- **A move on one volume is a rename** (`SameVolume`, `TryRename`), not a copy
+  and a delete, for every item that can be renamed whole.
+- **Retries are short locally and long on a share** (`RetriesFor`): `/R:2 /W:1`
+  for a local disk, where a held or deleted file never fixes itself, and twenty
+  retries five seconds apart for a share that drops for a moment.
+- **Error names come from `/UNILOG`**, the UTF-16 log, with `/TEE` for the live
+  output. Standard output is in the console code page, so a failed Japanese or
+  accented name arrived as "???".
+- **`AlreadyThere`** on `TransferResult` counts files a merge found already at
+  the destination and left alone. On a move their originals stay, and the window
+  says so instead of "Move complete".
+
+**Known gap:** a crash of the application mid-copy, as against a cancel, runs no
+cleanup, so a half-written file can be left dated after its source, and Fill gaps
+then skips it as newer. Not fixed: checking every newer file with `LooksComplete`
+on each Fill gaps run reads them all.
 
 **Deciding what "finished" means took four wrong answers, so do not re-derive
 it.** Not *"robocopy printed the name"*: its stdout is block-buffered through the

@@ -38,11 +38,31 @@ namespace ExplorerNative
             long Size,
             string? Sha256);
 
-        private static readonly HttpClient Http = CreateClient();
+        private static readonly HttpClient Shared = CreateClient(null);
 
-        private static HttpClient CreateClient()
+        private static HttpClient? _testClient;
+
+        private static HttpClient Http => _testClient ?? Shared;
+
+        /// <summary>
+        /// For the suite: answers every request from <paramref name="handler"/>
+        /// rather than GitHub, until called again with null.
+        /// </summary>
+        internal static void UseHandlerForTests(HttpMessageHandler? handler)
         {
-            var client = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+            var old = _testClient;
+            _testClient = handler == null ? null : CreateClient(handler);
+            old?.Dispose();
+        }
+
+        /// <summary>For the suite: where downloads and the update marker go instead.</summary>
+        internal static string? DirectoryOverride { get; set; }
+
+        private static HttpClient CreateClient(HttpMessageHandler? handler)
+        {
+            var client = handler == null
+                ? new HttpClient { Timeout = TimeSpan.FromMinutes(5) }
+                : new HttpClient(handler, disposeHandler: false) { Timeout = TimeSpan.FromMinutes(5) };
             // GitHub refuses API requests without one.
             client.DefaultRequestHeaders.UserAgent.ParseAdd("ExplorerNative/" + CurrentText);
             client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
@@ -68,6 +88,7 @@ namespace ExplorerNative
         /// sync root, and nothing should be walking or writing beside that.
         /// </summary>
         public static string DownloadsDirectory =>
+            DirectoryOverride ??
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
                 "ExplorerNative", "Updates");
 
@@ -77,10 +98,65 @@ namespace ExplorerNative
         /// </summary>
         private static string MarkerPath => Path.Combine(DownloadsDirectory, "updating-to.txt");
 
+        /// <summary>What went wrong talking to GitHub, for a caller that wants to act on it.</summary>
+        public enum Problem
+        {
+            /// <summary>GitHub refused for now (403 or 429): too many checks from this address.</summary>
+            RateLimited,
+
+            /// <summary>404: the release list, or the file, is not where it should be.</summary>
+            NotFound,
+
+            /// <summary>GitHub answered, but not with something that can be read.</summary>
+            BadAnswer,
+
+            /// <summary>Any other refusal or server error.</summary>
+            Refused,
+        }
+
+        /// <summary>
+        /// A failure whose <see cref="Exception.Message"/> is already the whole
+        /// sentence to show. Deliberately not an HttpRequestException, which
+        /// callers prefix with "GitHub could not be reached".
+        /// </summary>
+        public sealed class UpdateException : Exception
+        {
+            public Problem Problem { get; }
+
+            public UpdateException(Problem problem, string message, Exception? inner = null)
+                : base(message, inner) => Problem = problem;
+        }
+
+        public const string RateLimitedMessage = "GitHub is limiting checks right now. Try again in a few minutes.";
+
+        /// <summary>
+        /// Turns a refusal into a sentence. <paramref name="notFound"/> is the
+        /// sentence for a 404, which depends on what was asked for.
+        /// </summary>
+        private static void ThrowIfRefused(HttpResponseMessage response, string notFound)
+        {
+            if (response.IsSuccessStatusCode) return;
+
+            int status = (int)response.StatusCode;
+
+            // Nothing here signs in, so a 403 from these public endpoints is the
+            // rate limit (or its secondary, abuse-detection form) whatever its
+            // headers say; 429 is the same thing under its own number.
+            if (status is 403 or 429) throw new UpdateException(Problem.RateLimited, RateLimitedMessage);
+            if (status == 404) throw new UpdateException(Problem.NotFound, notFound);
+
+            throw new UpdateException(Problem.Refused,
+                $"GitHub answered {status} ({response.ReasonPhrase ?? "an error"}). Try again later.");
+        }
+
+        private static UpdateException Unreadable(Exception inner) =>
+            new(Problem.BadAnswer, "GitHub's answer about the releases could not be read. Try again later.", inner);
+
         /// <summary>
         /// The latest release if it is newer than this build, otherwise null.
         /// Throws when GitHub cannot be reached or the release has nothing for
-        /// this architecture, so the caller can say why.
+        /// this architecture, so the caller can say why: an
+        /// <see cref="UpdateException"/> carries the sentence to show.
         /// </summary>
         public static async Task<Release?> CheckAsync(CancellationToken cancel = default)
         {
@@ -90,47 +166,67 @@ namespace ExplorerNative
             using var response = await Http.GetAsync(
                 $"https://api.github.com/repos/{Repository}/releases/latest", timeout.Token).ConfigureAwait(false);
 
-            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
-                return null; // No release published yet.
-
-            response.EnsureSuccessStatusCode();
+            // A 404 is not "you are up to date": it means the list itself was
+            // not there to compare against, and saying "latest" then is a guess.
+            ThrowIfRefused(response, "Could not find the list of Explorer Native releases on GitHub.");
 
             await using var body = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
-            using var json = await JsonDocument.ParseAsync(body, cancellationToken: timeout.Token).ConfigureAwait(false);
-            var root = json.RootElement;
+            JsonDocument json;
+            try { json = await JsonDocument.ParseAsync(body, cancellationToken: timeout.Token).ConfigureAwait(false); }
+            catch (JsonException ex) { throw Unreadable(ex); }
 
-            var tag = root.GetProperty("tag_name").GetString() ?? "";
-            if (!TryParseVersion(tag, out var latest))
-                throw new InvalidOperationException($"The latest release is tagged \"{tag}\", which is not a version number.");
-
-            if (latest <= Current) return null;
-
-            foreach (var asset in root.GetProperty("assets").EnumerateArray())
+            using (json)
             {
-                if (!string.Equals(asset.GetProperty("name").GetString(), AssetName, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                string? sha = null;
-                if (asset.TryGetProperty("digest", out var digest) && digest.ValueKind == JsonValueKind.String)
+                try
                 {
-                    var d = digest.GetString() ?? "";
-                    if (d.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)) sha = d[7..];
+                    var root = json.RootElement;
+
+                    var tag = root.GetProperty("tag_name").GetString() ?? "";
+                    if (!TryParseVersion(tag, out var latest))
+                        throw new UpdateException(Problem.BadAnswer,
+                            $"The latest release is tagged \"{tag}\", which is not a version number.");
+
+                    if (latest <= Current) return null;
+
+                    foreach (var asset in root.GetProperty("assets").EnumerateArray())
+                    {
+                        if (!string.Equals(asset.GetProperty("name").GetString(), AssetName, StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        string? sha = null;
+                        if (asset.TryGetProperty("digest", out var digest) && digest.ValueKind == JsonValueKind.String)
+                        {
+                            var d = digest.GetString() ?? "";
+                            if (d.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)) sha = d[7..];
+                        }
+
+                        var notes = root.TryGetProperty("body", out var b) && b.ValueKind == JsonValueKind.String
+                            ? (b.GetString() ?? "").Trim()
+                            : "";
+
+                        var url = asset.TryGetProperty("browser_download_url", out var u) && u.ValueKind == JsonValueKind.String
+                            ? u.GetString()
+                            : null;
+                        long size = asset.TryGetProperty("size", out var s) && s.ValueKind == JsonValueKind.Number &&
+                                    s.TryGetInt64(out var n) ? n : -1;
+
+                        if (string.IsNullOrEmpty(url) || size <= 0)
+                            throw new UpdateException(Problem.BadAnswer,
+                                $"Version {Text(latest)} is out, but GitHub did not say " +
+                                (string.IsNullOrEmpty(url) ? "where to download it" : "how big the download is") +
+                                ". Try again later.");
+
+                        return new Release(latest, notes, url, size, sha);
+                    }
+
+                    throw new UpdateException(Problem.NotFound,
+                        $"Version {Text(latest)} is out, but it has no {AssetName} for this computer yet.");
                 }
-
-                var notes = root.TryGetProperty("body", out var b) && b.ValueKind == JsonValueKind.String
-                    ? (b.GetString() ?? "").Trim()
-                    : "";
-
-                return new Release(
-                    latest,
-                    notes,
-                    asset.GetProperty("browser_download_url").GetString()!,
-                    asset.GetProperty("size").GetInt64(),
-                    sha);
+                catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException or FormatException)
+                {
+                    throw Unreadable(ex);
+                }
             }
-
-            throw new InvalidOperationException(
-                $"Version {Text(latest)} is out, but it has no {AssetName} for this computer yet.");
         }
 
         /// <summary>One published version and its notes, for Help, Changelog.</summary>
@@ -142,36 +238,89 @@ namespace ExplorerNative
         /// </summary>
         public static async Task<List<ReleaseNotes>> AllReleasesAsync(CancellationToken cancel = default)
         {
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);
-            timeout.CancelAfter(TimeSpan.FromSeconds(20));
-
-            using var response = await Http.GetAsync(
-                $"https://api.github.com/repos/{Repository}/releases?per_page=100", timeout.Token).ConfigureAwait(false);
-            response.EnsureSuccessStatusCode();
-
-            await using var body = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
-            using var json = await JsonDocument.ParseAsync(body, cancellationToken: timeout.Token).ConfigureAwait(false);
-
             var result = new List<ReleaseNotes>();
-            foreach (var release in json.RootElement.EnumerateArray())
+            string? url = $"https://api.github.com/repos/{Repository}/releases?per_page=100";
+
+            // GitHub hands the list out a hundred at a time and says where the
+            // next hundred are in the Link header. The first page alone was the
+            // whole changelog until the hundred-and-first release.
+            for (int page = 0; url != null && page < MaxReleasePages; page++)
             {
-                if (release.TryGetProperty("draft", out var draft) && draft.GetBoolean()) continue;
-                if (release.TryGetProperty("prerelease", out var pre) && pre.GetBoolean()) continue;
-                if (!TryParseVersion(release.GetProperty("tag_name").GetString() ?? "", out var version)) continue;
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+                timeout.CancelAfter(TimeSpan.FromSeconds(20));
 
-                DateTime? published = null;
-                if (release.TryGetProperty("published_at", out var at) && at.ValueKind == JsonValueKind.String &&
-                    DateTime.TryParse(at.GetString(), CultureInfo.InvariantCulture,
-                        DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var when))
-                    published = DateTime.SpecifyKind(when, DateTimeKind.Utc);
+                using var response = await Http.GetAsync(url, timeout.Token).ConfigureAwait(false);
+                ThrowIfRefused(response, "Could not find the list of Explorer Native releases on GitHub.");
 
-                var notes = release.TryGetProperty("body", out var b) && b.ValueKind == JsonValueKind.String
-                    ? b.GetString() ?? ""
-                    : "";
-                result.Add(new ReleaseNotes(version, published, notes));
+                await using var body = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
+                JsonDocument json;
+                try { json = await JsonDocument.ParseAsync(body, cancellationToken: timeout.Token).ConfigureAwait(false); }
+                catch (JsonException ex) { throw Unreadable(ex); }
+
+                using (json)
+                {
+                    if (json.RootElement.ValueKind != JsonValueKind.Array) throw Unreadable(new FormatException("not a list"));
+                    foreach (var release in json.RootElement.EnumerateArray())
+                    {
+                        // One release GitHub describes oddly is left out rather
+                        // than costing the whole changelog.
+                        try
+                        {
+                            if (release.TryGetProperty("draft", out var draft) && draft.ValueKind == JsonValueKind.True) continue;
+                            if (release.TryGetProperty("prerelease", out var pre) && pre.ValueKind == JsonValueKind.True) continue;
+                            if (!release.TryGetProperty("tag_name", out var tag) || tag.ValueKind != JsonValueKind.String ||
+                                !TryParseVersion(tag.GetString() ?? "", out var version)) continue;
+
+                            DateTime? published = null;
+                            if (release.TryGetProperty("published_at", out var at) && at.ValueKind == JsonValueKind.String &&
+                                DateTime.TryParse(at.GetString(), CultureInfo.InvariantCulture,
+                                    DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var when))
+                                published = DateTime.SpecifyKind(when, DateTimeKind.Utc);
+
+                            var notes = release.TryGetProperty("body", out var b) && b.ValueKind == JsonValueKind.String
+                                ? b.GetString() ?? ""
+                                : "";
+                            result.Add(new ReleaseNotes(version, published, notes));
+                        }
+                        catch (InvalidOperationException) { }
+                    }
+                }
+
+                url = NextPage(response);
             }
 
             return result.OrderByDescending(r => r.Version).ToList();
+        }
+
+        /// <summary>
+        /// How many pages of a hundred releases the changelog reads. A bound, so
+        /// a Link header that points back at itself cannot loop for ever.
+        /// </summary>
+        internal const int MaxReleasePages = 10;
+
+        /// <summary>
+        /// The rel="next" address from a Link header, or null. Only ever another
+        /// page of GitHub's API: the header is followed without a person seeing it.
+        /// </summary>
+        internal static string? NextPage(HttpResponseMessage response)
+        {
+            if (!response.Headers.TryGetValues("Link", out var values)) return null;
+
+            foreach (var value in values)
+            foreach (var part in value.Split(','))
+            {
+                var pieces = part.Split(';');
+                if (pieces.Length < 2) continue;
+                if (!pieces.Skip(1).Any(p => p.Trim().Replace(" ", "")
+                        .Equals("rel=\"next\"", StringComparison.OrdinalIgnoreCase))) continue;
+
+                var target = pieces[0].Trim().TrimStart('<').TrimEnd('>');
+                if (Uri.TryCreate(target, UriKind.Absolute, out var uri) &&
+                    uri.Scheme == Uri.UriSchemeHttps &&
+                    uri.Host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase))
+                    return uri.AbsoluteUri;
+            }
+            return null;
         }
 
         /// <summary>
@@ -196,7 +345,7 @@ namespace ExplorerNative
             using (var response = await Http.GetAsync(release.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, limit.Token)
                        .ConfigureAwait(false))
             {
-                response.EnsureSuccessStatusCode();
+                ThrowIfRefused(response, $"The download for version {Text(release.Version)} is no longer on GitHub.");
                 await using var source = await response.Content.ReadAsStreamAsync(limit.Token).ConfigureAwait(false);
                 await using var file = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None);
                 await source.CopyToAsync(file, limit.Token).ConfigureAwait(false);
@@ -247,12 +396,17 @@ namespace ExplorerNative
             {
                 if (!File.Exists(MarkerPath)) return null;
                 var text = ProtectedFile.ReadAllText(MarkerPath).Trim();
-                File.Delete(MarkerPath);
                 return TryParseVersion(text, out var wanted) && Current >= wanted
                     ? $"Explorer Native updated to version {CurrentText}"
                     : null;
             }
             catch { return null; }
+            finally
+            {
+                // Whatever it held. A marker that could not be read was read
+                // again, and failed again, on every launch after.
+                TryDelete(MarkerPath);
+            }
         }
 
         /// <summary>

@@ -869,17 +869,107 @@ namespace ExplorerNative
 
         // ---------- Reading ----------
 
-        public static IReadOnlyList<ArchiveEntryInfo> List(string archivePath, CancellationToken token)
+        /// <summary>
+        /// Opens a zip for reading, with names decoded the way the writer meant
+        /// them, and a plain sentence when it cannot be opened at all.
+        /// </summary>
+        internal static ZipArchive Open(Stream file)
+        {
+            try { return new ZipArchive(file, ZipArchiveMode.Read, leaveOpen: true, NameEncoding.Instance); }
+            catch (InvalidDataException)
+            {
+                throw new InvalidDataException(
+                    "This zip is damaged or incomplete, and nothing in it could be extracted.");
+            }
+        }
+
+        /// <summary>
+        /// How a name without the UTF-8 flag is read.
+        ///
+        /// A name with bit 11 set is UTF-8 and ZipArchive decodes it itself. One
+        /// without is in the code page of whoever made it — and the zips made by
+        /// Windows' own tar, by Explorer's "Send to compressed folder" and by
+        /// older 7-Zip are all in the OEM code page: bsdtar writes "café" as
+        /// 63 61 66 82, which is CP437. Decoded as UTF-8, as it was, every such
+        /// name came out with a replacement character in it.
+        ///
+        /// Bytes that are valid UTF-8 are still read as UTF-8, because some tools
+        /// write UTF-8 and forget the flag, and a CP437 name that happens to be
+        /// valid UTF-8 is vanishingly unlikely.
+        /// </summary>
+        internal sealed class NameEncoding : Encoding
+        {
+            public static readonly NameEncoding Instance = new();
+
+            private static readonly UTF8Encoding Strict = new(false, throwOnInvalidBytes: true);
+            private static readonly Lazy<Encoding> Oem = new(() =>
+            {
+                try
+                {
+                    Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+                    int page = 437;
+                    try { page = (int)GetOEMCP(); } catch { }
+                    try { return Encoding.GetEncoding(page); }
+                    catch { return Encoding.GetEncoding(437); }
+                }
+                catch { return Encoding.Latin1; }
+            });
+
+            [System.Runtime.InteropServices.DllImport("kernel32.dll")]
+            private static extern uint GetOEMCP();
+
+            private static Encoding For(ReadOnlySpan<byte> bytes)
+            {
+                try { Strict.GetCharCount(bytes); return Strict; }
+                catch (DecoderFallbackException) { return Oem.Value; }
+            }
+
+            public override string GetString(byte[] bytes, int index, int count) =>
+                For(bytes.AsSpan(index, count)).GetString(bytes, index, count);
+
+            public override int GetByteCount(char[] chars, int index, int count) => UTF8.GetByteCount(chars, index, count);
+            public override int GetBytes(char[] chars, int charIndex, int charCount, byte[] bytes, int byteIndex) =>
+                UTF8.GetBytes(chars, charIndex, charCount, bytes, byteIndex);
+            public override int GetCharCount(byte[] bytes, int index, int count) =>
+                For(bytes.AsSpan(index, count)).GetCharCount(bytes, index, count);
+            public override int GetChars(byte[] bytes, int byteIndex, int byteCount, char[] chars, int charIndex) =>
+                For(bytes.AsSpan(byteIndex, byteCount)).GetChars(bytes, byteIndex, byteCount, chars, charIndex);
+            public override int GetMaxByteCount(int charCount) => UTF8.GetMaxByteCount(charCount);
+            public override int GetMaxCharCount(int byteCount) => byteCount + 1;
+        }
+
+        /// <summary>What is said about a zip whose every file needs a password.</summary>
+        public const string ProtectedMessage =
+            "This zip is password-protected. Explorer Native can't open protected zips.";
+
+        /// <summary>One entry that needs a password, in a zip where others do not.</summary>
+        private const string ProtectedEntry = "it is password-protected, which Explorer Native can't open";
+
+        public static IReadOnlyList<ArchiveEntryInfo> List(string archivePath, CancellationToken token) =>
+            List(archivePath, token, out _, out _);
+
+        /// <param name="files">How many entries are files rather than folders.</param>
+        /// <param name="locked">How many of those need a password.</param>
+        public static IReadOnlyList<ArchiveEntryInfo> List(string archivePath, CancellationToken token,
+            out int files, out int locked)
         {
             using var file = new FileStream(archivePath, FileMode.Open, FileAccess.Read,
                 FileShare.ReadWrite, 1 << 16);
-            using var archive = new ZipArchive(file, ZipArchiveMode.Read, leaveOpen: true, Encoding.UTF8);
+            using var archive = Open(file);
 
             var entries = new List<ArchiveEntryInfo>(archive.Entries.Count);
+            files = 0;
+            locked = 0;
 
             foreach (var entry in archive.Entries)
             {
                 token.ThrowIfCancellationRequested();
+
+                if (!entry.FullName.EndsWith('/') && !entry.FullName.EndsWith('\\'))
+                {
+                    files++;
+                    if (entry.IsEncrypted) locked++;
+                }
 
                 // A directory is an entry whose name ends in a slash and whose
                 // Name — the last segment — is therefore empty. Not every zip
@@ -919,7 +1009,7 @@ namespace ExplorerNative
         {
             using var probe = new FileStream(archivePath, FileMode.Open, FileAccess.Read,
                 FileShare.ReadWrite, 1 << 16);
-            using var index = new ZipArchive(probe, ZipArchiveMode.Read, leaveOpen: true, Encoding.UTF8);
+            using var index = Open(probe);
 
             int count = index.Entries.Count;
             if (count == 0) return 0;
@@ -928,6 +1018,12 @@ namespace ExplorerNative
             // writing the files inside works, but it loses every empty folder in
             // the archive — the same hole the copy engine had, arriving from the
             // other direction.
+            //
+            // And counted in what was extracted, as the tar reader and the
+            // system tar's both count them: "Extracted 7 items" from a zip and
+            // "Extracted 9 items" from the same tree as a .tar.gz was the same
+            // extraction described two ways.
+            int folders = 0;
             foreach (var entry in index.Entries)
             {
                 token.ThrowIfCancellationRequested();
@@ -944,7 +1040,7 @@ namespace ExplorerNative
                     continue;
                 }
 
-                try { Directory.CreateDirectory(target); }
+                try { Directory.CreateDirectory(target); folders++; }
                 catch (Exception ex) { lock (errors) errors.Add($"{entry.FullName}: {ex.Message}"); }
             }
 
@@ -967,6 +1063,12 @@ namespace ExplorerNative
             int done = 0;
             int lanes = Math.Clamp(threads, 1, Math.Max(1, count));
 
+            // Which entries got as far as being written or refused. Every
+            // replacement is recorded when its destination is settled above, so a
+            // cancelled extraction reported every one it had planned — files
+            // never touched announced as replaced. The rest are taken back.
+            var settled = new int[count];
+
             var workers = new Task[lanes];
             for (int lane = 0; lane < lanes; lane++)
             {
@@ -974,7 +1076,7 @@ namespace ExplorerNative
                 {
                     using var file = new FileStream(archivePath, FileMode.Open, FileAccess.Read,
                         FileShare.ReadWrite, 1 << 16);
-                    using var archive = new ZipArchive(file, ZipArchiveMode.Read, leaveOpen: true, Encoding.UTF8);
+                    using var archive = Open(file);
 
                     var buffer = new byte[1 << 20];
 
@@ -997,6 +1099,15 @@ namespace ExplorerNative
 
                         reporter.Starting(entry.FullName);
 
+                        if (entry.IsEncrypted)
+                        {
+                            lock (errors) errors.Add($"{entry.FullName}: {ProtectedEntry}");
+                            rules.Withdraw(target);
+                            Volatile.Write(ref settled[at], 1);
+                            reporter.Finished(0);
+                            continue;
+                        }
+
                         try
                         {
                             // Checked against the archive's own CRC and length
@@ -1009,11 +1120,28 @@ namespace ExplorerNative
                                 uint crc = Crc32.Seed;
                                 long length = 0;
 
-                                using var source = entry.Open();
+                                // Open refuses a method .NET has no decoder for;
+                                // Read refuses data that will not decompress. Both
+                                // say "unsupported compression method", which is
+                                // right for the first and misleading for the second.
+                                Stream source;
+                                try { source = entry.Open(); }
+                                catch (InvalidDataException)
+                                {
+                                    throw new NotSupportedException(
+                                        "it is compressed in a way Explorer Native can't read");
+                                }
+
+                                using var opened = source;
                                 while (true)
                                 {
                                     token.ThrowIfCancellationRequested();
-                                    int got = source.Read(buffer, 0, buffer.Length);
+                                    int got;
+                                    try { got = source.Read(buffer, 0, buffer.Length); }
+                                    catch (InvalidDataException)
+                                    {
+                                        throw new InvalidDataException("it is damaged in the archive");
+                                    }
                                     if (got <= 0) break;
                                     output.Write(buffer, 0, got);
                                     crc = Crc32.Append(crc, buffer.AsSpan(0, got));
@@ -1034,6 +1162,7 @@ namespace ExplorerNative
                             catch { }
 
                             Interlocked.Increment(ref done);
+                            Volatile.Write(ref settled[at], 1);
                             reporter.Finished(0);
                         }
                         catch (OperationCanceledException) { throw; }
@@ -1041,6 +1170,7 @@ namespace ExplorerNative
                         {
                             lock (errors) errors.Add($"{entry.FullName}: {ex.Message}");
                             rules.Withdraw(target);
+                            Volatile.Write(ref settled[at], 1);
                             reporter.Finished(0);
                         }
                     }
@@ -1051,11 +1181,16 @@ namespace ExplorerNative
             catch (AggregateException bundle)
             {
                 if (bundle.InnerExceptions.Any(e => e is OperationCanceledException))
+                {
+                    for (int i = 0; i < count; i++)
+                        if (targets[i] is { } unwritten && Volatile.Read(ref settled[i]) == 0)
+                            rules.Withdraw(unwritten);
                     throw new OperationCanceledException(token);
+                }
                 throw bundle.InnerExceptions[0];
             }
 
-            return done;
+            return done + folders;
         }
     }
 }

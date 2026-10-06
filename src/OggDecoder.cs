@@ -50,6 +50,9 @@ namespace ExplorerNative
 
         private Stream? _source;
         private StreamDecoder? _vorbis;
+
+        /// <summary>Where a Vorbis stream ends, in its own samples; zero when unknown. See <see cref="DecodeSome"/>.</summary>
+        private long _vorbisEnd;
         private OggOpusReader? _opus;
         private IResampler? _resampler;
 
@@ -365,6 +368,7 @@ namespace ExplorerNative
                 catch { }
 
                 _vorbis = reader;
+                _vorbisEnd = packets.GetGranuleCount();
                 _sourceRate = reader.SampleRate;
                 _sourceChannels = reader.Channels;
                 Duration = reader.TotalTime.TotalSeconds;
@@ -511,10 +515,25 @@ namespace ExplorerNative
                 // A damaged packet makes NVorbis throw, and this runs on the pump
                 // thread, which has nothing above it to catch: the application
                 // exited. A packet that cannot be decoded ends the track instead.
+                //
+                // The end is trimmed here, to the last page's granule position,
+                // rather than by NVorbis — see OggVorbisPackets.ReadPage for the
+                // damaged granule that made its own trim spin for ever.
+                long end = _vorbisEnd;
+                long at;
                 int floats;
-                try { floats = _vorbis.Read(_decoded, 0, need); }
-                catch { floats = 0; }
-                _decodedFrames = floats / _sourceChannels;
+                try
+                {
+                    at = _vorbis.SamplePosition;
+                    if (end > 0 && at >= end) floats = 0;
+                    else floats = _vorbis.Read(_decoded, 0, need);
+                }
+                catch { at = 0; floats = 0; }
+
+                int got = floats / _sourceChannels;
+                if (end > 0 && at + got > end) got = (int)Math.Max(0, end - at);
+
+                _decodedFrames = got;
                 return _decodedFrames;
             }
 
@@ -860,6 +879,17 @@ namespace ExplorerNative
                 }
                 catch { return false; }
             }
+        }
+
+        /// <summary>
+        /// Closes the file without waiting for the decoder's lock, for a pump
+        /// that did not come back when told to stop. Its next read finds the
+        /// stream closed, which <see cref="DecodeSome"/> takes as the end.
+        /// </summary>
+        public void ReleaseSource()
+        {
+            var source = _source;
+            if (source is FileStream) { try { source.Dispose(); } catch { } }
         }
 
         public void Dispose()

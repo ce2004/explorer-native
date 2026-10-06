@@ -27,6 +27,9 @@ namespace ExplorerNative
 
         public ConnectUploads(string root) => _root = root;
 
+        /// <summary>How long a chunk's body may go without a byte before it is given up on.</summary>
+        public TimeSpan StallAfter { get; set; } = TimeSpan.FromSeconds(30);
+
         public static string DefaultRoot => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ExplorerNative", "connect-uploads");
 
@@ -82,9 +85,21 @@ namespace ExplorerNative
                 await using var file = new FileStream(DataPath(id), FileMode.Append, FileAccess.Write, FileShare.Read,
                     1 << 20, useAsync: true);
                 var buffer = new byte[1 << 20];
-                int got;
-                while ((got = await body.ReadAsync(buffer, token)) > 0)
+                // A body that stops arriving holds this upload's gate, and every retry meets "still arriving"
+                // until the dead socket is noticed, which took over a minute. No byte for StallAfter and it is
+                // given up on: what landed stays, and the gate is free for the next chunk.
+                using var stall = CancellationTokenSource.CreateLinkedTokenSource(token);
+                while (true)
                 {
+                    stall.CancelAfter(StallAfter);
+                    int got;
+                    try { got = await body.ReadAsync(buffer, stall.Token); }
+                    catch (Exception e) when (e is OperationCanceledException or IOException &&
+                                              stall.IsCancellationRequested && !token.IsCancellationRequested)
+                    {
+                        throw new TimeoutException("the chunk stopped arriving");
+                    }
+                    if (got <= 0) break;
                     if (file.Position + got > meta.Size)
                         throw new ConnectException(400, $"That is more than the {meta.Size} bytes the upload said it would be.", file.Position);
                     await file.WriteAsync(buffer.AsMemory(0, got), token);

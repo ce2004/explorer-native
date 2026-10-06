@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Globalization;
 using System.Linq;
 using System.Text.RegularExpressions;
 using System.Windows.Forms;
@@ -95,11 +96,19 @@ namespace ExplorerNative
             };
         }
 
+        // Private-use characters standing in for code spans and escaped
+        // punctuation while the Markdown is taken out; nothing in real notes
+        // uses them.
+        private static readonly string CodeOpen = ((char)0xE100).ToString();
+        private static readonly string CodeClose = ((char)0xE101).ToString();
+        private const char EscapeBase = (char)0xE000;
+
         /// <summary>
         /// Release notes as plain rows: one per line, list markers, emphasis,
         /// headings and links' Markdown taken out, the "Full Changelog" link and
         /// the commit attribution lines dropped.
         /// </summary>
+
         internal static List<string> Changes(string notes)
         {
             var result = new List<string>();
@@ -111,13 +120,35 @@ namespace ExplorerNative
                 if (line.StartsWith("Co-Authored-By", StringComparison.OrdinalIgnoreCase)) continue;
                 if (line.StartsWith("Claude-Session", StringComparison.OrdinalIgnoreCase)) continue;
 
-                line = Regex.Replace(line, @"\[([^\]]*)\]\([^)]*\)", "$1");   // [text](url) -> text
-                line = Regex.Replace(line, @"^(#+|[-*+]|\d+\.)\s+", "");       // headings, list markers
+                // Code spans first, kept exactly as written: nothing inside one
+                // is Markdown, backslashes included.
+                var code = new List<string>();
+                line = Regex.Replace(line, @"`([^`]*)`", m =>
+                {
+                    code.Add(m.Groups[1].Value);
+                    return CodeOpen + (code.Count - 1).ToString(CultureInfo.InvariantCulture) + CodeClose;
+                });
+
+                // A backslash before punctuation means the character itself, so
+                // \*e\* is "*e*" and not emphasis. Hidden from the rules below
+                // and put back at the end.
+                line = Regex.Replace(line, @"\\([!-/:-@\[-`{-~])", m => ((char)(EscapeBase + m.Groups[1].Value[0])).ToString());
+
+                // [text](url) and ![alt](url) -> text, with the parentheses in an
+                // address counted, so [x](u/(y)) does not leave ")" behind.
+                line = Regex.Replace(line, @"!?\[([^\]]*)\]\((?>[^()]+|\((?<d>)|\)(?<-d>))*(?(d)(?!))\)", "$1");
+                // Headings and list markers, and a task list's box after one.
+                line = Regex.Replace(line, @"^(#+|[-*+]|\d+[.)])\s+(\[[ xX]\]\s+)?", "");
                 // Only Markdown pairs, so "C#" and "track #3" survive.
                 line = Regex.Replace(line, @"\*\*(.+?)\*\*", "$1");
-                line = Regex.Replace(line, @"__(.+?)__", "$1");
-                line = Regex.Replace(line, @"`([^`]*)`", "$1");
+                // Underscores only where a word starts and ends, so __init__.py
+                // and snake__case keep theirs.
+                line = Regex.Replace(line, @"(?<=^|[\s(\[""'])__(?=\S)(.+?)(?<=\S)__(?=$|\s|[,;:!?)\]""']|\.(?:\s|$))", "$1");
                 line = Regex.Replace(line, @"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", "$1");
+
+                line = Regex.Replace(line, CodeOpen + @"(\d+)" + CodeClose,
+                    m => code[int.Parse(m.Groups[1].Value, CultureInfo.InvariantCulture)]);
+                line = new string(line.Select(c => c >= EscapeBase && c < EscapeBase + 128 ? (char)(c - EscapeBase) : c).ToArray());
                 line = line.Trim();
                 if (line.Length == 0) continue;
                 if (line.Equals("What's Changed", StringComparison.OrdinalIgnoreCase)) continue;

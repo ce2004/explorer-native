@@ -7,7 +7,7 @@ namespace ExplorerNative
     /// <summary>
     /// Every audio shortcut, on its own.
     ///
-    /// Eighteen actions is a long page to walk past on the way to anything else,
+    /// Over twenty actions is a long page to walk past on the way to anything else,
     /// so the audio settings keep one button and the keys live here. It is also
     /// the only place that can tell whether a combination is already taken:
     /// checking needs every box at once, and a page that is only part of a larger
@@ -131,10 +131,15 @@ namespace ExplorerNative
             return null;
         }
 
-        private void Apply()
+        /// <summary>
+        /// What OK does. Only a box somebody pressed keys in is written: the rest
+        /// keep the text the file has, so OK neither blanks a shortcut this build
+        /// cannot read nor rewrites "ctrl+alt+m" as "Ctrl+Alt+M".
+        /// </summary>
+        internal void Apply()
         {
             foreach (var action in AudioActions.All)
-                if (_boxes.TryGetValue(action.Action, out var box))
+                if (_boxes.TryGetValue(action.Action, out var box) && box.Changed)
                     action.Set(_working, box.Value.ToString());
         }
 

@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Threading.Tasks;
 
 namespace ExplorerNative
 {
@@ -105,6 +106,47 @@ namespace ExplorerNative
             if (path.StartsWith(@"\\?\", StringComparison.Ordinal)) return path;
             if (path.StartsWith(@"\\", StringComparison.Ordinal)) return @"\\?\UNC\" + path[2..];
             return @"\\?\" + path;
+        }
+
+        /// <summary>
+        /// The path to hand to a filesystem call so that it reaches exactly this
+        /// entry: the literal form when any part of it ends in a dot or a space,
+        /// and the path untouched otherwise.
+        ///
+        /// Any part, not only the last. Inside a folder called "fold." every
+        /// ordinary path silently means "fold", so a copy walked the sibling
+        /// folder's files; and "report." beside "report" had a move take the
+        /// wrong one. Only fully qualified paths are converted, because the
+        /// literal form resolves nothing — no current directory, no "..".
+        /// </summary>
+        public static string ExactPath(string path)
+        {
+            if (string.IsNullOrEmpty(path) || path.StartsWith(@"\\?\", StringComparison.Ordinal)) return path;
+
+            bool needs = false;
+            foreach (var part in path.Split('\\', '/'))
+            {
+                if (part.Length == 0 || part == "." || part == "..") continue;
+                if (part[^1] == '.' || part[^1] == ' ') { needs = true; break; }
+            }
+            if (!needs) return path;
+
+            try { if (!Path.IsPathFullyQualified(path)) return path; }
+            catch { return path; }
+
+            return LiteralPath(path.Replace('/', '\\'));
+        }
+
+        /// <summary>
+        /// The ordinary form of a path that came back from a call given
+        /// <see cref="ExactPath"/>, so names and messages read normally. Feed it
+        /// back through <c>ExactPath</c> before using it again.
+        /// </summary>
+        public static string PlainPath(string path)
+        {
+            if (path.StartsWith(@"\\?\UNC\", StringComparison.Ordinal)) return @"\\" + path[8..];
+            if (path.StartsWith(@"\\?\", StringComparison.Ordinal)) return path[4..];
+            return path;
         }
 
         public static string UniqueAmong(string desired, Func<string, bool> taken, bool folder)
@@ -217,32 +259,57 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Orders two entries by name, falling back to the full path.
+        /// Orders two entries by name the way File Explorer does, falling back to
+        /// the full path.
+        ///
+        /// StrCmpLogicalW is Explorer's own comparison: numbers inside a name
+        /// compare as numbers, so "Track 2" comes before "Track 10" and this
+        /// application's own "file (2).txt" before "file (10).txt"; and it is
+        /// linguistic, so "Éclair" sorts among the E names rather than after
+        /// "Zebra" and "~tilde", where an ordinal comparison put every accented
+        /// and every CJK name. Accents are a secondary difference to it, which is
+        /// the same folding <see cref="TypeAhead"/> applies, so typing "e" lands
+        /// on the first E name in this order whether or not it has an accent.
         ///
         /// The fallback is what makes the order total. List.Sort is unstable, so
-        /// without a decisive tie-break two names differing only in case — which
-        /// are genuinely two different files — swapped places between refreshes of
-        /// the same unchanged folder.
+        /// without a decisive tie-break two names the comparison calls equal —
+        /// differing only in case, or only in an accent — swapped places between
+        /// refreshes of the same unchanged folder.
         /// </summary>
         public static int CompareNames(string aName, string aPath, string bName, string bPath)
         {
-            int c = string.Compare(aName, bName, StringComparison.OrdinalIgnoreCase);
+            int c = StrCmpLogicalW(aName, bName);
             return c != 0 ? c : string.CompareOrdinal(aPath, bPath);
         }
 
+        [System.Runtime.InteropServices.DllImport("shlwapi.dll",
+            CharSet = System.Runtime.InteropServices.CharSet.Unicode, ExactSpelling = true)]
+        private static extern int StrCmpLogicalW(string a, string b);
+
         /// <summary>
-        /// Orders two names by their extension.
+        /// The column a list is actually sorted by.
         ///
-        /// Compared as spans over the original strings rather than as the rendered
-        /// "FLAC file" label. Sorting is n log n comparisons, and building two
-        /// strings inside each one meant sorting a twenty-thousand file folder by
-        /// type allocated over half a million strings for an answer that the
-        /// extension alone already gives.
+        /// There is no Type column, so a settings file still saying Type sorts by
+        /// name: an order by something the row does not show is an order nobody
+        /// can hear.
         /// </summary>
-        public static int CompareExtensions(string aName, string bName) =>
-            MemoryExtensions.CompareTo(
-                Path.GetExtension(aName.AsSpan()),
-                Path.GetExtension(bName.AsSpan()),
-                StringComparison.OrdinalIgnoreCase);
+        public static SortColumn SortsAs(SortColumn column) =>
+            column == SortColumn.Type ? SortColumn.Name : column;
+
+        /// <summary>
+        /// The sentence for an update that could not be checked for, downloaded
+        /// or started.
+        ///
+        /// The updater's own refusals are already sentences ("GitHub is limiting
+        /// requests…") and are shown as they are. Only a network failure gets
+        /// "GitHub could not be reached" in front, and a timeout says so.
+        /// </summary>
+        public static string PlainUpdateFailure(Exception ex) => ex switch
+        {
+            Updater.UpdateException => ex.Message,
+            TaskCanceledException or OperationCanceledException => "GitHub did not answer in time.",
+            System.Net.Http.HttpRequestException => "GitHub could not be reached: " + ex.Message,
+            _ => ex.Message,
+        };
     }
 }

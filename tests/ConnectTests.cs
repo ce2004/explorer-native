@@ -623,6 +623,7 @@ namespace ExplorerNative
                 var r = await Send(http, HttpMethod.Get, "/api/clipboard/image");
                 var got = await r.Content.ReadAsByteArrayAsync();
                 Check("GET image is the PNG", (int)r.StatusCode == 200 && r.Content.Headers.ContentType?.MediaType == "image/png" && got.SequenceEqual(png));
+                Check("and never sniffed", Header(r, "X-Content-Type-Options") == "nosniff");
                 (_, body) = await CallAt(http, HttpMethod.Get, "/api/clipboard");
                 Check("and the state says image, with its size", Prop(body, "kind") == "image" && Prop(body, "imageBytes") == png.Length.ToString(), body.ToString());
 
@@ -654,6 +655,11 @@ namespace ExplorerNative
                 Equal("a name that could walk a path is 400", "400", status.ToString());
                 (status, _) = await CallAt(http, HttpMethod.Post, "/api/clipboard/send/commit", new { batch = "never" });
                 Equal("committing a batch nothing was sent in is 404", "404", status.ToString());
+                (status, body) = await CallAt(http, HttpMethod.Post, "/api/clipboard/send?name=empty.txt", content: new ByteArrayContent(Array.Empty<byte>()));
+                var emptySent = Prop(body, "path");
+                Check("an empty file can be sent too, and is put on as an empty file",
+                    status == 200 && System.IO.File.Exists(emptySent) && new FileInfo(emptySent).Length == 0 && fake.FilesSet.Last().SequenceEqual(new[] { emptySent }),
+                    $"{status} {body}");
 
                 // Gone with the old phone app: no history, no long poll, no ping, no stat.
                 foreach (var gone in new[] { "/api/clipboard/history", "/api/clipboard/wait?since=0", "/api/ping", "/api/stat?path=C%3A%5C" })
@@ -665,7 +671,7 @@ namespace ExplorerNative
                 foreach (var dir in Directory.GetDirectories(sends)) Directory.SetLastWriteTimeUtc(dir, DateTime.UtcNow.AddDays(-8));
                 var fresh = Directory.CreateDirectory(Path.Combine(sends, "fresh"));
                 Check("sent files are swept after seven days, and newer ones kept",
-                    server.SweepClipboardSends(ConnectServer.ClipboardSendsKeptFor) == 2 && Directory.GetDirectories(sends).Single() == fresh.FullName);
+                    server.SweepClipboardSends(ConnectServer.ClipboardSendsKeptFor) == 3 && Directory.GetDirectories(sends).Single() == fresh.FullName);
             }
             finally
             {
@@ -759,6 +765,37 @@ namespace ExplorerNative
                 Check("finish into a local folder puts it in place and answers the path",
                     status == 200 && Prop(body, "path") == @"C:\b\big.bin" && fake.Placed == Encoding.UTF8.GetString(payload), $"{status} {body}");
                 Check("and the partial is gone", !Directory.Exists(Path.Combine(store, id)));
+                var finishedPath = Prop(body, "path");
+                (status, body) = await CallAt(http, HttpMethod.Post, "/api/upload/finish", new { id });
+                Check("finishing again, because the answer was lost, gives the same answer and places nothing twice",
+                    status == 200 && Prop(body, "path") == finishedPath, $"{status} {body}");
+
+                // A chunk whose body stops arriving: the upload is held only until it is given up on, what
+                // landed is kept, and the stalled connection is closed.
+                server.UploadStallAfter = TimeSpan.FromSeconds(1);
+                (_, body) = await CallAt(http, HttpMethod.Post, "/api/upload/start", new { folder = @"C:\b", name = "stall.bin", size = 400 });
+                var stallId = Prop(body, "id");
+                using (var stalled = new TcpClient())
+                {
+                    stalled.Connect(IPAddress.Loopback, port);
+                    var ss = stalled.GetStream();
+                    ss.Write(Encoding.ASCII.GetBytes($"PUT /api/upload/chunk?id={stallId}&offset=0 HTTP/1.1\r\nHost: x\r\nX-Connect-Code: {Code}\r\nContent-Length: 400\r\n\r\n"));
+                    ss.Write(payload, 0, 100);
+                    ss.Flush();
+                    await Task.Delay(200);
+                    (status, body) = await CallAt(http, HttpMethod.Put, $"/api/upload/chunk?id={stallId}&offset=100", content: new ByteArrayContent(payload[100..400]));
+                    Check("while the stalled chunk holds it, another is 409, still arriving", status == 409, $"{status} {body}");
+                    await Task.Delay(1500);
+                    (status, body) = await CallAt(http, HttpMethod.Put, $"/api/upload/chunk?id={stallId}&offset=100", content: new ByteArrayContent(payload[100..400]));
+                    Check("once the stall is given up on, the upload carries on from what landed",
+                        status == 200 && Prop(body, "received") == "400", $"{status} {body}");
+                    stalled.ReceiveTimeout = 5000;
+                    int closed;
+                    try { closed = ss.Read(new byte[64], 0, 64); } catch (IOException) { closed = 0; }
+                    Check("and the stalled connection was closed", closed == 0, closed.ToString());
+                }
+                server.UploadStallAfter = TimeSpan.FromSeconds(30);
+                await CallAt(http, HttpMethod.Post, "/api/upload/cancel", new { id = stallId });
 
                 (_, body) = await CallAt(http, HttpMethod.Post, "/api/upload/start", new { folder = @"C:\b", name = "x.bin", size = 5 });
                 (status, body) = await CallAt(http, HttpMethod.Put, $"/api/upload/chunk?id={Prop(body, "id")}&offset=0", content: new ByteArrayContent(new byte[9]));
@@ -925,6 +962,25 @@ namespace ExplorerNative
                     System.IO.File.WriteAllBytes(junk, new byte[5000]);
                     r = await Send(http, HttpMethod.Get, "/api/audio?path=" + Uri.EscapeDataString(junk));
                     Equal("audio of something no decoder takes is 500, with a sentence", "500", ((int)r.StatusCode).ToString());
+
+                    r = await Send(http, HttpMethod.Get, url, range: new RangeHeaderValue(0, 99));
+                    Check("/api/audio is sandboxed and never sniffed, like /api/file",
+                        Header(r, "Content-Security-Policy").StartsWith("sandbox;") && Header(r, "X-Content-Type-Options") == "nosniff",
+                        $"[{Header(r, "Content-Security-Policy")}] [{Header(r, "X-Content-Type-Options")}]");
+
+                    var dotted = Path.Combine(dir, "album.");
+                    Directory.CreateDirectory(@"\\?\" + dotted);
+                    System.IO.File.Copy(aiff, @"\\?\" + Path.Combine(dotted, "sweep.aiff"));
+                    r = await Send(http, HttpMethod.Head, "/api/audio?path=" + Uri.EscapeDataString(Path.Combine(dotted, "sweep.aiff")));
+                    Check("a track in a folder whose name ends in a dot plays", (int)r.StatusCode == 200 && r.Content.Headers.ContentLength == total,
+                        $"{(int)r.StatusCode} {r.Content.Headers.ContentLength} {await r.Content.ReadAsStringAsync()}");
+                    if (System.IO.File.Exists(opus))
+                    {
+                        System.IO.File.Copy(opus, @"\\?\" + Path.Combine(dotted, "sweep.opus"));
+                        r = await Send(http, HttpMethod.Get, "/api/audio?path=" + Uri.EscapeDataString(Path.Combine(dotted, "sweep.opus")), range: new RangeHeaderValue(0, 999));
+                        var said = (int)r.StatusCode == 206 ? "" : await r.Content.ReadAsStringAsync();
+                        Check("and so does one read as bytes rather than by name", (int)r.StatusCode == 206, $"{(int)r.StatusCode} {said}");
+                    }
                 }
                 finally { server.Dispose(); }
 
@@ -933,7 +989,7 @@ namespace ExplorerNative
             }
             finally
             {
-                try { Directory.Delete(dir, true); } catch { }
+                try { Directory.Delete(@"\\?\" + dir, true); } catch { }
             }
         }
 
@@ -1130,14 +1186,77 @@ namespace ExplorerNative
                 r = await Send(http, HttpMethod.Get, "/api/nothing");
                 Equal("an unknown route is 404", "404", ((int)r.StatusCode).ToString());
 
+                // A file is somebody's bytes on the web app's own origin. An HTML page opened from the PC ran as
+                // the app with the owner's access, and a .js could be loaded as one of its scripts. Every kind a
+                // browser would run comes back sandboxed, never sniffed, as plain text, to be downloaded.
+                foreach (var ext in ConnectServer.ActiveExtensions)
+                {
+                    var page = Path.Combine(dir, "probe" + ext);
+                    System.IO.File.WriteAllText(page, "<html><script>fetch('/api/list?path=C%3A%5C')</script></html>");
+                    r = await Send(http, HttpMethod.Get, "/api/file?path=" + Uri.EscapeDataString(page));
+                    var csp = Header(r, "Content-Security-Policy");
+                    Check($"{ext} comes back sandboxed, nosniff, as an attachment in plain text",
+                        (int)r.StatusCode == 200 && csp.StartsWith("sandbox;") && csp.Contains("default-src 'none'") && !csp.Contains("allow-") &&
+                        Header(r, "X-Content-Type-Options") == "nosniff" && r.Content.Headers.ContentDisposition?.DispositionType == "attachment" &&
+                        r.Content.Headers.ContentType?.MediaType == "text/plain",
+                        $"{(int)r.StatusCode} [{csp}] [{Header(r, "X-Content-Type-Options")}] [{r.Content.Headers.ContentDisposition}] [{r.Content.Headers.ContentType}]");
+                    r = await Send(http, HttpMethod.Head, "/api/file?path=" + Uri.EscapeDataString(page), range: null);
+                    Check($"{ext}: a HEAD says the same", Header(r, "Content-Security-Policy").StartsWith("sandbox;") &&
+                        r.Content.Headers.ContentDisposition?.DispositionType == "attachment");
+                }
+                foreach (var ext in new[] { ".htm", ".svg", ".js" })
+                {
+                    var page = Path.Combine(dir, "ranged" + ext);
+                    System.IO.File.WriteAllText(page, "<svg xmlns='http://www.w3.org/2000/svg'><script>alert(1)</script></svg>");
+                    r = await Send(http, HttpMethod.Get, "/api/file?path=" + Uri.EscapeDataString(page), range: new RangeHeaderValue(0, 9));
+                    Check($"{ext}: a range of it is sandboxed and an attachment too", (int)r.StatusCode == 206 &&
+                        Header(r, "Content-Security-Policy").StartsWith("sandbox;") && Header(r, "X-Content-Type-Options") == "nosniff" &&
+                        r.Content.Headers.ContentDisposition?.DispositionType == "attachment" && r.Content.Headers.ContentType?.MediaType == "text/plain");
+                }
+                r = await Send(http, HttpMethod.Get, "/api/file?path=" + Uri.EscapeDataString(odd));
+                Check("anything else is sandboxed and nosniff too, shown in place, under its own name",
+                    Header(r, "Content-Security-Policy").StartsWith("sandbox;") && Header(r, "X-Content-Type-Options") == "nosniff" &&
+                    r.Content.Headers.ContentDisposition?.DispositionType == "inline" && r.Content.Headers.ContentDisposition?.FileNameStar == "a+b 日本.txt",
+                    r.Content.Headers.ContentDisposition?.ToString());
+                r = await Send(http, HttpMethod.Get, "/api/file?path=" + Uri.EscapeDataString(bin));
+                Check("an unknown kind is bytes, never guessed at", r.Content.Headers.ContentType?.MediaType == "application/octet-stream" &&
+                    Header(r, "X-Content-Type-Options") == "nosniff");
+                r = await Send(http, HttpMethod.Get, "/api/list?path=" + Uri.EscapeDataString(dir));
+                Equal("and JSON is never sniffed either", "nosniff", Header(r, "X-Content-Type-Options"));
+
+                // Names ending in a dot or a space, which Windows trims from an ordinary path: listed, and opened.
+                var dotted = Path.Combine(dir, "deep.");
+                Directory.CreateDirectory(@"\\?\" + dotted);
+                System.IO.File.WriteAllText(@"\\?\" + Path.Combine(dotted, "end."), "the dotted one");
+                r = await Send(http, HttpMethod.Get, "/api/list?path=" + Uri.EscapeDataString(dotted));
+                var dottedList = await r.Content.ReadAsStringAsync();
+                Check("a folder whose name ends in a dot lists", (int)r.StatusCode == 200 && dottedList.Contains("\"end.\""), $"{(int)r.StatusCode} {dottedList}");
+                r = await Send(http, HttpMethod.Get, "/api/file?path=" + Uri.EscapeDataString(Path.Combine(dotted, "end.")));
+                Equal("and a file in it whose name ends in a dot downloads", "the dotted one", await r.Content.ReadAsStringAsync());
+
+                // A file another program holds open with no sharing says so, not that it is missing.
+                var locked = Path.Combine(dir, "locked.bin");
+                System.IO.File.WriteAllBytes(locked, data);
+                using (new FileStream(locked, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                {
+                    r = await Send(http, HttpMethod.Get, "/api/file?path=" + Uri.EscapeDataString(locked));
+                    var said = await r.Content.ReadAsStringAsync();
+                    Check("a file in use is 423 with a sentence saying so", (int)r.StatusCode == 423 && said.Contains("in use"), $"{(int)r.StatusCode} {said}");
+                }
+
                 KeepAliveTests(port, bin, data);
             }
             finally
             {
                 server.Dispose();
-                try { Directory.Delete(dir, true); } catch { }
+                // Literally, or the folder ending in a dot stops the delete.
+                try { Directory.Delete(@"\\?\" + dir, true); } catch { }
             }
         }
+
+        private static string Header(HttpResponseMessage r, string name) =>
+            r.Headers.TryGetValues(name, out var v) ? string.Join(",", v)
+            : r.Content.Headers.TryGetValues(name, out var c) ? string.Join(",", c) : "";
 
         /// <summary>
         /// The v2 routes against a fake <see cref="IConnectFiles"/>: what the server itself owns is the shape of
@@ -1220,8 +1339,11 @@ namespace ExplorerNative
                     ["file"] = new Dictionary<string, object?> { ["name"] = stat.Name, ["hashed"] = hash },
                 });
 
+            public int Uploads;
+
             public async Task<string> UploadAsync(string folder, string name, PasteConflictPolicy conflict, Stream body, CancellationToken token)
             {
+                Interlocked.Increment(ref Uploads);
                 if (conflict == PasteConflictPolicy.Skip) return Path.Combine(folder, name);   // the body is left unread
                 using var read = new MemoryStream();
                 await body.CopyToAsync(read, token);
@@ -1394,8 +1516,21 @@ namespace ExplorerNative
                 var chunkedResponse = await http.SendAsync(chunkedRequest);
                 Check("a chunked upload arrives whole", (int)chunkedResponse.StatusCode == 200 && fake.LastUpload?.Length == 70_003 && fake.LastUpload.EndsWith("end"),
                     $"{(int)chunkedResponse.StatusCode} {fake.LastUpload?.Length}");
-                (status, _) = await Call(HttpMethod.Post, "/api/upload?folder=C%3A%5Cb&name=d.txt");
-                Equal("an upload with no body is 400", "400", status.ToString());
+                fake.LastUpload = null;
+                (status, body) = await Call(HttpMethod.Post, "/api/upload?folder=C%3A%5Cb&name=d.txt", content: new ByteArrayContent(Array.Empty<byte>()));
+                Check("an empty file uploads, as an empty file", status == 200 && fake.LastUpload == "" && S(body, "path") == @"C:\b\d.txt",
+                    $"{status} {body} [{fake.LastUpload}]");
+
+                // The answer to an upload can be lost after the file arrived; the web app sends it again with the
+                // same id, and gets the same answer rather than a second copy.
+                int uploadsBefore = fake.Uploads;
+                for (int i = 0; i < 2; i++)
+                    (status, body) = await Call(HttpMethod.Post, "/api/upload?folder=C%3A%5Cb&name=again.txt&uploadId=abc123",
+                        content: new ByteArrayContent(Encoding.UTF8.GetBytes("once")));
+                Check("an upload sent twice under one id is written once and answered the same both times",
+                    status == 200 && fake.Uploads == uploadsBefore + 1 && S(body, "path") == @"C:\b\again.txt", $"{status} {body} {fake.Uploads - uploadsBefore}");
+                await Call(HttpMethod.Post, "/api/upload?folder=C%3A%5Cb&name=again.txt&uploadId=def456", content: new ByteArrayContent(Encoding.UTF8.GetBytes("twice")));
+                Equal("a different id is a different upload", (uploadsBefore + 2).ToString(), fake.Uploads.ToString());
 
                 UploadKeepAliveTests(port);
             }
@@ -1474,10 +1609,13 @@ namespace ExplorerNative
                 return s;
             }, budget: 8L << 20);
 
+            Check("with nothing open, the sweep timer is not running", !pool.Sweeping);
             Check("a path that is not remote gets no lease", pool.Lease(@"C:\x.flac") == null);
+            Check("and a path that is not remote does not start it", !pool.Sweeping);
             var a = pool.Lease(@"Q:\song.flac")!;
             var b = pool.Lease(@"q:\SONG.flac")!;
             Equal("two requests for one file share one download", "1", opened.ToString());
+            Check("a stream held starts the sweep timer", pool.Sweeping);
 
             var buffer = new byte[1000];
             int got = await a.ReadAsync(2_000_000, buffer, CancellationToken.None);
@@ -1492,6 +1630,7 @@ namespace ExplorerNative
             Equal("not yet idle long enough", "1", pool.Count.ToString());
             pool.Sweep(DateTime.UtcNow + ConnectStreams.IdleFor + TimeSpan.FromSeconds(1));
             Check("idle for a minute, it is closed and its source disposed", pool.Count == 0 && sources[0].Disposed);
+            Check("and with the last one gone, the sweep timer stops", !pool.Sweeping);
 
             var held = pool.Lease(@"Q:\held.flac")!;
             pool.Sweep(DateTime.UtcNow + TimeSpan.FromHours(1));
@@ -1589,6 +1728,70 @@ namespace ExplorerNative
                 catch (ConnectException e) { status = e.Status; }
                 Equal("a destination that is not there is 404", "404", status.ToString());
 
+                var busy = Path.Combine(a, "busy.txt");
+                System.IO.File.WriteAllText(busy, "busy");
+                using (new FileStream(busy, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                {
+                    Exception? caught = null;
+                    try { await files.RenameAsync(busy, "free.txt", CancellationToken.None); } catch (Exception e) { caught = e; }
+                    Check("renaming a file another program holds is told apart as in use, which the server answers 423",
+                        caught != null && ConnectServer.InUse(caught), $"{caught?.GetType().Name}: {caught?.Message}");
+                }
+
+                // Moving into the folder it is already in is nothing to do, whatever the setting.
+                foreach (var policy in new[] { PasteConflictPolicy.AutoRename, PasteConflictPolicy.Skip, PasteConflictPolicy.Overwrite })
+                {
+                    var stay = new ConnectJob("s-" + policy, "move");
+                    await files.TransferAsync(stay, new[] { Path.Combine(b, "uno.txt"), Path.Combine(b, "inner") }, b + @"\", true, policy);
+                    var snapshot = JsonSerializer.Serialize(stay.Snapshot());
+                    Check($"moving into its own folder under {policy} leaves it alone and says it is already there",
+                        System.IO.File.Exists(Path.Combine(b, "uno.txt")) && !System.IO.File.Exists(Path.Combine(b, "uno (3).txt")) &&
+                        !Directory.Exists(Path.Combine(b, "inner (2)")) && stay.Failed.Count == 0 && snapshot.Contains("already in this folder"),
+                        snapshot);
+                }
+
+                // Eight uploads of one name at once: eight files, no errors.
+                var many = await Task.WhenAll(Enumerable.Range(0, 8).Select(i => Task.Run(() =>
+                    files.UploadAsync(b, "same.txt", PasteConflictPolicy.AutoRename, new MemoryStream(Encoding.UTF8.GetBytes("copy " + i)), CancellationToken.None))));
+                Check("eight uploads of one name at once all land, each under its own name",
+                    many.Distinct(StringComparer.OrdinalIgnoreCase).Count() == 8 && many.All(System.IO.File.Exists) &&
+                    Enumerable.Range(0, 8).All(i => many.Any(p => System.IO.File.ReadAllText(p) == "copy " + i)), string.Join(", ", many.Select(Path.GetFileName)));
+                var placedTwice = await Task.WhenAll(Enumerable.Range(0, 4).Select(i => Task.Run(() =>
+                {
+                    var part = Path.Combine(root, $"part{i}.bin");
+                    System.IO.File.WriteAllText(part, "placed " + i);
+                    return files.PlaceFileAsync(part, b, "placed.txt", PasteConflictPolicy.AutoRename, null, CancellationToken.None);
+                })));
+                Check("and so do finished resumable uploads of one name", placedTwice.Distinct(StringComparer.OrdinalIgnoreCase).Count() == 4,
+                    string.Join(", ", placedTwice.Select(Path.GetFileName)));
+
+                var empty = await files.UploadAsync(b, "empty.txt", PasteConflictPolicy.AutoRename, new MemoryStream(), CancellationToken.None);
+                Check("an empty file uploads as an empty file", System.IO.File.Exists(empty) && new FileInfo(empty).Length == 0, empty);
+
+                // Names ending in a dot or a space: Windows trims them from an ordinary path, so each action has to
+                // reach the literal one, or it acts on a different file or calls it missing.
+                string odd = Path.Combine(root, "odd."), end = Path.Combine(root, "end.");
+                Directory.CreateDirectory(@"\\?\" + odd);
+                System.IO.File.WriteAllText(@"\\?\" + Path.Combine(odd, "in.txt"), "inside");
+                System.IO.File.WriteAllText(@"\\?\" + end, "ends in a dot");
+                var endStat = await files.StatAsync(end, CancellationToken.None);
+                Check("stat of a name ending in a dot is that file, under its own path",
+                    endStat.Name == "end." && endStat.Size == 13 && endStat.Path == end, endStat.ToString());
+                var oddSize = await files.SizeAsync(odd, CancellationToken.None);
+                Check("a folder ending in a dot is measured", oddSize.Files == 1 && oddSize.Bytes == 6, oddSize.ToString());
+                var oddDetails = await files.DetailsAsync(end, endStat, true, CancellationToken.None);
+                Check("its details are read", oddDetails.TryGetValue("file", out var oddFile) && oddFile is Dictionary<string, object?> of && of.ContainsKey("sha256"));
+                Check("a folder can be made inside one",
+                    await files.CreateFolderAsync(odd, "made", CancellationToken.None) == Path.Combine(odd, "made") && Directory.Exists(@"\\?\" + Path.Combine(odd, "made")));
+                var intoOdd = await files.UploadAsync(odd, "up.txt", PasteConflictPolicy.AutoRename, new MemoryStream(Encoding.UTF8.GetBytes("up")), CancellationToken.None);
+                Check("and a file uploaded into it", System.IO.File.ReadAllText(@"\\?\" + intoOdd) == "up", intoOdd);
+                var deleted = await files.DeleteAsync(new[] { end }, CancellationToken.None);
+                Check("delete says why it cannot recycle one, rather than that it is missing",
+                    deleted.Deleted == 0 && deleted.Failed.Count == 1 && deleted.Failed[0].Error.Contains("Recycle Bin") && System.IO.File.Exists(@"\\?\" + end),
+                    deleted.Failed.FirstOrDefault()?.Error);
+                var fixedName = await files.RenameAsync(end, "fixed.txt", CancellationToken.None);
+                Check("and it can be renamed to a name Windows takes", System.IO.File.ReadAllText(fixedName) == "ends in a dot" && !System.IO.File.Exists(@"\\?\" + end), fixedName);
+
                 var f = ConnectFiles.FailureFor("two.bin: it would not go", new[] { Path.Combine(a, "two.bin") });
                 Check("an engine's error is filed against the source it names", f.Path == Path.Combine(a, "two.bin") && f.Error == "It would not go.", $"{f.Path} {f.Error}");
                 Check("a share has no Recycle Bin, so nothing there is deleted from the phone", !ConnectFiles.HasRecycleBin(@"\\server\share\x"));
@@ -1596,7 +1799,7 @@ namespace ExplorerNative
             }
             finally
             {
-                try { Directory.Delete(root, true); } catch { }
+                try { Directory.Delete(@"\\?\" + root, true); } catch { }
             }
         }
 

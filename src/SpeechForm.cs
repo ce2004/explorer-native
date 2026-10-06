@@ -110,7 +110,7 @@ namespace ExplorerNative
             allOn.Click += (_, _) => SetCategory(_ => NotificationChannel.Speech);
             allOff.Click += (_, _) => SetCategory(_ => NotificationChannel.None);
             defaults.Click += (_, _) => SetCategory(n => n.Default);
-            ok.Click += (_, _) => _working.SpeechOverrides = Notifications.FormatOverrides(_values);
+            ok.Click += (_, _) => Apply();
 
             buttons.Controls.Add(cancel);
             buttons.Controls.Add(ok);
@@ -139,6 +139,36 @@ namespace ExplorerNative
             ResumeLayout(true);
 
             Shown += (_, _) => _categories.Focus();
+        }
+
+        /// <summary>
+        /// What OK does. Nothing changed leaves the text exactly as it was; a
+        /// change keeps every entry this build does not know, because a newer
+        /// build wrote it and will want it back.
+        /// </summary>
+        internal void Apply()
+        {
+            var opened = Notifications.ParseOverrides(_working.SpeechOverrides);
+            bool changed = false;
+            foreach (var info in Notifications.All)
+            {
+                var was = opened.TryGetValue(info.Id, out var c) ? c : info.Default;
+                if (_values[info.Id] != was) { changed = true; break; }
+            }
+            if (!changed) return;
+
+            var known = new HashSet<string>(Notifications.All.Select(n => n.Id), StringComparer.OrdinalIgnoreCase);
+            var unknown = (_working.SpeechOverrides ?? "")
+                .Split(';', StringSplitOptions.RemoveEmptyEntries)
+                .Where(part =>
+                {
+                    int equals = part.IndexOf('=');
+                    return equals > 0 && !known.Contains(part[..equals].Trim());
+                });
+
+            var written = Notifications.FormatOverrides(_values);
+            _working.SpeechOverrides = string.Join(";",
+                new[] { written }.Where(s => s.Length > 0).Concat(unknown));
         }
 
         /// <summary>How many messages the current category lists. For the tests.</summary>

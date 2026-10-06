@@ -114,24 +114,29 @@ const UNREACHABLE = 'The PC could not be reached. Check that Tailscale is on, on
   'and that Explorer Native is running.';
 
 // fetch with a time limit, so nothing waits for ever on a PC that has gone away.
+// A caller's own signal (a Stop button) ends it too.
 async function timedFetch(url, options = {}, ms = 20000) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ms);
+  const stop = () => ctrl.abort();
+  const { signal, ...rest } = options;
+  if (signal) { if (signal.aborted) ctrl.abort(); else signal.addEventListener('abort', stop); }
   try {
-    return await fetch(url, { ...options, signal: ctrl.signal, cache: 'no-store' });
+    return await fetch(url, { ...rest, signal: ctrl.signal, cache: 'no-store' });
   } finally {
     clearTimeout(timer);
+    if (signal) signal.removeEventListener('abort', stop);
   }
 }
 
-async function api(path, { method = 'GET', body, raw = false, timeout = 20000 } = {}) {
+async function api(path, { method = 'GET', body, raw = false, timeout = 20000, signal } = {}) {
   const headers = {};
   if (state.code) headers['X-Connect-Code'] = state.code;
   let payload = body;
   if (body !== undefined && !raw) { headers['Content-Type'] = 'application/json'; payload = JSON.stringify(body); }
   let res;
   try {
-    res = await timedFetch(path, { method, headers, body: payload }, timeout);
+    res = await timedFetch(path, { method, headers, body: payload, signal }, timeout);
   } catch (e) {
     throw new ApiError(0, e && e.name === 'AbortError' ? 'The PC took too long to answer. ' + UNREACHABLE : UNREACHABLE);
   }
@@ -265,7 +270,7 @@ function dialog({ title, body, buttons, focus }) {
     d.returnValue = '';
     d.addEventListener('close', done);
     d.showModal();
-    const target = focus ? holder.querySelector(focus) : bar.querySelector('button');
+    const target = focus ? (holder.querySelector(focus) || bar.querySelector(focus)) : bar.querySelector('button');
     if (target) target.focus();
   });
 }
@@ -286,8 +291,10 @@ async function ask(title, label, value = '') {
   return answer === 'ok' ? input.value.trim() : null;
 }
 
+// It opens on Cancel: a question about losing something is not answered by
+// the first double tap after it appears.
 async function confirmBox(title, text, yes) {
-  const answer = await dialog({ title, body: text, buttons: [
+  const answer = await dialog({ title, body: text, focus: 'button[value="cancel"]', buttons: [
     { label: yes, value: 'yes', primary: true }, { label: 'Cancel', value: 'cancel' }] });
   return answer === 'yes';
 }
@@ -308,6 +315,7 @@ async function openFolder(path, { push = true, focusName = null, quiet = false }
     }
     state.path = path;
     state.entries = entries;
+    state.shown = true;
     state.selected.clear();
     if (path != null) store.set('lastPath', path);
     if (push) history.pushState({ path }, '');
@@ -320,16 +328,20 @@ async function openFolder(path, { push = true, focusName = null, quiet = false }
     if (!quiet) {
       if (focusName) {
         const row = [...$('file-list').querySelectorAll('li')].find((li) => li.dataset.name === focusName);
-        if (row) { row.querySelector('.main').focus(); return; }
+        if (row) { row.querySelector('.main').focus(); return true; }
       }
       $('files-title').focus();
       announce(plural(entries.length, 'item', 'items'));
     }
+    return true;
   } catch (e) {
-    if (e.status === 401) return;
-    if (e.status === 0 && state.entries.length === 0) { showOffline(e.message); return; }
+    if (e.status === 401) return false;
+    // Nothing on screen yet: the offline screen. A folder already shown,
+    // empty or not, stays, and the problem is said over it.
+    if (e.status === 0 && !state.shown) { showOffline(e.message); return false; }
     announce(e.message, true);
     if (path != null && state.path == null && !state.entries.length) openFolder(null, { push: false });
+    return false;
   }
 }
 
@@ -445,11 +457,12 @@ async function actions(e, full, opener) {
   items.push(['cancel', 'Cancel']);
   const choice = await dialog({ title: shownName(e.name, e.folder), body: null,
     buttons: items.map(([value, label]) => ({ value, label })) });
+  let placed = false;   // whether the action itself put focus somewhere
   switch (choice) {
     case 'open': activate(e, full); break;
     case 'details': await details(full); break;
     case 'rename': await rename(e, full); break;
-    case 'delete': await remove([full]); break;
+    case 'delete': placed = await remove([full]); break;
     case 'copy': hold([full], false); break;
     case 'move': hold([full], true); break;
     case 'pc': await copyOnPc([full]); break;
@@ -457,7 +470,7 @@ async function actions(e, full, opener) {
     case 'size': await folderSize(e, full); break;
     default: break;
   }
-  if (opener && document.body.contains(opener) && !['open', 'rename', 'delete'].includes(choice)) opener.focus();
+  if (opener && document.body.contains(opener) && !placed && !['open', 'rename'].includes(choice)) opener.focus();
 }
 
 async function rename(e, full) {
@@ -470,17 +483,44 @@ async function rename(e, full) {
   } catch (err) { announce(err.message, true); }
 }
 
+// The row VoiceOver should land on once a folder is shown again: the same
+// one, or where it was when it has gone.
+function focusRow(name, index) {
+  const rows = [...$('file-list').querySelectorAll('li')];
+  const row = (name != null && rows.find((li) => li.dataset.name === name)) ||
+    (index != null && rows.length ? rows[Math.min(index, rows.length - 1)] : null);
+  if (row) row.querySelector('.main').focus(); else $('files-title').focus();
+}
+
+// Returns whether it took care of where focus goes.
 async function remove(paths) {
   const what = paths.length === 1 ? shownName(leaf(paths[0]), false) : plural(paths.length, 'item', 'items');
-  if (prefs.confirmDelete && !(await confirmBox('Delete', `Delete ${what}? Files on the PC go to the Recycle Bin, and Google Drive files go to the Drive trash.`, 'Delete'))) return;
+  if (prefs.confirmDelete && !(await confirmBox('Delete', `Delete ${what}? Files on the PC go to the Recycle Bin, and Google Drive files go to the Drive trash.`, 'Delete'))) return false;
+  // Where the first of them is now, so focus lands on what follows it.
+  const gone = new Set(paths.map(leaf));
+  const index = state.entries.findIndex((e) => gone.has(e.name));
   try {
     const r = await api('/api/delete', { method: 'POST', body: { paths } });
     const failed = (r.failed || []).length;
     announce(failed ? `Deleted ${r.deleted}. ${plural(failed, 'item', 'items')} could not be deleted: ${r.failed[0].error}` : `Deleted ${what}`, failed > 0);
     state.selectMode = false;
     await openFolder(state.path, { push: false, quiet: true });
-    $('files-title').focus();
-  } catch (err) { announce(err.message, true); }
+    // A row that could not be deleted is still there, and is where it was.
+    const kept = (r.failed || []).map((f) => leaf(f.path)).find((n) => gone.has(n));
+    focusRow(kept != null ? kept : null, index < 0 ? 0 : index);
+  } catch (err) { announce(err.message, true); return false; }
+  return true;
+}
+
+// Refresh keeps focus where it is: on the Refresh button, or on the same row.
+async function refresh() {
+  const active = document.activeElement;
+  const li = active && active.closest ? active.closest('#file-list li') : null;
+  const name = li ? li.dataset.name : null;
+  const index = li ? [...$('file-list').children].indexOf(li) : -1;
+  if (!(await openFolder(state.path, { push: false, quiet: true }))) return;
+  if (li) focusRow(name, index);
+  announce(state.path == null ? plural(state.entries.length, 'drive', 'drives') : plural(state.entries.length, 'item', 'items'));
 }
 
 function hold(paths, cut) {
@@ -712,15 +752,28 @@ function pollJobs() {
 const CHUNK = 4 * 1024 * 1024;
 
 // A file up to one chunk goes in a single request, tried again while the network comes back.
+// An id for one upload, the same on every try, so a try whose answer was lost
+// is not a second copy of the file.
+function newUploadId() {
+  const b = new Uint8Array(12);
+  crypto.getRandomValues(b);
+  return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
+}
+
+const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 async function uploadSmall(file, folder) {
   const t = addTransfer({ kind: 'upload', name: file.name, folder, state: 'running', done: 0, total: file.size });
   let stopped = false;
-  t.cancel = async () => { stopped = true; finishTransfer(t, 'cancelled'); };
+  const ctrl = new AbortController();
+  // Stop calls the request off too, so the file does not land anyway.
+  t.cancel = async () => { stopped = true; ctrl.abort(); finishTransfer(t, 'cancelled'); };
+  const id = newUploadId();
   for (let attempt = 1; ; attempt++) {
     try {
       const url = `/api/upload?folder=${encodeURIComponent(folder)}&name=${encodeURIComponent(file.name)}` +
-        `&conflict=${encodeURIComponent(prefs.conflict)}`;
-      await api(url, { method: 'POST', body: file, raw: true, timeout: 120000 });
+        `&conflict=${encodeURIComponent(prefs.conflict)}&uploadId=${id}`;
+      await api(url, { method: 'POST', body: file, raw: true, timeout: 120000, signal: ctrl.signal });
       if (!stopped) { t.done = t.total; finishTransfer(t, 'done'); }
       return;
     } catch (err) {
@@ -738,26 +791,38 @@ async function upload(file, folder) {
   if (file.size <= CHUNK) return uploadSmall(file, folder);
   const t = addTransfer({ kind: 'upload', name: file.name, folder, state: 'running', done: 0, total: file.size });
   let stopped = false, id = null;
+  const ctrl = new AbortController();
   t.cancel = async () => {
     stopped = true;
+    ctrl.abort();
     if (id) try { await api('/api/upload/cancel', { method: 'POST', body: { id } }); } catch { }
     finishTransfer(t, 'cancelled');
   };
+  // Waits after the PC says a chunk is still arriving: a stalled one holds
+  // the upload until the PC gives up on it, so asking at once only asks again.
+  const BUSY = [1000, 2000, 5000, 10000];
   try {
     const s = await api('/api/upload/start', { method: 'POST',
       body: { folder, name: file.name, size: file.size, conflict: prefs.conflict } });
     id = s.id;
-    let offset = 0, failures = 0;
+    let offset = 0, failures = 0, busy = 0;
     while (offset < file.size && !stopped) {
       try {
         const r = await api(`/api/upload/chunk?id=${encodeURIComponent(id)}&offset=${offset}`,
-          { method: 'PUT', body: file.slice(offset, Math.min(file.size, offset + CHUNK)), raw: true, timeout: 120000 });
+          { method: 'PUT', body: file.slice(offset, Math.min(file.size, offset + CHUNK)), raw: true, timeout: 120000, signal: ctrl.signal });
         offset = r.received;
         failures = 0;
+        busy = 0;
         t.state = 'running';
       } catch (err) {
         if (stopped) return;
-        if (err.status === 409 && err.data && typeof err.data.received === 'number') { offset = err.data.received; continue; }
+        if (err.status === 409 && err.data && typeof err.data.received === 'number') {
+          const was = offset;
+          offset = err.data.received;
+          // Nothing moved: wait before asking again, longer each time.
+          if (offset === was) await delay(BUSY[Math.min(busy++, BUSY.length - 1)]);
+          continue;
+        }
         if (err.status && err.status !== 0 && err.status < 500) throw err;
         // The PC or the network went away: wait and ask how much it has, then carry on.
         t.state = 'waiting';
@@ -771,7 +836,20 @@ async function upload(file, folder) {
       renderTransfers();
     }
     if (stopped) return;
-    const f = await api('/api/upload/finish', { method: 'POST', body: { id } });
+    // Asked again if the answer is lost; the PC answers a repeat the same way.
+    let f;
+    for (let attempt = 1; ; attempt++) {
+      // Long: into another drive on the PC, finishing is a copy of the whole file.
+      try { f = await api('/api/upload/finish', { method: 'POST', body: { id }, timeout: 600000 }); break; }
+      catch (err) {
+        if (stopped) return;
+        if (err.status !== 0 || attempt >= 6) throw err;
+        t.state = 'waiting';
+        renderTransfers();
+        await waitForNetwork(Math.min(30000, 2000 * attempt));
+        t.state = 'running';
+      }
+    }
     if (f.job) { t.state = 'done'; transfers.splice(transfers.indexOf(t), 1); trackJob(f.job, `Sending ${file.name} to Google Drive`, folder); }
     else finishTransfer(t, 'done');
   } catch (err) {
@@ -1236,7 +1314,10 @@ async function downloadToPhone(url, name) {
         renderTransfers();
       }
       if (stopped) return;
-      const blob = new Blob(parts, { type: res.headers.get('content-type') || 'application/octet-stream' });
+      // A blob is this page's own origin: never one a browser would run as a page.
+      let type = res.headers.get('content-type') || 'application/octet-stream';
+      if (/html|xml|svg|script/i.test(type)) type = 'application/octet-stream';
+      const blob = new Blob(parts, { type });
       const href = URL.createObjectURL(blob);
       handToSafari(href, name);
       setTimeout(() => URL.revokeObjectURL(href), 60000);
@@ -1264,8 +1345,11 @@ function handToSafari(href, name) {
   a.remove();
 }
 
+// The status line is cleared first, so an older send's success is never left
+// standing over a send that failed.
 async function sendText(text) {
   if (!text) { announce('There is no text to send.'); return; }
+  $('clip-status').textContent = '';
   try {
     await api('/api/clipboard', { method: 'POST', body: { text } });
     $('clip-status').textContent = 'Sent to the PC clipboard';
@@ -1275,6 +1359,7 @@ async function sendText(text) {
 
 async function sendFiles(files) {
   const batch = `web${Date.now()}`;
+  $('clip-status').textContent = '';
   try {
     for (const f of files) {
       announce(`Sending ${f.name}`);
@@ -1435,7 +1520,7 @@ function bindEvents() {
     const up = parentOf(state.path);
     openFolder(up, { focusName: up == null ? state.path : came });
   });
-  $('btn-refresh').addEventListener('click', () => openFolder(state.path, { push: false }));
+  $('btn-refresh').addEventListener('click', refresh);
   $('btn-play-folder').addEventListener('click', () => {
     const tracks = sorted(state.entries).filter((x) => !x.folder && isAudio(x.name));
     if (!tracks.length) { announce('There is nothing to play in this folder.'); return; }

@@ -52,11 +52,18 @@ namespace ExplorerNative
             Width = 220;
             AccessibleName = label + " shortcut";
             AccessibleDescription =
-                "Press the key combination to use, with Control, Alt or Shift held. " +
+                "Press the key combination to use, with Control or Alt held. " +
                 "Press Delete to clear it. Tab moves on.";
 
             Value = initial;
         }
+
+        /// <summary>
+        /// Whether a key press has set or cleared the box. Only an edited box is
+        /// written back: a shortcut that does not parse, or one typed by hand as
+        /// "ctrl+alt+m", stays exactly as the file has it until somebody changes it.
+        /// </summary>
+        public bool Changed { get; private set; }
 
         public Shortcut Value
         {
@@ -91,6 +98,7 @@ namespace ExplorerNative
             if (modifiers == Keys.None && key is Keys.Delete or Keys.Back)
             {
                 Value = Shortcut.None;
+                Changed = true;
                 Captured?.Invoke(AccessibleName + " cleared");
                 return true;
             }
@@ -119,8 +127,9 @@ namespace ExplorerNative
             if (!candidate.CanRegister)
             {
                 Captured?.Invoke(
-                    "A global shortcut needs Control, Alt or Shift, or one of the media keys. " +
-                    "On its own, that key would stop working everywhere else.");
+                    "A global shortcut needs Control, Alt or the Windows key, or one of the media keys. " +
+                    "Shift alone is only enough with a function key. Without them, that key would stop " +
+                    "working everywhere else.");
                 return true;
             }
 
@@ -136,6 +145,7 @@ namespace ExplorerNative
             }
 
             Value = candidate;
+            Changed = true;
             Captured?.Invoke(AccessibleName + " is now " + candidate.Spoken);
             return true;
         }

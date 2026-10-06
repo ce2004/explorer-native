@@ -49,13 +49,19 @@ namespace ExplorerNative
         private const string Files = "https://www.googleapis.com/drive/v3/files";
         private const string About = "https://www.googleapis.com/drive/v3/about";
 
-        private readonly GoogleAuth _auth;
+        private readonly GoogleAuth? _auth;
+
+        /// <summary>
+        /// Where the access token comes from: the sign-in, or (for the suite's
+        /// fake Drive only) a fixed string.
+        /// </summary>
+        private readonly Func<CancellationToken, Task<string>> _token;
 
         // Fifteen seconds, not thirty. This timeout is how long a filesystem
         // callback can sit holding up whoever is listing a folder or reading a
         // track, and a minute of a frozen window is a worse answer than "Drive
         // is offline".
-        private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
+        private readonly HttpClient _http;
 
         /// <summary>
         /// The client the *upload* path's metadata goes out on: two minutes.
@@ -71,7 +77,7 @@ namespace ExplorerNative
         /// still has to be given up on — and the retry around it, which is the
         /// actual answer, needs something to be triggered by.
         /// </summary>
-        private readonly HttpClient _slowMetadata = new() { Timeout = TimeSpan.FromMinutes(2) };
+        private readonly HttpClient _slowMetadata;
 
         /// <summary>
         /// Sends a metadata request that belongs to a transfer, with a longer
@@ -126,7 +132,7 @@ namespace ExplorerNative
             for (int attempt = 0; attempt < MaxSmallUploadAttempts; attempt++)
             {
                 token.ThrowIfCancellationRequested();
-                if (attempt > 0) await Task.Delay(RetryDelay(attempt - 1, random, asked), token);
+                if (attempt > 0) await Pause(RetryDelay(attempt - 1, random, asked), token);
 
                 if (await AlreadyDone() is { } done) return done;
 
@@ -215,8 +221,7 @@ namespace ExplorerNative
                 if (code == 408 || code >= 500) maybeDone = true;
 
                 asked = RetryAfter(response);
-                last = new InvalidOperationException(
-                    $"{(int)response.StatusCode}: " + Explain((int)response.StatusCode, body));
+                last = new DriveStatusException(code, body, $"{code}: " + Explain(code, body));
                 response.Dispose();
             }
 
@@ -255,7 +260,7 @@ namespace ExplorerNative
                         throw new InvalidOperationException(
                             "Google Drive would not say whether this had already been done, " +
                             "so it was not sent again: " + ex.Message, ex);
-                    await Task.Delay(RetryDelay(ask, random), token);
+                    await Pause(RetryDelay(ask, random), token);
                 }
             }
         }
@@ -301,7 +306,36 @@ namespace ExplorerNative
         /// </summary>
         public static bool SimulateOffline { get; set; }
 
-        public DriveClient(GoogleAuth auth) => _auth = auth;
+        public DriveClient(GoogleAuth auth)
+        {
+            _auth = auth;
+            _token = auth.AccessToken;
+            _http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            _slowMetadata = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
+            _uploads = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+        }
+
+        /// <summary>
+        /// For the suite only: every request goes to <paramref name="handler"/>
+        /// (a fake Drive) with a fixed token, and every wait between retries is
+        /// multiplied by <paramref name="waitScale"/> so that a minute of backoff
+        /// is a few milliseconds. The timeouts and the logic are the real ones.
+        /// </summary>
+        internal DriveClient(HttpMessageHandler handler, double waitScale = 1)
+        {
+            _token = _ => Task.FromResult("fake-drive-token");
+            _http = new HttpClient(handler, disposeHandler: false) { Timeout = TimeSpan.FromSeconds(15) };
+            _slowMetadata = new HttpClient(handler, disposeHandler: false) { Timeout = TimeSpan.FromMinutes(2) };
+            _uploads = new HttpClient(handler, disposeHandler: false) { Timeout = Timeout.InfiniteTimeSpan };
+            _waitScale = waitScale;
+        }
+
+        /// <summary>One, except for the suite's fake Drive. See the internal constructor.</summary>
+        private readonly double _waitScale = 1;
+
+        /// <summary>A wait between retries, shortened only for the suite.</summary>
+        private Task Pause(TimeSpan wait, CancellationToken token) =>
+            Task.Delay(_waitScale == 1 ? wait : TimeSpan.FromTicks((long)(wait.Ticks * _waitScale)), token);
 
         private static readonly HttpRequestOptionsKey<bool> Retried = new("ExplorerNative.Retried401");
 
@@ -342,7 +376,7 @@ namespace ExplorerNative
                 if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized &&
                     request.Headers.Authorization?.Parameter is { } refused)
                 {
-                    _auth.Invalidate(refused);
+                    _auth?.Invalidate(refused);
 
                     if (request.Content == null && !request.Options.TryGetValue(Retried, out _))
                     {
@@ -356,7 +390,7 @@ namespace ExplorerNative
                         // failed refresh included.
                         response.Dispose();
                         again.Headers.Authorization =
-                            new AuthenticationHeaderValue("Bearer", await _auth.AccessToken(token));
+                            new AuthenticationHeaderValue("Bearer", await _token(token));
                         response = await (client ?? _http).SendAsync(again, completion, token);
                     }
                 }
@@ -480,7 +514,7 @@ namespace ExplorerNative
             url = AllDrives(url);
             var request = new HttpRequestMessage(method, url);
             request.Headers.Authorization =
-                new AuthenticationHeaderValue("Bearer", await _auth.AccessToken(token));
+                new AuthenticationHeaderValue("Bearer", await _token(token));
             return request;
         }
 
@@ -571,7 +605,7 @@ namespace ExplorerNative
 
                 var body = await response.Content.ReadAsStringAsync(token);
                 if (!response.IsSuccessStatusCode)
-                    throw new InvalidOperationException(
+                    throw new DriveStatusException((int)response.StatusCode, body,
                         $"list failed {(int)response.StatusCode}: " +
                         Explain((int)response.StatusCode, body));
 
@@ -697,7 +731,7 @@ namespace ExplorerNative
             using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token);
             var body = await response.Content.ReadAsStringAsync(token);
             if (!response.IsSuccessStatusCode)
-                throw new InvalidOperationException(
+                throw new DriveStatusException((int)response.StatusCode, body,
                     $"root lookup failed {(int)response.StatusCode}: " +
                     Explain((int)response.StatusCode, body));
 
@@ -818,7 +852,7 @@ namespace ExplorerNative
             var body = await response.Content.ReadAsStringAsync(token);
             if ((int)response.StatusCode == 404) return false;
             if (!response.IsSuccessStatusCode)
-                throw new InvalidOperationException(
+                throw new DriveStatusException((int)response.StatusCode, body,
                     $"{(int)response.StatusCode}: " + Explain((int)response.StatusCode, body));
 
             using var doc = JsonDocument.Parse(body);
@@ -1003,7 +1037,7 @@ namespace ExplorerNative
                     // how a bounded retry stops being bounded.
                     var wait = ReadRetryDelays[Math.Min(attempt - 1, ReadRetryDelays.Length - 1)];
                     if (spent.Elapsed + wait >= ReadRetryBudget) break;
-                    await Task.Delay(wait, token);
+                    await Pause(wait, token);
                 }
 
                 try { return await ReadRangeOnce(fileId, offset, length, token); }

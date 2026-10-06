@@ -910,8 +910,21 @@ namespace ExplorerNative
             }
         }
 
-        /// <summary>Jumps to an absolute position, with no clamping or announcement.</summary>
-        public void SeekTo(double seconds) => _direct?.SeekTo(Math.Max(0, seconds));
+        /// <summary>
+        /// Jumps to an absolute position, with no clamping or announcement.
+        ///
+        /// Every jump that does not come through <see cref="Seek"/> still has to
+        /// become the place the next skip counts from. Resuming a finished track
+        /// went back to zero this way and left the last skip's target standing,
+        /// so a skip straight after counted from the end and landed near the
+        /// start; a rewind-on-resume did the same from where the pause was.
+        /// </summary>
+        public void SeekTo(double seconds)
+        {
+            double target = Math.Max(0, seconds);
+            lock (_gate) { _seekTarget = target; _seekTargetAt = Environment.TickCount64; }
+            _direct?.SeekTo(target);
+        }
 
         /// <summary>Where the track has got to, in seconds. Zero when there is none.</summary>
         public double PositionSeconds => _direct?.Position ?? 0;
@@ -1439,14 +1452,17 @@ namespace ExplorerNative
                 // Ended is the player's own word for it. A track that stopped
                 // short of its length — a truncated file, a download that gave
                 // up — was "resumed" into silence for ever otherwise.
-                if (direct.Ended || (length > 0 && now >= length - 0.05)) direct.SeekTo(0);
+                // Through this.SeekTo, not the device's: the jump is where the
+                // next skip counts from, or a skip right after resuming counted
+                // from a target left over from before the pause.
+                if (direct.Ended || (length > 0 && now >= length - 0.05)) SeekTo(0);
                 else if (RewindOnResumeSeconds > 0 && !pausing)
                 {
                     // The last few seconds again, so picking a track back up does
                     // not drop you into the middle of a word. Not when the pause
                     // was still fading out: nothing was ever paused, and a double
                     // tap jumped back.
-                    direct.SeekTo(Math.Max(0, now - RewindOnResumeSeconds));
+                    SeekTo(Math.Max(0, now - RewindOnResumeSeconds));
                 }
 
                 bool fadeIn = FadeInMilliseconds > 0 && !_muted;

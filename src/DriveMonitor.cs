@@ -106,6 +106,30 @@ namespace ExplorerNative
         /// <summary>Raised on a worker thread whenever a pair's status changes.</summary>
         public event Action? Changed;
 
+        // ---- for the suite only; every one of these is the real thing by default ----
+
+        /// <summary>Multiplies every wait for Google, so the suite can wait "for ever" in milliseconds.</summary>
+        internal double WaitScale { get; set; } = 1;
+
+        /// <summary>Free and total bytes of the PC folder's volume, and its letter.</summary>
+        internal Func<string, (long Free, long Total, string Letter)> DiskOfRoot { get; set; } = DiskOf;
+
+        /// <summary>
+        /// Sends a PC file to the Recycle Bin with no window of any kind: null
+        /// when it went, otherwise why it was kept.
+        /// </summary>
+        internal Func<string, string?> RecycleLocal { get; set; } = ShellDelete.RecycleWithoutUi;
+
+        /// <summary>
+        /// Called at the moments a crash would hurt most: after something has
+        /// happened in Drive or on disk and before the state says so. The suite
+        /// copies the state file aside there and throws, which is what a crash
+        /// leaves behind.
+        /// </summary>
+        internal Action<string>? KillPoint { get; set; }
+
+        private void Kill(string what) => KillPoint?.Invoke(what);
+
         public DriveMonitor(GoogleDrive drive, Action<string, string> notify, Action<List<DriveSyncPair>> save)
         {
             _drive = drive;
@@ -314,7 +338,17 @@ namespace ExplorerNative
                 if (token.IsCancellationRequested) return;
                 if (pair.Paused || string.IsNullOrEmpty(pair.DriveFolderId)) continue;
                 if (!TakeDue(pair, all, now)) continue;
+                if (!await SyncOneAsync(client, pair, token).ConfigureAwait(false)) return;
+            }
+        }
 
+        /// <summary>
+        /// One pair, with everything a pass does about how it went. False when
+        /// Drive has gone offline and the rest of the pass should wait.
+        /// </summary>
+        internal async Task<bool> SyncOneAsync(DriveClient client, DriveSyncPair pair, CancellationToken token)
+        {
+            {
                 lock (_gate) _running = pair.Id;
                 SetStatus(pair.Id, StatusOf(pair.Id) with { Running = true, DoneBytes = 0, TotalBytes = 0 });
 
@@ -343,7 +377,7 @@ namespace ExplorerNative
                         _saidOffline = true;
                         _notify("sync.offline", "Drive monitor paused, offline");
                     }
-                    return;
+                    return false;
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -364,6 +398,7 @@ namespace ExplorerNative
                     try { Changed?.Invoke(); } catch { }
                 }
             }
+            return true;
         }
 
         private int _waitingEpisode;
@@ -392,7 +427,8 @@ namespace ExplorerNative
                     var (asked, at) = client.LastRetryAfter;
                     var retryAfter = Environment.TickCount64 - at < 15_000 ? asked : null;
                     var wait = SyncBackoff.Delay(attempt++, retryAfter, random.NextDouble());
-                    bool limited = ex.ToString().Contains("429") || ex.ToString().Contains("ateLimitExceeded");
+                    bool limited = ex.ToString().Contains("429") || ex.ToString().Contains("ateLimitExceeded") ||
+                                   Limited(ex);
                     var why = limited ? "Google is limiting requests" : "Google Drive is having trouble";
                     SetStatus(pair.Id, StatusOf(pair.Id) with
                     {
@@ -400,9 +436,20 @@ namespace ExplorerNative
                     });
                     if (Interlocked.Exchange(ref _waitingEpisode, 1) == 0)
                         _notify("sync.ratelimited", $"{DisplayName(pair)}: waiting, {why}");
-                    await Task.Delay(wait, token).ConfigureAwait(false);
+                    await Task.Delay(WaitScale == 1 ? wait : TimeSpan.FromTicks((long)(wait.Ticks * WaitScale)), token)
+                        .ConfigureAwait(false);
                 }
             }
+        }
+
+        /// <summary>A 429, or a 403 whose reason is a rate limit, anywhere in the chain.</summary>
+        private static bool Limited(Exception ex)
+        {
+            for (var e = ex; e != null; e = e.InnerException)
+                if (e is DriveClient.DriveStatusException s &&
+                    (s.Status == 429 || s.Reason is "rateLimitExceeded" or "userRateLimitExceeded"))
+                    return true;
+            return false;
         }
 
         private void Resumed(DriveSyncPair pair)
@@ -554,8 +601,15 @@ namespace ExplorerNative
             }
 
             var local = ScanLocal(root, pair.IncludeSubfolders);
+            var unusable = new List<string>();
+            var shadowed = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
             var (remote, folders) = await Patiently(pair,
-                () => ScanRemoteAsync(client, pair.DriveFolderId, pair.IncludeSubfolders, token), client, token)
+                () =>
+                {
+                    unusable.Clear();
+                    shadowed.Clear();
+                    return ScanRemoteAsync(client, pair.DriveFolderId, pair.IncludeSubfolders, token, unusable, shadowed);
+                }, client, token)
                 .ConfigureAwait(false);
 
             // Files already on both sides with nothing remembered about them (a
@@ -608,12 +662,24 @@ namespace ExplorerNative
                     var path = action.Path;
                     var localPath = Path.Combine(root, path.Replace('/', Path.DirectorySeparatorChar));
 
+                    // Nothing is written, moved or deleted outside the pair's own
+                    // folder, whatever a name turned out to say. The scan already
+                    // leaves out names Windows cannot use; this is the backstop.
+                    if ((action.Kind is SyncActionKind.Download or SyncActionKind.DeleteLocal
+                            or SyncActionKind.KeepBothRemoteWins) &&
+                        !IsInside(root, localPath))
+                    {
+                        failed++;
+                        lastError = $"{path}: its name would put it outside {root}, so it was left alone";
+                        continue;
+                    }
+
                     // Room before each file: the PC's disk keeps its margin, and
                     // Drive is never asked to hold more than its quota.
                     if (action.Kind is SyncActionKind.Download or SyncActionKind.KeepBothRemoteWins)
                     {
                         long need = remote[path].Size - PartialLength(state, path, localPath, remote[path]);
-                        var (free, volume, letter) = DiskOf(root);
+                        var (free, volume, letter) = DiskOfRoot(root);
                         if (volume > 0 && !SyncSpace.Fits(need, free, volume))
                         {
                             long stillToCome = plan.Skip(i)
@@ -644,38 +710,64 @@ namespace ExplorerNative
                         switch (action.Kind)
                         {
                             case SyncActionKind.Upload:
+                            {
                                 remote.TryGetValue(path, out var old);
-                                state.Files[path] = await UploadAsync(client, folders, pair, state, path, localPath,
+                                var sent = await UploadAsync(client, folders, pair, state, path, localPath,
                                     local[path], old.Id, Moved, token).ConfigureAwait(false);
+                                Kill("uploaded " + path);
+                                state.Files[path] = sent;
                                 uploadedThisPass += local[path].Size;
                                 uploaded++;
                                 break;
+                            }
 
                             case SyncActionKind.Download:
-                                state.Files[path] = await DownloadAsync(client, pair.Id, state, path, remote[path],
+                            {
+                                var got = await DownloadAsync(client, pair.Id, state, path, remote[path],
                                     localPath, Moved, token).ConfigureAwait(false);
+                                Kill("downloaded " + path);
+                                state.Files[path] = got;
                                 downloaded++;
                                 break;
+                            }
 
                             case SyncActionKind.DeleteRemote:
                                 await client.Trash(remote[path].Id!, token).ConfigureAwait(false);
+                                Kill("trashed " + path);
                                 state.Files.Remove(path);
                                 deleted++;
                                 break;
 
                             case SyncActionKind.DeleteLocal:
-                                ShellDelete.Recycle(localPath, IntPtr.Zero);
+                            {
+                                // Never a window: the monitor runs with nobody
+                                // watching. A file that could only be deleted for
+                                // good (no Recycle Bin on that drive) is kept and
+                                // said, and stays remembered so it is not sent
+                                // back up as new.
+                                var kept = RecycleLocal(localPath);
+                                if (kept != null)
+                                {
+                                    failed++;
+                                    lastError = $"{Path.GetFileName(path)} was kept: {kept}";
+                                    break;
+                                }
+                                Kill("recycled " + path);
                                 state.Files.Remove(path);
                                 deleted++;
                                 break;
+                            }
 
                             case SyncActionKind.KeepBothLocalWins:
                             {
                                 // Drive's copy steps aside under the conflict name; the PC's goes up.
                                 var aside = SyncPlanner.ConflictName(path, DateTime.Now, p => remote.ContainsKey(p) || local.ContainsKey(p));
                                 await client.MoveOrRename(remote[path].Id!, Path.GetFileName(aside), null, null, token).ConfigureAwait(false);
-                                state.Files[path] = await UploadAsync(client, folders, pair, state, path, localPath,
+                                Kill("set aside in Drive " + path);
+                                var sent = await UploadAsync(client, folders, pair, state, path, localPath,
                                     local[path], null, Moved, token).ConfigureAwait(false);
+                                Kill("uploaded " + path);
+                                state.Files[path] = sent;
                                 uploadedThisPass += local[path].Size;
                                 conflicts.Add(Path.GetFileName(path));
                                 uploaded++;
@@ -687,14 +779,26 @@ namespace ExplorerNative
                                 // The PC's copy steps aside under the conflict name; Drive's comes down.
                                 var aside = SyncPlanner.ConflictName(path, DateTime.Now, p => remote.ContainsKey(p) || local.ContainsKey(p));
                                 File.Move(localPath, Path.Combine(root, aside.Replace('/', Path.DirectorySeparatorChar)));
-                                state.Files[path] = await DownloadAsync(client, pair.Id, state, path, remote[path],
+                                Kill("set aside on the PC " + path);
+                                var got = await DownloadAsync(client, pair.Id, state, path, remote[path],
                                     localPath, Moved, token).ConfigureAwait(false);
+                                Kill("downloaded " + path);
+                                state.Files[path] = got;
                                 conflicts.Add(Path.GetFileName(path));
                                 downloaded++;
                                 break;
                             }
 
                             case SyncActionKind.Record:
+                                // A replacement that went up and was then cut off
+                                // before the old copy went to the trash: the old
+                                // copy is the very file this pair last synced, now
+                                // hidden behind a newer one of the same name that
+                                // matches the PC. Finished as the replace would have.
+                                if (state.Files.TryGetValue(path, out var was) &&
+                                    was.RemoteId != remote[path].Id &&
+                                    shadowed.TryGetValue(path, out var hidden) && hidden.Contains(was.RemoteId))
+                                    await client.Trash(was.RemoteId, token).ConfigureAwait(false);
                                 state.Files[path] = new SyncBase(local[path].Size, local[path].ModifiedUtc,
                                     remote[path].Size, remote[path].ModifiedUtc, remote[path].Id ?? "", remote[path].Md5);
                                 break;
@@ -754,14 +858,47 @@ namespace ExplorerNative
                 return;
             }
 
+            // Everything else is in step; these few never can be, and say so
+            // rather than failing on every pass or landing somewhere else.
+            if (unusable.Count > 0)
+            {
+                Finish(pair, state, UnusableNames(unusable), announce: true, synced: true);
+                return;
+            }
+
             Finish(pair, state, null, announce: false);
         }
 
-        private void Finish(DriveSyncPair pair, PairState state, string? problem, bool announce)
+        /// <summary>"2 files in Google Drive were left out, because Windows cannot use their names: a:b, x\y".</summary>
+        internal static string UnusableNames(IReadOnlyList<string> names)
+        {
+            const int shown = 5;
+            var list = string.Join(", ", names.Take(shown)) + (names.Count > shown ? $" and {names.Count - shown} more" : "");
+            return names.Count == 1
+                ? $"{names[0]} in Google Drive was left out, because Windows cannot use its name"
+                : $"{names.Count} items in Google Drive were left out, because Windows cannot use their names: {list}";
+        }
+
+        /// <summary>Whether a path resolves to somewhere inside the pair's PC folder.</summary>
+        internal static bool IsInside(string root, string path)
+        {
+            try
+            {
+                var top = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                var full = Path.GetFullPath(path);
+                return full.StartsWith(top, StringComparison.OrdinalIgnoreCase) && full.Length > top.Length;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void Finish(DriveSyncPair pair, PairState state, string? problem, bool announce, bool? synced = null)
         {
             bool newProblem = problem != null && problem != state.Problem;
             state.Problem = problem;
-            if (problem == null) state.LastSyncedUtc = DateTime.UtcNow;
+            if (synced ?? problem == null) state.LastSyncedUtc = DateTime.UtcNow;
             SaveState(pair.Id, state);
             SetStatus(pair.Id, new PairStatus(state.LastSyncedUtc, problem, false));
             if (announce && newProblem) _notify("sync.error", $"{DisplayName(pair)} could not sync: {problem}");
@@ -886,8 +1023,21 @@ namespace ExplorerNative
             return files;
         }
 
-        private static async Task<(Dictionary<string, SyncFile> Files, Dictionary<string, string> Folders)> ScanRemoteAsync(
-            DriveClient client, string rootId, bool subfolders, CancellationToken token)
+        /// <summary>
+        /// Everything under the Drive folder, by relative path.
+        ///
+        /// A Drive name is anything at all: "a:b", "x\y", "AC/DC", "trail.",
+        /// "..", "CON". On Windows those either land somewhere else (a backslash
+        /// or a slash makes a folder, ".." climbs out) or are quietly changed (a
+        /// trailing dot or space is dropped), and then the PC's file never
+        /// matches Drive's under one name: it fails on every pass, or worse, the
+        /// PC's copy reads as Drive's having been deleted and the original is
+        /// trashed. So such a name is left out, with its whole folder when it is
+        /// a folder, and listed in <paramref name="unusable"/> to be said.
+        /// </summary>
+        internal static async Task<(Dictionary<string, SyncFile> Files, Dictionary<string, string> Folders)> ScanRemoteAsync(
+            DriveClient client, string rootId, bool subfolders, CancellationToken token, List<string>? unusable = null,
+            Dictionary<string, List<string>>? shadowed = null)
         {
             var files = new Dictionary<string, SyncFile>(StringComparer.OrdinalIgnoreCase);
             var folders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [""] = rootId };
@@ -901,6 +1051,16 @@ namespace ExplorerNative
                 foreach (var entry in await client.ListChildren(id, token).ConfigureAwait(false))
                 {
                     var path = relative.Length == 0 ? entry.Name : relative + "/" + entry.Name;
+
+                    // Docs, Sheets and Slides are not files here whatever they are called.
+                    if (!entry.IsFolder && entry.IsGoogleDocument) continue;
+                    if (!NameRules.IsUsableName(entry.Name) || entry.Name.Length > 255)
+                    {
+                        if (entry.IsFolder && !subfolders) continue;
+                        unusable?.Add(path + (entry.IsFolder ? "/" : ""));
+                        continue;
+                    }
+
                     if (entry.IsFolder)
                     {
                         if (subfolders && folders.TryAdd(path, entry.Id)) queue.Enqueue((entry.Id, path));
@@ -911,8 +1071,19 @@ namespace ExplorerNative
                     if (entry.IsGoogleDocument || SyncPlanner.IsSkippedPath(path)) continue;
 
                     // Two Drive files of one name: the newer is the one that counts.
+                    // The other is remembered in <paramref name="shadowed"/>.
                     var file = new SyncFile(entry.Size, Truncate(entry.Modified.ToUniversalTime()), entry.Id, entry.Md5);
-                    if (!files.TryGetValue(path, out var seen) || file.ModifiedUtc > seen.ModifiedUtc) files[path] = file;
+                    if (!files.TryGetValue(path, out var seen)) files[path] = file;
+                    else
+                    {
+                        var older = file.ModifiedUtc > seen.ModifiedUtc ? seen : file;
+                        if (file.ModifiedUtc > seen.ModifiedUtc) files[path] = file;
+                        if (shadowed != null && older.Id != null)
+                        {
+                            if (!shadowed.TryGetValue(path, out var ids)) shadowed[path] = ids = new List<string>();
+                            ids.Add(older.Id);
+                        }
+                    }
                 }
             }
 
@@ -956,10 +1127,11 @@ namespace ExplorerNative
                 resume = saved.Session;
 
             long reported = 0;
-            string id;
+            DriveClient.DriveUploaded sent;
+            var stamp = DriveClient.UploadStamp(localPath);
             try
             {
-                id = await client.Upload(localPath, Path.GetFileName(localPath), parent,
+                sent = await client.UploadDetailed(localPath, Path.GetFileName(localPath), parent,
                     p =>
                     {
                         long delta = p.BytesSent - reported;
@@ -972,9 +1144,13 @@ namespace ExplorerNative
                         SaveState(pair.Id, state);
                     }).ConfigureAwait(false);
             }
-            catch (Exception ex) when (!IsOffline(ex, token))
+            catch (Exception ex) when (!IsOffline(ex, token) && !token.IsCancellationRequested &&
+                                       !SyncBackoff.IsTransient(ex))
             {
-                // Not the connection: a session that will not take is not kept.
+                // Not the connection, not a cancel (closing the app cancels the
+                // pass, and the session is what lets the upload carry on next
+                // time), and not Google saying "not now": a session that will not
+                // take is not kept.
                 state.Uploads.Remove(path);
                 throw;
             }
@@ -986,11 +1162,17 @@ namespace ExplorerNative
             // the Drive trash, where its earlier contents can still be had back.
             if (!string.IsNullOrEmpty(replaces))
             {
+                Kill("replacement up, old copy not yet trashed " + path);
                 try { await client.Trash(replaces, token).ConfigureAwait(false); } catch { }
             }
 
-            var stamp = DriveClient.UploadStamp(localPath);
-            return new SyncBase(local.Size, local.ModifiedUtc, local.Size, Truncate(stamp), id);
+            // What Drive holds, as Drive says: the time this end sent (taken
+            // before the bytes, not after), the size and checksum Google
+            // recorded. A file edited while it was going up used to be recorded
+            // with its new time against Drive's old one and no checksum, and
+            // the next pass called it changed on both sides: a false conflict.
+            return new SyncBase(local.Size, local.ModifiedUtc, sent.Size ?? local.Size,
+                Truncate(sent.ModifiedUtc ?? stamp), sent.Id, sent.Md5);
         }
 
         /// <summary>How much of a download is already on disk and can be continued from.</summary>

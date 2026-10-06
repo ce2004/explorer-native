@@ -128,6 +128,15 @@ namespace ExplorerNative
             /// <summary>Tells us when this folder changes underneath us.</summary>
             public FileSystemWatcher? Watcher;
 
+            /// <summary>When the watcher's changes are to be acted on, and which.</summary>
+            public readonly WatchDebounce Debounce = new();
+
+            /// <summary>
+            /// Asks Windows to say before the watched folder's drive is removed,
+            /// so the watcher can let go of it. Null for a share or no watcher.
+            /// </summary>
+            public RemovalWatch? Removal;
+
             /// <summary>
             /// Set from the watcher's thread, cleared on the UI thread. Volatile
             /// because those are different threads and nothing else synchronises
@@ -279,10 +288,10 @@ namespace ExplorerNative
 
             _ = InitialiseTabsAsync(tab1, tab2);
 
-            // Cheap poll so an unplugged drive is noticed even while idle.
+            // Cheap poll so an unplugged drive is noticed even while idle. Only
+            // while the window is shown: OnVisibleChanged starts and stops it.
             _availabilityTimer = new System.Windows.Forms.Timer { Interval = 4000 };
             _availabilityTimer.Tick += (_, _) => CheckCurrentPathStillExists();
-            _availabilityTimer.Start();
         }
 
         /// <summary>
@@ -508,10 +517,7 @@ namespace ExplorerNative
                 if (!IsDisposed) RestoreListFocus();
             }
 
-            static string Plain(Exception ex) =>
-                ex is TaskCanceledException or OperationCanceledException
-                    ? "GitHub did not answer in time."
-                    : ex is System.Net.Http.HttpRequestException ? "GitHub could not be reached: " + ex.Message : ex.Message;
+            static string Plain(Exception ex) => NameRules.PlainUpdateFailure(ex);
         }
 
         private void RestartApp()
@@ -1850,14 +1856,27 @@ namespace ExplorerNative
         /// <summary>How many transfers have a window open. Named for the sentence it ends up in.</summary>
         public int RunningTransfers { get; private set; }
 
+        /// <summary>
+        /// One-shot, and only running while something is waiting: see
+        /// <see cref="WatchDebounce"/>. It was a 600ms poll that never stopped,
+        /// hidden in the tray included.
+        /// </summary>
         private System.Windows.Forms.Timer? _watchTimer;
 
         /// <summary>
-        /// Coarse on purpose. File operations arrive as bursts of events — one
-        /// paste is hundreds — and the only thing worth doing is reading the
-        /// folder once after they stop.
+        /// How soon to look again when a reload is waiting on a listing or a
+        /// search already under way in the pane.
         /// </summary>
-        private const int WatchSettleMs = 600;
+        private const int WatchRetryMs = 1000;
+
+        /// <summary>
+        /// Drive roots whose watchers were let go because Windows asked whether
+        /// the drive could be removed, and when. Nothing watches them again
+        /// until the removal fails, completes, or long enough has passed that
+        /// the drive is plainly staying.
+        /// </summary>
+        private readonly Dictionary<string, long> _releasedRoots = new(StringComparer.OrdinalIgnoreCase);
+        private const int ReleasedRootMs = 30_000;
 
         /// <summary>
         /// Starts watching a folder for changes made by anything other than us.
@@ -1883,10 +1902,25 @@ namespace ExplorerNative
                 // The rebuild just took account of whatever was pending.
                 pane.NeedsRefresh = false;
                 pane.ReloadQuietly = false;
+                pane.Debounce.Clear();
                 return;
             }
 
             DisarmWatcher(pane);
+
+            // Hidden in the tray, nothing is watched: a watcher holds a handle on
+            // the folder, which is what stops "Safely remove" ejecting a USB
+            // drive, and nobody is looking. Showing the window arms it again and
+            // reads the folder (OnVisibleChanged).
+            if (!Visible) return;
+
+            // Windows asked whether this drive can be removed and was told yes.
+            var root = SafePathRoot(path);
+            if (root != null && _releasedRoots.TryGetValue(root, out var releasedAt))
+            {
+                if (Environment.TickCount64 - releasedAt < ReleasedRootMs) return;
+                _releasedRoots.Remove(root);
+            }
 
             try
             {
@@ -1900,27 +1934,35 @@ namespace ExplorerNative
                     InternalBufferSize = 64 * 1024,
                 };
 
-                void Touched(object? _, FileSystemEventArgs __) => pane.NeedsRefresh = true;
+                // A file the list already shows, written to: its row is updated
+                // in place. Everything else re-reads the folder once the burst
+                // is over. Only the first event of a burst wakes the window.
+                void Reload(object? _, EventArgs __)
+                {
+                    if (pane.Debounce.Reload(Environment.TickCount64)) WakeWatch();
+                }
 
-                watcher.Created += Touched;
-                watcher.Deleted += Touched;
-                watcher.Changed += Touched;
-                watcher.Renamed += (_, _) => pane.NeedsRefresh = true;
+                watcher.Created += Reload;
+                watcher.Deleted += Reload;
+                watcher.Renamed += Reload;
+                watcher.Changed += (_, e) =>
+                {
+                    if (pane.Debounce.Changed(e.FullPath, Environment.TickCount64)) WakeWatch();
+                };
 
                 // An error is usually a lost burst or a share that went away.
                 // Both mean the list can no longer be trusted, so re-read it.
-                watcher.Error += (_, _) => pane.NeedsRefresh = true;
+                watcher.Error += Reload;
 
                 watcher.EnableRaisingEvents = true;
                 pane.Watcher = watcher;
+                if (Drive?.Owns(path) != true) pane.Removal = RemovalWatch.TryRegister(Handle, path);
             }
             catch
             {
                 // Some filesystems will not support watching. That is a reason to
                 // do without live updates, not a reason to fail to show a folder.
             }
-
-            EnsureWatchTimer();
         }
 
         private static void DisarmWatcher(Pane pane)
@@ -1929,19 +1971,370 @@ namespace ExplorerNative
             pane.Watcher = null;
             pane.NeedsRefresh = false;
             pane.ReloadQuietly = false;
+            pane.Debounce.Clear();
+
+            pane.Removal?.Dispose();
+            pane.Removal = null;
 
             if (watcher == null) return;
             try { watcher.EnableRaisingEvents = false; } catch { }
             try { watcher.Dispose(); } catch { }
         }
 
-        private void EnsureWatchTimer()
+        /// <summary>From a watcher's thread: the first change of a burst has arrived.</summary>
+        private void WakeWatch()
         {
-            if (_watchTimer != null || IsDisposed) return;
+            if (IsDisposed || !IsHandleCreated) return;
+            try { BeginInvoke(ScheduleWatchCheck); } catch (ObjectDisposedException) { } catch (InvalidOperationException) { }
+        }
 
-            _watchTimer = new System.Windows.Forms.Timer { Interval = WatchSettleMs };
-            _watchTimer.Tick += (_, _) => ApplyPendingRefresh();
+        /// <summary>
+        /// Sets the one-shot timer for whenever the front pane's wait is over,
+        /// or stops it when nothing is waiting.
+        /// </summary>
+        private void ScheduleWatchCheck() => ScheduleWatchCheck(retry: false);
+
+        private void ScheduleWatchCheck(bool retry)
+        {
+            if (IsDisposed) return;
+
+            int due = Active.Debounce.DueIn(Environment.TickCount64);
+
+            // Marked for a reload with no burst in progress — a tab coming back,
+            // the window being shown or brought to the front: at once.
+            if (due < 0 && Active.NeedsRefresh) due = 50;
+            if (retry) due = Math.Max(due, WatchRetryMs);
+
+            if (!Visible || due < 0)
+            {
+                _watchTimer?.Stop();
+                return;
+            }
+
+            if (_watchTimer == null)
+            {
+                _watchTimer = new System.Windows.Forms.Timer();
+                _watchTimer.Tick += (_, _) =>
+                {
+                    _watchTimer?.Stop();
+                    // Woken early by a burst that is still going: wait out the rest.
+                    int left = Active.Debounce.DueIn(Environment.TickCount64);
+                    if (left > 0) { ScheduleWatchCheck(); return; }
+                    ApplyPendingRefresh();
+                };
+            }
+
+            _watchTimer.Stop();
+            _watchTimer.Interval = Math.Max(1, due);
             _watchTimer.Start();
+        }
+
+        /// <summary>
+        /// Puts new sizes and dates on the rows of files that were written to,
+        /// without re-reading the folder: the cursor, the selection and the
+        /// order stay exactly as they are and nothing is read aloud. Anything it
+        /// cannot do that way — a file it has no row for, one that has gone or
+        /// is now hidden — becomes an ordinary reload.
+        /// </summary>
+        private async void UpdateRowsInPlace(Pane pane, List<string> paths)
+        {
+            var folder = pane.CurrentPath;
+            bool showHidden = _settings.ShowHiddenFiles;
+            bool showSystem = _settings.ShowSystemFiles;
+
+            // Off the UI thread: the folder may be on a share.
+            List<(string Path, bool Keep, long Size, DateTime Modified)> facts;
+            try
+            {
+                facts = await Task.Run(() =>
+                {
+                    var found = new List<(string, bool, long, DateTime)>(paths.Count);
+                    foreach (var path in paths)
+                    {
+                        try
+                        {
+                            var info = new FileInfo(path);
+                            var attrs = info.Attributes;
+                            bool exists = (int)attrs != -1;
+                            bool shown = exists &&
+                                         (showHidden || (attrs & FileAttributes.Hidden) == 0) &&
+                                         (showSystem || (attrs & FileAttributes.System) == 0);
+                            bool dir = exists && (attrs & FileAttributes.Directory) != 0;
+                            found.Add((path, shown, dir || !shown ? -1 : info.Length,
+                                shown ? info.LastWriteTime : default));
+                        }
+                        catch { found.Add((path, false, -1, default)); }
+                    }
+                    return found;
+                });
+            }
+            catch { return; }
+
+            if (IsDisposed) return;
+
+            bool reload = false;
+            if (!string.Equals(pane.CurrentPath, folder, StringComparison.OrdinalIgnoreCase) || pane.Loading)
+                reload = true;
+            else
+            {
+                foreach (var (path, keep, size, modified) in facts)
+                {
+                    if (!keep || !pane.IndexByPath.TryGetValue(path, out var i) || i >= pane.Entries.Count)
+                    {
+                        reload = true;
+                        continue;
+                    }
+
+                    var old = pane.Entries[i];
+                    var now = old with { Size = old.IsDir ? old.Size : size, Modified = modified };
+                    if (now.Size == old.Size && now.Modified == old.Modified) continue;
+
+                    pane.Entries[i] = now;
+                    EvictItem(pane, i);
+                    if (pane.List.IsHandleCreated) pane.List.RedrawItems(i, i, true);
+                }
+                if (pane == Active) ScheduleStatusUpdate();
+            }
+
+            if (reload)
+            {
+                pane.NeedsRefresh = true;
+                pane.Debounce.Reload(Environment.TickCount64);
+                if (pane == Active) ScheduleWatchCheck();
+            }
+        }
+
+        /// <summary>
+        /// A request to be told before a drive is removed, for the folder a
+        /// watcher holds open on it.
+        ///
+        /// "Safely remove" asks every open handle on the drive whether it may
+        /// go, and only applications that registered a handle are asked; the
+        /// rest simply make it fail with "this device is currently in use". The
+        /// folder watcher's directory handle was one of those, so a USB stick
+        /// whose folder was on screen — or merely left in a tab — could not be
+        /// ejected. This opens a handle of its own on the same folder, purely to
+        /// register it; WM_DEVICECHANGE then says DBT_DEVICEQUERYREMOVE, and the
+        /// window lets go of both.
+        /// </summary>
+        private sealed class RemovalWatch : IDisposable
+        {
+            public IntPtr Notify { get; private set; }
+            public string Root { get; }
+            private Microsoft.Win32.SafeHandles.SafeFileHandle? _handle;
+
+            private RemovalWatch(IntPtr notify, string root, Microsoft.Win32.SafeHandles.SafeFileHandle handle)
+            {
+                Notify = notify;
+                Root = root;
+                _handle = handle;
+            }
+
+            /// <summary>Null for a share, the Drive letter or anything that will not register.</summary>
+            public static RemovalWatch? TryRegister(IntPtr window, string path)
+            {
+                try
+                {
+                    var root = Path.GetPathRoot(path);
+                    if (string.IsNullOrEmpty(root) || root.StartsWith(@"\\", StringComparison.Ordinal)) return null;
+                    var type = new DriveInfo(root).DriveType;
+                    if (type is not (DriveType.Removable or DriveType.Fixed or DriveType.CDRom)) return null;
+
+                    const uint FILE_READ_ATTRIBUTES = 0x80, SHARE_ALL = 7, OPEN_EXISTING = 3,
+                               FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+                    var handle = CreateFileW(path, FILE_READ_ATTRIBUTES, SHARE_ALL, IntPtr.Zero,
+                        OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
+                    if (handle.IsInvalid) { handle.Dispose(); return null; }
+
+                    var filter = new DEV_BROADCAST_HANDLE
+                    {
+                        dbch_size = System.Runtime.InteropServices.Marshal.SizeOf<DEV_BROADCAST_HANDLE>(),
+                        dbch_devicetype = DBT_DEVTYP_HANDLE,
+                        dbch_handle = handle.DangerousGetHandle(),
+                    };
+                    var notify = RegisterDeviceNotificationW(window, ref filter, 0 /* DEVICE_NOTIFY_WINDOW_HANDLE */);
+                    if (notify == IntPtr.Zero) { handle.Dispose(); return null; }
+                    return new RemovalWatch(notify, root, handle);
+                }
+                catch { return null; }
+            }
+
+            /// <summary>
+            /// The drive is about to go: close the handle, and keep the
+            /// registration, which is how a failed or completed removal is heard.
+            /// </summary>
+            public void Release()
+            {
+                _handle?.Dispose();
+                _handle = null;
+            }
+
+            public void Dispose()
+            {
+                Release();
+                if (Notify != IntPtr.Zero) UnregisterDeviceNotification(Notify);
+                Notify = IntPtr.Zero;
+            }
+        }
+
+        private const int WM_DEVICECHANGE = 0x0219;
+        private const int DBT_DEVICEARRIVAL = 0x8000;
+        private const int DBT_DEVICEQUERYREMOVE = 0x8001;
+        private const int DBT_DEVICEQUERYREMOVEFAILED = 0x8002;
+        private const int DBT_DEVICEREMOVEPENDING = 0x8003;
+        private const int DBT_DEVICEREMOVECOMPLETE = 0x8004;
+        private const int DBT_DEVTYP_VOLUME = 2;
+        private const int DBT_DEVTYP_HANDLE = 6;
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        private struct DEV_BROADCAST_HANDLE
+        {
+            public int dbch_size;
+            public int dbch_devicetype;
+            public int dbch_reserved;
+            public IntPtr dbch_handle;
+            public IntPtr dbch_hdevnotify;
+            public Guid dbch_eventguid;
+            public int dbch_nameoffset;
+            public byte dbch_data;
+        }
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        private struct DEV_BROADCAST_VOLUME
+        {
+            public int dbcv_size;
+            public int dbcv_devicetype;
+            public int dbcv_reserved;
+            public int dbcv_unitmask;
+            public short dbcv_flags;
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+        private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string name, uint access, uint share,
+            IntPtr security, uint disposition, uint flags, IntPtr template);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr RegisterDeviceNotificationW(IntPtr recipient, ref DEV_BROADCAST_HANDLE filter, int flags);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool UnregisterDeviceNotification(IntPtr handle);
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_DEVICECHANGE && m.LParam != IntPtr.Zero)
+            {
+                try { OnDeviceChange((int)(long)m.WParam, m.LParam); }
+                catch { }
+            }
+            base.WndProc(ref m);
+        }
+
+        /// <summary>
+        /// Lets go of a drive Windows is about to remove, and picks it up again
+        /// if the removal does not happen.
+        /// </summary>
+        private void OnDeviceChange(int what, IntPtr data)
+        {
+            int type = System.Runtime.InteropServices.Marshal.ReadInt32(data, 4);
+
+            if (type == DBT_DEVTYP_HANDLE)
+            {
+                var header = System.Runtime.InteropServices.Marshal.PtrToStructure<DEV_BROADCAST_HANDLE>(data);
+                foreach (var pane in _panes)
+                {
+                    if (pane.Removal is not { } removal || removal.Notify != header.dbch_hdevnotify) continue;
+
+                    switch (what)
+                    {
+                        case DBT_DEVICEQUERYREMOVE:
+                            // Yes, it may go: the watcher and our handle close now,
+                            // and nothing re-arms on this drive meanwhile.
+                            _releasedRoots[removal.Root] = Environment.TickCount64;
+                            var watcher = pane.Watcher;
+                            pane.Watcher = null;
+                            if (watcher != null)
+                            {
+                                try { watcher.EnableRaisingEvents = false; } catch { }
+                                try { watcher.Dispose(); } catch { }
+                            }
+                            pane.Debounce.Clear();
+                            removal.Release();
+                            break;
+
+                        case DBT_DEVICEQUERYREMOVEFAILED:
+                            // Something else held on, so the drive stays: watch it again.
+                            removal.Dispose();
+                            pane.Removal = null;
+                            _releasedRoots.Remove(removal.Root);
+                            if (IsUnder(pane.CurrentPath, removal.Root))
+                            {
+                                ArmWatcher(pane, pane.CurrentPath);
+                                pane.NeedsRefresh = true;
+                                pane.ReloadQuietly = true;
+                                if (pane == Active) ScheduleWatchCheck(retry: true);
+                            }
+                            break;
+
+                        case DBT_DEVICEREMOVEPENDING:
+                        case DBT_DEVICEREMOVECOMPLETE:
+                            removal.Dispose();
+                            pane.Removal = null;
+                            break;
+                    }
+                }
+            }
+            else if (type == DBT_DEVTYP_VOLUME && (what == DBT_DEVICEREMOVECOMPLETE || what == DBT_DEVICEARRIVAL))
+            {
+                // Broadcast to every window. A drive that went, or one that came
+                // (back), is no longer one we are holding off.
+                int mask = System.Runtime.InteropServices.Marshal.PtrToStructure<DEV_BROADCAST_VOLUME>(data).dbcv_unitmask;
+                for (int bit = 0; bit < 26; bit++)
+                    if ((mask & (1 << bit)) != 0) _releasedRoots.Remove($"{(char)('A' + bit)}:\\");
+            }
+        }
+
+        /// <summary>
+        /// Hidden in the tray, the window does nothing: the availability poll
+        /// (a Directory.Exists on a share every four seconds), the watch timer
+        /// and both folder watchers all stop. Shown again, each folder is
+        /// watched again and the one in front is read quietly, for whatever
+        /// changed while nobody was looking.
+        /// </summary>
+        protected override void OnVisibleChanged(EventArgs e)
+        {
+            base.OnVisibleChanged(e);
+            if (IsDisposed || _panes[0] == null) return;
+
+            if (!Visible)
+            {
+                _availabilityTimer?.Stop();
+                _watchTimer?.Stop();
+                foreach (var pane in _panes) DisarmWatcher(pane);
+                return;
+            }
+
+            foreach (var pane in _panes)
+            {
+                if (string.IsNullOrEmpty(pane.CurrentPath) || pane.CurrentPath == DrivesPath) continue;
+                if (pane.Watcher == null && !string.IsNullOrEmpty(pane.LastLoadedPath))
+                {
+                    ArmWatcher(pane, pane.CurrentPath);
+                    pane.NeedsRefresh = true;
+                    pane.ReloadQuietly = true;
+                }
+            }
+
+            _availabilityTimer?.Start();
+            CheckCurrentPathStillExists();
+            ScheduleWatchCheck();
+        }
+
+        protected override void OnActivated(EventArgs e)
+        {
+            base.OnActivated(e);
+            // A change that waited because another window was in front.
+            if (_panes[_activeIndex] is { } pane && (pane.NeedsRefresh || pane.Debounce.Pending))
+                ScheduleWatchCheck();
         }
 
         /// <summary>
@@ -1954,9 +2347,27 @@ namespace ExplorerNative
         /// </summary>
         private async void ApplyPendingRefresh()
         {
-            if (IsDisposed || _suppressWatch > 0) return;
+            if (IsDisposed || !Visible) return;
 
             var pane = Active;
+
+            // What the watcher collected. Rows of files written to are updated
+            // where they stand — unless the list is ordered by size or date,
+            // where a new size or date can move a row, which is a reload.
+            var (reload, changed) = pane.Debounce.Take();
+            if (reload) pane.NeedsRefresh = true;
+            if (changed.Count > 0)
+            {
+                bool byName = NameRules.SortsAs(_settings.SortBy) == SortColumn.Name;
+                // Not on the Drive letter, where the rows come from Google's
+                // listing and reading a placeholder's attributes is the
+                // provider's business.
+                bool onDrive = Drive is { } drive && drive.Owns(pane.CurrentPath);
+                if (byName && !onDrive) UpdateRowsInPlace(pane, changed);
+                else pane.NeedsRefresh = true;
+            }
+
+            if (_suppressWatch > 0) return;
             if (!pane.NeedsRefresh) return;
 
             // A folder being copied into stays marked and is re-read once, by
@@ -1975,14 +2386,17 @@ namespace ExplorerNative
 
             // Nor while a search is still gathering: a reload is a navigation,
             // and a navigation cancels it — silently, so the results never came.
-            if (pane.Searching) return;
-
             // Nor while the folder is still arriving, or a navigation is still
-            // finding out whether its folder is there; the mark stays for after.
-            if (pane.Loading || pane.Probing != 0) return;
+            // finding out whether its folder is there; the mark stays for after,
+            // and is looked at again in a second.
+            if (pane.Searching || pane.Loading || pane.Probing != 0)
+            {
+                ScheduleWatchCheck(retry: true);
+                return;
+            }
 
             // Nor behind somebody's back. With the window not in front the mark
-            // stays, and this runs again on the next tick after it is.
+            // stays, and OnActivated looks at it again.
             if (Form.ActiveForm != this) return;
 
             pane.NeedsRefresh = false;
@@ -2480,8 +2894,11 @@ namespace ExplorerNative
             private readonly string? _prefer;
             private readonly CancellationToken _token;
             private readonly System.Collections.Concurrent.ConcurrentQueue<List<Entry>> _arrived = new();
-            private readonly List<Entry> _shown = new();
+            private List<Entry> _shown = new();
             private readonly HashSet<string> _seen = new(StringComparer.OrdinalIgnoreCase);
+
+            /// <summary>The list's order, taken once on the UI thread for the worker to sort batches with.</summary>
+            private readonly Comparison<Entry> _order;
             private bool _landed;
             private readonly bool _enabled;
 
@@ -2496,12 +2913,21 @@ namespace ExplorerNative
                 _path = path;
                 _prefer = prefer;
                 _token = token;
+                _order = form.ListOrder();
             }
 
-            /// <summary>From the worker: some more of the folder.</summary>
+            /// <summary>
+            /// From the worker: some more of the folder, sorted here, on the
+            /// worker. The UI thread only merges it in. Re-sorting everything
+            /// shown on every tick was 43ms of the UI thread per tick at the end
+            /// of a 100,000-entry folder, and three times that with logical names.
+            /// </summary>
             public void Offer(List<Entry> batch)
             {
-                if (batch.Count > 0) _arrived.Enqueue(batch);
+                if (batch.Count == 0 || !_enabled) return;
+                var sorted = new List<Entry>(batch);
+                sorted.Sort(_order);
+                _arrived.Enqueue(sorted);
             }
 
             /// <summary>
@@ -2529,13 +2955,21 @@ namespace ExplorerNative
             {
                 bool any = false;
                 while (_arrived.TryDequeue(out var batch))
+                {
+                    var fresh = new List<Entry>(batch.Count);
                     foreach (var entry in batch)
-                        if (_seen.Add(entry.Path)) { _shown.Add(entry); any = true; }
+                        if (_seen.Add(entry.Path)) fresh.Add(entry);
+                    if (fresh.Count == 0) continue;
+
+                    // Each batch is already in order, and so is what is shown:
+                    // one linear merge, and a new list, because the pane holds
+                    // the last one.
+                    _shown = MergeSorted(_shown, fresh, _order);
+                    any = true;
+                }
 
                 if (!any) return;
-
-                var sorted = _form.SortLikeAFolder(new List<Entry>(_shown));
-                Put(sorted);
+                Put(_shown);
             }
 
             /// <summary>The whole listing, in place of the partial one.</summary>
@@ -2783,24 +3217,57 @@ namespace ExplorerNative
         /// </summary>
         private List<Entry> SortLikeAFolder(List<Entry> result)
         {
-            var cmp = ComparerFor(_settings.SortBy);
-
-            if (_settings.FoldersFirst)
-            {
-                var dirs = new List<Entry>();
-                var files = new List<Entry>();
-                foreach (var e in result) (e.IsDir ? dirs : files).Add(e);
-
-                dirs.Sort(cmp);
-                files.Sort(cmp);
-                if (!_settings.SortAscending) { dirs.Reverse(); files.Reverse(); }
-                dirs.AddRange(files);
-                return dirs;
-            }
-
-            result.Sort(cmp);
-            if (!_settings.SortAscending) result.Reverse();
+            result.Sort(ListOrder());
             return result;
+        }
+
+        /// <summary>
+        /// The whole order as one comparison: folders first when asked, then the
+        /// column, then the direction. Total, because every column falls back to
+        /// the name and the name to the path — which is what lets a progressive
+        /// load sort each batch on the worker and merge it into what is already
+        /// shown, instead of re-sorting everything on the UI thread every tick.
+        /// </summary>
+        private Comparison<Entry> ListOrder()
+        {
+            var cmp = ComparerFor(_settings.SortBy);
+            bool foldersFirst = _settings.FoldersFirst;
+            bool ascending = _settings.SortAscending;
+            return (a, b) =>
+            {
+                if (foldersFirst && a.IsDir != b.IsDir) return a.IsDir ? -1 : 1;
+                int c = cmp(a, b);
+                return ascending ? c : -c;
+            };
+        }
+
+        /// <summary>
+        /// A short sorted batch merged into a long sorted list: each new entry's
+        /// place is found by binary search from the last one's, and the rows in
+        /// between are copied without being compared. That is m log n
+        /// comparisons rather than n + m — which matters because a logical name
+        /// comparison is a call into Windows, and a plain merge of 100,000 rows
+        /// spent 80ms of the UI thread on one tick doing them.
+        /// </summary>
+        private static List<Entry> MergeSorted(List<Entry> into, List<Entry> batch, Comparison<Entry> order)
+        {
+            var merged = new List<Entry>(into.Count + batch.Count);
+            int from = 0;
+            foreach (var item in batch)
+            {
+                int lo = from, hi = into.Count;
+                while (lo < hi)
+                {
+                    int mid = (lo + hi) >>> 1;
+                    if (order(into[mid], item) <= 0) lo = mid + 1;
+                    else hi = mid;
+                }
+                for (int k = from; k < lo; k++) merged.Add(into[k]);
+                merged.Add(item);
+                from = lo;
+            }
+            for (int k = from; k < into.Count; k++) merged.Add(into[k]);
+            return merged;
         }
 
         /// <summary>
@@ -2813,16 +3280,11 @@ namespace ExplorerNative
         /// .Sort is unstable, and without a tie-break equal-sized files shuffled
         /// on every refresh.
         /// </summary>
-        private static Comparison<Entry> ComparerFor(SortColumn column) => column switch
+        private static Comparison<Entry> ComparerFor(SortColumn column) => NameRules.SortsAs(column) switch
         {
             SortColumn.Size => static (a, b) =>
             {
                 int c = a.Size.CompareTo(b.Size);
-                return c != 0 ? c : CompareNames(a, b);
-            },
-            SortColumn.Type => static (a, b) =>
-            {
-                int c = NameRules.CompareExtensions(a.Name, b.Name);
                 return c != 0 ? c : CompareNames(a, b);
             },
             SortColumn.Modified => static (a, b) =>
@@ -4933,7 +5395,7 @@ namespace ExplorerNative
                 }
                 else
                 {
-                    var target = Path.Combine(destination, name);
+                    var target = NameRules.ExactPath(Path.Combine(destination, name));
                     try { clashes = File.Exists(target) || Directory.Exists(target); }
                     catch { clashes = false; }
                 }
@@ -4974,6 +5436,30 @@ namespace ExplorerNative
 
         private async Task<bool> RunTransfer(string[] paths, string destination, bool move)
         {
+            // Cut and paste into the folder the items are already in is nothing
+            // to do. It was a collision of each item with itself, so under keep
+            // both everything came back renamed "a (2)" and the clipboard was
+            // cleared. A string comparison, so it costs nothing on a share; the
+            // engines refuse it as well. The clipboard keeps the cut, as File
+            // Explorer's does.
+            if (move)
+            {
+                var elsewhere = paths.Where(p =>
+                {
+                    var name = Path.GetFileName(p.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                    return string.IsNullOrEmpty(name) || !FileOperations.SamePath(Path.Combine(destination, name), p);
+                }).ToArray();
+
+                if (elsewhere.Length == 0)
+                {
+                    AnnounceOperation("move.done", paths.Length == 1
+                        ? "Already in this folder"
+                        : "Already in this folder; nothing to move");
+                    return false;
+                }
+                paths = elsewhere;
+            }
+
             // A move is finished on Drive by trashing and elsewhere by robocopy,
             // and a selection holding both went down one path or the other for
             // all of it: the local half copied rather than moved, was then counted
@@ -5108,12 +5594,12 @@ namespace ExplorerNative
                 var alreadyThere = move && fromDrive
                     ? await Task.Run(() => paths
                         .Select(p => Path.GetFileName(p.TrimEnd(Path.DirectorySeparatorChar)))
-                        .Where(n => File.Exists(Path.Combine(destination, n)) ||
-                                    Directory.Exists(Path.Combine(destination, n)))
+                        .Where(n => File.Exists(NameRules.ExactPath(Path.Combine(destination, n))) ||
+                                    Directory.Exists(NameRules.ExactPath(Path.Combine(destination, n))))
                         .ToHashSet(StringComparer.OrdinalIgnoreCase))
                     : null;
                 var merged = conflicts == PasteConflictPolicy.FillGaps
-                    ? alreadyThere?.Where(n => Directory.Exists(Path.Combine(destination, n)))
+                    ? alreadyThere?.Where(n => Directory.Exists(NameRules.ExactPath(Path.Combine(destination, n))))
                         .ToHashSet(StringComparer.OrdinalIgnoreCase)
                     : null;
                 var renamedAway = conflicts == PasteConflictPolicy.AutoRename ? alreadyThere : null;
@@ -5135,7 +5621,11 @@ namespace ExplorerNative
                 var task = RoboCopyEngine.RunAsync(
                     paths, destination, move && !fromDrive, TransferThreads(paths),
                     conflicts, progress, cts.Token, _settings.CopyBufferKilobytes,
-                    cloudSource: fromDrive);
+                    cloudSource: fromDrive,
+                    // A move within one volume is a rename now, and never to or
+                    // from the Drive letter, where a rename is not a move in
+                    // the account.
+                    onCloudLetter: Drive == null ? null : Drive.Owns);
 
                 // Show, not ShowDialog. The window is its own top-level window
                 // now and the file manager stays live behind it — which is the
@@ -5202,6 +5692,18 @@ namespace ExplorerNative
                 // Not "Move complete" over the warnings that some originals stayed.
                 else if (keptInDrive > 0)
                     AnnounceOperation("move.done", $"Copied; {NameRules.Items(keptInDrive)} kept in Google Drive");
+
+                // Files a merge found already there and left alone. Not "Move
+                // complete" over originals that are still in the source: a Fill
+                // gaps move said exactly that.
+                else if (result.AlreadyThere > 0 && move && !fromDrive)
+                    AnnounceOperation("move.done",
+                        $"Moved; {NameRules.Items(result.AlreadyThere, "file")} already there " +
+                        $"{(result.AlreadyThere == 1 ? "was" : "were")} left in the source folder");
+                else if (result.AlreadyThere > 0)
+                    AnnounceOperation(move ? "move.done" : "copy.done",
+                        $"{(move ? "Copied" : "Copy complete")}; {NameRules.Items(result.AlreadyThere, "file")} " +
+                        $"{(result.AlreadyThere == 1 ? "was" : "were")} already there");
                 else AnnounceOperation(move ? "move.done" : "copy.done", move ? "Move complete" : "Copy complete");
 
                 // Last, and after the outcome, because it is the more specific
@@ -5626,7 +6128,11 @@ namespace ExplorerNative
                         $"to {FolderDisplayName(destination)}");
                 }
 
-                AnnounceConflicts(result.Collisions);
+                // Not after a cancel: "Extracting cancelled" is the whole story,
+                // and a "Replaced" or "Saved as" after it reads as though the
+                // extract went on. The counts are the engine's own, so a finished
+                // extract names exactly what it renamed or replaced.
+                if (!result.Cancelled) AnnounceConflicts(result.Collisions);
             }
             catch (Exception ex)
             {
@@ -6416,8 +6922,13 @@ namespace ExplorerNative
 
             switch (ShellContextMenu.Show(this, paths, where.X, where.Y))
             {
+                // A command was chosen. Whatever it does finishes after the shell
+                // hands back, so a refresh here was always a moment too early —
+                // and in search results it ran the whole search again. The
+                // folder watcher picks up what the command changes.
                 case ShellContextMenu.MenuOutcome.Shown:
-                    Refresh_();
+                case ShellContextMenu.MenuOutcome.Dismissed:
+                    RestoreListFocus();
                     break;
 
                 // Building it is two shell calls per selected item, measured at
@@ -6603,11 +7114,10 @@ namespace ExplorerNative
 
             if (outcome == DialogResult.Retry)
             {
-                Program.ApplySettings(new Settings
-                {
-                    LastFolder = Active.CurrentPath,
-                    LastFolderTab2 = Other.CurrentPath,
-                });
+                // The window's geometry is taken first, so what is kept is where
+                // the window is now rather than where it was at the last save.
+                CaptureWindowGeometry();
+                Program.ApplySettings(SettingsReset.Defaults(_settings, _panes[0].CurrentPath, _panes[1].CurrentPath));
                 AnnounceOperation("settings.reset", "Preferences reset to defaults");
                 return;
             }

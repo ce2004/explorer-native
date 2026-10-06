@@ -83,6 +83,23 @@ namespace ExplorerNative
             return entries;
         }
 
+        /// <summary>
+        /// A local path as the file system is to be asked about it. A name ending in a dot or a space, anywhere
+        /// in the path, is quietly trimmed by Windows, so "report." would be taken as "report" and a different
+        /// file read, renamed or found missing; those paths go in the literal form. Every other path is
+        /// returned as the same string, so <c>ReferenceEquals</c> says whether it changed.
+        /// </summary>
+        public static string Io(string path)
+        {
+            if (string.IsNullOrEmpty(path) || path.StartsWith(@"\\?\", StringComparison.Ordinal)) return path;
+            foreach (var segment in path.Split('\\', '/'))
+            {
+                if (segment.Length == 0 || segment == "." || segment == "..") continue;
+                if (segment[^1] == '.' || segment[^1] == ' ') return NameRules.LiteralPath(path);
+            }
+            return path;
+        }
+
         private static string Leaf(string path) => Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
 
         private static string? Parent(string path) => Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(path));
@@ -142,7 +159,8 @@ namespace ExplorerNative
             }
 
             if (IsOurs(folder)) throw new ConnectException(403, "That is Explorer Native's own folder, which holds the Google Drive sync folder; it is not measured.");
-            var kind = await Task.Run(() => Directory.Exists(folder) ? 1 : File.Exists(folder) ? 2 : 0, token);
+            var io = Io(folder);
+            var kind = await Task.Run(() => Directory.Exists(io) ? 1 : File.Exists(io) ? 2 : 0, token);
             if (kind == 0) throw new ConnectException(404, "That folder is not there any more.");
             if (kind == 2) throw new ConnectException(400, "That is a file; ask for its details instead.");
 
@@ -151,9 +169,13 @@ namespace ExplorerNative
             using var calculator = new FolderSizeCalculator
             {
                 TimeoutSeconds = SizeBudgetSeconds,
-                Skip = p => IsOurs(p) || OnDrive(p),
+                Skip = p =>
+                {
+                    var plain = p.StartsWith(@"\\?\", StringComparison.Ordinal) ? p[4..] : p;
+                    return IsOurs(plain) || OnDrive(plain);
+                },
             };
-            var r = await calculator.CalculateAsync(folder, token);
+            var r = await calculator.CalculateAsync(io, token);
             token.ThrowIfCancellationRequested();
             return new ConnectSize(folder, r.Bytes, r.Files, r.Folders, r.Complete);
         }
@@ -197,10 +219,13 @@ namespace ExplorerNative
 
             var stat = await Task.Run<ConnectStat?>(() =>
             {
-                FileSystemInfo info = Directory.Exists(path) ? new DirectoryInfo(path) : new FileInfo(path);
+                var io = Io(path);
+                FileSystemInfo info = Directory.Exists(io) ? new DirectoryInfo(io) : new FileInfo(io);
                 if (!info.Exists) return null;
                 bool folder = info is DirectoryInfo;
-                return new ConnectStat(info.FullName, info.Name.Length > 0 ? info.Name : info.FullName, folder,
+                // The path as the web app knows it, never the literal form.
+                var full = ReferenceEquals(io, path) ? info.FullName : path;
+                return new ConnectStat(full, info.Name.Length > 0 ? info.Name : full, folder,
                     folder ? 0 : ((FileInfo)info).Length, info.LastWriteTimeUtc, info.CreationTimeUtc,
                     (info.Attributes & FileAttributes.ReadOnly) != 0, false);
             }, token) ?? throw new ConnectException(404, "That is not there any more.");
@@ -230,10 +255,10 @@ namespace ExplorerNative
             CachedBytes Bytes()
             {
                 if (bytes != null) return bytes;
-                raw = onDrive ? Drive.OpenRange(path) ?? throw new IOException("Google Drive would not open it") : new FileRangeSource(path);
+                raw = onDrive ? Drive.OpenRange(path) ?? throw new IOException("Google Drive would not open it") : new FileRangeSource(Io(path));
                 return bytes = new CachedBytes(raw, token);
             }
-            Stream OpenStream() => onDrive ? new CachedStream(Bytes()) : new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 64 * 1024, FileOptions.SequentialScan);
+            Stream OpenStream() => onDrive ? new CachedStream(Bytes()) : new FileStream(Io(path), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 64 * 1024, FileOptions.SequentialScan);
 
             async Task Section(string name, Func<object?> build)
             {
@@ -274,7 +299,7 @@ namespace ExplorerNative
                         }
                         else
                         {
-                            foreach (var e in new DirectoryInfo(path).EnumerateFileSystemInfos("*", new EnumerationOptions { IgnoreInaccessible = true, AttributesToSkip = FileAttributes.System | FileAttributes.Hidden }))
+                            foreach (var e in new DirectoryInfo(Io(path)).EnumerateFileSystemInfos("*", new EnumerationOptions { IgnoreInaccessible = true, AttributesToSkip = FileAttributes.System | FileAttributes.Hidden }))
                             {
                                 token.ThrowIfCancellationRequested();
                                 if (e is DirectoryInfo) folders++; else files++;
@@ -372,7 +397,8 @@ namespace ExplorerNative
             try
             {
                 // On the Drive letter these are the placeholder's own metadata: attributes, never its bytes.
-                FileSystemInfo info = stat.Folder ? new DirectoryInfo(path) : new FileInfo(path);
+                var io = Io(path);
+                FileSystemInfo info = stat.Folder ? new DirectoryInfo(io) : new FileInfo(io);
                 if (info.Exists)
                 {
                     if (!onDrive)
@@ -397,7 +423,7 @@ namespace ExplorerNative
                 }
                 if (!stat.Folder)
                 {
-                    uint low = GetCompressedFileSizeW(@"\\?\" + path, out uint high);
+                    uint low = GetCompressedFileSizeW(NameRules.LiteralPath(path), out uint high);
                     if (low != 0xFFFFFFFF || Marshal.GetLastWin32Error() == 0) f["sizeOnDisk"] = (long)high << 32 | low;
                 }
                 if (!onDrive)
@@ -405,8 +431,8 @@ namespace ExplorerNative
                     try
                     {
                         var owner = stat.Folder
-                            ? new DirectoryInfo(path).GetAccessControl().GetOwner(typeof(System.Security.Principal.NTAccount))
-                            : new FileInfo(path).GetAccessControl().GetOwner(typeof(System.Security.Principal.NTAccount));
+                            ? new DirectoryInfo(io).GetAccessControl().GetOwner(typeof(System.Security.Principal.NTAccount))
+                            : new FileInfo(io).GetAccessControl().GetOwner(typeof(System.Security.Principal.NTAccount));
                         if (owner != null) f["owner"] = owner.Value;
                     }
                     catch { }
@@ -513,14 +539,15 @@ namespace ExplorerNative
             return await Task.Run(() =>
             {
                 var target = Path.Combine(parent, newName);
-                bool folder = Directory.Exists(path);
-                if (!folder && !File.Exists(path)) throw new ConnectException(404, "That is not there any more.");
-                if (!caseOnly && (File.Exists(target) || Directory.Exists(target)))
+                string from = Io(path), to = Io(target);
+                bool folder = Directory.Exists(from);
+                if (!folder && !File.Exists(from)) throw new ConnectException(404, "That is not there any more.");
+                if (!caseOnly && (File.Exists(to) || Directory.Exists(to)))
                     throw new ConnectException(409, $"Something called {newName} is already there.");
                 try
                 {
-                    if (folder) Directory.Move(path, target);
-                    else File.Move(path, target);
+                    if (folder) Directory.Move(from, to);
+                    else File.Move(from, to);
                 }
                 catch (UnauthorizedAccessException e) { throw new ConnectException(403, ConnectServer.Sentence(e.Message)); }
                 return target;
@@ -547,11 +574,12 @@ namespace ExplorerNative
 
             return await Task.Run(() =>
             {
-                if (!Directory.Exists(parent)) throw new ConnectException(404, "That folder is not there any more.");
+                if (!Directory.Exists(Io(parent))) throw new ConnectException(404, "That folder is not there any more.");
                 var target = Path.Combine(parent, name);
-                if (Directory.Exists(target) || File.Exists(target))
+                var io = Io(target);
+                if (Directory.Exists(io) || File.Exists(io))
                     throw new ConnectException(409, $"Something called {name} is already there.");
-                try { Directory.CreateDirectory(target); }
+                try { Directory.CreateDirectory(io); }
                 catch (UnauthorizedAccessException e) { throw new ConnectException(403, ConnectServer.Sentence(e.Message)); }
                 return target;
             }, token);
@@ -592,10 +620,13 @@ namespace ExplorerNative
                 {
                     try
                     {
-                        if (!Directory.Exists(path) && !File.Exists(path)) { failed.Add(new ConnectFailure(path, "It is not there any more.")); continue; }
-                        if (NameRules.NeedsLiteralPath(path))
+                        var io = Io(path);
+                        if (!Directory.Exists(io) && !File.Exists(io)) { failed.Add(new ConnectFailure(path, "It is not there any more.")); continue; }
+                        // The Recycle Bin is reached only by the plain name, which here is a different file; and
+                        // the web app never deletes for good. So it is refused, saying why, as the window does.
+                        if (!ReferenceEquals(io, path))
                         {
-                            failed.Add(new ConnectFailure(path, "Windows can't put a name ending in a dot or a space in the Recycle Bin; delete it on the computer."));
+                            failed.Add(new ConnectFailure(path, "Windows can't put a name ending in a dot or a space in the Recycle Bin, so it is kept. Delete it on the computer with Shift+Delete."));
                             continue;
                         }
                         // The shell deletes for good, with a question on the computer's screen, whatever has no
@@ -658,8 +689,23 @@ namespace ExplorerNative
 
             bool there = destinationOnDrive
                 ? await Task.Run(() => DriveKind(destination), token) is (true, true)
-                : await Task.Run(() => Directory.Exists(destination), token);
+                : await Task.Run(() => Directory.Exists(Io(destination)), token);
             if (!there) throw new ConnectException(404, "The destination folder is not there any more.");
+
+            // Moving something into the folder it is already in is nothing to do, whatever the conflict setting:
+            // it was renamed to "name (2)" under keep both, refused under replace and failed under skip.
+            if (move)
+            {
+                var already = paths.Where(p => ParentIs(p, destination)).ToArray();
+                if (already.Length > 0)
+                {
+                    paths = paths.Where(p => !ParentIs(p, destination)).ToArray();
+                    job.Say(already.Length == 1 && paths.Length == 0 ? "It is already in this folder."
+                        : already.Length == 1 ? $"{Leaf(already[0])} is already in this folder."
+                        : $"{already.Length} items are already in this folder.");
+                    if (paths.Length == 0) return;
+                }
+            }
 
             if (destinationOnDrive)
             {
@@ -1109,42 +1155,76 @@ namespace ExplorerNative
                 }
             }
 
-            if (!await Task.Run(() => Directory.Exists(folder), token))
+            if (!await Task.Run(() => Directory.Exists(Io(folder)), token))
                 throw new ConnectException(404, "That folder is not there any more.");
 
-            var target = Path.Combine(folder, name);
-            bool taken = await Task.Run(() => File.Exists(target) || Directory.Exists(target), token);
-            if (taken)
-            {
-                if (conflict == PasteConflictPolicy.Skip) return target;
-                if (conflict == PasteConflictPolicy.AutoRename)
-                    target = Path.Combine(folder, NameRules.UniqueAmong(name,
-                        n => File.Exists(Path.Combine(folder, n)) || Directory.Exists(Path.Combine(folder, n)), folder: false));
-                else if (await Task.Run(() => Directory.Exists(target), token))
-                    throw new ConnectException(409, $"A folder called {name} is already there.");
-            }
+            // Skipped, or refused, before a byte of the body is read.
+            var wanted = Path.Combine(folder, name);
+            if (conflict == PasteConflictPolicy.Skip && await Task.Run(() => Exists(wanted), token)) return wanted;
+            if (conflict == PasteConflictPolicy.Overwrite && await Task.Run(() => Directory.Exists(Io(wanted)), token))
+                throw new ConnectException(409, $"A folder called {name} is already there.");
 
             // Written beside its destination under a hidden name, and renamed into place only once every byte
             // has arrived: a phone that goes away mid-upload leaves nothing that looks like the file.
             var partial = Path.Combine(folder, $".{name}.{Guid.NewGuid():N}.partial");
             try
             {
-                await using (var file = new FileStream(partial, FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 20, useAsync: true))
+                await using (var file = new FileStream(Io(partial), FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 20, useAsync: true))
                 {
-                    try { File.SetAttributes(partial, FileAttributes.Hidden); } catch { }
+                    try { File.SetAttributes(Io(partial), FileAttributes.Hidden); } catch { }
                     await body.CopyToAsync(file, 1 << 20, token);
                 }
-                await Task.Run(() =>
+                return await Task.Run(() =>
                 {
-                    File.SetAttributes(partial, FileAttributes.Normal);
-                    File.Move(partial, target, overwrite: conflict == PasteConflictPolicy.Overwrite);
+                    File.SetAttributes(Io(partial), FileAttributes.Normal);
+                    return MoveIntoPlace(partial, folder, name, conflict);
                 }, CancellationToken.None);
-                return target;
             }
             catch (UnauthorizedAccessException e) { throw new ConnectException(403, ConnectServer.Sentence(e.Message)); }
             finally
             {
-                try { if (File.Exists(partial)) File.Delete(partial); } catch { }
+                try { if (File.Exists(Io(partial))) File.Delete(Io(partial)); } catch { }
+            }
+        }
+
+        private static bool Exists(string path)
+        {
+            var io = Io(path);
+            return File.Exists(io) || Directory.Exists(io);
+        }
+
+        private static bool AlreadyExists(Exception e) =>
+            e is IOException && (e.HResult & 0xFFFF) is 80 or 183;   // ERROR_FILE_EXISTS, ERROR_ALREADY_EXISTS
+
+        /// <summary>
+        /// Moves a finished file to <paramref name="name"/> in a local folder under the conflict policy, and gives
+        /// the path it landed at. The free name is chosen and then taken, and something else can take it in
+        /// between: eight uploads of one name at once made two files and six errors. A name taken in that moment
+        /// is simply the next one tried. Under skip a name taken in between is a skip.
+        /// </summary>
+        internal static string MoveIntoPlace(string file, string folder, string name, PasteConflictPolicy conflict)
+        {
+            for (int attempt = 0; ; attempt++)
+            {
+                var target = Path.Combine(folder, name);
+                if (Exists(target))
+                {
+                    if (conflict == PasteConflictPolicy.Skip) return target;
+                    if (conflict == PasteConflictPolicy.AutoRename)
+                        target = Path.Combine(folder, NameRules.UniqueAmong(name, n => Exists(Path.Combine(folder, n)), folder: false));
+                    else if (Directory.Exists(Io(target)))
+                        throw new ConnectException(409, $"A folder called {name} is already there.");
+                }
+                try
+                {
+                    File.Move(Io(file), Io(target), overwrite: conflict == PasteConflictPolicy.Overwrite);
+                    return target;
+                }
+                catch (Exception e) when (attempt < 100 && conflict != PasteConflictPolicy.Overwrite &&
+                                          (AlreadyExists(e) || (e is UnauthorizedAccessException && Exists(target))))
+                {
+                    // Taken since it was looked at: look again.
+                }
             }
         }
 
@@ -1204,22 +1284,15 @@ namespace ExplorerNative
 
             return await Task.Run(() =>
             {
-                if (!Directory.Exists(folder)) throw new ConnectException(404, "That folder is not there any more.");
-                var target = Path.Combine(folder, name);
-                if (File.Exists(target) || Directory.Exists(target))
-                {
-                    if (conflict == PasteConflictPolicy.Skip) return target;
-                    if (conflict == PasteConflictPolicy.AutoRename)
-                        target = Path.Combine(folder, NameRules.UniqueAmong(name,
-                            n => File.Exists(Path.Combine(folder, n)) || Directory.Exists(Path.Combine(folder, n)), folder: false));
-                    else if (Directory.Exists(target))
-                        throw new ConnectException(409, $"A folder called {name} is already there.");
-                }
+                if (!Directory.Exists(Io(folder))) throw new ConnectException(404, "That folder is not there any more.");
+                string target;
                 try
                 {
                     // A rename when the partial is on the same volume; a copy and delete when it is not.
-                    File.Move(file, target, overwrite: conflict == PasteConflictPolicy.Overwrite);
-                    try { File.SetAttributes(target, File.GetAttributes(target) & ~FileAttributes.Hidden); } catch { }
+                    target = MoveIntoPlace(file, folder, name, conflict);
+                    // Only when it was moved: a skip leaves somebody's own file, attributes and all.
+                    if (!File.Exists(Io(file)))
+                        try { File.SetAttributes(Io(target), File.GetAttributes(Io(target)) & ~FileAttributes.Hidden); } catch { }
                 }
                 catch (UnauthorizedAccessException e) { throw new ConnectException(403, ConnectServer.Sentence(e.Message)); }
                 return target;

@@ -59,7 +59,23 @@ namespace ExplorerNative
             // and over, and closing it sent the console's close event to the file
             // manager as well. A GUI application has no business in a console it
             // is not writing to.
-            _quiet = args.Any(a => a.Equals("--quiet", StringComparison.OrdinalIgnoreCase));
+            _quiet = args.Any(a => a.Trim().Equals("--quiet", StringComparison.OrdinalIgnoreCase));
+
+            // A switch nobody knows is a typo, and a typo must not start the
+            // application: --unistall used to bring the running copy to the
+            // front, or start a new one, and say nothing about why.
+            var unknown = LaunchArguments.UnknownOption(args);
+            if (unknown != null)
+            {
+                AttachToParentConsole();
+                Deliver("Unknown option",
+                    $"{unknown} is not an option Explorer Native knows. The options are " +
+                    string.Join(", ", CommandLineSwitches.Concat(LaunchArguments.Modifiers)) + ".",
+                    failed: true);
+                Environment.ExitCode = 2;
+                return;
+            }
+
             if (IsCommandLineRun(args)) AttachToParentConsole();
 
             // Registration flags do their work and exit without starting a UI, so
@@ -196,11 +212,7 @@ namespace ExplorerNative
         /// The switches that do their work and exit without a window — the only
         /// runs that are allowed to borrow a console.
         /// </summary>
-        internal static readonly string[] CommandLineSwitches =
-        {
-            "--licence", "--license", "--install", "--install-only", "--update", "--uninstall", "--read-log",
-            "--register-default", "--unregister-default", "--unregister-all",
-        };
+        internal static readonly string[] CommandLineSwitches = LaunchArguments.CommandLineSwitches;
 
         private static bool IsCommandLineRun(string[] args) =>
             args.Any(a => CommandLineSwitches.Contains(a.Trim(), StringComparer.OrdinalIgnoreCase));
@@ -231,8 +243,7 @@ namespace ExplorerNative
                         // Logs under AppData are encrypted for this Windows
                         // account. Prints one back: --read-log crash.log, or a
                         // full path. install.log when no name is given.
-                        var name = args.SkipWhile(a => !a.Trim().Equals("--read-log", StringComparison.OrdinalIgnoreCase))
-                                       .Skip(1).FirstOrDefault() ?? "install.log";
+                        var name = LaunchArguments.ReadLogName(args);
                         var path = Path.IsPathRooted(name) ? name : Path.Combine(Settings.AppDataDir, name);
                         try
                         {
@@ -427,6 +438,7 @@ namespace ExplorerNative
             if (result.Hash != null) said += $"\nSHA-256 {result.Hash}";
 
             var old = StandDown.Gone;
+            bool agreedToGo = false;
 
             if (result.RunningCopyIsStale || restartRunning)
             {
@@ -436,7 +448,7 @@ namespace ExplorerNative
                 // Google Drive — and start the new one in its place. This is the
                 // *nice to have* now rather than the thing the install rests on:
                 // if nobody answers, the install has still happened.
-                old = AskRunningInstanceToExit();
+                old = AskRunningInstanceToExit(out agreedToGo);
 
                 said += old switch
                 {
@@ -446,6 +458,9 @@ namespace ExplorerNative
                         "\nThe copy that was running has stood down and the new build has been " +
                         "started. The old process has not finished exiting — Windows is still " +
                         "holding it — but it no longer holds anything the new one needs.",
+                    _ when agreedToGo =>
+                        "\nThe copy that was running is still closing. The new build will start " +
+                        "as soon as it has gone.",
                     _ =>
                         "\nA copy is still running from the previous build. It will pick this " +
                         "up the next time it starts; nothing else is outstanding.",
@@ -454,9 +469,13 @@ namespace ExplorerNative
 
             // Start the copy that was just installed, so whoever ran this ends up
             // running the thing the registry now names rather than the build they
-            // invoked. Skipped while the old copy still holds the single-instance
-            // lock, because a launch then only hands its request to that copy.
-            if (old != StandDown.StillRunning)
+            // invoked. While the old copy still holds the single-instance lock a
+            // plain launch would only hand its request to that copy — so a copy
+            // that agreed to go and is taking its time gets a successor started
+            // with --restart, which waits for the lock instead. Without it an
+            // update that outlasted the wait left nothing running at all, and
+            // reported that as success. One that never answered is left alone.
+            if (old != StandDown.StillRunning || agreedToGo)
             {
                 try
                 {
@@ -466,7 +485,10 @@ namespace ExplorerNative
                     // terminal left the file manager holding that terminal's
                     // output pipe open for as long as it ran — so whatever was
                     // waiting on the terminal waited for ever.
-                    Process.Start(new ProcessStartInfo(result.ExePath) { UseShellExecute = true });
+                    if (old == StandDown.StillRunning)
+                        Process.Start(new ProcessStartInfo(result.ExePath, "--restart") { UseShellExecute = true });
+                    else
+                        Process.Start(new ProcessStartInfo(result.ExePath) { UseShellExecute = true });
                 }
                 catch (Exception ex)
                 {
@@ -544,8 +566,12 @@ namespace ExplorerNative
         /// a process that still has I/O out, and one waiting on a cloud file
         /// can have it out for a minute.
         /// </summary>
-        private static StandDown AskRunningInstanceToExit()
+        private static StandDown AskRunningInstanceToExit() => AskRunningInstanceToExit(out _);
+
+        /// <param name="asked">Whether a running copy answered the request to go.</param>
+        private static StandDown AskRunningInstanceToExit(out bool asked)
         {
+            asked = false;
             Process[] others;
             try
             {
@@ -560,7 +586,6 @@ namespace ExplorerNative
                 // Nobody listening is not "nothing running" — the incident this
                 // installer was redesigned around was four copies with no pipe
                 // server among them. Only an answered request is worth waiting on.
-                bool asked;
                 try { asked = SingleInstance.SendToRunningInstance(SingleInstance.ExitCommand); }
                 catch { asked = false; }
 

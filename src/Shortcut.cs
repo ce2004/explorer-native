@@ -27,8 +27,26 @@ namespace ExplorerNative
         /// means no program ever sees a P again — including this one. The media
         /// keys are the exception: they are already global by nature, and a
         /// keyboard that has them is a keyboard where taking them is the point.
+        ///
+        /// Shift on its own does not count as a modifier, except with a function
+        /// key. Shift and a letter is a capital letter, Shift and a digit is a
+        /// symbol, and Shift with Space, an arrow, Enter or Backspace is typing
+        /// and selecting text: registered globally, Shift+P meant no capital P in
+        /// any program on the machine. Only bits Windows knows are counted, so a
+        /// stray bit in a hand-edited file is not a modifier either.
         /// </summary>
-        public bool CanRegister => IsAssigned && (Modifiers != 0 || IsSelfContained((Keys)Key));
+        public bool CanRegister
+        {
+            get
+            {
+                if (!IsAssigned) return false;
+                var key = (Keys)Key;
+                if (IsSelfContained(key)) return true;
+                if ((Modifiers & (HotkeyManager.MOD_CONTROL | HotkeyManager.MOD_ALT | HotkeyManager.MOD_WIN)) != 0)
+                    return true;
+                return (Modifiers & HotkeyManager.MOD_SHIFT) != 0 && key is >= Keys.F1 and <= Keys.F24;
+            }
+        }
 
         /// <summary>
         /// Keys worth registering with no modifier at all — they exist for exactly

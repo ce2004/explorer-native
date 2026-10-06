@@ -97,7 +97,12 @@ namespace ExplorerNative
             // Second chance for anything the managed side knows, whatever the
             // registry claimed. A handler being registered is not the same as it
             // working, and the file in front of us is the only real test.
-            if (OggDecoder.Handles(extension))
+            //
+            // And for anything that *is* an Ogg file, whatever it is called. An
+            // Ogg file named .mp3 — a download given the wrong name, a rip tool's
+            // idea of a default — failed with "Windows cannot decode .mp3",
+            // because this used to ask the extension and nothing else.
+            if (OggDecoder.Handles(extension) || StartsWithOggS(path, stream))
             {
                 var ogg = new OggDecoder();
                 if (ogg.Open(path, stream, sampleRate, channels)) { why = ogg.Diagnostic; return ogg; }
@@ -109,6 +114,52 @@ namespace ExplorerNative
 
             why = mediaSaid;
             return null;
+        }
+
+        /// <summary>
+        /// Whether the file begins with "OggS", the capture pattern every Ogg
+        /// page starts with. Asked only after Media Foundation has failed, so it
+        /// costs nothing on any file that plays.
+        /// </summary>
+        private static bool StartsWithOggS(string path,
+            System.Runtime.InteropServices.ComTypes.IStream? stream)
+        {
+            var head = new byte[4];
+            int got = 0;
+
+            try
+            {
+                if (stream != null)
+                {
+                    stream.Seek(0, 0, IntPtr.Zero);
+                    var read = System.Runtime.InteropServices.Marshal.AllocHGlobal(sizeof(int));
+                    try
+                    {
+                        stream.Read(head, head.Length, read);
+                        got = System.Runtime.InteropServices.Marshal.ReadInt32(read);
+                    }
+                    finally
+                    {
+                        System.Runtime.InteropServices.Marshal.FreeHGlobal(read);
+                        try { stream.Seek(0, 0, IntPtr.Zero); } catch { }
+                    }
+                }
+                else
+                {
+                    using var file = new FileStream(path, FileMode.Open, FileAccess.Read,
+                        FileShare.ReadWrite | FileShare.Delete, 16);
+                    while (got < head.Length)
+                    {
+                        int n = file.Read(head, got, head.Length - got);
+                        if (n <= 0) break;
+                        got += n;
+                    }
+                }
+            }
+            catch { return false; }
+
+            return got == 4 && head[0] == (byte)'O' && head[1] == (byte)'g' &&
+                   head[2] == (byte)'g' && head[3] == (byte)'S';
         }
 
         private static string SafeExtension(string path)

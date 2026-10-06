@@ -134,6 +134,27 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            // Just copying and moving, for working on the engines.
+            // Just the player review's fixes, with EXPLORERNATIVE_AUDIOFUZZ set
+            // to the number of damaged copies of each format to try.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "audiofix")
+            {
+                AudioFixTests.RunAll(Check, Equal);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "transfers")
+            {
+                await RoboCopyTests();
+                await CancelCleanupTests();
+                await ConflictSafetyTests();
+                await AwkwardNameTests();
+                await TransferFixTests.RunAll(Check, Equal);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             SizeUnitTests();
             SizeFormatterEdgeTests();
             TimeFormatTests();
@@ -206,10 +227,16 @@ namespace ExplorerNative
             await ArchiveTests.RunAll(Check, Equal);
             InstallTests.RunAll(Check, Equal);
             await DriveCopyTests.RunAll(Check, Equal);
+            await FakeDriveMonitorTests.RunAll(Check, Equal);
             await OddCaseTests.RunAll(Check, Equal);
+            await TransferFixTests.RunAll(Check, Equal);
+            SettingsFixTests.RunAll(Check, Equal);
             SearchTests.RunAll(Check, Equal);
             await ConnectTests.RunAll(Check, Equal);
             ExactSeekTests.RunAll(Check);
+            AudioFixTests.RunAll(Check, Equal);
+            await UpdateFixTests.RunAll(Check, Equal);
+            MainFixTests.RunAll(Check, Equal);
 
             Console.WriteLine($"\n{_passed} passed, {_failed} failed");
             return _failed == 0 ? 0 : 1;
@@ -1055,9 +1082,9 @@ namespace ExplorerNative
             {
                 foreach (var (state, wanted) in new[]
                          {
-                             (DriveAccountState.NotConnected, "&Connect Google Drive"),
+                             (DriveAccountState.NotConnected, "Co&nnect Google Drive"),
                              (DriveAccountState.Connected, "&Disconnect Google Drive"),
-                             (DriveAccountState.NeedsSignIn, "&Reconnect Google Drive"),
+                             (DriveAccountState.NeedsSignIn, "Reco&nnect Google Drive"),
                          })
                 {
                     SettingsForm.AccountState = () => state;
@@ -1324,9 +1351,10 @@ namespace ExplorerNative
                 Check("each with its own plain list of changes",
                     all.Where(r => r.Version >= new Version(1, 0, 2)).All(r => UpdateForm.Changes(r.Notes).Count > 0));
             }
-            catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or TaskCanceledException)
+            catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or TaskCanceledException
+                                           or Updater.UpdateException)
             {
-                // Offline: nothing to check against.
+                // Offline, or GitHub limiting checks: nothing to check against.
             }
 
             Check("a list with commas and spaces reads all three", mixedChecked == 3, mixedChecked.ToString());
@@ -9794,17 +9822,12 @@ namespace ExplorerNative
             Check("the same entry compares equal to itself",
                 NameRules.CompareNames("a.txt", @"C:\a.txt", "a.txt", @"C:\a.txt") == 0);
 
-            // Sorting by type is really sorting by extension.
-            Check("extensions order alphabetically",
-                NameRules.CompareExtensions("song.aac", "song.flac") < 0);
-            Check("extension comparison ignores case",
-                NameRules.CompareExtensions("song.FLAC", "song.flac") == 0);
-            Check("no extension sorts before any extension",
-                NameRules.CompareExtensions("makefile", "song.flac") < 0);
-            Check("two extensionless names tie on extension",
-                NameRules.CompareExtensions("makefile", "readme") == 0);
-            Check("only the last extension counts",
-                NameRules.CompareExtensions("a.tar.gz", "b.gz") == 0);
+            // There is no Type column, so a saved "sort by Type" sorts by name.
+            Check("sorting by Type sorts by name", NameRules.SortsAs(SortColumn.Type) == SortColumn.Name);
+            Check("and the other columns are themselves",
+                NameRules.SortsAs(SortColumn.Size) == SortColumn.Size &&
+                NameRules.SortsAs(SortColumn.Modified) == SortColumn.Modified &&
+                NameRules.SortsAs(SortColumn.Name) == SortColumn.Name);
 
             // A real sort must be total: the same input always gives the same
             // output, however the runtime happens to order equal elements.
@@ -10757,7 +10780,7 @@ namespace ExplorerNative
                     _ = NameRules.IsUsableName(s);
                     _ = NameRules.NormaliseLaunchPath(s);
                     _ = NameRules.CompareNames(s, s, "other", "other");
-                    _ = NameRules.CompareExtensions(s, "other.txt");
+                    _ = TypeAhead.Fold(s);
                     _ = DriveMount.Sanitise(s);
                     _ = RoboCopyEngine.QuoteDir(s);
                     _ = AudioFiles.IsAudio(s, null);

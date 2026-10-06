@@ -355,7 +355,7 @@ namespace ExplorerNative
         }
 
         /// <summary>Band-limited noise with a gliding tone, as 16-bit stereo.</summary>
-        private static short[] Signal(int rate, int seconds)
+        internal static short[] Signal(int rate, int seconds)
         {
             var random = new Random(1234);
             var pcm = new short[rate * seconds * 2];
@@ -664,7 +664,7 @@ namespace ExplorerNative
             }
         }
 
-        private static void WriteWav(string path, short[] pcm, int rate)
+        internal static void WriteWav(string path, short[] pcm, int rate)
         {
             using var w = new BinaryWriter(File.Create(path));
             int bytes = pcm.Length * 2;
@@ -680,7 +680,7 @@ namespace ExplorerNative
         /// is the one kind that needs no encoder. No seek table, which is the
         /// case Media Foundation got most wrong.
         /// </summary>
-        private static void WriteFlac(string path, short[] pcm, int rate)
+        internal static void WriteFlac(string path, short[] pcm, int rate)
         {
             const int block = 4096;
             long total = pcm.Length / 2;
@@ -758,7 +758,7 @@ namespace ExplorerNative
             return (ushort)crc;
         }
 
-        private static bool WriteOpus(string path, short[] pcm)
+        internal static bool WriteOpus(string path, short[] pcm)
         {
             try
             {
@@ -778,7 +778,7 @@ namespace ExplorerNative
         }
 
         /// <summary>Windows' own encoders, through the sink writer.</summary>
-        private static class MfEncoder
+        internal static class MfEncoder
         {
             public static readonly Guid Aac = new("00001610-0000-0010-8000-00AA00389B71");
             public static readonly Guid Mp3 = new("00000055-0000-0010-8000-00AA00389B71");

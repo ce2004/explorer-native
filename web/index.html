@@ -41,7 +41,7 @@
     <p id="code-error" class="error" role="alert"></p>
   </section>
 
-  <section id="screen-files" aria-labelledby="files-title">
+  <section id="screen-files" role="tabpanel" aria-labelledby="files-title">
     <h1 class="screen-title" id="files-title" tabindex="-1">Files</h1>
     <p id="files-path" class="path"></p>
     <div class="toolbar" id="files-toolbar">
@@ -65,7 +65,7 @@
     <p id="files-empty" hidden>This folder is empty.</p>
   </section>
 
-  <section id="screen-player" hidden aria-labelledby="player-title">
+  <section id="screen-player" role="tabpanel" hidden aria-labelledby="player-title">
     <h1 class="screen-title" id="player-title" tabindex="-1">Now Playing</h1>
     <div class="np-art" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/><circle cx="6" cy="18" r="3" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="18" cy="16" r="3" fill="none" stroke="currentColor" stroke-width="1.6"/></svg></div>
     <p id="np-track" class="np-title">Nothing is playing.</p>
@@ -108,7 +108,7 @@
     <audio id="audio" preload="auto"></audio>
   </section>
 
-  <section id="screen-transfers" hidden aria-labelledby="transfers-title">
+  <section id="screen-transfers" role="tabpanel" hidden aria-labelledby="transfers-title">
     <h1 class="screen-title" id="transfers-title" tabindex="-1">Transfers</h1>
     <div class="toolbar">
       <button type="button" id="tr-clear">Clear finished</button>
@@ -118,7 +118,7 @@
     <p id="transfers-empty">Nothing is transferring.</p>
   </section>
 
-  <section id="screen-clipboard" hidden aria-labelledby="clip-title">
+  <section id="screen-clipboard" role="tabpanel" hidden aria-labelledby="clip-title">
     <h1 class="screen-title" id="clip-title" tabindex="-1">Clipboard</h1>
     <h2 class="group-head">On the PC now</h2>
     <div id="clip-now"></div>
@@ -142,7 +142,7 @@
     </div>
   </section>
 
-  <section id="screen-settings" hidden aria-labelledby="settings-title">
+  <section id="screen-settings" role="tabpanel" hidden aria-labelledby="settings-title">
     <h1 class="screen-title" id="settings-title" tabindex="-1">Settings</h1>
     <p id="set-who"></p>
     <h2 class="group-head">Files</h2>

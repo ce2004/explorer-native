@@ -29,12 +29,19 @@ namespace ExplorerNative
                 : null;
     }
 
+    /// <param name="AlreadyThere">
+    /// Files inside a merged folder that the destination already had, so they
+    /// were left alone — and on a move, whose originals therefore stayed where
+    /// they were. Not copied, not failed, and said so rather than counted as
+    /// either.
+    /// </param>
     public sealed record TransferResult(
         int Copied,
         int Failed,
         bool Cancelled,
         IReadOnlyList<string> Errors,
-        ConflictOutcomes? Conflicts = null)
+        ConflictOutcomes? Conflicts = null,
+        int AlreadyThere = 0)
     {
         /// <summary>Never null, so a caller can read it without a guard.</summary>
         public ConflictOutcomes Collisions => Conflicts ?? ConflictOutcomes.None;
@@ -184,13 +191,18 @@ namespace ExplorerNative
             IProgress<TransferProgress>? progress,
             CancellationToken token,
             int bufferKilobytes = 1024,
-            bool cloudSource = false)
+            bool cloudSource = false,
+            Func<string, bool>? onCloudLetter = null)
         {
             // cloudSource: copying *out of* the Google Drive letter, where every
             // source file is a placeholder this same process downloads while
             // robocopy reads it. How many to read at once is the caller's decision
             // (MainForm.TransferThreads, which says one); what changes here is the
             // attributes — see where the switches are added.
+            //
+            // onCloudLetter: whether a path is on the Drive letter, where nothing
+            // may be renamed into or out of — a rename there is not a move in
+            // the account. Null when Drive is not mounted.
 
             var errors = new List<string>();
             int copied = 0, failed = 0;
@@ -202,7 +214,21 @@ namespace ExplorerNative
             // full speed, which is the overwhelmingly common case.
             var colliding = new List<string>();
             var clean = new List<string>();
-            var overwritten = new List<string>();
+            var overwritten = new List<(string Name, string Source)>();
+
+            // Selected links being moved, and top-level folders whose names end in
+            // a dot or a space. Neither can be handed to robocopy: it follows a
+            // link at the root of a job (/XJ only covers links inside one), and
+            // given "fold." it quietly copies the sibling "fold" instead.
+            var linkMoves = new List<(string Source, string Target)>();
+            var literalFolders = new List<string>();
+
+            // Sources robocopy was never given, because they were refused first.
+            var refusedSources = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            // Replaced by the managed engine, which robocopy's list cannot know of.
+            int managedReplaced = 0;
+            var managedReplacedNames = new List<string>();
 
             // Destinations that did not exist before this transfer started, so
             // everything that appears under one of them was put there by us.
@@ -234,9 +260,57 @@ namespace ExplorerNative
 
                 var target = Path.Combine(destinationDir, name);
                 if (!targets.Add(target)) { sameName.Add(source); continue; }
+
+                // Exact, because "report." and "report" are different files and an
+                // ordinary path says "report" for both.
+                var exactSource = NameRules.ExactPath(source);
+                var exactTarget = NameRules.ExactPath(target);
+
+                // Pasted where it already is.
+                if (FileOperations.SamePath(target, source))
+                {
+                    // A move there is nothing to do. Under keep both it was a
+                    // collision with itself, and cut and paste within one folder
+                    // renamed everything to "a (2)".
+                    if (move) continue;
+
+                    // Replacing a thing with itself is not a copy. Refused here,
+                    // before it is recorded as replaced: it was announced as
+                    // "overwritten" and then refused as the same folder.
+                    if (conflictPolicy == PasteConflictPolicy.Overwrite)
+                    {
+                        failed++;
+                        errors.Add($"{name}: source and destination are the same folder, so it cannot replace itself");
+                        continue;
+                    }
+
+                    // Every file it has is already there, which is all Fill gaps asks.
+                    if (conflictPolicy == PasteConflictPolicy.FillGaps)
+                    {
+                        gapSkipped.Add(name);
+                        continue;
+                    }
+                }
+
                 bool collides;
-                try { collides = File.Exists(target) || Directory.Exists(target); }
+                try { collides = File.Exists(exactTarget) || Directory.Exists(exactTarget); }
                 catch { collides = false; }
+
+                // A selected link, moved: as itself, never through robocopy, which
+                // follows a link at the root of a job and moved — so deleted —
+                // whatever it pointed at.
+                if (move && FileOperations.IsLinkAt(exactSource))
+                {
+                    if (!collides) linkMoves.Add((source, target));
+
+                    // The managed engine moves links as links. Overwrite and Fill
+                    // gaps have no meaning for one — neither replaces a folder with
+                    // a link nor merges into one — so it is kept both.
+                    else if (conflictPolicy is PasteConflictPolicy.Overwrite or PasteConflictPolicy.FillGaps)
+                        sameName.Add(source);
+                    else colliding.Add(source);
+                    continue;
+                }
 
                 // A file where a folder of that name is, or the other way round.
                 // Robocopy will not put one over the other and says so only as
@@ -248,8 +322,8 @@ namespace ExplorerNative
                     bool sourceIsFolder, targetIsFolder;
                     try
                     {
-                        sourceIsFolder = Directory.Exists(source);
-                        targetIsFolder = Directory.Exists(target);
+                        sourceIsFolder = Directory.Exists(exactSource);
+                        targetIsFolder = Directory.Exists(exactTarget);
                     }
                     catch { sourceIsFolder = targetIsFolder = false; }
 
@@ -259,6 +333,23 @@ namespace ExplorerNative
                         errors.Add($"{name}: a {(targetIsFolder ? "folder" : "file")} of that name is already there");
                         continue;
                     }
+                }
+
+                // A folder robocopy would be handed by a name ending in a dot or a
+                // space — the folder itself, the one it is in, or the destination.
+                // Robocopy strips the dot and copies the sibling of that name, and
+                // does not take the literal form at all. The managed engine does.
+                bool isFolder;
+                try { isFolder = Directory.Exists(exactSource); } catch { isFolder = false; }
+                var parent = Path.GetDirectoryName(source.TrimEnd(Path.DirectorySeparatorChar)) ?? "";
+                if (NameRules.ExactPath(destinationDir) != destinationDir ||
+                    NameRules.ExactPath(parent) != parent ||
+                    (isFolder && exactSource != source))
+                {
+                    if (collides && conflictPolicy is not (PasteConflictPolicy.Overwrite or PasteConflictPolicy.FillGaps))
+                        colliding.Add(source);
+                    else literalFolders.Add(source);
+                    continue;
                 }
 
                 // FillGaps never splits anything off. Its whole job is to go
@@ -273,7 +364,7 @@ namespace ExplorerNative
                 {
                     colliding.Add(source);
                 }
-                else if (collides && conflictPolicy == PasteConflictPolicy.FillGaps && File.Exists(target))
+                else if (collides && conflictPolicy == PasteConflictPolicy.FillGaps && File.Exists(exactTarget))
                 {
                     gapSkipped.Add(name);
                 }
@@ -290,7 +381,7 @@ namespace ExplorerNative
                     // would announce a file as destroyed for the one policy
                     // chosen specifically because it does not do that.
                     if (collides && conflictPolicy == PasteConflictPolicy.Overwrite)
-                        overwritten.Add(name);
+                        overwritten.Add((name, source));
                     else if (!collides) newRootSources[target] = source;
 
                     clean.Add(source);
@@ -371,14 +462,138 @@ namespace ExplorerNative
                     return new TransferResult(managedFiles, failed, true, errors, Collisions());
             }
 
+            // What robocopy cannot be handed by name, under the policy asked for.
+            // Not reserved against their own names, or every one of them would
+            // be numbered as though it collided with itself.
+            if (literalFolders.Count > 0)
+            {
+                var others = new HashSet<string>(targets, StringComparer.OrdinalIgnoreCase);
+                foreach (var source in literalFolders)
+                    others.Remove(Path.Combine(destinationDir, Path.GetFileName(source.TrimEnd(Path.DirectorySeparatorChar))));
+
+                var exact = await FileOperations.RunAsync(
+                    literalFolders, destinationDir, move,
+                    conflictPolicy == PasteConflictPolicy.Ask ? PasteConflictPolicy.AutoRename : conflictPolicy,
+                    threads, bufferKilobytes, null, null, token, reserved: others);
+
+                renamed += exact.Collisions.RenamedCount;
+                renamedNames.AddRange(exact.Collisions.Renamed);
+                skipped += exact.Collisions.SkippedCount;
+                skippedNames.AddRange(exact.Collisions.Skipped);
+                managedReplaced += exact.Collisions.OverwrittenCount;
+                managedReplacedNames.AddRange(exact.Collisions.Overwritten);
+                managedFiles += exact.Succeeded;
+                failed += exact.Failed;
+                errors.AddRange(exact.Errors);
+                if (exact.Cancelled)
+                    return new TransferResult(managedFiles, failed, true, errors, Collisions());
+            }
+
+            // A move that can be a rename is one. Robocopy's /MOVE copies every
+            // byte and then deletes the original — a gigabyte moved within C: took
+            // as long as copying it and came out a different file. A rename is
+            // instant, and is exactly what the user asked for.
+            //
+            // Only where nothing collides (the rest needs the conflict policy),
+            // where both ends are on one volume, and never to or from the Drive
+            // letter: a rename there is local, and the account never hears of it.
+            // The rename itself refuses to copy across volumes, so a wrong answer
+            // about the volume costs a refused call, never a silent copy.
+            //
+            // Selected links are moved here too, as themselves.
+            if (move && (linkMoves.Count > 0 || clean.Count > 0))
+            {
+                bool OnCloud(string path)
+                {
+                    try { return onCloudLetter?.Invoke(path) == true; }
+                    catch { return true; }
+                }
+
+                var clock = Stopwatch.StartNew();
+                bool renaming = !cloudSource && !OnCloud(destinationDir);
+                var candidates = renaming
+                    ? clean.Where(s =>
+                    {
+                        var target = Path.Combine(destinationDir,
+                            Path.GetFileName(s.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)));
+                        return newRootSources.ContainsKey(target) && !OnCloud(s) && !IsWithin(target, s);
+                    }).ToList()
+                    : new List<string>();
+                int planned = candidates.Count + linkMoves.Count;
+
+                var (moved, movedFiles, problems) = await Task.Run(() =>
+                {
+                    int done = 0, files = 0;
+                    var trouble = new List<string>();
+
+                    void Moved(string name)
+                    {
+                        done++;
+                        progress?.Report(new TransferProgress(0, 0, done, planned, name, 0, clock.Elapsed,
+                            ItemsKnown: true));
+                    }
+
+                    foreach (var (source, target) in linkMoves)
+                    {
+                        if (token.IsCancellationRequested) break;
+                        try
+                        {
+                            FileOperations.MoveLink(source, target);
+                            files++;
+                            Moved(Path.GetFileName(target));
+                        }
+                        catch (Exception ex) { trouble.Add($"{source}: the link could not be moved ({ex.Message})"); }
+                    }
+
+                    foreach (var source in candidates)
+                    {
+                        if (token.IsCancellationRequested) break;
+                        var target = Path.Combine(destinationDir,
+                            Path.GetFileName(source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)));
+                        if (!SameVolume(source, destinationDir) || !TryRename(source, target)) continue;
+
+                        lock (clean) clean.Remove(source);
+                        newRootSources.Remove(target);
+
+                        // Counted in files, like everything else this reports.
+                        if (Directory.Exists(target))
+                            foreach (var _ in SafeEnumerateFiles(target)) files++;
+                        else files++;
+                        Moved(Path.GetFileName(target));
+                    }
+
+                    return (done, files, trouble);
+                });
+
+                managedFiles += movedFiles;
+                failed += problems.Count;
+                errors.AddRange(problems);
+                Trace($"renamed {moved} of {planned} in {clock.ElapsedMilliseconds}ms");
+
+                if (token.IsCancellationRequested)
+                    return new TransferResult(managedFiles, failed, true, errors, Collisions());
+            }
+
             // Built from whichever counts are filled in by the time it is called,
             // so every exit reports what actually happened rather than only the
             // exits that happen to run to the end.
-            ConflictOutcomes Collisions() => new(
-                renamedNames.Take(ConflictOutcomes.MaxRemembered).ToArray(),
-                skippedNames.Take(ConflictOutcomes.MaxRemembered).ToArray(),
-                overwritten.Take(ConflictOutcomes.MaxRemembered).ToArray(),
-                renamed, skipped, overwritten.Count);
+            ConflictOutcomes Collisions()
+            {
+                // Not what was refused afterwards: overwriting a thing with itself
+                // was announced as "replaced" and then refused.
+                var replaced = overwritten
+                    .Where(o => !refusedSources.Contains(o.Source))
+                    .Select(o => o.Name)
+                    .Concat(managedReplacedNames)
+                    .ToList();
+                int replacedCount = overwritten.Count(o => !refusedSources.Contains(o.Source)) + managedReplaced;
+
+                return new(
+                    renamedNames.Take(ConflictOutcomes.MaxRemembered).ToArray(),
+                    skippedNames.Take(ConflictOutcomes.MaxRemembered).ToArray(),
+                    replaced.Take(ConflictOutcomes.MaxRemembered).ToArray(),
+                    renamed, skipped, replacedCount);
+            }
 
             if (clean.Count == 0)
                 return new TransferResult(managedFiles, failed, false, errors, Collisions());
@@ -389,7 +604,7 @@ namespace ExplorerNative
             // was never shown.
             int beforeRefusals = errors.Count;
             int jobsFailed = 0;
-            var jobs = BuildJobs(clean, destinationDir, errors);
+            var jobs = BuildJobs(clean, destinationDir, errors, refusedSources);
             failed += errors.Count - beforeRefusals;
             if (jobs.Count == 0)
                 return new TransferResult(managedFiles, failed, false, errors, Collisions());
@@ -417,13 +632,13 @@ namespace ExplorerNative
                     if (token.IsCancellationRequested) return;
                     try
                     {
-                        if (Directory.Exists(source))
+                        if (Directory.Exists(NameRules.ExactPath(source)))
                         {
                             foreach (var f in SafeEnumerateFiles(source))
                             {
                                 try
                                 {
-                                    var len = new FileInfo(f).Length;
+                                    var len = new FileInfo(NameRules.ExactPath(f)).Length;
                                     Interlocked.Add(ref bytesTotal, len);
                                     Interlocked.Increment(ref itemsTotal);
                                     lock (sizeByName) sizeByName[Path.GetFileName(f)] = len;
@@ -431,9 +646,9 @@ namespace ExplorerNative
                                 catch { }
                             }
                         }
-                        else if (File.Exists(source))
+                        else if (File.Exists(NameRules.ExactPath(source)))
                         {
-                            var len = new FileInfo(source).Length;
+                            var len = new FileInfo(NameRules.ExactPath(source)).Length;
                             Interlocked.Add(ref bytesTotal, len);
                             Interlocked.Increment(ref itemsTotal);
                             lock (sizeByName) sizeByName[Path.GetFileName(source)] = len;
@@ -478,9 +693,9 @@ namespace ExplorerNative
             // The true answer was about eight minutes.
             //
             // The operating system knows, so it is asked. The larger of the two
-            // wins because neither is right on its own: a same-volume move
-            // renames rather than copies and writes almost nothing, where the
-            // parsed lines are correct.
+            // wins because neither is right on its own: the kernel counter reads
+            // zero for a process whose handle cannot be asked, where the parsed
+            // lines are still correct.
             long BytesLanded()
             {
                 long matched = Interlocked.Read(ref bytesDone);
@@ -560,12 +775,70 @@ namespace ExplorerNative
                     started.Elapsed));
             }
 
-            using var landings = WatchLandings(destinationDir, name =>
+            // Where each planned file lands, so that a file appearing in the
+            // destination can be told apart from anything else writing there.
+            //
+            // The watcher covered the whole destination tree and believed every
+            // file in it: while a 3GB file copied, a browser writing its cookies
+            // in a subfolder had the window naming "Cookies-journal" and counting
+            // it as an item. And the cleanup below needs the same answer the
+            // other way round — which files this transfer made.
+            var treeJobs = jobs.Where(j => j.WholeTree)
+                .Select(j => (Dest: Prefix(j.DestDir), Source: Prefix(j.SourceDir)))
+                .ToList();
+            var looseLandings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var j in jobs.Where(j => !j.WholeTree))
+                foreach (var f in j.Files)
+                    looseLandings[Path.Combine(j.DestDir, f)] = Path.Combine(j.SourceDir, f);
+            var looseSources = looseLandings.ToDictionary(kv => kv.Value, kv => kv.Key, StringComparer.OrdinalIgnoreCase);
+
+            static string Prefix(string folder) => folder.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+
+            string? SourceFor(string landing)
             {
-                Volatile.Write(ref current, name);
+                if (looseLandings.TryGetValue(landing, out var source)) return source;
+                foreach (var (dest, from) in treeJobs)
+                    if (landing.StartsWith(dest, StringComparison.OrdinalIgnoreCase))
+                        return from + landing[dest.Length..];
+                return null;
+            }
+
+            string? LandingFor(string source)
+            {
+                if (looseSources.TryGetValue(source, out var landing)) return landing;
+                foreach (var (dest, from) in treeJobs)
+                    if (source.StartsWith(from, StringComparison.OrdinalIgnoreCase))
+                        return dest + source[from.Length..];
+                return null;
+            }
+
+            // Files this transfer created, as Windows announced them. Every one
+            // is a file robocopy started, whether or not the destination existed
+            // before — which is what the cleanup needs and the old "new roots
+            // only" rule could not see.
+            var created = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
+            int landingsLost = 0;
+
+            using var landings = WatchLandings(destinationDir, landing =>
+            {
+                // Only what the plan copies, and — inside a folder being merged
+                // into, where anything else may be writing — only what has a
+                // source. Not on a move, where robocopy may already have deleted
+                // the source of a small file by the time this is heard.
+                var source = SourceFor(landing);
+                if (source == null) return;
+                if (!move)
+                {
+                    try { if (!File.Exists(NameRules.ExactPath(source))) return; }
+                    catch { return; }
+                }
+
+                created[landing] = 0;
+                Volatile.Write(ref current, Path.GetFileName(landing));
                 Interlocked.Increment(ref filesStarted);
                 ReportSoon();
-            });
+            }, () => Interlocked.Exchange(ref landingsLost, 1));
+            if (landings == null) landingsLost = 1;
 
             // Whether the file at the destination is really the whole file.
             //
@@ -603,8 +876,8 @@ namespace ExplorerNative
 
                 try
                 {
-                    var a = new FileInfo(source);
-                    var b = new FileInfo(landing);
+                    var a = new FileInfo(NameRules.ExactPath(source));
+                    var b = new FileInfo(NameRules.ExactPath(landing));
                     if (!a.Exists || !b.Exists) return false;
                     if (a.Length != b.Length) return false;
                     if (a.Length == 0) return true;
@@ -619,8 +892,8 @@ namespace ExplorerNative
                         return true;
 
                     const FileShare Share = FileShare.ReadWrite | FileShare.Delete;
-                    using var fa = new FileStream(source, FileMode.Open, FileAccess.Read, Share);
-                    using var fb = new FileStream(landing, FileMode.Open, FileAccess.Read, Share);
+                    using var fa = new FileStream(NameRules.ExactPath(source), FileMode.Open, FileAccess.Read, Share);
+                    using var fb = new FileStream(NameRules.ExactPath(landing), FileMode.Open, FileAccess.Read, Share);
                     var x = new byte[BlockBytes];
                     var y = new byte[BlockBytes];
 
@@ -681,43 +954,116 @@ namespace ExplorerNative
             //
             // A plain comment, not ///. A doc comment on a local function is
             // CS1587 and the compiler drops it.
-            void RemoveHalfWritten()
+            void RemoveHalfWritten(IReadOnlyCollection<string>? failedSources = null)
             {
-                // From what actually landed, not from the plan. The planning
-                // walk stops when the transfer is cancelled — and a cancel early
-                // enough lands before it has started at all — so a plan-driven
-                // cleanup found nothing to check and left the half-written file
-                // it exists to remove. What is in a new destination is bounded by
-                // what robocopy got to, which is small exactly when this matters.
                 var planned = new List<(string Source, string Landing)>();
-                foreach (var (root, origin) in newRootSources)
+                var considered = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                void Consider(string source, string landing)
                 {
-                    try
-                    {
-                        if (File.Exists(root)) { planned.Add((origin, root)); continue; }
-                        if (!Directory.Exists(root)) continue;
+                    if (considered.Add(landing)) planned.Add((source, landing));
+                }
 
-                        foreach (var landed in Directory.EnumerateFiles(root, "*", new EnumerationOptions
-                                 {
-                                     RecurseSubdirectories = true,
-                                     IgnoreInaccessible = true,
-                                     AttributesToSkip = FileAttributes.ReparsePoint,
-                                 }))
-                            planned.Add((Path.Combine(origin, Path.GetRelativePath(root, landed)), landed));
+                // Written during this transfer: a file robocopy still has open
+                // carries the time it was created, and only a finished one has
+                // the source's date stamped back on. A few seconds of slack for a
+                // share whose clock is not quite ours.
+                bool WrittenDuring(string landing)
+                {
+                    try { return File.GetLastWriteTimeUtc(NameRules.ExactPath(landing)) >= transferStartedUtc.AddSeconds(-5); }
+                    catch { return false; }
+                }
+
+                if (failedSources != null)
+                {
+                    // After a failure rather than a cancel: only the destinations
+                    // of the files robocopy itself said it could not copy, and only
+                    // if this transfer wrote them. Left there, a part-written file
+                    // dated "now" is "newer" to every later Fill gaps, which then
+                    // never copies it again and reports success.
+                    foreach (var source in failedSources)
+                        if (LandingFor(source) is { } landing &&
+                            (created.ContainsKey(landing) || WrittenDuring(landing)))
+                            Consider(source, landing);
+                }
+                else
+                {
+                    // From what actually landed, not from the plan. The planning
+                    // walk stops when the transfer is cancelled — and a cancel
+                    // early enough lands before it has started at all — so a
+                    // plan-driven cleanup found nothing to check.
+                    //
+                    // Everything under a destination that did not exist before.
+                    foreach (var (root, origin) in newRootSources)
+                    {
+                        try
+                        {
+                            if (File.Exists(NameRules.ExactPath(root))) { Consider(origin, root); continue; }
+                            if (!Directory.Exists(NameRules.ExactPath(root))) continue;
+
+                            var prefix = Prefix(root);
+                            foreach (var landed in Directory.EnumerateFiles(root, "*", new EnumerationOptions
+                                     {
+                                         RecurseSubdirectories = true,
+                                         IgnoreInaccessible = true,
+                                         AttributesToSkip = FileAttributes.ReparsePoint,
+                                     }))
+                                if (landed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                                    Consider(Prefix(origin) + landed[prefix.Length..], landed);
+                        }
+                        catch { }
                     }
-                    catch { }
+
+                    // Every file this transfer created, wherever it is. That was
+                    // the missing half: Fill gaps resumed into a folder that was
+                    // already there, was cancelled again, and left its part-written
+                    // file behind, dated now — which every later Fill gaps then
+                    // excluded as "newer" and reported success over.
+                    foreach (var landing in created.Keys)
+                        if (SourceFor(landing) is { } source) Consider(source, landing);
+
+                    // And when the watcher cannot be believed — it overflowed, or
+                    // could not watch at all — or files were written over rather
+                    // than created, which raises no event: whatever in the
+                    // destinations was written during this transfer.
+                    if (Volatile.Read(ref landingsLost) != 0 || conflictPolicy == PasteConflictPolicy.Overwrite)
+                    {
+                        foreach (var (landing, source) in looseLandings)
+                            if (WrittenDuring(landing)) Consider(source, landing);
+
+                        foreach (var (dest, from) in treeJobs)
+                        {
+                            try
+                            {
+                                var tree = new DirectoryInfo(dest);
+                                if (!tree.Exists) continue;
+                                foreach (var file in tree.EnumerateFiles("*", new EnumerationOptions
+                                         {
+                                             RecurseSubdirectories = true,
+                                             IgnoreInaccessible = true,
+                                             AttributesToSkip = FileAttributes.ReparsePoint,
+                                         }))
+                                {
+                                    if (file.LastWriteTimeUtc < transferStartedUtc.AddSeconds(-5)) continue;
+                                    if (!file.FullName.StartsWith(dest, StringComparison.OrdinalIgnoreCase)) continue;
+                                    Consider(from + file.FullName[dest.Length..], file.FullName);
+                                }
+                            }
+                            catch { }
+                        }
+                    }
                 }
 
                 int removed = 0, refused = 0, kept = 0;
                 foreach (var (source, landing) in planned)
                 {
-                    if (!File.Exists(landing)) continue;
+                    var exactLanding = NameRules.ExactPath(landing);
+                    if (!File.Exists(exactLanding)) continue;
 
                     // The source is gone, so this is a move that already finished
                     // this file and deleted the original. Removing the
                     // destination now would destroy the only copy there is — the
                     // one outcome worse than leaving a half-written file.
-                    if (!File.Exists(source)) { kept++; continue; }
+                    if (!File.Exists(NameRules.ExactPath(source))) { kept++; continue; }
 
                     if (LooksComplete(source, landing, transferStartedUtc)) { kept++; continue; }
 
@@ -733,7 +1079,14 @@ namespace ExplorerNative
                     // the one this cleanup exists to remove.
                     for (int attempt = 0; attempt < 20 && !gone; attempt++)
                     {
-                        try { File.Delete(landing); gone = true; }
+                        try
+                        {
+                            var attributes = File.GetAttributes(exactLanding);
+                            if (attributes.HasFlag(FileAttributes.ReadOnly))
+                                File.SetAttributes(exactLanding, attributes & ~FileAttributes.ReadOnly);
+                            File.Delete(exactLanding);
+                            gone = true;
+                        }
                         catch { Thread.Sleep(150); }
                     }
 
@@ -742,12 +1095,13 @@ namespace ExplorerNative
                     {
                         refused++;
                         errors.Add($"could not remove the half-copied \"{Path.GetFileName(landing)}\" " +
-                                   "after cancelling — it is incomplete");
+                                   (failedSources == null ? "after cancelling" : "after it failed") +
+                                   " — it is incomplete");
                     }
                 }
 
-                Trace($"cancelled: removed {removed}, kept {kept}, refused {refused}, " +
-                      $"of {planned.Count} planned");
+                Trace($"{(failedSources == null ? "cancelled" : "failed")}: removed {removed}, kept {kept}, " +
+                      $"refused {refused}, of {planned.Count} planned");
             }
 
             Trace($"starting: jobs={jobs.Count} sources={clean.Count} " +
@@ -757,21 +1111,33 @@ namespace ExplorerNative
             // file is in flight and robocopy has printed nothing yet.
             using var ticker = new Timer(_ => Report(), null, 250, 250);
 
-            // Copied counts FILES, not robocopy invocations. The old code added
-            // the managed engine's file count to a per-job tally, so "3 succeeded"
-            // could mean three files or three folders of a thousand each — the one
-            // number the user reads after a partial failure meant nothing.
+            // How long robocopy waits on a file it cannot open — held by another
+            // program, or gone since the plan. See RetriesFor.
+            // On a worker: it asks Windows about volumes, which on a mapped
+            // drive whose server is asleep is not instant.
+            var (retries, retryWait) = await Task.Run(() => RetriesFor(clean, destinationDir, cloudSource));
+            bool fillGaps = conflictPolicy == PasteConflictPolicy.FillGaps;
+
+            // Copied counts FILES, not robocopy invocations, and now from what
+            // robocopy says it copied rather than from the plan: a file that
+            // failed, one it would not put over a folder, and one Fill gaps left
+            // alone were all counted as copied, and "Failed" counted runs.
+            int jobCopied = 0, alreadyThere = 0;
+            bool allCounted = true;
+            var failedSources = new List<string>();
+
             foreach (var job in jobs)
             {
                 if (token.IsCancellationRequested)
                 {
                     try { await planning; } catch { }
-                    await Task.Run(RemoveHalfWritten);
-                    return new TransferResult(managedFiles + Volatile.Read(ref itemsDone), failed, true, errors, Collisions());
+                    await Task.Run(() => RemoveHalfWritten());
+                    return new TransferResult(managedFiles + jobCopied + Volatile.Read(ref itemsDone), failed, true,
+                        errors, Collisions(), alreadyThere);
                 }
 
-                var (ok, jobErrors, jobBytes) = await RunOneAsync(
-                    job, move, threads, conflictPolicy == PasteConflictPolicy.FillGaps, cloudSource, line =>
+                var outcome = await RunOneAsync(
+                    job, move, threads, fillGaps, cloudSource, retries, retryWait, line =>
                 {
                     var name = MatchCopiedFile(line, sizeByName, out long size);
                     if (name == null) return;
@@ -779,13 +1145,57 @@ namespace ExplorerNative
                     Interlocked.Add(ref bytesDone, size);
                     Interlocked.Increment(ref itemsDone);
                     ReportSoon();
-                }, p => Volatile.Write(ref liveJob, p), token);
+                },
+                (file, attempt) =>
+                {
+                    // Said, rather than sitting at a percentage that does not move.
+                    Volatile.Write(ref current, $"Waiting for {RetryName(file)} (retry {attempt} of {retries})");
+                    Report();
+                },
+                p => Volatile.Write(ref liveJob, p), token);
 
                 // Carried over before the next job starts from zero, so a
                 // multi-job transfer accumulates rather than restarting.
-                Interlocked.Add(ref finishedJobBytes, jobBytes);
+                Interlocked.Add(ref finishedJobBytes, outcome.BytesWritten);
+                failedSources.AddRange(outcome.FailedSources);
 
-                if (!ok) { failed++; jobsFailed++; errors.AddRange(jobErrors); }
+                if (outcome.Counts is { } c)
+                {
+                    int problems = c.Failed + c.Mismatch + c.DirMismatch + c.DirFailed;
+
+                    if (move)
+                    {
+                        // What is still in the source after a move is what did not
+                        // move: the failures, and the rest — files the destination
+                        // already had, which Fill gaps leaves and robocopy excludes.
+                        // A Fill gaps move said "Move complete" over them.
+                        int left = token.IsCancellationRequested ? 0 : await Task.Run(() => FilesLeftIn(job));
+                        int stayed = Math.Max(0, left - c.Failed - c.Mismatch);
+                        jobCopied += c.Copied + Math.Max(0, c.Skipped - stayed);
+                        alreadyThere += stayed;
+                    }
+                    else if (fillGaps)
+                    {
+                        // Skipped is exactly "already there", which is the policy.
+                        jobCopied += c.Copied;
+                        alreadyThere += c.Skipped;
+                    }
+                    else
+                    {
+                        // Skipped as identical: already the file that was asked for.
+                        jobCopied += c.Copied + c.Skipped;
+                    }
+
+                    failed += problems;
+                    if (!outcome.Ok && problems == 0) failed++;
+                }
+                else
+                {
+                    allCounted = false;
+                    if (!outcome.Ok) failed++;
+                }
+
+                if (!outcome.Ok) { jobsFailed++; errors.AddRange(outcome.Errors); }
             }
 
             try { await planning; } catch { }
@@ -794,17 +1204,16 @@ namespace ExplorerNative
             // Before the final report, or a late event lands a name on top of it.
             landings?.Dispose();
 
-            // Taken from the plan when every job succeeded, because that is the
-            // number that is actually true. The per-line count only rises for
-            // output we managed to match against a name, and the planning walk
-            // runs alongside the copy — so files copied before their names were
-            // known were never counted, and a fast copy of a small folder
+            // From robocopy's own count wherever it gave one. Otherwise, as
+            // before, from the plan when every job succeeded: the per-line count
+            // only rises for output matched against a name, and the planning
+            // walk runs alongside the copy, so a fast copy of a small folder
             // reported having transferred nothing at all.
-            // By the jobs, not by failures in general: a refused source did not
-            // make the others' files any less copied.
-            copied = managedFiles + (jobsFailed == 0
-                ? Math.Max(Volatile.Read(ref itemsTotal), Volatile.Read(ref itemsDone))
-                : Volatile.Read(ref itemsDone));
+            copied = managedFiles + (allCounted
+                ? jobCopied
+                : jobsFailed == 0
+                    ? Math.Max(Volatile.Read(ref itemsTotal), Volatile.Read(ref itemsDone))
+                    : Volatile.Read(ref itemsDone));
 
             if (token.IsCancellationRequested)
             {
@@ -813,9 +1222,13 @@ namespace ExplorerNative
                 // and this continuation resumes on the UI thread, which measured
                 // 294ms of the window not answering at the exact moment somebody
                 // has just asked for something to stop.
-                await Task.Run(RemoveHalfWritten);
-                return new TransferResult(copied, failed, true, errors, Collisions());
+                await Task.Run(() => RemoveHalfWritten());
+                return new TransferResult(copied, failed, true, errors, Collisions(), alreadyThere);
             }
+
+            // A file robocopy gave up on may have been part written.
+            if (failedSources.Count > 0)
+                await Task.Run(() => RemoveHalfWritten(failedSources));
 
             // Final report with the real totals now that planning has finished.
             if (progress != null)
@@ -828,21 +1241,60 @@ namespace ExplorerNative
                     Volatile.Read(ref current), done / seconds, started.Elapsed));
             }
 
-            return new TransferResult(copied, failed, false, errors, Collisions());
+            return new TransferResult(copied, failed, false, errors, Collisions(), alreadyThere);
+        }
+
+        /// <summary>Files still in a moved job's source: what did not move.</summary>
+        private static int FilesLeftIn(Job job)
+        {
+            try
+            {
+                if (job.WholeTree)
+                    return Directory.Exists(NameRules.ExactPath(job.SourceDir)) ? SafeEnumerateFiles(job.SourceDir).Count() : 0;
+                return job.Files.Count(f => File.Exists(NameRules.ExactPath(Path.Combine(job.SourceDir, f))));
+            }
+            catch { return 0; }
         }
 
         /// <summary>
-        /// Calls <paramref name="started"/> with the name of each file created
-        /// under <paramref name="destinationDir"/>, or returns null when the
-        /// folder cannot be watched — the transfer does not depend on it, it only
-        /// tells the window sooner.
+        /// The name of a file robocopy is retrying, in its own letters. Robocopy
+        /// writes its output in the console code page, so anything outside it
+        /// arrives as "?" — which is a wildcard for exactly one character, so the
+        /// folder is asked which file that was.
+        /// </summary>
+        private static string RetryName(string path)
+        {
+            var name = Path.GetFileName(path);
+            if (!name.Contains('?')) return name;
+            try
+            {
+                var folder = Path.GetDirectoryName(path);
+                if (folder != null && !folder.Contains('?'))
+                {
+                    var found = Directory.EnumerateFiles(NameRules.ExactPath(folder), name).Take(2).ToList();
+                    if (found.Count == 1) return Path.GetFileName(found[0]);
+                }
+            }
+            catch { }
+            return name;
+        }
+
+        /// <summary>
+        /// Calls <paramref name="started"/> with the full path of each file
+        /// created under <paramref name="destinationDir"/>, or returns null when
+        /// the folder cannot be watched. The caller decides which of them belong
+        /// to the transfer; anything else may be writing there too.
         ///
         /// Created, not Changed: every write to a large file is a Changed event,
         /// and each one would be a cross-thread report to draw a name that has
         /// not changed. A file robocopy overwrites rather than creates is named
         /// by its own line instead, later, as before.
+        ///
+        /// <paramref name="lost"/> is called when Windows dropped events — the
+        /// buffer overflowed — so the caller knows the list of created files is
+        /// no longer the whole of it.
         /// </summary>
-        private static FileSystemWatcher? WatchLandings(string destinationDir, Action<string> started)
+        private static FileSystemWatcher? WatchLandings(string destinationDir, Action<string> started, Action lost)
         {
             try
             {
@@ -857,10 +1309,13 @@ namespace ExplorerNative
                 {
                     try
                     {
-                        var name = Path.GetFileName(e.Name);
-                        if (!string.IsNullOrEmpty(name)) started(name);
+                        if (!string.IsNullOrEmpty(e.FullPath)) started(e.FullPath);
                     }
                     catch { }
+                };
+                watcher.Error += (_, _) =>
+                {
+                    try { lost(); } catch { }
                 };
 
                 watcher.EnableRaisingEvents = true;
@@ -872,7 +1327,8 @@ namespace ExplorerNative
             }
         }
 
-        private static List<Job> BuildJobs(IReadOnlyList<string> sources, string destinationDir, List<string> errors)
+        private static List<Job> BuildJobs(IReadOnlyList<string> sources, string destinationDir, List<string> errors,
+            ISet<string>? refused = null)
         {
             var jobs = new List<Job>();
             var looseFiles = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
@@ -881,7 +1337,8 @@ namespace ExplorerNative
             {
                 try
                 {
-                    if (Directory.Exists(source))
+                    var exact = NameRules.ExactPath(source);
+                    if (Directory.Exists(exact))
                     {
                         var name = Path.GetFileName(source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
 
@@ -892,6 +1349,7 @@ namespace ExplorerNative
                         if (string.IsNullOrEmpty(name))
                         {
                             errors.Add($"{source}: copying a whole drive is not supported; open it and copy its contents");
+                            refused?.Add(source);
                             continue;
                         }
 
@@ -900,20 +1358,21 @@ namespace ExplorerNative
                         if (IsWithin(dest, source))
                         {
                             errors.Add($"{name}: cannot copy a folder into itself");
+                            refused?.Add(source);
                             continue;
                         }
                         jobs.Add(new Job(source, dest, new List<string>(), WholeTree: true));
                     }
-                    else if (File.Exists(source))
+                    else if (File.Exists(exact))
                     {
                         var dir = Path.GetDirectoryName(source)!;
                         if (!looseFiles.TryGetValue(dir, out var list))
                             looseFiles[dir] = list = new List<string>();
                         list.Add(Path.GetFileName(source));
                     }
-                    else errors.Add($"{source}: not found");
+                    else { errors.Add($"{source}: not found"); refused?.Add(source); }
                 }
-                catch (Exception ex) { errors.Add($"{source}: {ex.Message}"); }
+                catch (Exception ex) { errors.Add($"{source}: {ex.Message}"); refused?.Add(source); }
             }
 
             // Files sharing a parent go in one robocopy call, which is what makes
@@ -928,6 +1387,7 @@ namespace ExplorerNative
                                   StringComparison.OrdinalIgnoreCase))
                 {
                     errors.Add("Source and destination are the same folder");
+                    foreach (var file in files) refused?.Add(Path.Combine(dir, file));
                     continue;
                 }
                 // In batches that fit on a command line. All of a folder's files
@@ -953,15 +1413,126 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// What robocopy's own summary says one job did, per file — the number
+        /// of files it copied, skipped (already there, or excluded), would not
+        /// put over a folder of the same name, and failed; and the same for
+        /// folders where it matters.
+        /// </summary>
+        internal sealed record JobCounts(int Copied, int Skipped, int Mismatch, int Failed, int DirMismatch, int DirFailed);
+
+        private sealed record JobOutcome(
+            bool Ok, List<string> Errors, long BytesWritten, JobCounts? Counts, List<string> FailedSources);
+
+        /// <summary>What a robocopy log says, read after the job.</summary>
+        internal sealed class RobocopyLog
+        {
+            /// <summary>Files that failed and stayed failed, by path, with the reason.</summary>
+            public readonly Dictionary<string, string> FileErrors = new(StringComparer.OrdinalIgnoreCase);
+
+            /// <summary>Files robocopy would not put over a folder of the same name.</summary>
+            public readonly List<string> Mismatched = new();
+
+            public JobCounts? Counts;
+        }
+
+        private static readonly Regex SummaryRow =
+            new(@"^\s*[^:\d\t]+:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$", RegexOptions.Compiled);
+
+        /// <summary>
+        /// Reads a robocopy log: the failures that were never retried into
+        /// success, the files it refused to put over folders, and the summary
+        /// table. Pure, so the parsing is tested on its own.
+        ///
+        /// A failed file is reported as a dated ERROR line naming it, with the
+        /// reason on the line after. It is kept by file and dropped when that
+        /// file is later copied: a file that failed once and then went across
+        /// on a retry is not a failure. By the whole path when the line gives
+        /// one: by name alone, cover.jpg copying in the next album cleared the
+        /// failure of this one's.
+        /// </summary>
+        internal static RobocopyLog ParseLog(IEnumerable<string> lines)
+        {
+            var log = new RobocopyLog();
+            string? reasonFor = null;
+            bool inSummary = false;
+            var rows = new List<int[]>();
+
+            foreach (var raw in lines)
+            {
+                var line = raw.TrimEnd('\r', '\n');
+
+                var error = RobocopyError.Match(line);
+                if (error.Success)
+                {
+                    var message = line[error.Groups[1].Index..].Trim();
+                    var file = FailedFile(message);
+                    log.FileErrors[file] = message;
+                    reasonFor = file;
+                    continue;
+                }
+
+                if (reasonFor != null)
+                {
+                    var file = reasonFor;
+                    reasonFor = null;
+                    if (!string.IsNullOrWhiteSpace(line) && log.FileErrors.TryGetValue(file, out var said))
+                        log.FileErrors[file] = said + ": " + line.Trim();
+                    continue;
+                }
+
+                if (line.TrimStart().StartsWith("-----", StringComparison.Ordinal)) { inSummary = true; continue; }
+
+                if (inSummary)
+                {
+                    var row = SummaryRow.Match(line);
+                    if (row.Success)
+                        rows.Add(Enumerable.Range(1, 6).Select(i => int.Parse(row.Groups[i].Value, CultureInfo.InvariantCulture)).ToArray());
+                    continue;
+                }
+
+                var tail = line.TrimEnd();
+                int tab = tail.LastIndexOf('\t');
+                tail = (tab >= 0 ? tail[(tab + 1)..] : tail).Trim();
+                if (tail.Length == 0) continue;
+
+                if (line.Contains("*MISMATCH", StringComparison.OrdinalIgnoreCase))
+                {
+                    log.Mismatched.Add(tail);
+                    continue;
+                }
+
+                bool fullPath = Path.IsPathFullyQualified(tail);
+                var name = Path.GetFileName(tail);
+                if (log.FileErrors.Count > 0)
+                    foreach (var key in log.FileErrors.Keys.ToList())
+                        if (fullPath
+                                ? string.Equals(key, tail, StringComparison.OrdinalIgnoreCase)
+                                : string.Equals(Path.GetFileName(key), name, StringComparison.OrdinalIgnoreCase))
+                            log.FileErrors.Remove(key);
+            }
+
+            // Dirs, Files, Bytes, in that order, whatever the labels are called
+            // in this language: Total, Copied, Skipped, Mismatch, FAILED, Extras.
+            if (rows.Count >= 2)
+                log.Counts = new JobCounts(
+                    Copied: rows[1][1], Skipped: rows[1][2], Mismatch: rows[1][3], Failed: rows[1][4],
+                    DirMismatch: rows[0][3], DirFailed: rows[0][4]);
+
+            return log;
+        }
+
+        /// <summary>
         /// Runs one robocopy job. <paramref name="onProcess"/> is handed the live
         /// process while it runs and null the moment it stops being safe to touch,
         /// so the progress ticker can ask the operating system how many bytes it
         /// has written — see <see cref="BytesWritten"/>. The count comes back with
         /// the result because the next job starts its own counter at zero.
+        /// <paramref name="onRetry"/> hears each file robocopy is about to try
+        /// again, and which attempt it will be.
         /// </summary>
-        private static async Task<(bool Ok, List<string> Errors, long BytesWritten)> RunOneAsync(
-            Job job, bool move, int threads, bool fillGaps, bool cloudSource, Action<string> onLine,
-            Action<Process?> onProcess, CancellationToken token)
+        private static async Task<JobOutcome> RunOneAsync(
+            Job job, bool move, int threads, bool fillGaps, bool cloudSource, int retries, int retryWait,
+            Action<string> onLine, Action<string, int> onRetry, Action<Process?> onProcess, CancellationToken token)
         {
             var errors = new List<string>();
 
@@ -978,7 +1549,8 @@ namespace ExplorerNative
             // robocopy by default does not: moving a folder that held a junction
             // moved — and so deleted — whatever the junction pointed at, anywhere
             // on the disk. A self-referencing one ("Application Data") recursed
-            // until the paths were too long.
+            // until the paths were too long. A *selected* junction never gets
+            // here — /XJ does not cover the root of a job — see RunAsync.
             args.Add("/XJ");
             if (move) args.Add(job.WholeTree ? "/MOVE" : "/MOV");
 
@@ -996,6 +1568,11 @@ namespace ExplorerNative
             // reasons that have nothing to do with the contents — and recopying
             // forty gigabytes because a clock disagrees is the failure this
             // policy exists to avoid.
+            //
+            // Which is also why nothing this transfer part-wrote may be left
+            // behind: a file robocopy had open is dated "now", so it is "newer",
+            // and this exclusion keeps it for ever. RunAsync's cleanup is what
+            // makes the exclusion safe.
             if (fillGaps)
             {
                 args.Add("/XC");    // exclude changed
@@ -1015,29 +1592,38 @@ namespace ExplorerNative
                 args.Add("/A-:O");
                 args.Add("/DCOPY:T");
             }
-            // Retries, and enough of them to sit out a share that blinked.
+
+            // Retries: long for a share, short for a local disk (RetriesFor).
             //
-            // /R:1 /W:1 was "one retry, not a million" — aimed at robocopy's
-            // default of a million retries thirty seconds apart, which is a copy
-            // that never returns. But one retry one second later is the other
-            // extreme, and it is the wrong one for the case this application is
-            // actually used for: a NAS that drops for a few seconds, a laptop
-            // changing access point, a drive that spins up slowly. Every file in
-            // flight fails, and a folder of thousands ends up mostly errors from
-            // an interruption that lasted less than a minute.
-            //
-            // Twenty retries five seconds apart is up to a hundred seconds per
-            // file — long enough for anything that fixes itself, and still
-            // bounded, so a genuinely missing server ends the file rather than
-            // the decade. Cancelling is unaffected: the process is killed
+            // Twenty retries five seconds apart is right for a NAS that drops
+            // for a few seconds or a laptop changing access point — one retry a
+            // second later fails every file in flight over an interruption that
+            // lasted less than a minute. It is wrong for a local file that is
+            // simply held open by another program, or deleted since the plan:
+            // that never fixes itself, and it was a hundred seconds per file of
+            // a window at 100 percent saying nothing. Locally it is two retries
+            // a second apart, and either way the window now says what it is
+            // waiting for. Cancelling is unaffected: the process is killed
             // outright, and never waits out its own retries.
-            args.Add("/R:20");
-            args.Add("/W:5");
+            args.Add("/R:" + retries);
+            args.Add("/W:" + retryWait);
             args.Add("/BYTES");
             args.Add("/NJH");                                   // no job header
-            args.Add("/NJS");                                   // no job summary
             args.Add("/NDL");                                   // no directory list
             args.Add("/NP");                                    // no per-file percentage spam
+            args.Add("/XX");                                    // nothing about files only the destination has
+
+            // The job summary is kept, because it is the only place robocopy
+            // says per file what it did; and so is a log of everything, in
+            // UTF-16. Its standard output is in the console code page, so a name
+            // outside it — any Japanese, most accents — arrived as "???" in the
+            // very error that had to say which file failed. /TEE keeps standard
+            // output as well, which the progress reads; without it everything
+            // goes to the log and the window sees nothing until the end.
+            var logPath = Path.Combine(Path.GetTempPath(), $"explorernative-robocopy-{Guid.NewGuid():N}.log");
+            var logName = Path.GetFileName(logPath);
+            args.Add("/UNILOG:" + Quote(logPath));
+            args.Add("/TEE");
 
             var psi = new ProcessStartInfo("robocopy.exe")
             {
@@ -1050,68 +1636,37 @@ namespace ExplorerNative
 
             using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
 
-            // Robocopy reports a failed file on standard output, as a dated
-            // ERROR line naming it with the reason on the line after. Passed on
-            // as progress, the file was counted as copied and the reason was
-            // thrown away, leaving "exit code 8". Collected here and used only
-            // if the job fails — a file that failed once and then copied on a
-            // retry is not a failure.
-            //
-            // Kept by file, and dropped when that file is later copied: a file
-            // that failed once and then went across on a retry was otherwise
-            // listed as a failure beside the one that really failed. The reason
-            // is joined to its own message, not to whatever the list ends with.
-            var fileErrors = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            string? reasonFor = null;
+            // The live view of the output: progress, and the retries. Failures
+            // are read afterwards from the log, which has the names right; what
+            // is collected here is only for when the log cannot be read.
+            var liveLines = new List<string>();
+            var attempts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+            bool summaryStarted = false;
             process.OutputDataReceived += (_, e) =>
             {
                 if (e.Data == null) return;
                 var line = e.Data;
+                lock (liveLines) liveLines.Add(line);
+
+                // "Log File : …", which /TEE prints first.
+                if (line.Contains(logName, StringComparison.OrdinalIgnoreCase)) return;
 
                 var error = RobocopyError.Match(line);
                 if (error.Success)
                 {
-                    var message = line[error.Groups[1].Index..].Trim();
-                    lock (fileErrors) fileErrors[FailedFile(message)] = message;
-                    reasonFor = FailedFile(message);
+                    var file = FailedFile(line[error.Groups[1].Index..].Trim());
+                    int attempt;
+                    lock (attempts) attempts[file] = attempt = attempts.GetValueOrDefault(file) + 1;
+
+                    // The attempt that has just failed is followed by a wait while
+                    // there are retries left — that is the moment to say so.
+                    if (attempt <= retries)
+                        try { onRetry(file, attempt); } catch { }
                     return;
                 }
 
-                if (reasonFor != null)
-                {
-                    var file = reasonFor;
-                    reasonFor = null;
-                    if (!string.IsNullOrWhiteSpace(line))
-                    {
-                        lock (fileErrors)
-                            if (fileErrors.TryGetValue(file, out var said))
-                                fileErrors[file] = said + ": " + line.Trim();
-                    }
-                    return;
-                }
-
-                var copiedTail = line.TrimEnd();
-                int tab = copiedTail.LastIndexOf('\t');
-                copiedTail = (tab >= 0 ? copiedTail[(tab + 1)..] : copiedTail).Trim();
-                // Robocopy names a copied file by its full path or by its name
-                // alone, depending on the mode, so it is matched by name.
-                var copiedName = copiedTail.Length > 0 ? Path.GetFileName(copiedTail) : "";
-                if (copiedName.Length > 0)
-                {
-                    lock (fileErrors)
-                    {
-                        // By the whole path when the line gives one: by name
-                        // alone, cover.jpg copying in the next album cleared the
-                        // failure of this one's.
-                        bool fullPath = Path.IsPathFullyQualified(copiedTail);
-                        if (fileErrors.Count > 0)
-                            foreach (var key in fileErrors.Keys.ToList())
-                                if (fullPath
-                                        ? string.Equals(key, copiedTail, StringComparison.OrdinalIgnoreCase)
-                                        : string.Equals(Path.GetFileName(key), copiedName, StringComparison.OrdinalIgnoreCase))
-                                    fileErrors.Remove(key);
-                    }
-                }
+                if (line.TrimStart().StartsWith("-----", StringComparison.Ordinal)) summaryStarted = true;
+                if (summaryStarted) return;
 
                 onLine(line);
             };
@@ -1126,73 +1681,124 @@ namespace ExplorerNative
 
             try
             {
-                if (!process.Start())
-                    return (false, new List<string> { "Could not start robocopy" }, 0);
-            }
-            catch (Exception ex)
-            {
-                return (false, new List<string> { "robocopy failed to start: " + ex.Message }, 0);
-            }
-
-            // Published only once it is running, and taken back inside the finally
-            // below — before `using` disposes it, so the ticker can never reach a
-            // handle that has gone.
-            onProcess(process);
-            try
-            {
-                process.BeginOutputReadLine();
-                process.BeginErrorReadLine();
-
                 try
                 {
-                    await process.WaitForExitAsync(token);
-
-                    // WaitForExitAsync returns when the process object is signalled,
-                    // which happens before the redirected pipes have been drained. The
-                    // synchronous overload is what waits for the reader threads, so
-                    // without it the last few files robocopy printed never reached the
-                    // progress handler and the transfer appeared to stall at 97%.
-                    process.WaitForExit();
+                    if (!process.Start())
+                        return new JobOutcome(false, new List<string> { "Could not start robocopy" }, 0, null, new List<string>());
                 }
-                catch (OperationCanceledException)
+                catch (Exception ex)
                 {
-                    // Not while it is reading a Drive placeholder: a process
-                    // ended in the middle of one never finishes exiting, and only
-                    // a restart of Windows clears it. Its reads are failed first,
-                    // on a worker — this may be the window's thread.
-                    int id = 0;
-                    try { id = process.Id; } catch { }
-                    var standDown = BeforeKill;
-                    if (standDown != null && id != 0)
-                        try { await Task.Run(() => standDown(id)); } catch { }
-
-                    try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
-
-                    // Wait for it to actually be gone before returning. Kill only
-                    // asks; until the process has exited it still holds the
-                    // destination file open, and the cleanup that runs next then
-                    // finds every delete refused and leaves the half-written file
-                    // exactly where it was — the thing the cleanup exists to
-                    // prevent, defeated by a race with a dying process.
-                    try { process.WaitForExit(5000); } catch { }
-                    if (id != 0) try { AfterKill?.Invoke(id); } catch { }
-
-                    lock (errors) return (false, new List<string>(errors), BytesWritten(process));
+                    return new JobOutcome(false, new List<string> { "robocopy failed to start: " + ex.Message }, 0, null,
+                        new List<string>());
                 }
 
-                int code = process.ExitCode;
-                if (code >= FirstFailureCode)
+                // Published only once it is running, and taken back inside the finally
+                // below — before `using` disposes it, so the ticker can never reach a
+                // handle that has gone.
+                onProcess(process);
+                try
                 {
-                    lock (fileErrors)
-                        lock (errors) errors.AddRange(fileErrors.Values);
+                    process.BeginOutputReadLine();
+                    process.BeginErrorReadLine();
+
+                    try
+                    {
+                        await process.WaitForExitAsync(token);
+
+                        // WaitForExitAsync returns when the process object is signalled,
+                        // which happens before the redirected pipes have been drained. The
+                        // synchronous overload is what waits for the reader threads, so
+                        // without it the last few files robocopy printed never reached the
+                        // progress handler and the transfer appeared to stall at 97%.
+                        process.WaitForExit();
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        // Not while it is reading a Drive placeholder: a process
+                        // ended in the middle of one never finishes exiting, and only
+                        // a restart of Windows clears it. Its reads are failed first,
+                        // on a worker — this may be the window's thread.
+                        int id = 0;
+                        try { id = process.Id; } catch { }
+                        var standDown = BeforeKill;
+                        if (standDown != null && id != 0)
+                            try { await Task.Run(() => standDown(id)); } catch { }
+
+                        try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+
+                        // Wait for it to actually be gone before returning. Kill only
+                        // asks; until the process has exited it still holds the
+                        // destination file open, and the cleanup that runs next then
+                        // finds every delete refused and leaves the half-written file
+                        // exactly where it was — the thing the cleanup exists to
+                        // prevent, defeated by a race with a dying process.
+                        try { process.WaitForExit(5000); } catch { }
+                        if (id != 0) try { AfterKill?.Invoke(id); } catch { }
+
+                        lock (errors)
+                            return new JobOutcome(false, new List<string>(errors), BytesWritten(process), null,
+                                new List<string>());
+                    }
+
+                    int code = process.ExitCode;
+
+                    // The log, in its own letters; the live output only if the log
+                    // could not be read.
+                    RobocopyLog log;
+                    try { log = ParseLog(File.ReadAllLines(logPath, System.Text.Encoding.Unicode)); }
+                    catch
+                    {
+                        lock (liveLines) log = ParseLog(liveLines.Where(l => !l.Contains(logName, StringComparison.OrdinalIgnoreCase)).ToList());
+                    }
+
+                    var counts = log.Counts;
+                    int mismatched = Math.Max(counts?.Mismatch ?? 0, log.Mismatched.Count);
+                    int foldersMismatched = counts?.DirMismatch ?? 0;
+
+                    // Exit code 4 is "mismatched": a file robocopy would not put
+                    // over a folder of the same name, deeper in the tree. It is
+                    // below the failure threshold, so it was success.
+                    bool ok = code < FirstFailureCode && mismatched == 0 && foldersMismatched == 0;
+
+                    if (!ok)
+                    {
+                        var explained = new List<string>(log.FileErrors.Values);
+                        foreach (var path in log.Mismatched)
+                            explained.Add($"{path}: a folder of that name is already there");
+                        if (mismatched > log.Mismatched.Count)
+                            explained.Add($"{NameRules.Items(mismatched - log.Mismatched.Count, "file")} in \"{job.SourceDir}\" " +
+                                          "could not go over a folder of the same name");
+                        if (foldersMismatched > 0)
+                            explained.Add($"{NameRules.Items(foldersMismatched, "folder")} in \"{job.SourceDir}\" " +
+                                          "could not go over a file of the same name");
+
+                        lock (errors)
+                        {
+                            errors.AddRange(explained);
+                            if (explained.Count == 0)
+                                errors.Add($"robocopy reported failures copying \"{job.SourceDir}\" (exit code {code})");
+                        }
+                    }
+
                     lock (errors)
-                        errors.Add($"robocopy reported failures copying \"{job.SourceDir}\" (exit code {code})");
+                        return new JobOutcome(ok, new List<string>(errors), BytesWritten(process), counts,
+                            log.FileErrors.Keys.ToList());
                 }
-
-                lock (errors)
-                    return (code < FirstFailureCode, new List<string>(errors), BytesWritten(process));
+                finally { onProcess(null); }
             }
-            finally { onProcess(null); }
+            finally
+            {
+                // Gone, whatever happened. A killed robocopy may hold it a moment.
+                for (int attempt = 0; attempt < 10; attempt++)
+                {
+                    try
+                    {
+                        if (File.Exists(logPath)) File.Delete(logPath);
+                        break;
+                    }
+                    catch { Thread.Sleep(50); }
+                }
+            }
         }
 
         /// <summary>
@@ -1230,10 +1836,11 @@ namespace ExplorerNative
         /// always: robocopy's stdout is block-buffered through a pipe, so the
         /// parsed count sits at one file's worth while fifty have been copied.
         ///
-        /// <paramref name="parsed"/> wins when *it* is larger, which is a move
-        /// within one volume: robocopy renames instead of copying and writes
-        /// almost nothing, so the kernel counter stays near zero while files are
-        /// genuinely being moved.
+        /// <paramref name="parsed"/> wins when *it* is larger, which is when the
+        /// kernel counter cannot be read for the running process. (A move within
+        /// one volume used to be described here as robocopy renaming; it does
+        /// not — /MOVE copies and deletes — which is why RunAsync renames such
+        /// moves itself before robocopy is started.)
         ///
         /// And neither may exceed <paramref name="total"/> or fall below
         /// <paramref name="alreadyShown"/>. The kernel counts a little more than
@@ -1247,6 +1854,129 @@ namespace ExplorerNative
             long best = Math.Max(parsed, measured);
             if (total > 0 && best > total) best = total;
             return best < alreadyShown ? alreadyShown : best;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetVolumePathNameW(string fileName, char[] volumePathName, int bufferLength);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetVolumeNameForVolumeMountPointW(string mountPoint, char[] volumeName, int bufferLength);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern uint GetDriveTypeW(string rootPathName);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool MoveFileExW(string existingFileName, string newFileName, uint flags);
+
+        private const uint DriveRemote = 4;
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint QueryDosDeviceW(string deviceName, char[] targetPath, int max);
+
+        /// <summary>The folder a path's volume is mounted at: "C:\", or a mount-point folder.</summary>
+        private static string? VolumePathOf(string path, int depth = 0)
+        {
+            try
+            {
+                var plain = NameRules.PlainPath(path);
+                var buffer = new char[1024];
+                if (!GetVolumePathNameW(plain, buffer, buffer.Length))
+                {
+                    // A subst letter has no volume path of its own — measured:
+                    // GetVolumePathName fails outright — so it is asked as the
+                    // folder it stands for. "\??\C:\folder" is a subst; anything
+                    // else (a device, a share) is left unknown.
+                    if (plain.Length < 2 || plain[1] != ':' || !char.IsLetter(plain[0])) return null;
+                    var target = new char[1024];
+                    if (QueryDosDeviceW(plain[..2], target, target.Length) == 0) return null;
+                    int stop = Array.IndexOf(target, '\0');
+                    var device = new string(target, 0, stop < 0 ? target.Length : stop);
+                    if (!device.StartsWith(@"\??\", StringComparison.Ordinal) || device.Length < 6 || device[5] != ':') return null;
+                    var resolved = device[4..].TrimEnd('\\') + "\\" + plain[2..].TrimStart('\\');
+                    if (string.Equals(resolved[..2], plain[..2], StringComparison.OrdinalIgnoreCase)) return null;
+                    return depth < 4 ? VolumePathOf(resolved, depth + 1) : null;
+                }
+                int end = Array.IndexOf(buffer, '\0');
+                return new string(buffer, 0, end < 0 ? buffer.Length : end);
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// The volume a path is on, as Windows names it ("\\?\Volume{…}\"), or
+        /// null for anything that has no such name — a network share among them.
+        ///
+        /// Not the drive letter. A folder that is a mount point puts paths under
+        /// C: on another volume, and a subst drive puts another letter's paths on
+        /// this one.
+        /// </summary>
+        internal static string? VolumeOf(string path)
+        {
+            var mount = VolumePathOf(path);
+            if (mount == null) return null;
+            try
+            {
+                if (!mount.EndsWith('\\')) mount += "\\";
+                var name = new char[128];
+                if (!GetVolumeNameForVolumeMountPointW(mount, name, name.Length)) return null;
+                int end = Array.IndexOf(name, '\0');
+                return new string(name, 0, end < 0 ? name.Length : end);
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Whether two paths are on one volume, so that moving between them can
+        /// be a rename. Unknown counts as no: the answer only decides whether a
+        /// rename is tried, and the rename itself never copies (see
+        /// <see cref="TryRename"/>), so a wrong yes costs one refused call and a
+        /// wrong no costs a copy.
+        /// </summary>
+        public static bool SameVolume(string a, string b)
+        {
+            var va = VolumeOf(a);
+            return va != null && string.Equals(va, VolumeOf(b), StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>A share, or a drive letter mapped to one.</summary>
+        internal static bool IsRemote(string path)
+        {
+            try
+            {
+                var plain = NameRules.PlainPath(path);
+                if (plain.StartsWith(@"\\", StringComparison.Ordinal)) return true;
+                var mount = VolumePathOf(plain);
+                return mount != null && GetDriveTypeW(mount.EndsWith('\\') ? mount : mount + "\\") == DriveRemote;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// Renames, and only renames: no copy across volumes and nothing replaced.
+        /// False whenever it cannot be done as a rename, so the caller can copy
+        /// instead. A junction or symbolic link is renamed as itself.
+        /// </summary>
+        internal static bool TryRename(string from, string to)
+        {
+            try { return MoveFileExW(NameRules.ExactPath(from), NameRules.ExactPath(to), 0); }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// How many times robocopy tries a file again, and how long it waits
+        /// between. See where the switches are added for why the two answers.
+        /// </summary>
+        internal static (int Count, int WaitSeconds) RetriesFor(
+            IEnumerable<string> sources, string destination, bool cloudSource)
+        {
+            if (cloudSource || IsRemote(destination)) return (20, 5);
+            foreach (var folder in sources.Select(s => Path.GetDirectoryName(NameRules.PlainPath(s)) ?? s)
+                         .Distinct(StringComparer.OrdinalIgnoreCase))
+                if (IsRemote(folder)) return (20, 5);
+            return (2, 1);
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -1339,21 +2069,21 @@ namespace ExplorerNative
                 var dir = stack.Pop();
 
                 string[] subDirs;
-                try { subDirs = Directory.GetDirectories(dir); }
+                try { subDirs = Directory.GetDirectories(NameRules.ExactPath(dir)); }
                 catch { continue; }
 
                 foreach (var sub in subDirs)
                 {
-                    try { if (NameRules.IsLink(new DirectoryInfo(sub))) continue; }
+                    try { if (NameRules.IsLink(new DirectoryInfo(NameRules.ExactPath(sub)))) continue; }
                     catch { continue; }
-                    stack.Push(sub);
+                    stack.Push(NameRules.PlainPath(sub));
                 }
 
                 string[] files;
-                try { files = Directory.GetFiles(dir); }
+                try { files = Directory.GetFiles(NameRules.ExactPath(dir)); }
                 catch { continue; }
 
-                foreach (var f in files) yield return f;
+                foreach (var f in files) yield return NameRules.PlainPath(f);
             }
         }
 
@@ -1427,6 +2157,100 @@ namespace ExplorerNative
             if (span.TotalHours < 1)
                 return $"{NameRules.Items((int)span.TotalMinutes, "minute")}, {NameRules.Items(span.Seconds, "second")}";
             return $"{NameRules.Items((int)span.TotalHours, "hour")}, {NameRules.Items(span.Minutes, "minute")}";
+        }
+    }
+
+    /// <summary>
+    /// Junctions, which .NET can read but not make. Moving one to another volume
+    /// means making it again there; see <see cref="FileOperations.MoveLink"/>.
+    /// </summary>
+    internal static class ReparseLinks
+    {
+        private const uint MountPointTag = 0xA0000003;
+        private const uint SetReparsePoint = 0x000900A4;
+        private const uint GenericWrite = 0x40000000;
+        private const uint OpenExisting = 3;
+        private const uint BackupSemantics = 0x02000000;
+        private const uint OpenReparsePoint = 0x00200000;
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct FindData
+        {
+            public uint Attributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME Created, Accessed, Written;
+            public uint SizeHigh, SizeLow, Reserved0, Reserved1;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)] public string FileName;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 14)] public string AlternateFileName;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr FindFirstFileW(string fileName, out FindData data);
+
+        [DllImport("kernel32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool FindClose(IntPtr find);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(
+            string fileName, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool DeviceIoControl(Microsoft.Win32.SafeHandles.SafeFileHandle device, uint code,
+            byte[] input, int inputLength, IntPtr output, int outputLength, out int returned, IntPtr overlapped);
+
+        /// <summary>A junction (a mount point to a folder), as against a symbolic link.</summary>
+        public static bool IsJunction(string path)
+        {
+            var find = FindFirstFileW(NameRules.ExactPath(path.TrimEnd('\\')), out var data);
+            if (find == new IntPtr(-1)) return false;
+            FindClose(find);
+            return (data.Attributes & (uint)FileAttributes.ReparsePoint) != 0 && data.Reserved0 == MountPointTag;
+        }
+
+        /// <summary>Makes <paramref name="link"/> a new junction to <paramref name="target"/>.</summary>
+        public static void CreateJunction(string link, string target)
+        {
+            // What a junction stores is "\??\C:\target"; .NET hands back either
+            // form depending on the version, so both prefixes are taken off.
+            foreach (var prefix in new[] { @"\??\", @"\\?\" })
+                if (target.StartsWith(prefix, StringComparison.Ordinal)) target = target[prefix.Length..];
+
+            // A volume mount point is registered with the mount manager, which a
+            // reparse buffer alone does not do. Refused rather than half made.
+            if (target.StartsWith("Volume{", StringComparison.OrdinalIgnoreCase) || !Path.IsPathFullyQualified(target))
+                throw new IOException("This link cannot be made again on another drive");
+
+            var substitute = System.Text.Encoding.Unicode.GetBytes(@"\??\" + target);
+            var print = System.Text.Encoding.Unicode.GetBytes(target);
+            int pathBuffer = substitute.Length + 2 + print.Length + 2;
+            int dataLength = 8 + pathBuffer;
+            var buffer = new byte[8 + dataLength];
+
+            BitConverter.GetBytes(MountPointTag).CopyTo(buffer, 0);
+            BitConverter.GetBytes((ushort)dataLength).CopyTo(buffer, 4);
+            BitConverter.GetBytes((ushort)0).CopyTo(buffer, 8);                          // substitute offset
+            BitConverter.GetBytes((ushort)substitute.Length).CopyTo(buffer, 10);
+            BitConverter.GetBytes((ushort)(substitute.Length + 2)).CopyTo(buffer, 12);   // print offset
+            BitConverter.GetBytes((ushort)print.Length).CopyTo(buffer, 14);
+            substitute.CopyTo(buffer, 16);
+            print.CopyTo(buffer, 16 + substitute.Length + 2);
+
+            var exact = NameRules.ExactPath(link);
+            Directory.CreateDirectory(exact);
+            try
+            {
+                using var handle = CreateFileW(exact, GenericWrite, 0, IntPtr.Zero, OpenExisting,
+                    BackupSemantics | OpenReparsePoint, IntPtr.Zero);
+                if (handle.IsInvalid) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                if (!DeviceIoControl(handle, SetReparsePoint, buffer, buffer.Length, IntPtr.Zero, 0, out _, IntPtr.Zero))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            }
+            catch
+            {
+                try { Directory.Delete(exact); } catch { }
+                throw;
+            }
         }
     }
 }

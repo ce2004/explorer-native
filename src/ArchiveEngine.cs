@@ -174,6 +174,13 @@ namespace ExplorerNative
                         var info = new FileInfo(trimmed);
                         plan.Add(new ArchiveItem(trimmed, unique, info.Length, false, info.LastWriteTime, info.Attributes));
                     }
+                    else
+                    {
+                        // Gone between being chosen and being compressed — moved,
+                        // deleted, a share that dropped. Silently skipped, it made
+                        // "Created x.7z" with no file and an empty zip.
+                        unreadable?.Add($"{name}: it is no longer there");
+                    }
                 }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                 {
@@ -382,6 +389,31 @@ namespace ExplorerNative
                 Report(force: true);
             }
 
+            // How far through the archive file the reading has got, for an
+            // extraction that does not list the archive first.
+            private Func<long>? _position;
+            private long _positionTotal;
+            private volatile bool _over;
+
+            /// <summary>
+            /// Measures progress through the compressed file rather than through
+            /// what comes out of it.
+            ///
+            /// Knowing the uncompressed totals means listing the archive first,
+            /// and for a compressed tar that is a whole decompression — measured,
+            /// about half the time of the extraction. So an extraction with
+            /// nothing to collide with skips it and reports how much of the
+            /// archive has been read, which is honest at both ends and smooth in
+            /// between. The item total is worked out from the same proportion
+            /// and is exact by the end.
+            /// </summary>
+            public void Estimate(long archiveBytes, Func<long> position)
+            {
+                Interlocked.Exchange(ref _positionTotal, Math.Max(1, archiveBytes));
+                _position = position;
+                Report(force: true);
+            }
+
             /// <summary>
             /// Names the thing being worked on.
             ///
@@ -408,7 +440,12 @@ namespace ExplorerNative
                 Report(force: false);
             }
 
-            public void Done() => Report(force: true);
+            /// <param name="finished">False for a cancellation, which did not get to the end.</param>
+            public void Done(bool finished = true)
+            {
+                if (finished) _over = true;
+                Report(force: true);
+            }
 
             private void Report(bool force)
             {
@@ -425,13 +462,38 @@ namespace ExplorerNative
 
                 var elapsed = TimeSpan.FromMilliseconds(now);
                 long done = Interlocked.Read(ref _bytesDone);
+                long total = Interlocked.Read(ref _bytesTotal);
+                int items = Volatile.Read(ref _itemsDone);
+                int itemsTotal = Volatile.Read(ref _itemsTotal);
+
+                if (_position is { } position)
+                {
+                    total = Interlocked.Read(ref _positionTotal);
+                    long at;
+                    try { at = position(); }
+                    catch { at = 0; }
+                    done = _over ? total : Math.Clamp(at, 0, total);
+
+                    // Extrapolated from how far through the file the entries so
+                    // far have come, and never fewer than have been counted.
+                    itemsTotal = _over || done <= 0
+                        ? items
+                        : (int)Math.Min(int.MaxValue, Math.Max(items, (long)Math.Round(items * (double)total / done)));
+                }
+
+                // Never past the end. An entry the system tar adds that was not in
+                // the plan — a link it stored, a name that could not be matched —
+                // took the bar to 154 percent.
+                if (total > 0) done = Math.Min(done, total);
+                if (itemsTotal > 0) items = Math.Min(items, itemsTotal);
+
                 double speed = elapsed.TotalSeconds > 0.001 ? done / elapsed.TotalSeconds : 0;
 
                 _sink.Report(new TransferProgress(
                     done,
-                    Interlocked.Read(ref _bytesTotal),
-                    Volatile.Read(ref _itemsDone),
-                    Volatile.Read(ref _itemsTotal),
+                    total,
+                    items,
+                    itemsTotal,
                     Volatile.Read(ref _current),
                     speed,
                     elapsed));
@@ -483,6 +545,16 @@ namespace ExplorerNative
             {
                 return new ArchiveResult(0, 0, true, errors, 0, 0);
             }
+            // Nothing left to put in it is a failure, not an empty archive: the
+            // system tar made no file at all and reported success, and the zip
+            // writer made one with nothing in it.
+            if (plan.Count == 0)
+                throw new IOException(errors.Count == 1
+                    ? errors[0]
+                    : errors.Count > 1
+                        ? $"none of the {errors.Count} chosen items could be read"
+                        : "there was nothing to compress");
+
             long totalBytes = plan.Sum(p => p.Size);
             reporter.SetTotals(totalBytes, plan.Count);
 
@@ -520,7 +592,7 @@ namespace ExplorerNative
                 {
                     ArchiveEngineKind.Zip => ZipEngine.Create(plan, working, level, threads, reporter, errors, token),
                     ArchiveEngineKind.Tar => TarEngine.Create(plan, working, format, level, threads, reporter, errors, token),
-                    _ => BsdTar.Create(plan, working, format, level, threads, reporter, token),
+                    _ => BsdTar.Create(plan, working, format, level, threads, reporter, errors, token),
                 };
 
                 // Only now does the old one go. A move onto it is the last step
@@ -545,7 +617,7 @@ namespace ExplorerNative
             }
             catch (OperationCanceledException)
             {
-                reporter.Done();
+                reporter.Done(finished: false);
                 return new ArchiveResult(reporter.ItemsDone, errors.Count, true, errors, totalBytes, 0);
             }
             finally
@@ -649,22 +721,47 @@ namespace ExplorerNative
                 }
                 catch (OperationCanceledException)
                 {
-                    reporter.Done();
+                    reporter.Done(finished: false);
                     return new ArchiveResult(reporter.ItemsDone, errors.Count, true, errors, 0, reporter.BytesDone);
                 }
             }
 
-            // Listing a compressed tar means decompressing all of it, so a cancel
-            // is as likely here as during the extraction itself.
+            // The listing is for two things: the totals, and the names that
+            // might collide with what is already there. Into a folder that does
+            // not exist yet — which is what Extract makes — nothing can collide,
+            // and for a tar the listing is a whole decompression of its own,
+            // about half the time the extraction takes. So it is not done, and
+            // the progress is measured through the archive file instead.
+            //
+            // A zip's listing is its central directory, which costs a read of
+            // the end of the file and gives exact totals, so it is always read.
+            bool listFirst = format.Engine == ArchiveEngineKind.Zip || !IsEmptyFolder(destinationDir);
+
             IReadOnlyList<ArchiveEntryInfo> entries;
             ExtractionRules? rules;
             try
             {
-                entries = format.Engine == ArchiveEngineKind.Zip
-                    ? ZipEngine.List(archivePath, token)
-                    : TarEngine.List(archivePath, format, token);
+                if (format.Engine == ArchiveEngineKind.Zip)
+                {
+                    entries = ZipEngine.List(archivePath, token, out int files, out int locked);
 
-                reporter.SetTotals(entries.Sum(e => e.Size), entries.Count);
+                    // Said once, before any question about collisions is asked
+                    // and before any folder is made for it. Each entry used to
+                    // fail with "unsupported compression method", which reads as
+                    // a fault in the file rather than a password.
+                    if (locked > 0 && locked == files)
+                        throw new NotSupportedException(ZipEngine.ProtectedMessage);
+                }
+                else if (listFirst)
+                {
+                    entries = TarEngine.List(archivePath, format, token);
+                }
+                else
+                {
+                    entries = Array.Empty<ArchiveEntryInfo>();
+                }
+
+                if (listFirst) reporter.SetTotals(entries.Sum(e => e.Size), entries.Count);
                 rules = ExtractionRules.Build(entries, destinationDir, policy, ask, token);
             }
             catch (OperationCanceledException)
@@ -681,7 +778,8 @@ namespace ExplorerNative
             {
                 int done = format.Engine == ArchiveEngineKind.Zip
                     ? ZipEngine.Extract(archivePath, rules, threads, reporter, errors, token)
-                    : TarEngine.Extract(archivePath, format, rules, threads, reporter, errors, token);
+                    : TarEngine.Extract(archivePath, format, rules, threads, reporter, errors, token,
+                        estimate: !listFirst);
 
                 reporter.Done();
                 RoboCopyEngine.Trace($"archive: extracted {done} entries, {errors.Count} failed");
@@ -691,11 +789,34 @@ namespace ExplorerNative
             }
             catch (OperationCanceledException)
             {
-                reporter.Done();
+                reporter.Done(finished: false);
                 return new ArchiveResult(reporter.ItemsDone, errors.Count, true, errors, 0, reporter.BytesDone,
                     rules.Outcomes());
             }
         }
+
+        /// <summary>
+        /// Whether nothing extracted into <paramref name="folder"/> can land on
+        /// something already there: it does not exist, or it is empty.
+        /// </summary>
+        internal static bool IsEmptyFolder(string folder)
+        {
+            try { return !Directory.Exists(folder) || !Directory.EnumerateFileSystemEntries(folder).Any(); }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// The sentence for an archive that stopped making sense part way.
+        ///
+        /// Every reader produced its own: "Unable to read beyond the end of the
+        /// stream", "unsupported compression method" for a damaged gzip, and
+        /// "(null)" from the system tar for a truncated 7z. None of them says the
+        /// one thing worth knowing, which is that the file is damaged and how
+        /// much of it was saved.
+        /// </summary>
+        internal static string DamagedMessage(int extracted) => extracted > 0
+            ? $"This archive is damaged or incomplete. {NameRules.Items(extracted)} {(extracted == 1 ? "was" : "were")} extracted before the damage."
+            : "This archive is damaged or incomplete, and nothing in it could be extracted.";
 
         /// <summary>
         /// Writes an extracted file under a temporary name beside
@@ -720,7 +841,9 @@ namespace ExplorerNative
 
             try
             {
-                using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.Write,
+                // Readable as well, so a writer can check what it wrote before it
+                // is given its name — the bare .gz reads back its last member.
+                using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.ReadWrite,
                            FileShare.None, bufferSize))
                     write(output);
 

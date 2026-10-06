@@ -1238,6 +1238,23 @@ namespace ExplorerNative
             }
         }
 
+        /// <summary>
+        /// Makes a pairing code if there is none, and says whether it did.
+        ///
+        /// Never while the file could not be read: these are defaults standing in
+        /// for it, so the code is the file's and nobody has seen it yet. A code
+        /// made then was carried over the real one when the file opened (11112222
+        /// on disk and 99998888 made at startup gave 99998888), and every browser
+        /// paired with the old code was asked for a new one. With no code at all
+        /// the web app simply asks everybody but the owner, until the file opens.
+        /// </summary>
+        public bool EnsureConnectCode()
+        {
+            if (_unreadableOnDisk || !string.IsNullOrEmpty(ConnectCode)) return false;
+            ConnectCode = ConnectServer.NewCode();
+            return true;
+        }
+
         public Settings Clone()
         {
             var copy = JsonSerializer.Deserialize<Settings>(JsonSerializer.Serialize(this))!;

@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.IO.Pipes;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -111,6 +113,11 @@ namespace ExplorerNative
         [DllImport("user32.dll")]
         private static extern bool AllowSetForegroundWindow(int dwProcessId);
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool PeekNamedPipe(
+            Microsoft.Win32.SafeHandles.SafePipeHandle pipe, IntPtr buffer, uint size,
+            IntPtr bytesRead, out uint totalAvailable, IntPtr bytesLeftThisMessage);
+
         private const int ASFW_ANY = -1;
 
         // ---------- Server side (the instance that owns the lock) ----------
@@ -185,23 +192,29 @@ namespace ExplorerNative
                     // Rebuilt per connection. A single reused instance would have
                     // to be disconnected and re-armed between clients anyway, and
                     // getting that wrong wedges the pipe for the whole session.
+                    //
+                    // Synchronous, on this thread of its own. An asynchronous pipe
+                    // completes on the thread pool, so a busy pool starved the
+                    // handoff: twenty launches at once from a process whose pool
+                    // was full lost half of them to the connect timeout, every
+                    // one a folder double-clicked that opened nothing.
                     using var server = new NamedPipeServerStream(
                         pipe, PipeDirection.In, 1,
-                        PipeTransmissionMode.Byte, PipeOptions.Asynchronous | Restricted);
+                        PipeTransmissionMode.Byte, Restricted);
 
                     // Not cancelled by the token. A cancelled wait leaves the pipe
                     // listening until it is disposed, and a launcher that connected
                     // in that moment took its folder as delivered while nothing
                     // read it. StopServer connects instead, and whoever connected
                     // is read before the token is looked at.
-                    server.WaitForConnectionAsync(CancellationToken.None).GetAwaiter().GetResult();
+                    server.WaitForConnection();
 
                     // A client that connected is read and handed on even when
                     // stopping has begun: its launcher takes the connection as
                     // the folder taken and exits, and the application routes a
                     // folder that arrives while quitting to the copy after it.
                     // The read keeps its own deadline, not the server's token.
-                    var line = ReadRequest(server, CancellationToken.None);
+                    var line = ReadRequest(server);
 
                     if (!string.IsNullOrWhiteSpace(line))
                     {
@@ -252,17 +265,18 @@ namespace ExplorerNative
         /// it is still waiting on the last one. Nothing recovers that except
         /// restarting the application, and nothing reports it either.
         ///
-        /// The pipe is asynchronous, so the read can be given a deadline. The
-        /// bytes are decoded once at the end rather than per chunk: a path can
-        /// carry characters whose UTF-8 runs across a read boundary, and
-        /// decoding each chunk on its own splits them into replacement
-        /// characters — a folder that opens for most people and not for the one
-        /// with an accent in their user name.
+        /// The deadline comes from asking the pipe what it holds
+        /// (<c>PeekNamedPipe</c>) and reading only that much, so no read ever
+        /// blocks and nothing waits on the thread pool. The bytes are decoded
+        /// once at the end rather than per chunk: a path can carry characters
+        /// whose UTF-8 runs across a read boundary, and decoding each chunk on
+        /// its own splits them into replacement characters — a folder that
+        /// opens for most people and not for the one with an accent in their
+        /// user name.
         /// </summary>
-        private static string? ReadRequest(NamedPipeServerStream server, CancellationToken token)
+        private static string? ReadRequest(NamedPipeServerStream server)
         {
-            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
-            deadline.CancelAfter(ReadTimeoutMs);
+            long deadline = Environment.TickCount64 + ReadTimeoutMs;
 
             using var collected = new MemoryStream();
             var buffer = new byte[512];
@@ -272,8 +286,20 @@ namespace ExplorerNative
             {
                 while (!complete && collected.Length < MaxRequestBytes)
                 {
-                    int n = server.ReadAsync(buffer, 0, buffer.Length, deadline.Token)
-                                  .GetAwaiter().GetResult();
+                    // False once the client has gone and everything it wrote
+                    // has been read.
+                    if (!PeekNamedPipe(server.SafePipeHandle, IntPtr.Zero, 0, IntPtr.Zero,
+                            out uint available, IntPtr.Zero))
+                        break;
+
+                    if (available == 0)
+                    {
+                        if (Environment.TickCount64 >= deadline) return null;
+                        Thread.Sleep(2);
+                        continue;
+                    }
+
+                    int n = server.Read(buffer, 0, (int)Math.Min(available, (uint)buffer.Length));
                     if (n <= 0) break;
 
                     for (int i = 0; i < n; i++)
@@ -330,5 +356,53 @@ namespace ExplorerNative
                 return false;
             }
         }
+    }
+
+    /// <summary>
+    /// What a launch's arguments mean, kept apart from Program so the suite
+    /// can check it: Program owns Main and cannot be compiled into it.
+    /// </summary>
+    internal static class LaunchArguments
+    {
+        /// <summary>
+        /// The switches that do their work and exit without a window — the only
+        /// runs that are allowed to borrow a console.
+        /// </summary>
+        public static readonly string[] CommandLineSwitches =
+        {
+            "--licence", "--license", "--install", "--install-only", "--update", "--uninstall", "--read-log",
+            "--register-default", "--unregister-default", "--unregister-all",
+        };
+
+        /// <summary>
+        /// Switches that change how an ordinary launch behaves: --quiet silences
+        /// a command-line run's notice, --restart is a copy taking over from one
+        /// that is leaving.
+        /// </summary>
+        public static readonly string[] Modifiers = { "--quiet", "--restart" };
+
+        public static bool IsKnown(string arg) =>
+            CommandLineSwitches.Contains(arg.Trim(), StringComparer.OrdinalIgnoreCase) ||
+            Modifiers.Contains(arg.Trim(), StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// The first argument that looks like a switch and is not one, or null.
+        /// A typo such as --unistall used to fall through to an ordinary launch,
+        /// which brought the running copy to the front or started a new one.
+        /// </summary>
+        public static string? UnknownOption(IEnumerable<string> args) =>
+            args.Select(a => a.Trim())
+                .FirstOrDefault(a => a.StartsWith("--", StringComparison.Ordinal) && !IsKnown(a));
+
+        /// <summary>
+        /// The log --read-log was asked for: the first argument after it that is
+        /// not a switch, so "--read-log --quiet" reads install.log rather than a
+        /// file called "--quiet".
+        /// </summary>
+        public static string ReadLogName(IEnumerable<string> args) =>
+            args.SkipWhile(a => !a.Trim().Equals("--read-log", StringComparison.OrdinalIgnoreCase))
+                .Skip(1)
+                .FirstOrDefault(a => !a.Trim().StartsWith("--", StringComparison.Ordinal) && a.Trim().Length > 0)
+            ?? "install.log";
     }
 }

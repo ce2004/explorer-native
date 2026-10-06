@@ -246,6 +246,12 @@ namespace ExplorerNative
                     _ => $"Google gave an unexpected answer ({(int)response.StatusCode} {error}).",
                 };
             }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                // Somebody called it off. That is not Google being unreachable,
+                // and saying so would send them to check a connection that works.
+                throw;
+            }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
             {
                 return "Google could not be reached to check them. Check the internet connection and press OK again.";

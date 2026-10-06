@@ -434,8 +434,12 @@ namespace ExplorerNative
             for (var e = error; e != null; e = e.InnerException)
             {
                 if (e is DriveQuotaException quota) return quota.ResetsOnItsOwn;
+
+                // The status and Google's reason, carried as facts. The message
+                // is prose by now and no longer names either.
+                if (e is DriveClient.DriveStatusException { Status: > 0 } status) return status.Transient;
                 if (e is System.Net.Http.HttpRequestException { StatusCode: { } code } &&
-                    (int)code is 429 or 500 or 502 or 503 or 504) return true;
+                    (int)code is 408 or 429 or 500 or 502 or 503 or 504) return true;
 
                 var text = e.Message ?? "";
                 if (text.Contains("userRateLimitExceeded", StringComparison.Ordinal) ||

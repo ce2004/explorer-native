@@ -219,7 +219,28 @@ namespace ExplorerNative
         {
             _open = open;
             _budget = budget;
-            _sweep = new Timer(_ => Sweep(DateTime.UtcNow), null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+            // Disarmed until a stream is opened, and disarmed again when the last one goes: a timer waking every
+            // ten seconds to find nothing, for as long as the application runs, is battery spent on nothing.
+            _sweep = new Timer(_ => Sweep(DateTime.UtcNow), null, Timeout.Infinite, Timeout.Infinite);
+        }
+
+        private bool _sweeping, _disposed;
+
+        /// <summary>Whether the sweep timer is running, for tests. It runs only while a stream is held.</summary>
+        public bool Sweeping { get { lock (_gate) return _sweeping; } }
+
+        /// <summary>Starts or stops the sweep to match whether anything is held. Called under <see cref="_gate"/>.</summary>
+        private void ArmSweep()
+        {
+            bool want = _streams.Count > 0 && !_disposed;
+            if (want == _sweeping) return;
+            _sweeping = want;
+            try
+            {
+                if (want) _sweep.Change(TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+                else _sweep.Change(Timeout.Infinite, Timeout.Infinite);
+            }
+            catch (ObjectDisposedException) { _sweeping = false; }
         }
 
         /// <summary>How many files are held open, for tests.</summary>
@@ -257,6 +278,7 @@ namespace ExplorerNative
                         if (idle.Value != null) { evicted = idle.Value.Stream; _streams.Remove(idle.Key); }
                     }
                     _streams[path] = new Entry { Stream = stream, Leases = 1, LastUsed = DateTime.UtcNow };
+                    ArmSweep();
                 }
                 lease = new Leased(this, path, stream);
             }
@@ -284,15 +306,22 @@ namespace ExplorerNative
                 var idle = _streams.Where(e => e.Value.Leases == 0 && now - e.Value.LastUsed >= IdleFor).ToList();
                 foreach (var e in idle) _streams.Remove(e.Key);
                 done = idle.Select(e => e.Value.Stream).ToList();
+                ArmSweep();
             }
             foreach (var s in done) s.Dispose();
         }
 
         public void Dispose()
         {
-            _sweep.Dispose();
             List<StreamingSource> all;
-            lock (_gate) { all = _streams.Values.Select(e => e.Stream).ToList(); _streams.Clear(); }
+            lock (_gate)
+            {
+                _disposed = true;
+                all = _streams.Values.Select(e => e.Stream).ToList();
+                _streams.Clear();
+                ArmSweep();
+            }
+            _sweep.Dispose();
             foreach (var s in all) s.Dispose();
         }
 
@@ -378,6 +407,13 @@ namespace ExplorerNative
 
         /// <summary>Resumable uploads nobody has touched for this long are swept when the server starts.</summary>
         public static readonly TimeSpan UploadsKeptFor = TimeSpan.FromHours(24);
+
+        /// <summary>How long a chunk's body may go without a byte before it is given up on; tests shorten it.</summary>
+        internal TimeSpan UploadStallAfter
+        {
+            get => _uploads.StallAfter;
+            set => _uploads.StallAfter = value;
+        }
         private readonly CancellationTokenSource _stop = new();
         private TcpListener? _listener;
         private readonly object _gate = new();
@@ -755,6 +791,10 @@ namespace ExplorerNative
             {
                 throw;
             }
+            catch (Exception e) when (InUse(e) && !token.IsCancellationRequested)
+            {
+                await Error(s, 423, InUseMessage, head, token);
+            }
             catch (Exception e) when (e is not IOException || !token.IsCancellationRequested)
             {
                 _log?.Invoke($"Connect: {r.Method} {r.Path} failed: {e.Message}");
@@ -1057,16 +1097,40 @@ namespace ExplorerNative
             return new { ok = true };
         }
 
+        /// <summary>
+        /// Uploads that have finished, by the id the web app gave them, with the answer they got. The answer to
+        /// a finished upload can be lost on the way back, and the web app then sends it again: without this the
+        /// file arrived twice, the second as "name (2)". Kept an hour.
+        /// </summary>
+        private readonly ConcurrentDictionary<string, (int Status, object Body, DateTime At)> _finished = new(StringComparer.Ordinal);
+
+        private bool AlreadyFinished(string? key, out (int Status, object Body, DateTime At) answer)
+        {
+            foreach (var old in _finished.Where(e => DateTime.UtcNow - e.Value.At > TimeSpan.FromHours(1)).Select(e => e.Key).ToList())
+                _finished.TryRemove(old, out _);
+            answer = default;
+            return key != null && _finished.TryGetValue(key, out answer);
+        }
+
+        private void Finished(string? key, int status, object body)
+        {
+            if (key != null) _finished[key] = (status, body, DateTime.UtcNow);
+        }
+
         private async Task<object> Upload(Request r, CancellationToken token)
         {
             var folder = CheckPath(r.Query.TryGetValue("folder", out var f) ? f : "", "folder");
             var name = r.Query.TryGetValue("name", out var n) ? n : "";
             CheckName(name);
             var conflict = Conflict(r.Query.TryGetValue("conflict", out var c) ? c : null);
-            if (!r.Body.HasBody) throw new ConnectException(400, "The file's bytes go in the body, with a Content-Length.");
+            string? key = r.Query.TryGetValue("uploadId", out var u) && BatchId(u) ? "upload-" + u : null;
+            if (AlreadyFinished(key, out var done)) return done.Body;
+            // No body is an empty file, which is a file like any other.
             var path = await Files.UploadAsync(folder, name, conflict, r.Body, token);
             Changed();
-            return new { ok = true, path };
+            var answer = new { ok = true, path };
+            Finished(key, 200, answer);
+            return answer;
         }
 
         // MARK: Clipboard
@@ -1077,7 +1141,7 @@ namespace ExplorerNative
 
         private static async Task Png(NetworkStream s, byte[] png, bool head, CancellationToken token)
         {
-            await Write(s, $"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {png.Length}\r\nCache-Control: no-store\r\n\r\n", token);
+            await Write(s, $"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: {png.Length}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nContent-Security-Policy: {FileCsp}\r\n\r\n", token);
             if (!head) await s.WriteAsync(png, token);
         }
 
@@ -1101,7 +1165,7 @@ namespace ExplorerNative
             var paths = Strs(body, "paths");
             if (paths.Count == 0) throw new ConnectException(400, "No paths were given.");
             foreach (var path in paths) CheckPath(path);
-            var missing = await Task.Run(() => paths.FirstOrDefault(p => !System.IO.File.Exists(p) && !Directory.Exists(p)), token);
+            var missing = await Task.Run(() => paths.FirstOrDefault(p => !System.IO.File.Exists(ConnectFiles.Io(p)) && !Directory.Exists(ConnectFiles.Io(p))), token);
             if (missing != null) throw new ConnectException(404, $"{Path.GetFileName(missing)} is not there any more.");
             return new { ok = true, seq = await Clip.SetFilesAsync(paths) };
         }
@@ -1119,7 +1183,6 @@ namespace ExplorerNative
             var clip = Clip;
             var name = r.Query.TryGetValue("name", out var n) ? n : "";
             CheckName(name);
-            if (!r.Body.HasBody) throw new ConnectException(400, "The file's bytes go in the body.");
             string? batch = r.Query.TryGetValue("batch", out var b) && b.Length > 0 ? b : null;
             if (batch != null && !BatchId(batch)) throw new ConnectException(400, "A batch id is letters, digits and dashes.");
 
@@ -1208,7 +1271,14 @@ namespace ExplorerNative
             FindUpload(id);
             if (!r.Query.TryGetValue("offset", out var o) || !long.TryParse(o, out long offset) || offset < 0)
                 throw new ConnectException(400, "The chunk has to say its offset.");
-            long received = await _uploads.AppendAsync(id, offset, r.Body, token);
+            long received;
+            try { received = await _uploads.AppendAsync(id, offset, r.Body, token); }
+            catch (TimeoutException e)
+            {
+                // The body stopped arriving. What landed is kept and the upload is free for the next chunk; the
+                // connection is closed, because the rest of a stalled body can never be told from a next request.
+                throw new ResponseStartedException(e);
+            }
             return new { ok = true, received };
         }
 
@@ -1225,6 +1295,8 @@ namespace ExplorerNative
         private async Task<(int Status, object Body)> UploadFinish(JsonElement body, CancellationToken token)
         {
             var id = Str(body, "id") ?? "";
+            // Asked again because the answer was lost: the same answer, not a second file or a second job.
+            if (AlreadyFinished("finish-" + id, out var again)) return (again.Status, again.Body);
             var meta = FindUpload(id);
             long received = _uploads.Received(id);
             if (received != meta.Size)
@@ -1238,10 +1310,13 @@ namespace ExplorerNative
                 var placed = await Files.PlaceFileAsync(data, meta.Folder, meta.Name, conflict, null, token);
                 _uploads.Delete(id);
                 Changed();
-                return (200, new { ok = true, path = placed });
+                var answer = new { ok = true, path = placed };
+                Finished("finish-" + id, 200, answer);
+                return (200, answer);
             }
 
             var job = NewJob("upload");
+            Finished("finish-" + id, 202, new { ok = true, job = job.Id });
             job.Report(0, 1, 0, meta.Size, meta.Name);
             _ = Task.Run(async () =>
             {
@@ -1254,10 +1329,15 @@ namespace ExplorerNative
                     _uploads.Delete(id);
                     job.Finish("done");
                 }
-                catch (OperationCanceledException) when (job.Token.IsCancellationRequested) { job.Finish("cancelled", "Cancelled."); }
+                catch (OperationCanceledException) when (job.Token.IsCancellationRequested)
+                {
+                    _finished.TryRemove("finish-" + id, out _);
+                    job.Finish("cancelled", "Cancelled.");
+                }
                 catch (Exception e)
                 {
                     // The partial is kept: the bytes are all here, and finishing again is one request.
+                    _finished.TryRemove("finish-" + id, out _);
                     _log?.Invoke($"Connect: upload to Drive failed: {e.Message}");
                     job.Fail(Path.Combine(meta.Folder, meta.Name), Sentence(e.Message));
                     job.Finish("failed", Sentence(e.Message));
@@ -1287,20 +1367,30 @@ namespace ExplorerNative
             CheckPath(path);
 
             var remote = await Task.Run(() => _remote?.Invoke(path), token);
+            var io = ConnectFiles.Io(path);
             string why = "";
             var audio = await Task.Run(() =>
             {
+                // A name ending in a dot or a space, anywhere in the path: by its plain name Windows opens a
+                // different file. AIFF is read by its own reader, which opens the literal path itself; everything
+                // else reaches the decoder as bytes, because Media Foundation does not take the literal form.
+                var openAs = path;
+                if (remote == null && !ReferenceEquals(io, path))
+                {
+                    if (AudioDecoder.IsAiffName(Path.GetExtension(path))) openAs = io;
+                    else try { remote = new FileRangeSource(io); } catch { }
+                }
                 long bytes = remote?.Length ?? 0;
                 if (remote == null)
                 {
-                    try { bytes = new FileInfo(path).Length; }
+                    try { bytes = new FileInfo(io).Length; }
                     catch { bytes = 0; }
                 }
-                return ConnectAudio.Open(path, remote, bytes, out why);
+                return ConnectAudio.Open(openAs, remote, bytes, out why);
             }, token);
             if (audio == null)
             {
-                bool exists = remote != null || await Task.Run(() => System.IO.File.Exists(path), token);
+                bool exists = remote != null || await Task.Run(() => System.IO.File.Exists(io), token);
                 throw new ConnectException(exists ? 500 : 404, exists
                     ? Sentence($"Explorer Native can't decode that: {why}")
                     : "No such file.");
@@ -1320,7 +1410,8 @@ namespace ExplorerNative
 
             var head = new StringBuilder();
             head.Append(status == 206 ? "HTTP/1.1 206 Partial Content\r\n" : "HTTP/1.1 200 OK\r\n");
-            head.Append("Content-Type: audio/wav\r\nAccept-Ranges: bytes\r\n");
+            head.Append("Content-Type: audio/wav\r\nAccept-Ranges: bytes\r\nX-Content-Type-Options: nosniff\r\n");
+            head.Append("Content-Security-Policy: ").Append(FileCsp).Append("\r\n");
             head.Append("Content-Length: ").Append(to - from + 1).Append("\r\n");
             if (status == 206) head.Append($"Content-Range: bytes {from}-{to}/{length}\r\n");
             head.Append("\r\n");
@@ -1456,7 +1547,7 @@ namespace ExplorerNative
             {
                 var held = _tryListing(path);
                 if (held != null) return held.ToList();
-                var dir = new DirectoryInfo(path);
+                var dir = new DirectoryInfo(ConnectFiles.Io(path));
                 if (!dir.Exists) return null;
                 var list = new List<ConnectEntry>();
                 foreach (var info in dir.EnumerateFileSystemInfos("*", new EnumerationOptions { IgnoreInaccessible = true, AttributesToSkip = FileAttributes.System | FileAttributes.Hidden }))
@@ -1481,9 +1572,12 @@ namespace ExplorerNative
             var away = _files?.Unavailable(path);
             if (away != null) { await Error(s, 503, Sentence(away), headOnly, token); return; }
             IRangeSource source;
-            // On a worker: opening a Drive file can be a listing of its folder.
-            try { source = await Task.Run(() => _open(path), token); }
+            // On a worker: opening a Drive file can be a listing of its folder. A local name ending in a dot or a
+            // space is opened by its literal path, or Windows opens a different file; Drive's names never do.
+            var open = _files?.OnDrive(path) == true ? path : ConnectFiles.Io(path);
+            try { source = await Task.Run(() => _open(open), token); }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (Exception e) when (InUse(e)) { await Error(s, 423, InUseMessage, headOnly, token); return; }
             catch { await Error(s, 404, "That file can't be opened.", headOnly, token); return; }
             using var _ = source;
 
@@ -1500,7 +1594,7 @@ namespace ExplorerNative
             long count = length == 0 ? 0 : to - from + 1;
             var head = new StringBuilder();
             head.Append(status == 206 ? "HTTP/1.1 206 Partial Content\r\n" : "HTTP/1.1 200 OK\r\n");
-            head.Append("Content-Type: ").Append(ContentType(path)).Append("\r\n");
+            head.Append(FileHeaders(path));
             head.Append("Accept-Ranges: bytes\r\n");
             head.Append("Content-Length: ").Append(count).Append("\r\n");
             if (status == 206) head.Append($"Content-Range: bytes {from}-{to}/{length}\r\n");
@@ -1579,6 +1673,42 @@ namespace ExplorerNative
             return true;
         }
 
+        /// <summary>
+        /// What every response carrying a file's own bytes is sent with (<c>/api/file</c>, <c>/api/audio</c>). The
+        /// bytes are somebody's file, served on the web app's own origin: an HTML page opened from the PC ran as
+        /// the app, with the owner's access to everything. So the browser is told never to guess a type
+        /// (nosniff, which also stops anything not typed as a script from loading as one), and the file is a
+        /// sandbox with no origin and no scripts. Images and media still show when opened on their own.
+        /// </summary>
+        public const string FileCsp = "sandbox; default-src 'none'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'unsafe-inline'";
+
+        /// <summary>Kinds a browser would run as a page or a script. They download, typed as plain text, never shown.</summary>
+        public static readonly IReadOnlySet<string> ActiveExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ".html", ".htm", ".xhtml", ".xht", ".shtml", ".mht", ".mhtml", ".hta", ".svg", ".svgz", ".xml", ".xsl", ".xslt",
+            ".js", ".mjs", ".cjs",
+        };
+
+        /// <summary>Content-Type, Content-Disposition, nosniff and the sandbox, each line ending in CRLF.</summary>
+        internal static string FileHeaders(string path)
+        {
+            var name = Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
+            bool active = ActiveExtensions.Contains(Path.GetExtension(name));
+            var type = active ? "text/plain; charset=utf-8" : ContentType(path);
+            // The plain name for old readers, letters and digits only, and the real one encoded beside it.
+            var plain = new string(name.Select(c => c is >= ' ' and < (char)127 and not '"' and not '\\' and not ';' ? c : '_').ToArray());
+            return $"Content-Type: {type}\r\n" +
+                   $"Content-Disposition: {(active ? "attachment" : "inline")}; filename=\"{plain}\"; filename*=UTF-8''{Uri.EscapeDataString(name)}\r\n" +
+                   "X-Content-Type-Options: nosniff\r\n" +
+                   $"Content-Security-Policy: {FileCsp}\r\n";
+        }
+
+        /// <summary>A file another program holds open so that nothing else may read or move it.</summary>
+        internal static bool InUse(Exception e) =>
+            e is IOException && (e.HResult & 0xFFFF) is 32 or 33;   // sharing violation, lock violation
+
+        internal const string InUseMessage = "That file is in use by another program on the PC. Close it there, then try again.";
+
         public static string ContentType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
         {
             ".mp3" => "audio/mpeg",
@@ -1610,7 +1740,7 @@ namespace ExplorerNative
         private static async Task Json(NetworkStream s, int status, object value, bool head, CancellationToken token)
         {
             var body = JsonSerializer.SerializeToUtf8Bytes(value, JsonOptions);
-            await Write(s, $"HTTP/1.1 {status} {Reason(status)}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {body.Length}\r\nCache-Control: no-store\r\n\r\n", token);
+            await Write(s, $"HTTP/1.1 {status} {Reason(status)}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {body.Length}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n", token);
             if (!head) await s.WriteAsync(body, token);
         }
 
@@ -1621,7 +1751,7 @@ namespace ExplorerNative
         private static string Reason(int status) => status switch
         {
             200 => "OK", 202 => "Accepted", 400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden",
-            404 => "Not Found", 405 => "Method Not Allowed", 409 => "Conflict", 503 => "Service Unavailable",
+            404 => "Not Found", 405 => "Method Not Allowed", 409 => "Conflict", 423 => "Locked", 503 => "Service Unavailable",
             _ => "Internal Server Error",
         };
 

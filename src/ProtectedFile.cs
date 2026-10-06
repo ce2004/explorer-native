@@ -53,38 +53,97 @@ namespace ExplorerNative
 
         public static void WriteAllText(string path, string text) => File.WriteAllBytes(path, Encode(text));
 
-        /// <summary>Appends one encrypted line. Newlines inside it are kept, since the line is opaque.</summary>
-        public static void AppendLine(string path, string line) =>
-            File.AppendAllText(path,
+        /// <summary>
+        /// Appends one encrypted line. Newlines inside it are kept, since the line is opaque.
+        ///
+        /// One write through a handle nobody else may write through, retried
+        /// for a moment when another writer — or <see cref="EncryptLogInPlace"/>
+        /// — has the file: two processes logging at once is normal, and a line
+        /// dropped for that is a line missing from the one record that outlives
+        /// the run.
+        /// </summary>
+        public static void AppendLine(string path, string line)
+        {
+            var bytes = Encoding.UTF8.GetBytes(
                 LinePrefix + Convert.ToBase64String(Protect(Encoding.UTF8.GetBytes(line))) + Environment.NewLine);
+
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    using var file = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.Read);
+                    file.Write(bytes, 0, bytes.Length);
+                    return;
+                }
+                catch (IOException ex) when (IsSharingViolation(ex) && attempt < ShareRetries)
+                {
+                    System.Threading.Thread.Sleep(ShareRetryMilliseconds);
+                }
+            }
+        }
+
+        /// <summary>About two seconds of waiting for a file another writer has.</summary>
+        private const int ShareRetries = 100;
+        private const int ShareRetryMilliseconds = 20;
+
+        private static bool IsSharingViolation(IOException ex) =>
+            (ex.HResult & 0xFFFF) is 32 or 33; // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
 
         /// <summary>
         /// Encrypts the plain lines an older build left in a log. Best effort;
         /// a log in use is done on a later launch.
+        ///
+        /// Read and rewritten inside one handle that shares nothing, so a line
+        /// appended meanwhile waits for it rather than being lost. It used to
+        /// read the file, write a copy and move the copy over the log, and
+        /// anything appended in between was gone: a stress run kept 804 lines
+        /// of 2,195.
         /// </summary>
         public static void EncryptLogInPlace(string path)
         {
             try
             {
                 if (!File.Exists(path)) return;
-                var lines = File.ReadAllLines(path);
-                bool plain = false;
-                foreach (var l in lines)
-                    if (l.Length > 0 && !l.StartsWith(LinePrefix, StringComparison.Ordinal)) { plain = true; break; }
-                if (!plain) return;
 
-                var sb = new StringBuilder();
-                foreach (var l in lines)
+                FileStream? file = null;
+                for (int attempt = 0; file == null; attempt++)
                 {
-                    if (l.Length == 0) continue;
-                    sb.Append(l.StartsWith(LinePrefix, StringComparison.Ordinal)
-                        ? l
-                        : LinePrefix + Convert.ToBase64String(Protect(Encoding.UTF8.GetBytes(l))));
-                    sb.Append(Environment.NewLine);
+                    try { file = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.None); }
+                    catch (IOException ex) when (IsSharingViolation(ex) && attempt < ShareRetries)
+                    {
+                        System.Threading.Thread.Sleep(ShareRetryMilliseconds);
+                    }
                 }
-                var temp = path + ".enc-tmp";
-                File.WriteAllText(temp, sb.ToString());
-                File.Move(temp, path, overwrite: true);
+
+                using (file)
+                {
+                    var bytes = new byte[file.Length];
+                    file.ReadExactly(bytes);
+
+                    var text = new UTF8Encoding(false).GetString(bytes).TrimStart('﻿');
+                    var lines = text.Replace("\r", "").Split('\n');
+
+                    bool plain = false;
+                    foreach (var l in lines)
+                        if (l.Length > 0 && !l.StartsWith(LinePrefix, StringComparison.Ordinal)) { plain = true; break; }
+                    if (!plain) return;
+
+                    var sb = new StringBuilder();
+                    foreach (var l in lines)
+                    {
+                        if (l.Length == 0) continue;
+                        sb.Append(l.StartsWith(LinePrefix, StringComparison.Ordinal)
+                            ? l
+                            : LinePrefix + Convert.ToBase64String(Protect(Encoding.UTF8.GetBytes(l))));
+                        sb.Append(Environment.NewLine);
+                    }
+
+                    var rewritten = Encoding.UTF8.GetBytes(sb.ToString());
+                    file.Position = 0;
+                    file.Write(rewritten, 0, rewritten.Length);
+                    file.SetLength(rewritten.Length);
+                    file.Flush(flushToDisk: true);
+                }
             }
             catch { }
         }

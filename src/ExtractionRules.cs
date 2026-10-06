@@ -263,7 +263,11 @@ namespace ExplorerNative
 
             if (_skippedTops.Contains(top))
             {
-                Record(_skippedNames, ref _skippedCount, top);
+                // Once per folder, not once per entry inside it: skipping a
+                // folder of four thousand files is one skip, as a paste counts it.
+                bool first;
+                lock (_gate) first = _skippedTopsCounted.Add(top);
+                if (first) Record(_skippedNames, ref _skippedCount, top);
                 return null;
             }
 
@@ -320,6 +324,7 @@ namespace ExplorerNative
         }
 
         private readonly HashSet<string> _given = new(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _skippedTopsCounted = new(StringComparer.OrdinalIgnoreCase);
 
         private void Record(List<string> into, ref int count, string name)
         {

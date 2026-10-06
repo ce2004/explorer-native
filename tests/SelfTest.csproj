@@ -60,7 +60,7 @@
     <Compile Include="..\src\ConflictForm.cs" />
     <Compile Include="..\src\ShellContextMenu.cs" /><Compile Include="..\src\ShellDelete.cs" />
     <Compile Include="..\src\FolderSizeCalculator.cs" />
-    <Compile Include="..\src\NameRules.cs" />
+    <Compile Include="..\src\NameRules.cs" /><Compile Include="..\src\SettingsReset.cs" /><Compile Include="..\src\WatchDebounce.cs" />
     <Compile Include="..\src\TypeAhead.cs" />
     <Compile Include="..\src\NavigationHistory.cs" />
     <Compile Include="..\src\ShellRegistration.cs" />
@@ -84,10 +84,18 @@
     <Compile Include="SeekTests.cs" />
     <Compile Include="Tests.cs" />
     <Compile Include="ArchiveTests.cs" />
+    <Compile Include="ArchiveFixTests.cs" />
     <Compile Include="InstallTests.cs" />
     <Compile Include="DriveCopyTests.cs" />
+    <Compile Include="FakeDrive.cs" />
+    <Compile Include="DriveMonitorTests.cs" />
     <Compile Include="EdgeCaseTests.cs" />
+    <Compile Include="TransferFixTests.cs" />
+    <Compile Include="SettingsFixTests.cs" />
+    <Compile Include="AudioFixTests.cs" />
     <Compile Include="VideoContainerTests.cs" />
+    <Compile Include="UpdateFixTests.cs" />
+    <Compile Include="MainFixTests.cs" />
   </ItemGroup>
 
   <!-- The managed Ogg Vorbis and Opus decoders, which the suite exercises the

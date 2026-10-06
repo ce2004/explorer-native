@@ -105,7 +105,14 @@ namespace ExplorerNative
                 if (!File.Exists(SystemExecutable)) return SystemExecutable;
                 var systemDll = Path.Combine(Path.GetDirectoryName(SystemExecutable)!, "archiveint.dll");
                 if (!File.Exists(systemDll)) return SystemExecutable;
-                var key = FileVersionInfo.GetVersionInfo(systemDll).FileVersion + "|" + new FileInfo(SystemExecutable).Length;
+                // The version string alone carries no Windows build number —
+                // "3.8.8 (WinBuild.160101.0800)" for every build of 3.8.8 — so a
+                // serviced DLL under the same string would never be measured
+                // again. Its size and date change whenever its bytes do.
+                var dllInfo = new FileInfo(systemDll);
+                var key = FileVersionInfo.GetVersionInfo(systemDll).FileVersion + "|" +
+                          new FileInfo(SystemExecutable).Length + "|" +
+                          dllInfo.Length + "|" + dllInfo.LastWriteTimeUtc.Ticks;
 
                 var root = PrivateRoot;
                 var choiceFile = Path.Combine(root, "choice.txt");
@@ -246,6 +253,7 @@ namespace ExplorerNative
             ArchiveLevel level,
             int threads,
             ArchiveEngine.Reporter reporter,
+            List<string> errors,
             CancellationToken token)
         {
             RequireAvailable();
@@ -254,33 +262,6 @@ namespace ExplorerNative
             // everything under a selected folder is bsdtar's business.
             var tops = plan.Where(p => !p.Name.Contains('/')).ToList();
             if (tops.Count == 0) return 0;
-
-            var start = NewStartInfo();
-            start.ArgumentList.Add("-a");
-            start.ArgumentList.Add("-c");
-            start.ArgumentList.Add("-f");
-            start.ArgumentList.Add(archivePath);
-
-            // One line per entry on standard error, which is the only progress
-            // there is. The names in it are the mangled ones; they are counted,
-            // and matched against the plan where they happen to be ASCII, which
-            // is what nearly every archive is.
-            start.ArgumentList.Add("-v");
-
-            // The owner and group of a Windows file are not a unix user name, and
-            // libarchive says so once per entry if left to work it out.
-            start.ArgumentList.Add("--uname");
-            start.ArgumentList.Add("");
-            start.ArgumentList.Add("--gname");
-            start.ArgumentList.Add("");
-
-            if (Options(format, level, threads) is { } options)
-            {
-                start.ArgumentList.Add("--options");
-                start.ArgumentList.Add(options);
-            }
-
-            int budget = CommandLineBudget - archivePath.Length - 120;
 
             // bsdtar names entries after what is on disk, so two chosen items with
             // one name — a selection across two folders — become two entries with
@@ -294,71 +275,263 @@ namespace ExplorerNative
                     $"Two of the chosen items are called {twice.Key}, and a {format.Extension} " +
                     "would hold both under that one name. Zip and .tar.gz keep both.");
 
-            foreach (var group in tops.GroupBy(
-                         p => Path.GetDirectoryName(p.Source) ?? "", StringComparer.OrdinalIgnoreCase))
+            var aliases = new List<Alias>();
+            try
             {
-                start.ArgumentList.Add("-C");
-                start.ArgumentList.Add(group.Key);
-                budget -= group.Key.Length + 6;
+                int budget = CommandLineBudget - archivePath.Length - 120;
 
-                foreach (var item in group)
+                // What each top-level item is called on the command line, which is
+                // also how bsdtar names everything under it.
+                var argFor = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var groups = new List<(string Folder, List<string> Args)>();
+
+                foreach (var group in tops.GroupBy(
+                             p => Path.GetDirectoryName(p.Source) ?? "", StringComparer.OrdinalIgnoreCase))
                 {
-                    // The name **on disk**, not the plan's. Two sources that
-                    // share a leaf name — one selection spanning two folders,
-                    // which the second pane makes easy — are deduplicated by the
-                    // plan into "x (2).txt", and bsdtar walks the disk itself: it
-                    // was handed a name no file has, said it could not stat it,
-                    // exited non-zero, and the whole compress came back as an
-                    // error with nothing made. The zip and tar engines open
-                    // item.Source and never saw this.
-                    var onDisk = Path.GetFileName(item.Source);
-                    if (onDisk.Length == 0) onDisk = item.Name;
+                    // A folder past MAX_PATH cannot be bsdtar's current directory —
+                    // "could not chdir" — and this volume has no 8.3 names to
+                    // shorten it with. A junction at a short path can be.
+                    var folder = Reachable(group.Key, aliases);
+                    budget -= folder.Length + 6;
+                    var args = new List<string>();
 
-                    // A name bsdtar would read as something else: "@x" means
-                    // "the entries of archive x", and "-x" an option. Given as
-                    // "./x" it is a file — Synology's "@eaDir" folders failed the
-                    // whole compress before this.
-                    if (onDisk[0] is '@' or '-') onDisk = "./" + onDisk;
+                    foreach (var item in group)
+                    {
+                        // The name **on disk**, not the plan's. Two sources that
+                        // share a leaf name — one selection spanning two folders,
+                        // which the second pane makes easy — are deduplicated by the
+                        // plan into "x (2).txt", and bsdtar walks the disk itself: it
+                        // was handed a name no file has, said it could not stat it,
+                        // exited non-zero, and the whole compress came back as an
+                        // error with nothing made. The zip and tar engines open
+                        // item.Source and never saw this.
+                        var onDisk = Path.GetFileName(item.Source);
+                        if (onDisk.Length == 0) onDisk = item.Name;
 
-                    budget -= onDisk.Length + 3;
-                    if (budget <= 0)
-                        throw new NotSupportedException(
-                            $"Too many items were chosen for a {format.Extension}. " +
-                            "Zip and .tar.gz have no such limit.");
+                        // A name bsdtar would read as something else: "@x" means
+                        // "the entries of archive x", and "-x" an option. Given as
+                        // "./x" it is a file — Synology's "@eaDir" folders failed the
+                        // whole compress before this.
+                        if (onDisk[0] is '@' or '-') onDisk = "./" + onDisk;
 
-                    start.ArgumentList.Add(onDisk);
+                        budget -= onDisk.Length + 3;
+                        if (budget <= 0)
+                            throw new NotSupportedException(
+                                $"Too many items were chosen for a {format.Extension}. " +
+                                "Zip and .tar.gz have no such limit.");
+
+                        args.Add(onDisk);
+                        argFor[item.Name] = onDisk;
+                    }
+
+                    groups.Add((folder, args));
                 }
+
+                // Progress. A line's name identifies its entry only where it is
+                // ASCII, so an entry that matches nothing is charged a share of
+                // whatever is still unaccounted for — never more. Charging it the
+                // average of everything took the bar to 154 percent when the
+                // archive held entries the plan did not: a link bsdtar stored, a
+                // name it printed in another code page.
+                var gate = new object();
+                var unmatched = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+                foreach (var item in plan) unmatched[item.Name] = item.Size;
+                long unaccounted = plan.Sum(p => p.Size);
+                int unaccountedItems = plan.Count;
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+                // Items that could not be opened, left out on the next attempt.
+                var excluded = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var unexplained = new List<string>();
+
+                for (int attempt = 0; ; attempt++)
+                {
+                    var start = NewStartInfo();
+                    foreach (var flag in FormatFlags(format)) start.ArgumentList.Add(flag);
+                    start.ArgumentList.Add("-c");
+                    start.ArgumentList.Add("-f");
+                    start.ArgumentList.Add(archivePath);
+
+                    // One line per entry on standard error, which is the only progress
+                    // there is. The names in it are the mangled ones; they are counted,
+                    // and matched against the plan where they happen to be ASCII, which
+                    // is what nearly every archive is.
+                    start.ArgumentList.Add("-v");
+
+                    // The owner and group of a Windows file are not a unix user name, and
+                    // libarchive says so once per entry if left to work it out.
+                    start.ArgumentList.Add("--uname");
+                    start.ArgumentList.Add("");
+                    start.ArgumentList.Add("--gname");
+                    start.ArgumentList.Add("");
+
+                    if (Options(format, level, threads) is { } options)
+                    {
+                        start.ArgumentList.Add("--options");
+                        start.ArgumentList.Add(options);
+                    }
+
+                    foreach (var name in excluded.Keys)
+                    {
+                        start.ArgumentList.Add("--exclude");
+                        start.ArgumentList.Add(Pattern(ArchivePathOf(name, argFor)));
+                    }
+
+                    foreach (var (folder, args) in groups)
+                    {
+                        start.ArgumentList.Add("-C");
+                        start.ArgumentList.Add(folder);
+                        foreach (var a in args) start.ArgumentList.Add(a);
+                    }
+
+                    RoboCopyEngine.Trace($"bsdtar create: {string.Join(" ", start.ArgumentList)}");
+
+                    Outcome outcome;
+                    using (var process = Start(start, (line, failed, _) =>
+                           {
+                               if (failed || !line.StartsWith("a ", StringComparison.Ordinal)) return;
+
+                               var name = EntryName(line[2..]);
+                               long charge;
+                               lock (gate)
+                               {
+                                   // A second attempt names everything again.
+                                   if (!seen.Add(name)) return;
+
+                                   if (unmatched.Remove(name, out var size))
+                                   {
+                                       charge = Math.Min(size, unaccounted);
+                                   }
+                                   else
+                                   {
+                                       charge = unaccountedItems > 0 ? unaccounted / unaccountedItems : 0;
+                                   }
+                                   unaccounted = Math.Max(0, unaccounted - charge);
+                                   unaccountedItems = Math.Max(0, unaccountedItems - 1);
+                               }
+
+                               reporter.Starting(name);
+                               reporter.Finished(charge);
+                           }))
+                    {
+                        using var kill = token.Register(() => Stop(process));
+                        outcome = Wait(process, token);
+                    }
+
+                    if (outcome.ExitCode == 0) break;
+
+                    // It gave up on the whole thing rather than on an entry.
+                    if (!outcome.Delayed) throw new IOException(outcome.First);
+
+                    // An entry it could not open — a file locked by another
+                    // program — is reported, and bsdtar finishes with an error
+                    // code. That used to throw the whole archive away. Worse,
+                    // measured: bsdtar abandons the rest of that folder after it,
+                    // so keeping the archive as it stands would silently lose
+                    // the files that came after. So the archive is made again
+                    // without the file that could not be opened.
+                    unexplained.Clear();
+                    bool added = false;
+                    foreach (var message in outcome.Messages)
+                    {
+                        const string prefix = "Couldn't open ";
+                        int at = message.IndexOf(prefix, StringComparison.Ordinal);
+                        int colon = message.LastIndexOf(": ", StringComparison.Ordinal);
+                        if (at >= 0 && colon > at + prefix.Length &&
+                            MatchPlan(EntryName(message[(at + prefix.Length)..colon]), plan) is { } item)
+                        {
+                            if (excluded.TryAdd(item.Name, message[(colon + 2)..].Trim())) added = true;
+                            continue;
+                        }
+
+                        if (!message.Contains("Error exit delayed", StringComparison.Ordinal))
+                            unexplained.Add(Plain(message));
+                    }
+
+                    if (added && attempt < 4) continue;
+                    break;
+                }
+
+                foreach (var (name, reason) in excluded)
+                    errors.Add($"{name}: it could not be opened ({reason}), so it was left out");
+                errors.AddRange(unexplained);
+
+                // Anything with a name that can be read back and that never went
+                // in, after a run that complained: said, not left to be found.
+                if (unexplained.Count > 0)
+                    foreach (var name in unmatched.Keys.Where(n => !excluded.ContainsKey(n) && n.All(c => c < 128)))
+                        errors.Add($"{name}: it was not added");
+
+                return seen.Count;
             }
-
-            // Each entry is charged the average rather than its own size, because
-            // the name on the line it arrived with cannot be trusted to identify
-            // it. The figures are honest at both ends and smooth in between,
-            // which is all a progress window is for.
-            long totalBytes = plan.Sum(p => p.Size);
-            long perItem = totalBytes / Math.Max(1, plan.Count);
-
-            var byName = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
-            foreach (var item in plan) byName[item.Name] = item.Size;
-
-            int counted = 0;
-
-            RoboCopyEngine.Trace($"bsdtar create: {string.Join(" ", start.ArgumentList)}");
-
-            using var process = Start(start, (line, _) =>
+            finally
             {
-                if (!line.StartsWith("a ", StringComparison.Ordinal)) return;
-
-                var name = line[2..].Replace('\\', '/').TrimStart('.', '/');
-                reporter.Starting(name);
-                reporter.Finished(byName.TryGetValue(name, out var size) ? size : perItem);
-                Interlocked.Increment(ref counted);
-            });
-
-            using var kill = token.Register(() => Stop(process));
-
-            Finish(process, token);
-            return counted;
+                foreach (var alias in aliases) alias.Dispose();
+            }
         }
+
+        /// <summary>
+        /// The format, said outright rather than left to "-a".
+        ///
+        /// "-a" picks the format from the archive's name and matches the
+        /// extension case-sensitively, so "BACKUP.7Z" and "x.Tar.Xz" got no
+        /// format at all — and then the compression options failed with
+        /// "Unknown module name: 7zip".
+        /// </summary>
+        internal static string[] FormatFlags(ArchiveFormat format) => format.Id switch
+        {
+            "7z" => new[] { "--format", "7zip" },
+            "tar.xz" => new[] { "-J" },
+            "tar.bz2" => new[] { "-j" },
+            "tar.zst" => new[] { "--zstd" },
+            _ => new[] { "-a" },
+        };
+
+        /// <summary>An entry name as bsdtar prints it, without "./" or a leading slash.</summary>
+        private static string EntryName(string printed)
+        {
+            var name = printed.Trim().Replace('\\', '/');
+            while (true)
+            {
+                if (name.StartsWith("./", StringComparison.Ordinal)) name = name[2..];
+                else if (name.StartsWith('/')) name = name[1..];
+                else return name;
+            }
+        }
+
+        /// <summary>The plan item a printed name stands for: by name, or by the mangled pattern.</summary>
+        private static ArchiveItem? MatchPlan(string printed, IReadOnlyList<ArchiveItem> plan)
+        {
+            var exact = plan.FirstOrDefault(p => string.Equals(p.Name, printed, StringComparison.OrdinalIgnoreCase));
+            if (exact != null || printed.All(c => c < 128 && c != '?')) return exact;
+            var pattern = MangledPattern(printed);
+            return plan.FirstOrDefault(p => pattern.IsMatch(p.Name));
+        }
+
+        /// <summary>A plan name as bsdtar sees it: the top segment as it was given on the command line.</summary>
+        private static string ArchivePathOf(string planName, Dictionary<string, string> argFor)
+        {
+            int slash = planName.IndexOf('/');
+            var top = slash < 0 ? planName : planName[..slash];
+            var arg = argFor.TryGetValue(top, out var given) ? given : top;
+            return slash < 0 ? arg : arg + planName[slash..];
+        }
+
+        /// <summary>A name as an --exclude pattern that matches only itself.</summary>
+        internal static string Pattern(string name)
+        {
+            var sb = new StringBuilder(name.Length + 8);
+            foreach (var c in name)
+            {
+                if (c is '*' or '?' or '[') sb.Append('[').Append(c).Append(']');
+                else sb.Append(c);
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>One of bsdtar's own lines, without its name on the front.</summary>
+        private static string Plain(string message) =>
+            message.StartsWith("tar.exe: ", StringComparison.OrdinalIgnoreCase) ? message["tar.exe: ".Length..] : message;
 
         // ---------- How big it is ----------
 
@@ -461,73 +634,252 @@ namespace ExplorerNative
             var staging = Path.Combine(destination, ".extracting-" + Guid.NewGuid().ToString("N")[..8]);
             Directory.CreateDirectory(staging);
 
+            var aliases = new List<Alias>();
             try
             {
-                var (items, bytes) = Totals(archivePath, token);
-                reporter.SetTotals(bytes, items);
-                long perItem = bytes / Math.Max(1, items);
-
+                // No listing first. It used to run `tar -tvf` for the totals,
+                // which for a .tar.xz is a whole decompression before the real
+                // one — about half the time of the extraction, measured. The
+                // progress is read from how much of the archive bsdtar has read,
+                // and the entries are counted from its own lines as it goes.
                 var start = NewStartInfo();
                 start.ArgumentList.Add("-x");
                 start.ArgumentList.Add("-v");
+
+                // Keep the first of two entries with one name, as the zip and tar
+                // readers do; without it the last one silently won. Into a staging
+                // folder this application has just made, nothing else can be
+                // "already there".
+                start.ArgumentList.Add("-k");
+
                 start.ArgumentList.Add("-f");
                 start.ArgumentList.Add(archivePath);
                 start.ArgumentList.Add("-C");
-                start.ArgumentList.Add(staging);
+                start.ArgumentList.Add(Reachable(staging, aliases));
 
                 RoboCopyEngine.Trace($"bsdtar extract: {string.Join(" ", start.ArgumentList)}");
 
-                // The entry bsdtar named last, which is the one it was writing if
-                // it stopped part way.
-                string? lastNamed = null;
-                var failedEntries = new List<string>();
-                bool incomplete = false;
+                // Every "x" line, in order: the name as printed, and the complaint
+                // on the end of it if there was one.
+                var printed = new List<(string Name, string? Failure)>();
+                Outcome? outcome = null;
+                bool unfinished = false;
 
-                using (var process = Start(start, (line, failed) =>
+                long archiveBytes = 0;
+                try { archiveBytes = new FileInfo(archivePath).Length; } catch { }
+
+                using (var process = Start(start, (line, failed, reason) =>
                        {
                            if (!line.StartsWith("x ", StringComparison.Ordinal)) return;
-                           lastNamed = line[2..].Trim();
-
-                           // The entry bsdtar complained about, which is the one
-                           // not to trust — not whichever it happened to name last.
-                           if (failed) lock (failedEntries) failedEntries.Add(lastNamed);
-                           reporter.Finished(perItem);
+                           lock (printed) printed.Add((line[2..].Trim(), failed ? reason ?? "" : null));
+                           reporter.Finished(0);
                        }))
                 {
+                    long lastRead = 0;
+                    reporter.Estimate(archiveBytes, () =>
+                    {
+                        try { if (GetProcessIoCounters(process.Process.Handle, out var io)) lastRead = (long)io.ReadTransferCount; }
+                        catch { }
+                        return lastRead;
+                    });
+
                     using var kill = token.Register(() => Stop(process));
 
-                    // One entry it could not write — a symbolic link without the
-                    // privilege to make one, a name Windows refuses — ends the run
-                    // with a failure code after everything else has been
-                    // extracted. That used to throw the whole extraction away,
-                    // good files included; now the rest is kept and the complaint
-                    // is reported alongside it.
-                    try { Finish(process, token); }
+                    try { outcome = Wait(process, token); }
                     catch (IOException ex) when (!token.IsCancellationRequested)
                     {
+                        // The stall timer: bsdtar did not get to the end.
                         errors.Add(ex.Message);
-                        incomplete = true;
+                        unfinished = true;
                     }
                 }
 
                 token.ThrowIfCancellationRequested();
 
-                // Every entry it complained about, and the one it named last:
-                // a run that failed later — a truncated archive, the stall timer
-                // — was part way through that one, whatever came before.
-                List<string>? distrusted = null;
-                if (incomplete)
+                List<(string Name, string? Failure)> lines;
+                lock (printed) lines = new List<(string, string?)>(printed);
+
+                bool damaged = false;
+                if (outcome is { ExitCode: not 0 })
                 {
-                    lock (failedEntries) distrusted = new List<string>(failedEntries);
-                    if (lastNamed != null) distrusted.Add(lastNamed);
+                    // "Error exit delayed from previous errors" is bsdtar saying it
+                    // carried on to the end and is reporting failures it met on the
+                    // way. Without it, it stopped where it was.
+                    if (!outcome.Delayed) unfinished = true;
+
+                    damaged = lines.Any(l => l.Failure != null && LooksDamaged(l.Failure)) ||
+                              outcome.Messages.Any(LooksDamaged);
+
+                    // Each entry it complained about, named. One it could not
+                    // write — a link without the privilege to make one — used to
+                    // throw the whole extraction away, good files included.
+                    foreach (var (name, failure) in lines)
+                        if (failure != null)
+                            errors.Add(LooksDamaged(failure)
+                                ? $"{name}: the archive is damaged at this point"
+                                : $"{name}: {PlainReason(failure)}");
+
+                    if (unfinished && !damaged) errors.Add(outcome.First);
                 }
 
-                return Rehome(staging, destination, policy, ask, reporter, errors, token, distrusted);
+                // Every entry it complained about is not trusted. The one it named
+                // last is distrusted only when it did not get to the end — a
+                // stall, a crash — because only then can that one be half
+                // written. Distrusted always, one link in a .tar.xz withheld the
+                // archive's last file as "stopped while it was being written",
+                // and under Replace left every existing file as it was.
+                var distrusted = lines.Where(l => l.Failure != null).Select(l => l.Name).ToList();
+                if (unfinished && lines.Count > 0) distrusted.Add(lines[^1].Name);
+
+                bool stripped = outcome != null &&
+                                outcome.Messages.Any(m => m.Contains("Removing leading", StringComparison.Ordinal));
+
+                var (done, conflicts, stagedFiles) = Rehome(staging, destination, policy, ask, reporter, errors, token,
+                    distrusted.Count > 0 || unfinished ? distrusted : null, unfinished,
+                    staged => Withheld(lines, staged, destination, stripped ? archivePath : null, token));
+
+                // Two entries with one name — or two that differ only in capitals,
+                // which are one name here — are one file in the staging folder.
+                // The zip and tar readers say so; this said nothing and kept the
+                // last. Now the first is kept and the difference is said.
+                int arrived = lines.Count(l => l.Failure == null && !l.Name.EndsWith('/'));
+                if (!unfinished && arrived > stagedFiles)
+                {
+                    int lost = arrived - stagedFiles;
+                    errors.Add($"{NameRules.Items(lost)} in the archive repeated a name already used " +
+                               "(names that differ only in capitals are one name here); the first of each was kept");
+                }
+
+                if (damaged) errors.Add(ArchiveEngine.DamagedMessage(done));
+
+                return (done, conflicts);
             }
             finally
             {
+                foreach (var alias in aliases) alias.Dispose();
                 RemoveStaging(staging, errors);
             }
+        }
+
+        /// <summary>Whether one of bsdtar's complaints is about the archive rather than about one entry.</summary>
+        private static bool LooksDamaged(string message) =>
+            message.Contains("truncated", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("damaged", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("corrupt", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("Decompression failed", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("Unrecognized archive format", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("Error opening archive", StringComparison.OrdinalIgnoreCase) ||
+            message.Contains("(null)", StringComparison.Ordinal);
+
+        /// <summary>
+        /// A complaint about one entry, without the staging path it quotes: a
+        /// link said "Can't create '\\?\C:\…\.extracting-1a2b3c4d\link': Invalid
+        /// argument", which names a folder that is gone by the time it is read.
+        /// </summary>
+        private static string PlainReason(string reason)
+        {
+            var plain = Regex.Replace(reason, @"'[^']*'", "it").Trim();
+            return plain.Length == 0 ? "it could not be extracted" : plain;
+        }
+
+        /// <summary>
+        /// Staged entries that came from a name Windows cannot store, and so must
+        /// not be moved into place under the name bsdtar gave them instead.
+        ///
+        /// bsdtar does not refuse those names; it changes them, silently: "q?"
+        /// becomes "q_", "x*y" "x_y", "trail." "trail", "a:b" "b", and
+        /// "//host/share/f" "host/share/f". Each is refused here with the name it
+        /// had, as the zip and tar readers refuse it.
+        ///
+        /// The names come from bsdtar's own output, which is not trusted for
+        /// anything outside ASCII — see the table at the top of this file — and
+        /// they are used only to refuse, never to decide where a file goes. A
+        /// printed name with a question mark in it may be a non-ASCII name the
+        /// console could not show; if a staged name fits it that way, it is one.
+        /// </summary>
+        private static Dictionary<string, string> Withheld(
+            List<(string Name, string? Failure)> lines,
+            IReadOnlyCollection<string> staged,
+            string destination,
+            string? listAgain,
+            CancellationToken token)
+        {
+            var withheld = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var present = new HashSet<string>(staged, StringComparer.OrdinalIgnoreCase);
+
+            foreach (var (raw, failure) in lines)
+            {
+                if (failure != null) continue;
+                var name = raw.TrimEnd('/');
+                if (name.Length == 0 || name.Any(c => c >= 128)) continue;
+                if (ArchiveEngine.SafeTarget(destination, name, out var reason) != null || reason == null) continue;
+
+                if (name.Contains('?'))
+                {
+                    var pattern = MangledPattern(name);
+                    if (staged.Any(s => pattern.IsMatch(s))) continue;
+                }
+
+                var cleaned = ExtractionRules.Normalise(CleanLikeTar(name));
+                if (present.Contains(cleaned)) withheld.TryAdd(cleaned, reason);
+            }
+
+            // A drive letter or a network path has already been taken off the
+            // printed name, so the only record of it is the archive's own
+            // listing — read only when bsdtar said it removed one.
+            if (listAgain != null)
+            {
+                foreach (var original in ListNames(listAgain, token))
+                {
+                    var name = original.TrimEnd('/');
+                    if (name.Length == 0 || name.Any(c => c >= 128)) continue;
+                    if (ArchiveEngine.SafeTarget(destination, name, out var reason) != null || reason == null) continue;
+
+                    var rest = StripRoot(name);
+                    if (rest == name) continue;
+                    var cleaned = ExtractionRules.Normalise(CleanLikeTar(rest));
+                    if (present.Contains(cleaned)) withheld.TryAdd(cleaned, reason);
+                }
+            }
+
+            return withheld;
+        }
+
+        /// <summary>What bsdtar does on Windows to a name it cannot store: the forbidden characters become underscores and a trailing dot or space goes.</summary>
+        internal static string CleanLikeTar(string name) => string.Join('/', name.Replace('\\', '/').Split('/').Select(segment =>
+        {
+            var chars = segment.Select(c => c < 32 || ":*?\"<>|".IndexOf(c) >= 0 ? '_' : c).ToArray();
+            return new string(chars).TrimEnd('.', ' ');
+        }));
+
+        /// <summary>A name without the drive letters and leading slashes bsdtar removes.</summary>
+        private static string StripRoot(string name)
+        {
+            var rest = name.Replace('\\', '/');
+            while (true)
+            {
+                var before = rest;
+                rest = rest.TrimStart('/');
+                if (rest.Length >= 2 && rest[1] == ':' && char.IsAsciiLetter(rest[0])) rest = rest[2..];
+                if (rest == before) return rest;
+            }
+        }
+
+        /// <summary>The names in an archive as bsdtar prints them, for <see cref="Withheld"/> only.</summary>
+        private static List<string> ListNames(string archivePath, CancellationToken token)
+        {
+            var names = new List<string>();
+            var start = NewStartInfo();
+            start.ArgumentList.Add("-tf");
+            start.ArgumentList.Add(archivePath);
+            start.RedirectStandardOutput = true;
+
+            using var process = Start(start, null);
+            using var kill = token.Register(() => Stop(process));
+            string? line;
+            while ((line = process.Process.StandardOutput.ReadLine()) != null) names.Add(line);
+            try { Wait(process, token); } catch (IOException) { }
+            return names;
         }
 
         /// <summary>
@@ -535,22 +887,17 @@ namespace ExplorerNative
         /// made on Linux carries r--r--r-- as a read-only attribute, and a plain
         /// recursive delete refuses those and left ".extracting-…" in the
         /// person's folder.
+        ///
+        /// Through the "\\?\" form of every path, because the staging folder can
+        /// hold names Windows' ordinary path rules cannot reach: bsdtar writes
+        /// "CON" as a file called CON, and a trailing dot as itself.
         /// </summary>
         private static void RemoveStaging(string staging, List<string> errors)
         {
             try
             {
                 if (!Directory.Exists(staging)) return;
-                foreach (var file in Directory.EnumerateFiles(staging, "*", new EnumerationOptions
-                         {
-                             RecurseSubdirectories = true,
-                             IgnoreInaccessible = true,
-                             AttributesToSkip = FileAttributes.ReparsePoint,
-                         }))
-                {
-                    try { File.SetAttributes(file, FileAttributes.Normal); } catch { }
-                }
-                Directory.Delete(staging, recursive: true);
+                DeleteTree(Verbatim(staging));
             }
             catch (Exception ex)
             {
@@ -559,16 +906,48 @@ namespace ExplorerNative
             }
         }
 
+        private static string Verbatim(string path)
+        {
+            var full = Path.GetFullPath(path);
+            if (full.StartsWith(@"\\?\", StringComparison.Ordinal)) return full;
+            return full.StartsWith(@"\\", StringComparison.Ordinal) ? @"\\?\UNC\" + full[2..] : @"\\?\" + full;
+        }
+
+        private static void DeleteTree(string folder)
+        {
+            foreach (var entry in new DirectoryInfo(folder).EnumerateFileSystemInfos())
+            {
+                // A link is removed, never followed.
+                if ((entry.Attributes & FileAttributes.ReparsePoint) != 0)
+                {
+                    if (entry is DirectoryInfo) Directory.Delete(entry.FullName, recursive: false);
+                    else File.Delete(entry.FullName);
+                    continue;
+                }
+
+                if (entry is DirectoryInfo) { DeleteTree(entry.FullName); continue; }
+
+                try { File.SetAttributes(entry.FullName, FileAttributes.Normal); } catch { }
+                File.Delete(entry.FullName);
+            }
+
+            try { File.SetAttributes(folder, FileAttributes.Directory); } catch { }
+            Directory.Delete(folder, recursive: false);
+        }
+
         /// <summary>
         /// Moves a staged tree into the destination, applying the conflict rules
         /// to it exactly as the zip and tar readers apply them to entries.
         ///
-        /// <paramref name="stoppedAt"/> is non-null when bsdtar failed: the entry
-        /// it named last may be half written and is not moved, and nothing that
-        /// is already in the destination is replaced — a truncated archive under
-        /// Replace otherwise put its broken last file over a good one.
+        /// <paramref name="stoppedAt"/> holds the entries bsdtar complained
+        /// about, which may be half written and are not moved. When
+        /// <paramref name="unfinished"/> — bsdtar never got to the end — nothing
+        /// that is already in the destination is replaced either: a truncated
+        /// archive under Replace otherwise put its broken last file over a good
+        /// one.
         /// </summary>
-        private static (int Done, ConflictOutcomes Conflicts) Rehome(
+        /// <param name="withhold">Given every staged name, the ones not to move and why.</param>
+        private static (int Done, ConflictOutcomes Conflicts, int StagedFiles) Rehome(
             string staging,
             string destination,
             PasteConflictPolicy policy,
@@ -576,39 +955,94 @@ namespace ExplorerNative
             ArchiveEngine.Reporter reporter,
             List<string> errors,
             CancellationToken token,
-            IReadOnlyCollection<string>? stoppedAt = null)
+            IReadOnlyCollection<string>? stoppedAt,
+            bool unfinished,
+            Func<IReadOnlyCollection<string>, Dictionary<string, string>> withhold)
         {
             var entries = new List<ArchiveEntryInfo>();
+            var folders = new List<ArchiveEntryInfo>();
+            var empty = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var links = new List<string>();
 
+            // One scan, carrying sizes and dates out of the call that found each
+            // entry. Asking again by path — new FileInfo(file).Length — failed
+            // for a name Windows' path rules rewrite: a trailing dot or space is
+            // dropped, the file "does not exist", and that one name took the
+            // whole extraction with it, leaving an empty folder behind.
+            //
             // Links are never followed, or moved. Where bsdtar can create a
             // symbolic link, an archive holding one that pointed at a folder
             // elsewhere on the disk had that folder's files enumerated here and
-            // moved into the destination. A link is left in staging and deleted
-            // with it.
-            var walk = new EnumerationOptions
-            {
-                RecurseSubdirectories = true,
-                AttributesToSkip = FileAttributes.ReparsePoint,
-                IgnoreInaccessible = true,
-            };
+            // moved into the destination. A link is said, left in staging, and
+            // deleted with it.
+            var pending = new Stack<DirectoryInfo>();
+            pending.Push(new DirectoryInfo(Verbatim(staging)));
+            var root = Verbatim(staging);
 
-            foreach (var folder in Directory.EnumerateDirectories(staging, "*", walk))
-                entries.Add(new ArchiveEntryInfo(Relative(staging, folder), 0, Directory.GetLastWriteTime(folder), true));
-
-            foreach (var file in Directory.EnumerateFiles(staging, "*", walk))
+            while (pending.Count > 0)
             {
-                var info = new FileInfo(file);
-                entries.Add(new ArchiveEntryInfo(Relative(staging, file), info.Length, info.LastWriteTime, false));
+                token.ThrowIfCancellationRequested();
+                var folder = pending.Pop();
+                bool any = false;
+
+                foreach (var item in folder.EnumerateFileSystemInfos())
+                {
+                    any = true;
+                    var name = Relative(root, item.FullName);
+
+                    if ((item.Attributes & FileAttributes.ReparsePoint) != 0) { links.Add(name); continue; }
+
+                    if (item is DirectoryInfo sub)
+                    {
+                        folders.Add(new ArchiveEntryInfo(name, 0, sub.LastWriteTime, true));
+                        pending.Push(sub);
+                    }
+                    else if (item is FileInfo file)
+                    {
+                        entries.Add(new ArchiveEntryInfo(name, file.Length, file.LastWriteTime, false));
+                    }
+                }
+
+                if (!any && folder.FullName.Length > root.Length) empty.Add(Relative(root, folder.FullName));
             }
 
-            var rules = ExtractionRules.Build(entries, destination, policy, ask, token);
+            foreach (var link in links) errors.Add($"{link}: a symbolic link was not extracted");
+
+            var withheld = withhold(entries.Concat(folders).Select(e => ExtractionRules.Normalise(e.Name)).ToList());
+
+            // A folder is made when something good goes in it, or when it was
+            // empty in the archive. One that only ever held refused names is
+            // not left behind empty.
+            var needed = new HashSet<string>(empty, StringComparer.OrdinalIgnoreCase);
+            foreach (var file in entries)
+            {
+                var name = ExtractionRules.Normalise(file.Name);
+                if (withheld.ContainsKey(name)) continue;
+                for (int slash = name.LastIndexOf('/'); slash > 0; slash = name.LastIndexOf('/', slash - 1))
+                    needed.Add(name[..slash]);
+            }
+
+            var all = entries.Concat(folders.Where(f =>
+            {
+                var name = ExtractionRules.Normalise(f.Name);
+                return needed.Contains(name) && !withheld.ContainsKey(name);
+            })).ToList();
+
+            var said = new HashSet<string>();
+            foreach (var (name, reason) in withheld)
+                if (entries.Any(e => string.Equals(ExtractionRules.Normalise(e.Name), name, StringComparison.OrdinalIgnoreCase)) &&
+                    said.Add(reason))
+                    errors.Add(reason);
+
+            var rules = ExtractionRules.Build(all.Where(e => !withheld.ContainsKey(ExtractionRules.Normalise(e.Name))).ToList(),
+                destination, policy, ask, token);
             if (rules == null) throw new OperationCanceledException(token);
 
             int done = 0;
 
             // Folders first and shallowest first, so a file never arrives before
             // the folder it goes in.
-            foreach (var entry in entries.Where(e => e.IsDirectory).OrderBy(e => e.Name.Length))
+            foreach (var entry in all.Where(e => e.IsDirectory).OrderBy(e => e.Name.Length))
             {
                 token.ThrowIfCancellationRequested();
 
@@ -632,9 +1066,8 @@ namespace ExplorerNative
             // nothing.
             if (stoppedAt != null)
             {
-                var staged = entries.Where(e => !e.IsDirectory)
-                    .Select(e => ExtractionRules.Normalise(e.Name)).ToList();
-                var exact = new HashSet<string>(staged, StringComparer.OrdinalIgnoreCase);
+                var stagedNames = entries.Select(e => ExtractionRules.Normalise(e.Name)).ToList();
+                var exact = new HashSet<string>(stagedNames, StringComparer.OrdinalIgnoreCase);
                 var more = new List<string>();
 
                 foreach (var printed in stoppedAt.Select(ExtractionRules.Normalise))
@@ -651,15 +1084,16 @@ namespace ExplorerNative
                     // printed intact has already matched above.
                     if (printed.All(c => c < 128 && c != '?')) continue;
                     var pattern = MangledPattern(printed);
-                    more.AddRange(staged.Where(name => pattern.IsMatch(name)));
+                    more.AddRange(stagedNames.Where(name => pattern.IsMatch(name)));
                 }
 
                 if (more.Count > 0) stoppedAt = stoppedAt.Concat(more).ToList();
             }
 
-            foreach (var entry in entries.Where(e => !e.IsDirectory))
+            foreach (var entry in entries)
             {
                 token.ThrowIfCancellationRequested();
+                if (withheld.ContainsKey(ExtractionRules.Normalise(entry.Name))) continue;
 
                 var target = rules.TargetFor(entry.Name, false, out var problem);
                 if (target == null)
@@ -668,7 +1102,7 @@ namespace ExplorerNative
                     continue;
                 }
 
-                var from = Path.Combine(staging, entry.Name.Replace('/', Path.DirectorySeparatorChar));
+                var from = Path.Combine(root, entry.Name.Replace('/', Path.DirectorySeparatorChar));
 
                 if (stoppedAt != null)
                 {
@@ -677,11 +1111,12 @@ namespace ExplorerNative
                     var name = ExtractionRules.Normalise(entry.Name);
                     if (stoppedAt.Any(s => string.Equals(ExtractionRules.Normalise(s), name, StringComparison.OrdinalIgnoreCase)))
                     {
-                        errors.Add($"{entry.Name}: not extracted, because the archive stopped while it was being written");
+                        if (unfinished)
+                            errors.Add($"{entry.Name}: not extracted, because the archive stopped while it was being written");
                         rules.Withdraw(target);
                         continue;
                     }
-                    if (File.Exists(target))
+                    if (unfinished && File.Exists(target))
                     {
                         errors.Add($"{entry.Name}: left as it was, because the archive did not extract cleanly");
                         rules.Withdraw(target);
@@ -697,6 +1132,7 @@ namespace ExplorerNative
                     reporter.Starting(entry.Name);
                     ArchiveEngine.ClearReadOnly(target);
                     File.Move(from, target, overwrite: true);
+                    reporter.Advance(entry.Size);
                     done++;
                 }
                 catch (Exception ex)
@@ -706,7 +1142,7 @@ namespace ExplorerNative
                 }
             }
 
-            return (done, rules.Outcomes());
+            return (done, rules.Outcomes(), entries.Count + links.Count);
         }
 
         /// <summary>
@@ -736,6 +1172,140 @@ namespace ExplorerNative
         private static string Relative(string root, string path) =>
             Path.GetRelativePath(root, path).Replace('\\', '/');
 
+        // ---------- A short name for a long folder ----------
+
+        /// <summary>
+        /// A junction at a short path, standing in for a folder too long to be
+        /// bsdtar's current directory.
+        ///
+        /// bsdtar changes into the folder given with -C, and a current directory
+        /// is limited to MAX_PATH whatever else is long-path aware: a 7z or
+        /// .tar.xz of anything past 260 characters failed in both directions
+        /// with "could not chdir". Its file access is not limited — libarchive
+        /// opens through "\\?\" names — so only the folder it starts in has to be
+        /// short. This volume has 8.3 names switched off, so shortening is not
+        /// available; a junction needs no privilege and works, measured on a
+        /// 447-character folder both ways.
+        ///
+        /// Kept in %LOCALAPPDATA%\ExplorerNative\tarlinks rather than in Temp,
+        /// where something cleaning up might follow it. It is removed as a link
+        /// — never recursively — and any left by a crash are swept.
+        /// </summary>
+        private sealed class Alias : IDisposable
+        {
+            public required string Link { get; init; }
+
+            public void Dispose()
+            {
+                try { Directory.Delete(Link, recursive: false); }
+                catch (Exception ex) { RoboCopyEngine.Trace($"bsdtar: junction left behind: {ex.Message}"); }
+            }
+        }
+
+        private const int LongFolder = 240;
+        private static int _swept;
+
+        private static string LinkRoot => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ExplorerNative", "tarlinks");
+
+        /// <summary>The folder itself when it is short enough, otherwise a junction to it.</summary>
+        private static string Reachable(string folder, List<Alias> aliases)
+        {
+            if (folder.Length < LongFolder) return folder;
+
+            var full = Path.GetFullPath(folder);
+            if (full.StartsWith(@"\\?\", StringComparison.Ordinal)) full = full[4..];
+            if (full.StartsWith(@"\\", StringComparison.Ordinal)) return folder;   // a share cannot be a junction's target
+
+            try
+            {
+                Directory.CreateDirectory(LinkRoot);
+                if (Interlocked.Exchange(ref _swept, 1) == 0) SweepLinks();
+
+                var link = Path.Combine(LinkRoot, Guid.NewGuid().ToString("N")[..8]);
+                CreateJunction(link, full);
+                aliases.Add(new Alias { Link = link });
+                return link;
+            }
+            catch (Exception ex)
+            {
+                RoboCopyEngine.Trace($"bsdtar: no junction for a long folder: {ex.Message}");
+                return folder;
+            }
+        }
+
+        /// <summary>Removes junctions a crashed run left, as links and nothing else.</summary>
+        private static void SweepLinks()
+        {
+            try
+            {
+                foreach (var old in new DirectoryInfo(LinkRoot).EnumerateDirectories())
+                {
+                    if ((old.Attributes & FileAttributes.ReparsePoint) == 0) continue;
+                    if (DateTime.UtcNow - old.CreationTimeUtc < TimeSpan.FromHours(1)) continue;
+                    try { Directory.Delete(old.FullName, recursive: false); } catch { }
+                }
+            }
+            catch { }
+        }
+
+        private static void CreateJunction(string link, string target)
+        {
+            Directory.CreateDirectory(link);
+            try
+            {
+                var substitute = Encoding.Unicode.GetBytes(@"\??\" + target);
+                var print = Encoding.Unicode.GetBytes(target);
+                int pathBuffer = substitute.Length + 2 + print.Length + 2;
+                if (8 + pathBuffer > ushort.MaxValue) throw new PathTooLongException();
+
+                var buffer = new byte[16 + pathBuffer];
+                BitConverter.GetBytes(0xA0000003u).CopyTo(buffer, 0);               // IO_REPARSE_TAG_MOUNT_POINT
+                BitConverter.GetBytes((ushort)(8 + pathBuffer)).CopyTo(buffer, 4);
+                BitConverter.GetBytes((ushort)0).CopyTo(buffer, 8);
+                BitConverter.GetBytes((ushort)substitute.Length).CopyTo(buffer, 10);
+                BitConverter.GetBytes((ushort)(substitute.Length + 2)).CopyTo(buffer, 12);
+                BitConverter.GetBytes((ushort)print.Length).CopyTo(buffer, 14);
+                substitute.CopyTo(buffer, 16);
+                print.CopyTo(buffer, 16 + substitute.Length + 2);
+
+                using var handle = CreateFileW(link, 0x40000000, 0, IntPtr.Zero, 3,
+                    0x02000000 | 0x00200000, IntPtr.Zero);                          // BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+                if (handle.IsInvalid) throw new IOException($"error {Marshal.GetLastWin32Error()} opening the link");
+                if (!DeviceIoControl(handle, 0x000900A4, buffer, buffer.Length, IntPtr.Zero, 0, out _, IntPtr.Zero))
+                    throw new IOException($"error {Marshal.GetLastWin32Error()} making the link");
+            }
+            catch
+            {
+                try { Directory.Delete(link, recursive: false); } catch { }
+                throw;
+            }
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string name, uint access,
+            uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool DeviceIoControl(Microsoft.Win32.SafeHandles.SafeFileHandle device, uint code,
+            byte[] inBuffer, int inSize, IntPtr outBuffer, int outSize, out int returned, IntPtr overlapped);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct IoCounters
+        {
+            public ulong ReadOperationCount;
+            public ulong WriteOperationCount;
+            public ulong OtherOperationCount;
+            public ulong ReadTransferCount;
+            public ulong WriteTransferCount;
+            public ulong OtherTransferCount;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetProcessIoCounters(IntPtr process, out IoCounters counters);
+
         // ---------- Running it ----------
 
         private static ProcessStartInfo NewStartInfo() => new()
@@ -755,10 +1325,10 @@ namespace ExplorerNative
         }
 
         /// <param name="onLine">
-        /// Each "a name" or "x name" line, with the name alone, and whether
-        /// bsdtar put an error on the end of it.
+        /// Each "a name" or "x name" line, with the name alone, whether bsdtar
+        /// put an error on the end of it, and that error.
         /// </param>
-        private static Run Start(ProcessStartInfo start, Action<string, bool>? onLine)
+        private static Run Start(ProcessStartInfo start, Action<string, bool, string?>? onLine)
         {
             var collected = new StringBuilder();
             var process = new Process { StartInfo = start };
@@ -782,7 +1352,7 @@ namespace ExplorerNative
                     // matched nothing, so a half-written file was kept.
                     int colon = e.Data.IndexOf(": ", 2, StringComparison.Ordinal);
                     bool failed = colon > 0;
-                    try { onLine(failed ? e.Data[..colon] : e.Data, failed); } catch { }
+                    try { onLine(failed ? e.Data[..colon] : e.Data, failed, failed ? e.Data[(colon + 2)..] : null); } catch { }
                     if (!failed) return;
                 }
 
@@ -821,7 +1391,22 @@ namespace ExplorerNative
         /// </summary>
         private static readonly TimeSpan StallLimit = TimeSpan.FromMinutes(5);
 
+        /// <summary>How a run ended.</summary>
+        /// <param name="First">Its first complaint worth reading, or a sentence standing in for one.</param>
+        /// <param name="Delayed">
+        /// bsdtar said "Error exit delayed from previous errors": it went on to
+        /// the end and is reporting entries that failed on the way.
+        /// </param>
+        /// <param name="Messages">Every line it wrote that was not an entry.</param>
+        private sealed record Outcome(int ExitCode, string First, bool Delayed, IReadOnlyList<string> Messages);
+
         private static void Finish(Run run, CancellationToken token)
+        {
+            var outcome = Wait(run, token);
+            if (outcome.ExitCode != 0) throw new IOException(outcome.First);
+        }
+
+        private static Outcome Wait(Run run, CancellationToken token)
         {
             var process = run.Process;
 
@@ -856,25 +1441,31 @@ namespace ExplorerNative
 
             token.ThrowIfCancellationRequested();
 
-            if (process.ExitCode == 0) return;
+            string text;
+            lock (run.Errors) text = run.Errors.ToString();
+            var messages = text.Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).ToList();
 
-            string message;
-            lock (run.Errors) message = run.Errors.ToString().Trim();
+            if (process.ExitCode == 0) return new Outcome(0, "", false, messages);
 
-            RoboCopyEngine.Trace($"bsdtar: exit {process.ExitCode}: {message}");
+            RoboCopyEngine.Trace($"bsdtar: exit {process.ExitCode}: {text.Trim()}");
 
-            // Its own first line is the useful sentence; the rest is usually the
-            // same complaint once per entry.
-            var first = message.Length == 0
-                ? $"the system tar stopped with code {process.ExitCode}"
-                : message.Split('\n')[0].Trim();
+            bool delayed = messages.Any(m => m.Contains("Error exit delayed from previous errors", StringComparison.Ordinal));
 
-            // It prefixes everything with its own name, which in a message this
-            // application puts on screen is furniture.
-            if (first.StartsWith("tar.exe: ", StringComparison.OrdinalIgnoreCase))
-                first = first["tar.exe: ".Length..];
+            // Its own first complaint is the useful sentence; the rest is usually
+            // the same complaint once per entry. A warning about a name it
+            // changed is not the complaint, and nor is its sign-off.
+            var first = messages
+                .Select(Plain)
+                .FirstOrDefault(m => !m.StartsWith("Removing leading", StringComparison.Ordinal) &&
+                                     !m.StartsWith("Error exit delayed", StringComparison.Ordinal));
 
-            throw new IOException(first);
+            // A truncated 7z says "(null)", and nothing else.
+            if (string.IsNullOrEmpty(first) || first == "(null)")
+                first = first == "(null)"
+                    ? "This archive is damaged or incomplete."
+                    : $"the system tar stopped with code {process.ExitCode}";
+
+            return new Outcome(process.ExitCode, first, delayed, messages);
         }
 
         // ---------- Compression options ----------

@@ -67,6 +67,44 @@ namespace ExplorerNative
             return true;
         }
 
+        /// <summary>
+        /// What OK does once every check has passed, before the pages' values are
+        /// applied: the things that act outside this dialog, such as saving the
+        /// Google client. A check only looks. Saving the client from inside its
+        /// check meant a later check failing (the port), and then Cancel, left the
+        /// new client saved and the sign-in forgotten. False keeps the dialog open.
+        /// </summary>
+        private readonly List<Func<bool>> _commits = new();
+
+        private bool RunCommits()
+        {
+            foreach (var commit in _commits)
+                if (!commit() || IsDisposed) return false;
+            return true;
+        }
+
+        /// <summary>Asks Google about a client ID and secret. Replaced by the tests.</summary>
+        internal static Func<string, string, System.Threading.CancellationToken, System.Threading.Tasks.Task<string?>>
+            CheckClient = GoogleAuth.CheckClientAsync;
+
+        /// <summary>Every page built so far. For the tests.</summary>
+        internal IReadOnlyList<Control> Pages => _panels;
+
+        /// <summary>Adds a check that runs after the pages' own. For the tests.</summary>
+        internal void AddCheckForTests(Func<System.Threading.Tasks.Task<bool>> check) => _beforeOkChecks.Add(check);
+
+        /// <summary>
+        /// What OK does, short of closing: every check, then every commit, then
+        /// every page's values. False means something refused and the dialog stays.
+        /// </summary>
+        internal async System.Threading.Tasks.Task<bool> AcceptAsync()
+        {
+            if (!await RunBeforeOk()) return false;
+            if (!RunCommits()) return false;
+            foreach (var apply in _applies) apply();
+            return true;
+        }
+
         /// <summary>True while Google is being asked; one check at a time, and no closing.</summary>
         private bool _checkingGoogle;
 
@@ -269,6 +307,7 @@ namespace ExplorerNative
                                "Windows Explorer will take them back.";
                 if (ShellRegistration.IsContextMenuRegistered())
                     warning += "\n\nThe \"Open in Explorer Native\" menu entry will be removed.";
+                warning += "\n\n" + SettingsReset.KeptSentence;
 
                 if (MessageBox.Show(this, warning, "Reset",
                         MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
@@ -292,8 +331,7 @@ namespace ExplorerNative
                 closing = true;
                 try
                 {
-                    if (!await RunBeforeOk()) return;
-                    foreach (var apply in _applies) apply();
+                    if (!await AcceptAsync()) return;
                     DialogResult = DialogResult.OK;
                     Close();
                 }
@@ -407,7 +445,10 @@ namespace ExplorerNative
             AddCheck(panel, "Show file extensions", _working.ShowExtensions, v => _working.ShowExtensions = v);
             AddCheck(panel, "List folders before files", _working.FoldersFirst, v => _working.FoldersFirst = v);
 
-            AddEnum<SortColumn>(panel, "Sort by", _working.SortBy, v => _working.SortBy = v);
+            // There is no Type column, so Type is not offered. A file that still
+            // says Type shows as Name and keeps saying Type until somebody picks.
+            AddEnum<SortColumn>(panel, "Sort by", _working.SortBy, v => _working.SortBy = v,
+                hidden: new[] { SortColumn.Type }, shownAs: v => v == SortColumn.Type ? SortColumn.Name : v);
             AddCheck(panel, "Sort ascending", _working.SortAscending, v => _working.SortAscending = v);
 
             AddText(panel, "Window title", _working.WindowTitle, v => _working.WindowTitle = v);
@@ -511,11 +552,19 @@ namespace ExplorerNative
                 currentAt = keys.Count - 1;
             }
             keyBox.SelectedIndex = currentAt >= 0 ? currentAt : 0;
+            int openedAt = keyBox.SelectedIndex;
 
             AddLabelled(panel, "Key", keyBox);
 
             _applies.Add(() =>
             {
+                // Nothing on this page touched: the saved value stays exactly as
+                // it is, stray bits and all. Rebuilt from the four boxes, a file
+                // holding 0x4003 came back as 3 from OK on any page.
+                if (nCtrl == ctrl && nAlt == alt && nShift == shift && nWin == win &&
+                    keyBox.SelectedIndex == openedAt)
+                    return;
+
                 uint mods = 0;
                 if (nCtrl) mods |= HotkeyManager.MOD_CONTROL;
                 if (nAlt) mods |= HotkeyManager.MOD_ALT;
@@ -549,10 +598,11 @@ namespace ExplorerNative
 
                 // With every modifier unticked this is a bare letter, and a bare
                 // letter registered globally is that letter gone from every
-                // program on the machine.
+                // program on the machine. Shift alone is the same: Shift+P is
+                // every capital P.
                 if (!candidate.CanRegister)
                 {
-                    Say($"{candidate.Spoken} needs Control, Alt, Shift or the Windows key with it. " +
+                    Say($"{candidate.Spoken} needs Control, Alt or the Windows key with it. " +
                         "The window shortcut was left as it was.");
                     return;
                 }
@@ -682,6 +732,11 @@ namespace ExplorerNative
             // The button says what pressing it will do, from the live drive's
             // state: Disconnect while it is working, Reconnect when Google wants
             // the sign-in again, Connect otherwise.
+            //
+            // N for Connect and Reconnect, never C or R: those are Cancel and
+            // Reset, and a page's own access key wins over the dialog's. Alt+C
+            // here pressed Connect, which saved everything, switched Drive on and
+            // started a sign-in from the key that means Cancel.
             var state = AccountState?.Invoke() ?? DriveAccountState.NotConnected;
             void Show(DriveAccountState now)
             {
@@ -691,8 +746,8 @@ namespace ExplorerNative
                     DriveAccountState.Connected =>
                         ("&Disconnect Google Drive", "Takes Google Drive off its drive letter. You stay signed in."),
                     DriveAccountState.NeedsSignIn =>
-                        ("&Reconnect Google Drive", "Google needs you to sign in again."),
-                    _ => ("&Connect Google Drive", "Puts Google Drive on its drive letter."),
+                        ("Reco&nnect Google Drive", "Google needs you to sign in again."),
+                    _ => ("Co&nnect Google Drive", "Puts Google Drive on its drive letter."),
                 };
             }
             Show(state);
@@ -715,6 +770,7 @@ namespace ExplorerNative
                 }
 
                 if (!await RunBeforeOk()) return;
+                if (!RunCommits()) return;
                 if (GoogleAuth.Credentials(GoogleDrive.CredentialsDirectory) == null)
                 {
                     MessageBox.Show(this,
@@ -745,7 +801,8 @@ namespace ExplorerNative
 
             var signOut = new Button
             {
-                Text = "Sign &out of Google",
+                // G, not O: Alt+O is OK.
+                Text = "Si&gn out of Google",
                 AutoSize = true,
                 Enabled = signedIn,
             };
@@ -788,8 +845,13 @@ namespace ExplorerNative
             // fields pass straight through; anything new is checked with Google
             // and the dialog stays open, on the field, if Google refuses it.
             string savedId = idBox.Text, savedSecret = secretBox.Text;
+
+            // What Google has accepted and is waiting for OK to finish: saved by
+            // the commit below, once every other check has passed too.
+            string? acceptedId = null, acceptedSecret = null;
             _beforeOkChecks.Add(async () =>
             {
+                acceptedId = acceptedSecret = null;
                 var id = idBox.Text.Trim();
                 var secret = secretBox.Text.Trim();
                 if (id == savedId && secret == savedSecret) return true;
@@ -810,7 +872,7 @@ namespace ExplorerNative
                 Say("Checking with Google");
                 UseWaitCursor = true;
                 string? problem;
-                try { problem = await GoogleAuth.CheckClientAsync(id, secret, System.Threading.CancellationToken.None); }
+                try { problem = await CheckClient(id, secret, System.Threading.CancellationToken.None); }
                 finally
                 {
                     _checkingGoogle = false;
@@ -818,14 +880,30 @@ namespace ExplorerNative
                 }
                 if (IsDisposed) return false;
 
-                bool changed = false;
-                problem ??= GoogleAuth.SaveClient(id, secret, GoogleDrive.CredentialsDirectory, out changed);
                 if (problem != null)
                 {
-                    MessageBox.Show(this, problem, "Google Drive", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    // On the page with the field, or Focus does nothing.
-                    _showCategory?.Invoke("Google Drive");
-                    idBox.Focus();
+                    RefuseClient(problem);
+                    return false;
+                }
+
+                // Accepted, and nothing done about it yet: a later check can
+                // still refuse, and Cancel after that must find nothing changed.
+                acceptedId = id;
+                acceptedSecret = secret;
+                return true;
+            });
+
+            _commits.Add(() =>
+            {
+                if (acceptedId == null || acceptedSecret == null) return true;
+                var id = acceptedId;
+                var secret = acceptedSecret;
+                acceptedId = acceptedSecret = null;
+
+                var problem = GoogleAuth.SaveClient(id, secret, GoogleDrive.CredentialsDirectory, out bool changed);
+                if (problem != null)
+                {
+                    RefuseClient(problem);
                     return false;
                 }
 
@@ -846,6 +924,14 @@ namespace ExplorerNative
                 Say("Google accepted them. Signing in");
                 return true;
             });
+
+            void RefuseClient(string problem)
+            {
+                MessageBox.Show(this, problem, "Google Drive", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                // On the page with the field, or Focus does nothing.
+                _showCategory?.Invoke("Google Drive");
+                idBox.Focus();
+            }
 
             row.Controls.Add(connect);
             row.Controls.Add(signOut);
@@ -889,7 +975,7 @@ namespace ExplorerNative
                 dialog.ShowDialog(this);
             });
             AddInfo(panel,
-                "Eighteen actions, each with its own global shortcut. They open in their own window " +
+                $"{AudioActions.All.Count} actions, each with its own global shortcut. They open in their own window " +
                 "rather than filling this page, and a combination already used by another action is " +
                 "refused there rather than quietly taking it over.");
 
@@ -1111,8 +1197,10 @@ namespace ExplorerNative
             };
             panel.Controls.Add(linkBox);
             var linkRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 2, 0, 4), Visible = false };
-            var copy = new Button { Text = "&Copy link", AutoSize = true, AccessibleName = "Copy link" };
-            var open = new Button { Text = "&Open in browser", AutoSize = true, AccessibleName = "Open in browser" };
+            // Y and B, not C and O: those are Cancel and OK, and from the category
+            // list Alt+O opened the browser and Alt+C copied the link.
+            var copy = new Button { Text = "Cop&y link", AutoSize = true, AccessibleName = "Copy link" };
+            var open = new Button { Text = "Open in &browser", AutoSize = true, AccessibleName = "Open in browser" };
             linkRow.Controls.Add(copy);
             linkRow.Controls.Add(open);
             panel.Controls.Add(linkRow);
@@ -1139,6 +1227,14 @@ namespace ExplorerNative
             _beforeOkChecks.Add(() =>
             {
                 var text = portBox.Text.Trim();
+
+                // Untouched: nothing to check and nothing to write. A saved port
+                // that is busy right now (the web app is on 47810 for this
+                // session) is still the one asked for, and OK on another page
+                // must neither refuse over it nor replace it.
+                if (text == startPort.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                    return System.Threading.Tasks.Task.FromResult(true);
+
                 int current = CurrentWebPort?.Invoke() ?? startPort;
                 string? refusal = !int.TryParse(text, System.Globalization.NumberStyles.None,
                         System.Globalization.CultureInfo.InvariantCulture, out var port)
@@ -1420,8 +1516,16 @@ namespace ExplorerNative
             var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 140 };
             combo.AccessibleName = label;
 
+            // The saved value is always on the list, even outside the range, and
+            // is written back only if another entry is picked: clamped on the
+            // way in, OK on any page changed a number nobody had touched.
             var choices = SettingChoices.Between(min, max, value);
-            int chosen = Math.Max(0, choices.IndexOf(Math.Clamp(value, min, max)));
+            if (!choices.Contains(value))
+            {
+                choices.Add(value);
+                choices.Sort();
+            }
+            int chosen = choices.IndexOf(value);
 
             // Only the current value until the list is reached. Windows loads
             // every item of every list when the page appears, and the Audio page
@@ -1453,7 +1557,11 @@ namespace ExplorerNative
             combo.MouseDown += (_, _) => Fill();
 
             AddLabelled(parent, label, combo);
-            _applies.Add(() => apply(filled ? choices[Math.Max(0, combo.SelectedIndex)] : choices[chosen]));
+            _applies.Add(() =>
+            {
+                if (filled && combo.SelectedIndex >= 0 && combo.SelectedIndex != chosen)
+                    apply(choices[combo.SelectedIndex]);
+            });
         }
 
         // The ladder itself is SettingChoices.Between, in a file of its own. It
@@ -1480,7 +1588,7 @@ namespace ExplorerNative
             var box = new TextBox { Text = value, Width = 200 };
             box.AccessibleName = label;
             AddLabelled(parent, label, box);
-            _applies.Add(() => apply(box.Text));
+            _applies.Add(() => { if (box.Text != value) apply(box.Text); });
         }
 
         private void Say(string message)
@@ -1489,16 +1597,45 @@ namespace ExplorerNative
             Speech.Speak(message, interrupt: true);
         }
 
-        private void AddEnum<T>(Control parent, string label, T value, Action<T> apply) where T : struct, Enum
+        /// <summary>
+        /// A choice from an enum, as a list.
+        ///
+        /// A saved value the list does not offer (a number from a hand-edited
+        /// file, or a choice this build no longer makes) is shown as an entry of
+        /// its own rather than as the first one, and nothing is written back
+        /// unless another entry is picked. <paramref name="hidden"/> are values not
+        /// offered any more; <paramref name="shownAs"/> says which offered entry
+        /// a saved value is shown on.
+        /// </summary>
+        private void AddEnum<T>(Control parent, string label, T value, Action<T> apply,
+            T[]? hidden = null, Func<T, T>? shownAs = null) where T : struct, Enum
         {
             var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
             combo.AccessibleName = label;
-            foreach (var name in Enum.GetNames<T>()) combo.Items.Add(Humanise(name));
-            combo.SelectedIndex = Array.IndexOf(Enum.GetNames<T>(), value.ToString());
-            if (combo.SelectedIndex < 0) combo.SelectedIndex = 0;
+
+            var values = new List<T>();
+            foreach (var v in Enum.GetValues<T>())
+            {
+                if (hidden != null && Array.IndexOf(hidden, v) >= 0) continue;
+                values.Add(v);
+                combo.Items.Add(Humanise(v.ToString()));
+            }
+
+            int at = values.IndexOf(shownAs != null ? shownAs(value) : value);
+            if (at < 0)
+            {
+                values.Add(value);
+                combo.Items.Add((Enum.IsDefined(value) ? Humanise(value.ToString()) : value.ToString()) + " (custom)");
+                at = values.Count - 1;
+            }
+            combo.SelectedIndex = at;
+            int opened = at;
 
             AddLabelled(parent, label, combo);
-            _applies.Add(() => apply(Enum.GetValues<T>()[combo.SelectedIndex]));
+            _applies.Add(() =>
+            {
+                if (combo.SelectedIndex >= 0 && combo.SelectedIndex != opened) apply(values[combo.SelectedIndex]);
+            });
         }
 
         /// <summary>
@@ -1527,12 +1664,27 @@ namespace ExplorerNative
 
             foreach (var l in letters) combo.Items.Add(l + ":");
             int at = letters.IndexOf(current);
-            combo.SelectedIndex = at >= 0 ? at : (letters.Count > 0 ? 0 : -1);
+
+            // Whatever the file says that is not a free letter (blank, C, or
+            // something that is not a letter at all) is its own entry rather
+            // than the first free letter: that change, from OK on any page, then
+            // moved a mounted drive. "q" and "G:" show as Q and G, and are
+            // written back only if another letter is picked.
+            if (at < 0)
+            {
+                var saved = _working.GoogleDriveLetter ?? "";
+                letters.Add(saved);
+                combo.Items.Add((saved.Trim().Length == 0 ? "None" : saved.Trim()) + " (custom)");
+                at = letters.Count - 1;
+            }
+            combo.SelectedIndex = at;
+            int opened = at;
 
             AddLabelled(parent, "Google Drive letter", combo);
             _applies.Add(() =>
             {
-                if (combo.SelectedIndex >= 0) _working.GoogleDriveLetter = letters[combo.SelectedIndex];
+                if (combo.SelectedIndex >= 0 && combo.SelectedIndex != opened)
+                    _working.GoogleDriveLetter = letters[combo.SelectedIndex];
             });
         }
 
@@ -1550,19 +1702,36 @@ namespace ExplorerNative
             const string label = "Read ahead from the selected file";
             var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 160 };
             combo.AccessibleName = label;
-            foreach (var kb in ReadAheadKilobytes)
-                combo.Items.Add(kb == 1024 ? "1 megabyte" : ReadAheadText(kb));
+            // The saved size is always on the list. Builds up to 1.0.2 took any
+            // number, and snapping to the nearest offered size turned 512 into
+            // Off and 1536 into 1 megabyte from OK on any page.
+            int saved = _working.AudioPrefetchKilobytes;
+            var sizes = new List<int>(ReadAheadKilobytes);
+            if (!sizes.Contains(saved))
+            {
+                sizes.Add(saved);
+                sizes.Sort();
+            }
+            foreach (var kb in sizes)
+                combo.Items.Add(Array.IndexOf(ReadAheadKilobytes, kb) < 0 ? CustomReadAheadText(kb) + " (custom)"
+                    : kb == 1024 ? "1 megabyte" : ReadAheadText(kb));
 
-            // The nearest offered size to whatever was set before.
-            int best = 0;
-            for (int i = 0; i < ReadAheadKilobytes.Length; i++)
-                if (Math.Abs(ReadAheadKilobytes[i] - _working.AudioPrefetchKilobytes) <
-                    Math.Abs(ReadAheadKilobytes[best] - _working.AudioPrefetchKilobytes)) best = i;
-            combo.SelectedIndex = best;
+            int opened = sizes.IndexOf(saved);
+            combo.SelectedIndex = opened;
 
             AddLabelled(parent, label, combo);
-            _applies.Add(() => _working.AudioPrefetchKilobytes = ReadAheadKilobytes[Math.Max(0, combo.SelectedIndex)]);
+            _applies.Add(() =>
+            {
+                if (combo.SelectedIndex >= 0 && combo.SelectedIndex != opened)
+                    _working.AudioPrefetchKilobytes = sizes[combo.SelectedIndex];
+            });
         }
+
+        /// <summary>"1.5 megabytes", "512 kilobytes": a size the list does not offer, as it is.</summary>
+        internal static string CustomReadAheadText(int kilobytes) =>
+            kilobytes < 1024
+                ? kilobytes.ToString(System.Globalization.CultureInfo.InvariantCulture) + " kilobytes"
+                : (kilobytes / 1024.0).ToString("0.##", System.Globalization.CultureInfo.InvariantCulture) + " megabytes";
 
         private static void AddLabelled(Control parent, string label, Control control)
         {

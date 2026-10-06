@@ -898,10 +898,23 @@ namespace ExplorerNative
                     // beginning. Windows' decoders do not all restart the same way
                     // after a seek to zero as they start on open: WMA came back 15
                     // samples later, so "back to the start" was not the start.
-                    if (_virtual || request <= 0)
+                    //
+                    // Except a very short track going round on repeat, where the
+                    // loop point comes hundreds of times a second and a new reader
+                    // at each one cost up to a tenth of a core for a click. The
+                    // reader it has is turned back instead, and only rebuilt if
+                    // that is refused.
+                    bool rewound = false;
+                    if (!_virtual && request <= 0 && _reportedDuration > 0 && _reportedDuration < ShortTrackSeconds)
+                    {
+                        var zero = new PropVariant { Type = 20, Long = 0 };
+                        rewound = _reader.SetCurrentPosition(ref GUID_NULL, ref zero) == 0;
+                    }
+
+                    if (!rewound && (_virtual || request <= 0))
                     {
                         var own = CreateReader(_opened, out _);
-                        if (own == null) return false;
+                        if (own == null) { Abandon(); return false; }
                         Release(_reader);
                         _reader = own;
                         _virtual = false;
@@ -921,7 +934,7 @@ namespace ExplorerNative
                         };
 
                         int hr = _reader.SetCurrentPosition(ref GUID_NULL, ref position);
-                        if (hr != 0) return false;
+                        if (hr != 0) { Abandon(); return false; }
                     }
 
                     _clockBase = seconds;
@@ -930,8 +943,41 @@ namespace ExplorerNative
                     _awaitingStamp = true;
                     return true;
                 }
-                catch { return false; }
+                catch { Abandon(); return false; }
             }
+        }
+
+        /// <summary>A track this short is turned round on the reader it has. See <see cref="SeekTo"/>.</summary>
+        private const double ShortTrackSeconds = 1.0;
+
+        /// <summary>
+        /// After a seek Media Foundation refused: the reader is not trusted again.
+        ///
+        /// It used to be kept, and the next read went into it — measured on the
+        /// first 20KB of a variable-bitrate MP3 asked for a point past its real
+        /// audio, that read never returned, and the pump thread with it. A fresh
+        /// reader replaces it so that a later seek still works, and until one
+        /// comes the track is finished: nothing is read from where nobody knows
+        /// the reader is.
+        /// </summary>
+        private void Abandon()
+        {
+            _finished = true;
+            _spillCount = 0;
+            _spillOffset = 0;
+            _discardUntil = -1;
+
+            try
+            {
+                var fresh = CreateReader(_opened, out _);
+                if (fresh != null)
+                {
+                    Release(_reader);
+                    _reader = fresh;
+                    _virtual = false;
+                }
+            }
+            catch { }
         }
 
         /// <summary>

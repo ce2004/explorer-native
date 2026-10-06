@@ -312,7 +312,11 @@ namespace ExplorerNative
             if (p.TotalKnown)
             {
                 var total = SizeFormatter.Format(p.BytesTotal, _settings.SizeUnits);
-                _progress.Text = $"{p.Percent:0} percent, {p.ItemsDone} of {NameRules.Items(p.ItemsTotal)}";
+                // A byte total can be known before the item total is: then it is
+                // "3 items", not "3 of 0 items".
+                _progress.Text = p.ItemsTotal > 0
+                    ? $"{p.Percent:0} percent, {p.ItemsDone} of {NameRules.Items(p.ItemsTotal)}"
+                    : $"{p.Percent:0} percent, {NameRules.Items(p.ItemsDone)}";
                 _size.Text = $"{done} of {total}";
                 _remaining.Text = p.Remaining is { } left
                     ? RoboCopyEngine.FormatDuration(left)

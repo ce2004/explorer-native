@@ -91,8 +91,13 @@ namespace ExplorerNative
         {
             if (count <= 0 || nameAt == null || string.IsNullOrEmpty(query)) return -1;
 
-            bool cycling = IsAllOneCharacter(query);
-            string prefix = cycling ? query[..1] : query;
+            // Both sides without their accents, so "e" reaches "Éclair" and
+            // "étoile" — which the list sorts among the E names (see
+            // NameRules.CompareNames), so the jump lands where the eye and the
+            // ear expect the E names to start.
+            var folded = Fold(query);
+            bool cycling = IsAllOneCharacter(folded, out int first);
+            string prefix = cycling ? folded[..first] : folded;
 
             // Cycling must leave the current row; refining may stay on it.
             int start = cycling ? currentIndex + 1 : currentIndex;
@@ -102,7 +107,7 @@ namespace ExplorerNative
             {
                 int index = (start + step) % count;
                 var name = nameAt(index);
-                if (name != null && name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                if (name != null && Fold(name).StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
                     return index;
             }
 
@@ -113,12 +118,88 @@ namespace ExplorerNative
         /// True for "s", "ss", "sss" — a single character is the same case as a
         /// repeat of one, because a lone letter has always meant "next one of
         /// these", not "the first one of these".
+        ///
+        /// A character is a whole code point, not a UTF-16 unit: an emoji is two
+        /// units, and "🎶🎶" compared unit by unit was not a repeat, so it
+        /// searched for "🎶🎶" and said nothing starts with it.
+        /// <paramref name="firstLength"/> is how long the first one is.
         /// </summary>
-        private static bool IsAllOneCharacter(string query)
+        private static bool IsAllOneCharacter(string query, out int firstLength)
         {
-            for (int i = 1; i < query.Length; i++)
-                if (char.ToUpperInvariant(query[i]) != char.ToUpperInvariant(query[0])) return false;
+            // A lone surrogate is not a character, but it is still a key: one unit.
+            if (!System.Text.Rune.TryGetRuneAt(query, 0, out var firstRune))
+            {
+                firstLength = 1;
+                for (int k = 1; k < query.Length; k++)
+                    if (query[k] != query[0]) return false;
+                return true;
+            }
+            firstLength = firstRune.Utf16SequenceLength;
+            var upper = System.Text.Rune.ToUpperInvariant(firstRune);
+
+            for (int i = firstLength; i < query.Length;)
+            {
+                if (!System.Text.Rune.TryGetRuneAt(query, i, out var rune)) return false;
+                if (System.Text.Rune.ToUpperInvariant(rune) != upper) return false;
+                i += rune.Utf16SequenceLength;
+            }
             return true;
         }
+
+        /// <summary>
+        /// A name with its accents taken off: "Éclair" is "Eclair", "Ärger" is
+        /// "Arger". Plain ASCII, which is nearly every name, comes back as it is
+        /// without allocating, because this runs per row on every keystroke.
+        ///
+        /// Decomposed by Windows itself (NormalizeString), not by
+        /// string.Normalize: the application runs with InvariantGlobalization,
+        /// where string.Normalize leaves everything above ASCII untouched —
+        /// measured, "Éclair" comes back unchanged.
+        /// </summary>
+        public static string Fold(string text)
+        {
+            int i = 0;
+            while (i < text.Length && text[i] < 0x80) i++;
+            if (i == text.Length) return text;
+
+            var decomposed = Decompose(text);
+            var kept = new System.Text.StringBuilder(decomposed.Length);
+            foreach (char c in decomposed)
+            {
+                var category = char.GetUnicodeCategory(c);
+                if (category is System.Globalization.UnicodeCategory.NonSpacingMark
+                    or System.Globalization.UnicodeCategory.SpacingCombiningMark
+                    or System.Globalization.UnicodeCategory.EnclosingMark) continue;
+                kept.Append(c);
+            }
+            return kept.ToString();
+        }
+
+        private static string Decompose(string text)
+        {
+            const int NormalizationD = 2;
+            try
+            {
+                int size = NormalizeString(NormalizationD, text, text.Length, null, 0);
+                for (int attempt = 0; attempt < 3 && size > 0; attempt++)
+                {
+                    var buffer = new char[size];
+                    int written = NormalizeString(NormalizationD, text, text.Length, buffer, buffer.Length);
+                    if (written > 0) return new string(buffer, 0, written);
+
+                    // ERROR_INSUFFICIENT_BUFFER: the first answer was an estimate.
+                    if (System.Runtime.InteropServices.Marshal.GetLastWin32Error() != 122) break;
+                    size = -written;
+                    if (size <= buffer.Length) size = buffer.Length * 2;
+                }
+            }
+            catch { }
+            return text;
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll",
+            CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
+        private static extern int NormalizeString(int form, string source, int sourceLength,
+            char[]? destination, int destinationLength);
     }
 }

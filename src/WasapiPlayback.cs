@@ -1589,7 +1589,24 @@ namespace ExplorerNative
 
             var pump = _pump;
             _pump = null;
-            try { pump?.Join(2000); } catch { }
+
+            // Woken, not waited out. A paused or full pump sleeps on this event
+            // for up to a quarter of a second, and Stop while paused took a
+            // hundred milliseconds against fifteen while playing.
+            try { _drained.Set(); } catch { }
+
+            bool left = true;
+            try { left = pump?.Join(2000) ?? true; } catch { }
+
+            // A pump that will not come back is stuck inside a decoder, and the
+            // one thing that must not outlive Stop is the file being held open:
+            // the track could not be deleted or renamed until the application
+            // exited. The handle is let go from here; whatever the decoder was
+            // doing finds its stream closed and ends.
+            if (!left)
+            {
+                try { (_decoder as OggDecoder)?.ReleaseSource(); } catch { }
+            }
 
             // The pump owns the decoder and disposes it as it leaves, so there is
             // nothing to dispose here — and disposing it from this thread would

@@ -243,8 +243,15 @@ namespace ExplorerNative
                 // a position 448 samples from where NVorbis's output really is.
                 // Measured: a straight decode then played 16 samples of padding
                 // past the end of the file.
+                //
+                // Not on the last page any more. NVorbis trims the last packet by
+                // however far the granule falls short of where it has counted to,
+                // and a damaged granule far enough short leaves the packet's end
+                // before its start — its read loop then spins for ever, the same
+                // fault as the seek has. OggDecoder trims the end itself, to the
+                // same count, with nothing that can go below zero.
                 var last = packets[packets.Count - 1];
-                if (page.Granule >= 0 && (page.Last || resync)) last.GranulePosition = page.Granule - _base;
+                if (page.Granule >= 0 && resync && !page.Last) last.GranulePosition = page.Granule - _base;
                 if (page.Last) last.IsEndOfStream = true;
             }
 
@@ -386,6 +393,22 @@ namespace ExplorerNative
                         _queue.Enqueue(prior);
                         for (int j = i; j < n; j++) _queue.Enqueue(packets[j]);
                         start = priorEnd;
+
+                        // NVorbis skips target minus start into this packet's
+                        // output, and a skip as long as the output or longer is
+                        // not an error to it: its read loop then waits for its
+                        // cursor to come back to the end of the packet, which it
+                        // has already passed, and spins a core for ever with the
+                        // file held open. In a sound file the two ends agree and
+                        // this never applies. In a damaged one the page before
+                        // can say an end tens of thousands of samples before
+                        // this page's — measured at 46,000 — and the packet is
+                        // placed from its own page instead, which is where it is
+                        // heard: never further in than it produces, never before
+                        // the target's own packet.
+                        if (target - start >= counts[i])
+                            start = Math.Min(target, ends[i] - counts[i]);
+
                         return true;
                     }
 

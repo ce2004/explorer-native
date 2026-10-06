@@ -159,8 +159,16 @@ namespace ExplorerNative
         /// <summary>What happened when the Windows menu was asked for.</summary>
         public enum MenuOutcome
         {
-            /// <summary>It appeared. Whether anything was chosen is not this method's business.</summary>
+            /// <summary>It appeared and a command was chosen and handed to the shell.</summary>
             Shown,
+
+            /// <summary>
+            /// It appeared and was closed without choosing anything. Not a
+            /// failure, and not a reason to re-read the folder: it used to come
+            /// back as Shown, and the window refreshed — in search results that
+            /// was the whole search run again, announced.
+            /// </summary>
+            Dismissed,
 
             /// <summary>The shell would not produce one here at all.</summary>
             Unavailable,
@@ -179,13 +187,13 @@ namespace ExplorerNative
         /// How long this may spend turning a selection into something the shell
         /// will build a menu for, before giving up.
         ///
-        /// The work is two shell calls per selected item — SHParseDisplayName and
-        /// SHBindToParent — and they are not cheap. Measured on this machine:
-        /// **8 milliseconds each**. Three thousand selected files is therefore
-        /// twenty-four seconds of the window not responding, ten thousand is over
-        /// a minute, and a folder of two hundred thousand is not worth writing
-        /// down. There was no limit at all, so right-clicking after Ctrl+A did
-        /// exactly that.
+        /// The work was two shell calls per selected item — SHParseDisplayName and
+        /// SHBindToParent — measured at between 1 and 8 milliseconds each, so
+        /// three thousand selected files was seconds to twenty-four seconds of the
+        /// window not responding. The parent is now bound once and each item is
+        /// its name parsed by that folder, about 0.02ms, but an extension can
+        /// still make one item slow, and there was no limit at all, so
+        /// right-clicking after Ctrl+A did exactly that.
         ///
         /// A time budget rather than a count, because the per-item cost is a
         /// property of the machine and of whatever shell extensions are installed
@@ -232,6 +240,11 @@ namespace ExplorerNative
             // So the full PIDLs are the things we own and release, at the very end.
             var fullPidls = new List<IntPtr>();
             var childPidls = new List<IntPtr>();
+
+            // Relative PIDLs parsed by the parent folder itself. Unlike the
+            // ones SHBindToParent points into, these are separate allocations
+            // and ours to free.
+            var ownedChildren = new List<IntPtr>();
             IntPtr parentFolderPtr = IntPtr.Zero;
             IntPtr contextMenuPtr = IntPtr.Zero;
             IntPtr hMenu = IntPtr.Zero;
@@ -278,12 +291,36 @@ namespace ExplorerNative
                     // budget note above already warns about.
                     try
                     {
-                        SHParseDisplayName(paths[i], IntPtr.Zero, out IntPtr full, 0, out _);
-                        if (full == IntPtr.Zero) return MenuOutcome.Unavailable;
-                        fullPidls.Add(full);
+                        // The parent is already bound, so each item is only its
+                        // name parsed by that folder: 0.02ms, against 1.12ms for
+                        // parsing the whole path from the desktop down and
+                        // binding the same parent again, every item. A name the
+                        // folder cannot take — a drive root has none — goes the
+                        // long way.
+                        var name = Path.GetFileName(paths[i].TrimEnd('\\', '/'));
+                        IntPtr child = IntPtr.Zero;
+                        if (name.Length > 0)
+                        {
+                            try
+                            {
+                                uint attributes = 0;
+                                parentFolder.ParseDisplayName(IntPtr.Zero, IntPtr.Zero, name,
+                                    out _, out child, ref attributes);
+                            }
+                            catch { child = IntPtr.Zero; }
+                            if (child != IntPtr.Zero) ownedChildren.Add(child);
+                        }
 
-                        SHBindToParent(full, ref shellFolderGuid, out IntPtr otherParent, out IntPtr child);
-                        if (otherParent != IntPtr.Zero) Marshal.Release(otherParent);
+                        if (child == IntPtr.Zero)
+                        {
+                            SHParseDisplayName(paths[i], IntPtr.Zero, out IntPtr full, 0, out _);
+                            if (full == IntPtr.Zero) return MenuOutcome.Unavailable;
+                            fullPidls.Add(full);
+
+                            SHBindToParent(full, ref shellFolderGuid, out IntPtr otherParent, out child);
+                            if (otherParent != IntPtr.Zero) Marshal.Release(otherParent);
+                        }
+
                         if (child == IntPtr.Zero) return MenuOutcome.Unavailable;
                         childPidls.Add(child);
                     }
@@ -311,7 +348,9 @@ namespace ExplorerNative
                 uint selected = TrackPopupMenuEx(hMenu, TPM_RETURNCMD | TPM_LEFTALIGN,
                     screenX, screenY, msgWindow.Handle, IntPtr.Zero);
 
-                if (selected == 0) return MenuOutcome.Shown; // dismissed without choosing — not a failure
+                // Escape, or a click elsewhere: nothing was done, so nothing
+                // is to be refreshed, re-searched or said.
+                if (selected == 0) return MenuOutcome.Dismissed;
 
                 // ANSI verb only: setting CMIC_MASK_UNICODE means the shell reads
                 // the W fields too, and getting that struct layout subtly wrong
@@ -346,6 +385,7 @@ namespace ExplorerNative
                 if (parentFolderPtr != IntPtr.Zero) Marshal.Release(parentFolderPtr);
                 // Only the full PIDLs are ours; the child PIDLs live inside them.
                 foreach (var p in fullPidls) if (p != IntPtr.Zero) CoTaskMemFree(p);
+                foreach (var p in ownedChildren) if (p != IntPtr.Zero) CoTaskMemFree(p);
             }
         }
 

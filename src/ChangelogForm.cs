@@ -94,9 +94,15 @@ namespace ExplorerNative
             catch (Exception ex)
             {
                 if (IsDisposed) return;
-                _status.Text = ex is OperationCanceledException
-                    ? "GitHub did not answer in time."
-                    : "Could not load the changelog: " + ex.Message;
+                _status.Text = ex switch
+                {
+                    OperationCanceledException => "GitHub did not answer in time.",
+                    // Already a whole sentence: rate limited, not found, unreadable.
+                    Updater.UpdateException => "Could not load the changelog. " + ex.Message,
+                    System.Net.Http.HttpRequestException =>
+                        "Could not load the changelog. GitHub could not be reached: " + ex.Message,
+                    _ => "Could not load the changelog: " + ex.Message,
+                };
                 Speak(_status.Text);
                 return;
             }

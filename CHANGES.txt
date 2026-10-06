@@ -1,5 +1,24 @@
 2.0.0
 Version 2.0 is the largest release of this program, with many improvements and new features.
+Files sort the way File Explorer sorts them: Track 2 comes before Track 10, and names with accents sit with the other letters instead of at the end.
+Typing a letter now finds names that start with that letter and an accent, so E finds Éclair. Pressing the same emoji again moves to the next name that starts with it.
+Downloading into the folder you're looking at no longer makes the list reload over and over. The file's size updates where it is, and the cursor stays put.
+When lots of files arrive in a folder at once, the list catches up every few seconds instead of reloading constantly.
+Big folders that fill in while they load are much smoother to arrow through.
+The Windows right-click menu opens much faster when many files are selected.
+Bug fixed: pressing Escape to close the Windows right-click menu searched again or reloaded the folder. Now it just closes the menu.
+While Explorer Native is hidden in the tray, it stops checking the folder and watching for changes, and catches up when you open it again.
+Bug fixed: a USB drive could refuse to be safely removed while its folder was open in Explorer Native. Now Explorer Native lets go of it when Windows asks.
+Reset to defaults keeps your web app pairing code, your Google Drive sync pairs, the folders you're in and where the window is. The question now says so.
+Bug fixed: cancelling an extract still said which files it had replaced or renamed. Now it just says it was cancelled.
+Bug fixed: the progress window could say things like "3 of 0 items" before it knew how many there were. Now it says "3 items" until it knows.
+A global shortcut message now says it needs Control, Alt or the Windows key, which is what Preferences already allowed.
+Bug fixed: skipping in some damaged Ogg files could freeze playback and keep the file locked. Now playback stops cleanly.
+Bug fixed: skipping right after resuming jumped to the wrong place.
+Bug fixed: skipping past the end of some damaged or cut-off MP3 files could freeze the player. Now the track just ends.
+Bug fixed: an Ogg file with the wrong extension, such as .mp3, wouldn't play. It plays now.
+Stop is faster when a track is paused.
+Very short sounds on repeat use much less of the processor.
 Bug fixed: while music or an audiobook played in the web app, VoiceOver could stop talking and the page lagged. The page was updating the playback position every second. Now playback leaves VoiceOver alone, and the position only changes when you skip or seek. Press Time on Now Playing to hear where you are.
 The web app looks and works just like the old iPhone app. Tabs along the bottom with icons for Files, Now Playing, Clipboard, Transfers and Settings. Each screen has its big title at the top, and in a folder the Back button names the folder it goes back to. Settings are in rounded groups with switches, folders have arrows, and each file has a More button for its actions. Now Playing has the title, the position slider, big skip and play buttons, then speed and the queue. Menus slide up from the bottom, and it follows your phone's light or dark mode. Each tab keeps its place when you switch away and back. The skip to content link is gone.
 While something plays, a small player sits above the tabs with the title and a Play and Pause button. Tap the title to open Now Playing.
@@ -7,10 +26,58 @@ Bug fixed: in the web app, the drop-down lists in Settings and on Now Playing wo
 New feature: Copy to iPhone, on the web app's Clipboard screen. Whatever is on the PC clipboard comes to your phone in one tap. Text goes straight onto the phone's clipboard and it says "Text copied to iPhone". Files and pictures download to the phone, show their progress in Transfers, and say "Saved to iPhone" when each one is done.
 If the phone won't let the web app copy text, the text appears in a box with its own Copy button, so you can still get it.
 Sending text or a file from the phone to the PC now says "Sent to the PC clipboard" when it arrives.
+Bug fixed: opening a web page file from the PC in the web app could let that page act as you. Web pages, drawings saved as SVG, and scripts now download instead of opening, and nothing inside a file you open can run in the web app.
+Bug fixed: empty files couldn't be uploaded from the web app or sent to the PC clipboard. They go like any other file now.
+Bug fixed: if an upload from the web app stalled, it could stay stuck for over a minute. The PC now gives up on a stalled piece after 30 seconds, and the web app waits a little longer each time before trying again.
+Bug fixed: uploading several files with the same name at once from the web app made most of them fail. Each one arrives now, with a number added when the name is taken.
+Bug fixed: if the PC got an upload but its answer never reached the phone, trying again made a second copy. Now the PC knows it is the same upload and keeps one.
+Bug fixed: pressing Stop on a small upload in the web app didn't stop it, and the file still arrived. Now it stops.
+Bug fixed: moving something in the web app into the folder it was already in renamed it, or said it failed. Now nothing changes, and it says it is already there.
+Bug fixed: in the web app, files and folders whose names end in a dot or a space couldn't be opened, downloaded, renamed, measured or played. They work now. Deleting one says why it can't go to the Recycle Bin, instead of saying it isn't there.
+Bug fixed: a file open in another program on the PC showed as missing in the web app, or failed with an unclear error. Now it says the file is in use by another program.
+Bug fixed: after Refresh or Delete in the web app, VoiceOver jumped to the folder's title. Refresh now stays where you were, and Delete lands on the next item.
+Bug fixed: after sending to the PC clipboard failed, the web app still showed "Sent to the PC clipboard" from the time before.
+Bug fixed: refreshing an empty folder while the PC couldn't be reached switched to the Can't reach the PC screen, while a folder with files in it only said so. Both now stay on the folder and say the PC can't be reached.
+The delete question in the web app starts on Cancel, so a quick double tap doesn't delete anything.
+VoiceOver now knows which tab each screen of the web app belongs to.
+Explorer Native no longer wakes up every 10 seconds for the web app while nothing is being played or downloaded from Google Drive through it, which saves battery.
 The Speech settings only list things Explorer Native actually says, in plain words. Each one is a checkbox: tick it to hear it, and press Preview to hear an example.
 Bug fixed: Preferences and the Speech settings were slow to open, and lagged when you moved between pages or tabbed through them. They're instant now.
 New installs start with no keyboard shortcuts. Set the ones you want in Preferences.
 Updates never change your settings. Whatever you have set stays exactly as it is.
+Bug fixed: typing a wrong option on the command line, such as --unistall, opened Explorer Native. Now it says the option isn't known.
+Bug fixed: Check for updates said GitHub could not be reached when GitHub was only limiting checks for a while, and said you had the latest version when it couldn't find the list of releases. Now it says what actually happened.
+Bug fixed: if the old copy took a long time to close during an update, the new version never started. Now it starts as soon as the old one has gone.
+Bug fixed: the list of changes in the update window and the changelog could lose brackets, underscores and other characters from the release notes. They show as written now.
+Bug fixed: pressing Alt+C on the Google Drive page in Preferences connected Google Drive instead of cancelling. Now Alt+C always means Cancel. Connect and Reconnect use Alt+N now, and Sign out of Google uses Alt+G, so Alt+O always means OK.
+Bug fixed: on the Web app page in Preferences, Alt+O opened the web app in the browser and Alt+C copied the link, instead of OK and Cancel. Copy link is Alt+Y and Open in browser is Alt+B now.
+Bug fixed: a keyboard shortcut could be just Shift and a letter, so Shift+P took away the capital P in every program. Shift on its own is now only allowed with a function key.
+Bug fixed: pressing OK in Preferences could change settings you never touched. A read ahead size from an older version, a drive letter written in lower case, or the window shortcut could change, and Google Drive could move to another letter. Now OK only changes what you changed, and a setting the lists don't offer is shown as it is, marked custom.
+Bug fixed: pressing OK in the Audio keyboard shortcuts window could blank a shortcut it didn't understand. Now only the shortcuts you set are saved.
+Bug fixed: pressing OK in the Speech settings could forget choices made by a newer version of Explorer Native. They're kept now.
+Bug fixed: if another program was holding the settings file when Explorer Native started, the web app's pairing code changed, and every browser had to enter the new one. Now the code stays the same.
+Bug fixed: if the web app's port was busy when Explorer Native started, it used port 47810 and saved that over your choice. Now it uses 47810 just until the next start, and your port stays your setting.
+Bug fixed: when you entered a new Google client ID and secret, they were saved even if OK then stopped on another problem and you pressed Cancel. Now nothing is saved until OK finishes.
+The Audio page in Preferences says how many audio actions there are, instead of a number that was out of date.
+Sort by in Preferences no longer offers Type, since there is no Type column.
+Extracting a tar.gz into a new folder, and extracting any 7z, tar.xz, tar.bz2, tar.zst or rar, is about twice as fast.
+Bug fixed: if one file in a 7z or similar archive had an unusual name, nothing extracted at all. Now everything else extracts and you're told which file was skipped.
+Bug fixed: files in a 7z or similar archive with names Windows can't use, such as ones with a question mark or a colon, were quietly extracted under a different name. Now they're left out and you're told their names.
+Bug fixed: if a 7z, tar.xz, tar.bz2 or tar.zst held two files with the same name, one was lost without a word. Now the first one is kept, as with zip and tar, and you're told.
+Bug fixed: one shortcut in a tar.xz could stop its last file from extracting, and with Replace chosen, nothing was replaced. Now everything else extracts normally.
+Bug fixed: a cut-off .gz file extracted as half a file and said it worked. Now you're told the file is damaged.
+Bug fixed: a damaged or cut-off zip, tar, tar.gz or 7z gave a confusing error and often saved nothing. Now everything before the damage is saved, and you're told the archive is damaged and how many items were extracted.
+Bug fixed: some very large files in tar archives, such as disk images, came out at the wrong size inside a folder called GNUSparseFile.0. They come out whole now.
+Bug fixed: a 7z or tar.xz with a capital-letter name, such as BACKUP.7Z, couldn't be made.
+Bug fixed: one file open in another program stopped a whole 7z or tar.xz from being made. Now the archive is made with everything else, and you're told which file was left out.
+Bug fixed: 7z and tar.xz archives couldn't be made or extracted in very deeply nested folders.
+Bug fixed: zips made by Windows and some other programs showed odd symbols in place of accented letters in file names. The names come out right now.
+Bug fixed: password-protected zips gave a confusing error. Now you're told they need a password, which Explorer Native can't open.
+Bug fixed: the progress for making a 7z, tar.xz, tar.bz2 or tar.zst could go past 100 percent.
+Bug fixed: cancelling a zip extraction said files had been replaced when they hadn't been.
+Bug fixed: compressing something that had been moved or deleted in the meantime said the archive was created. Now it says the item is no longer there.
+Bug fixed: skipping a folder while extracting counted every file inside it as a separate skip.
+Bug fixed: extracting the same files from a zip and from a tar gave different counts. They match now.
 
 1.0.7
 The old iPhone app no longer works. Use the web app instead: open the link from Preferences, Web app in Safari and add it to your Home Screen.

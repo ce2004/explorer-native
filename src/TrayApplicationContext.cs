@@ -309,6 +309,8 @@ namespace ExplorerNative
                     if (!_settings.UnreadableOnDisk) return;
 
                     var merged = Settings.WithChanges(fresh, new Settings(), _settings);
+                    // The file's own pairing code; a new one only if it had none.
+                    merged.EnsureConnectCode();
                     ApplyPendingReleases(merged);
                     ApplySettings(merged, reload: true);
                     merged.Save();
@@ -424,9 +426,14 @@ namespace ExplorerNative
             bool driveWasOn = _settings.GoogleDriveEnabled;
             bool webWasOn = _settings.WebAppEnabled;
             int portWas = _connect?.ListenPort ?? _settings.WebAppPort;
+            // Only a port setting that changed is acted on. On the fallback port
+            // for this session (see StartConnect) the saved port differs from
+            // the one listening, and OK on any page tried it, failed, and saved
+            // the fallback over it.
+            bool portSettingChanged = settings.WebAppPort != _settings.WebAppPort;
             _settings = settings;
             bool portMoved = false;
-            if (_connect != null && settings.WebAppPort != portWas)
+            if (_connect != null && portSettingChanged && settings.WebAppPort != portWas)
             {
                 // Preferences checked the port before OK; it can still have been
                 // taken since, in which case the old one is kept and said.
@@ -667,7 +674,7 @@ namespace ExplorerNative
             if (unusable.Count > 0)
                 Notify("hotkey.failed",
                     string.Join(", ", unusable) +
-                    " cannot be a global shortcut: one needs Control, Alt or Shift, or a media key. " +
+                    " cannot be a global shortcut: one needs Control, Alt or the Windows key, or a media key. " +
                     "On its own that key would stop working everywhere else.");
 
             if (duplicates.Count > 0)
@@ -771,7 +778,7 @@ namespace ExplorerNative
             lines.AddRange(reserved);
             lines.AddRange(duplicates);
             foreach (var one in unusable)
-                lines.Add($"{one} has no Control, Alt or Shift.");
+                lines.Add($"{one} has no Control, Alt or Windows key.");
 
             // Only the reasons that apply. A paragraph about keys being used
             // twice, in a dialog raised because a key was a function key, is one
@@ -791,7 +798,7 @@ namespace ExplorerNative
                         "by the order the settings are read, not by anything you can see.");
 
             if (unusable.Count > 0)
-                why.Add("A global shortcut needs Control, Alt or Shift, or else a media key. " +
+                why.Add("A global shortcut needs Control, Alt or the Windows key, or else a media key. " +
                         "On its own, a letter would stop typing that letter everywhere else.");
 
             var body =
@@ -1835,11 +1842,9 @@ namespace ExplorerNative
         /// </summary>
         private void StartConnect()
         {
-            if (string.IsNullOrEmpty(_settings.ConnectCode))
-            {
-                _settings.ConnectCode = ConnectServer.NewCode();
-                _settings.Save();
-            }
+            // Not while settings.json could not be read: the code is in that
+            // file, and RetrySettings makes one only if it turns out to have none.
+            if (_settings.EnsureConnectCode()) _settings.Save();
             _connectStreams = new ConnectStreams(path => _drive.OpenRange(path));
             var streams = _connectStreams;
             // Its own STA thread and message-only window: never the UI thread.
@@ -1865,17 +1870,17 @@ namespace ExplorerNative
                 port: _settings.WebAppPort);
             _connect.Start();
 
-            // A saved port another program has taken since: the default instead, said once.
+            // A saved port another program has taken since: the default for this
+            // session only, said once. Not saved: the port chosen is still the one
+            // asked for, and it was written over with 47810 for good because some
+            // other program happened to hold it at one startup.
             if (_connect.ListenProblem != null && _settings.WebAppPort != ConnectServer.Port)
             {
                 int wanted = _settings.WebAppPort;
                 if (_connect.Rebind(ConnectServer.Port))
-                {
-                    _settings.WebAppPort = ConnectServer.Port;
-                    _settings.Save();
                     Notify("webapp.port.fallback",
-                        $"Port {wanted} is in use by another program, so the web app is using port {ConnectServer.Port} instead");
-                }
+                        $"Port {wanted} is in use by another program, so the web app is using port " +
+                        $"{ConnectServer.Port} until Explorer Native next starts. Port {wanted} is still your setting");
             }
             if (_connect.ListenProblem != null)
                 Notify("webapp.port.failed", "The web app could not start. " + _connect.ListenProblem);

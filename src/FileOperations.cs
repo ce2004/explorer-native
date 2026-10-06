@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -150,13 +151,14 @@ namespace ExplorerNative
             // operation looks like one that never started.
             var conflicts = new ConflictLog();
             var unreadable = new List<string>();
+            var extras = new PlanExtras();
             try
             {
                 var outcome = await Task.Run(() =>
                 {
                     var dirs = new List<PlannedDirectory>();
                     var built = BuildPlan(sources, destinationDir, conflictPolicy, askConflict, conflicts, dirs, token,
-                        reserved, unreadable);
+                        reserved, unreadable, move, extras);
                     return (Files: built, Directories: dirs);
 
                 // Not back to the caller's thread: what follows creates every
@@ -175,6 +177,12 @@ namespace ExplorerNative
                 {
                     failed++;
                     errors.Add($"{dir}: could not be read, so nothing in it was copied");
+                }
+
+                foreach (var gone in extras.Missing)
+                {
+                    failed++;
+                    errors.Add($"{gone}: not found");
                 }
             }
             catch (OperationCanceledException)
@@ -215,12 +223,31 @@ namespace ExplorerNative
             int parallelism = Math.Clamp(threads, 1, 32);
             int bufferSize = Math.Clamp(bufferKilobytes, 4, 16384) * 1024;
 
+            // Selected links, moved as links. On a worker: recreating one on
+            // another volume is filesystem work like the rest.
+            if (extras.Links.Count > 0)
+            {
+                await Task.Run(() =>
+                {
+                    foreach (var (link, to) in extras.Links)
+                    {
+                        if (token.IsCancellationRequested) break;
+                        try { MoveLink(link, to); succeeded++; }
+                        catch (Exception ex)
+                        {
+                            failed++;
+                            errors.Add($"{link}: the link could not be moved ({ex.Message})");
+                        }
+                    }
+                }).ConfigureAwait(false);
+            }
+
             // Created before the files, so an empty folder survives the copy and
             // so a folder that only contains empty folders does too.
             foreach (var directory in plannedDirectories)
             {
                 if (token.IsCancellationRequested) break;
-                try { Directory.CreateDirectory(directory.Destination); }
+                try { Directory.CreateDirectory(NameRules.ExactPath(directory.Destination)); }
                 catch (Exception ex)
                 {
                     // Counted, not only recorded. A folder that files land in
@@ -244,12 +271,12 @@ namespace ExplorerNative
                     {
                         try
                         {
-                            Directory.CreateDirectory(Path.GetDirectoryName(item.Destination)!);
+                            Directory.CreateDirectory(NameRules.ExactPath(Path.GetDirectoryName(item.Destination)!));
 
                             if (move && SameVolume(item.Source, item.Destination))
                             {
                                 // Same-volume move is a rename: no bytes travel.
-                                File.Move(item.Source, item.Destination, overwrite: true);
+                                File.Move(NameRules.ExactPath(item.Source), NameRules.ExactPath(item.Destination), overwrite: true);
                             }
                             else
                             {
@@ -261,7 +288,16 @@ namespace ExplorerNative
                                     // A move that left the original behind is not a
                                     // move, and the error only reaches anybody when
                                     // something has been counted as failed.
-                                    try { File.Delete(item.Source); }
+                                    try
+                                    {
+                                        // Read-only is copied now, and a read-only
+                                        // original refuses the delete that ends a move.
+                                        var original = NameRules.ExactPath(item.Source);
+                                        var attributes = File.GetAttributes(original);
+                                        if (attributes.HasFlag(FileAttributes.ReadOnly))
+                                            File.SetAttributes(original, attributes & ~FileAttributes.ReadOnly);
+                                        File.Delete(original);
+                                    }
                                     catch (Exception ex)
                                     {
                                         Interlocked.Increment(ref failed);
@@ -295,14 +331,19 @@ namespace ExplorerNative
             }
 
             // A move leaves the source directory skeletons behind; clear the empties.
+            //
+            // Only folders whose tree this move planned. Every source used to be
+            // tried, and an empty folder that was skipped, or already where it
+            // was being moved to, was deleted for being empty.
             if (move)
             {
-                foreach (var src in sources)
+                foreach (var src in extras.MovedFolders)
                 {
                     try
                     {
-                        if (Directory.Exists(src) && IsEffectivelyEmpty(src))
-                            Directory.Delete(src, recursive: true);
+                        var exact = NameRules.ExactPath(src);
+                        if (Directory.Exists(exact) && !IsLinkAt(exact) && IsEffectivelyEmpty(exact))
+                            Directory.Delete(exact, recursive: true);
                     }
                     catch (Exception ex) { errors.Add($"{src}: {ex.Message}"); }
                 }
@@ -314,6 +355,19 @@ namespace ExplorerNative
 
         public enum ConflictChoice { Overwrite, Skip, Rename, Cancel, FillGaps }
 
+        /// <summary>What the plan decided beyond the files themselves.</summary>
+        private sealed class PlanExtras
+        {
+            /// <summary>Sources that are neither a file nor a folder any more.</summary>
+            public readonly List<string> Missing = new();
+
+            /// <summary>Selected links being moved, and where each goes.</summary>
+            public readonly List<(string Source, string Destination)> Links = new();
+
+            /// <summary>Folders whose tree was planned, the only ones a move may tidy away.</summary>
+            public readonly List<string> MovedFolders = new();
+        }
+
         private static List<PlannedCopy> BuildPlan(
             IReadOnlyList<string> sources,
             string destinationDir,
@@ -323,7 +377,9 @@ namespace ExplorerNative
             List<PlannedDirectory> directories,
             CancellationToken token,
             IEnumerable<string>? reserved = null,
-            List<string>? unreadable = null)
+            List<string>? unreadable = null,
+            bool move = false,
+            PlanExtras? extras = null)
         {
             var plan = new List<PlannedCopy>();
 
@@ -341,7 +397,28 @@ namespace ExplorerNative
                 var name = Path.GetFileName(source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
                 if (string.IsNullOrEmpty(name)) continue;
 
-                if (Directory.Exists(source))
+                // A move into the folder it is already in is nothing to do. Under
+                // keep both it used to be a collision with itself, and cut and
+                // paste in one folder renamed everything to "a (2)".
+                if (move && SamePath(Path.Combine(destinationDir, name), source)) continue;
+
+                // Exact, because "report." and "report" are two files and an
+                // ordinary path cannot tell them apart.
+                var exact = NameRules.ExactPath(source);
+
+                // A selected link is moved as itself. Planned as a folder, the
+                // walk went through it and the move deleted what it pointed at.
+                if (move && extras != null && IsLinkAt(exact))
+                {
+                    var linkDest = ResolveConflict(Path.Combine(destinationDir, name), policy, askConflict,
+                        conflicts, claimed, Directory.Exists(exact), out bool skipLink);
+                    if (skipLink) continue;
+                    claimed.Add(linkDest);
+                    extras.Links.Add((source, linkDest));
+                    continue;
+                }
+
+                if (Directory.Exists(exact))
                 {
                     var destRoot = Path.Combine(destinationDir, name);
 
@@ -368,6 +445,7 @@ namespace ExplorerNative
                     // The root itself, so copying an entirely empty folder still
                     // produces a folder rather than nothing at all.
                     directories.Add(new PlannedDirectory(destRoot));
+                    extras?.MovedFolders.Add(source);
 
                     foreach (var directory in SafeEnumerateDirectories(source))
                     {
@@ -382,11 +460,11 @@ namespace ExplorerNative
                         var relative = Path.GetRelativePath(source, file);
                         var dest = Path.Combine(destRoot, relative);
                         long size = 0;
-                        try { size = new FileInfo(file).Length; } catch { }
+                        try { size = new FileInfo(NameRules.ExactPath(file)).Length; } catch { }
                         plan.Add(new PlannedCopy(file, dest, size));
                     }
                 }
-                else if (File.Exists(source))
+                else if (File.Exists(exact))
                 {
                     var dest = Path.Combine(destinationDir, name);
                     dest = ResolveConflict(dest, policy, askConflict, conflicts, claimed, false, out bool skip);
@@ -394,12 +472,83 @@ namespace ExplorerNative
                     claimed.Add(dest);
 
                     long size = 0;
-                    try { size = new FileInfo(source).Length; } catch { }
+                    try { size = new FileInfo(exact).Length; } catch { }
                     plan.Add(new PlannedCopy(source, dest, size));
                 }
+
+                // Neither a file nor a folder: gone since it was picked. This had
+                // no branch at all, and a paste of nothing said "Copy complete".
+                else extras?.Missing.Add(source);
             }
 
             return plan;
+        }
+
+        internal static bool IsLinkAt(string exactPath)
+        {
+            try
+            {
+                FileSystemInfo entry = Directory.Exists(exactPath)
+                    ? new DirectoryInfo(exactPath)
+                    : new FileInfo(exactPath);
+                return entry.Exists && NameRules.IsLink(entry);
+            }
+            catch { return false; }
+        }
+
+        /// <summary>Whether two paths name the same place, as written.</summary>
+        internal static bool SamePath(string a, string b)
+        {
+            static string Norm(string p) => NameRules.PlainPath(p)
+                .Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar)
+                .TrimEnd(Path.DirectorySeparatorChar);
+            return string.Equals(Norm(a), Norm(b), StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>
+        /// Moves a junction or symbolic link itself, never what it points at.
+        ///
+        /// A rename when both ends are on one volume. Otherwise the link is made
+        /// again at the destination, pointing at the same place, and only then
+        /// is the original link removed — removing a link does not touch its
+        /// target, which is the whole point.
+        /// </summary>
+        public static void MoveLink(string link, string destination)
+        {
+            var from = NameRules.ExactPath(link);
+            var to = NameRules.ExactPath(destination);
+
+            if (RoboCopyEngine.TryRename(from, to)) return;
+
+            bool folder = Directory.Exists(from);
+            RecreateLink(link, destination);
+
+            if (folder) Directory.Delete(from, recursive: false);
+            else File.Delete(from);
+        }
+
+        /// <summary>
+        /// Makes <paramref name="destination"/> a link to whatever
+        /// <paramref name="link"/> points at: a junction for a junction, a
+        /// symbolic link for a symbolic link. A relative target is resolved
+        /// against the original's folder, because it would mean something else
+        /// from anywhere else.
+        /// </summary>
+        internal static void RecreateLink(string link, string destination)
+        {
+            var from = NameRules.ExactPath(link);
+            var to = NameRules.ExactPath(destination);
+            bool folder = Directory.Exists(from);
+
+            FileSystemInfo entry = folder ? new DirectoryInfo(from) : new FileInfo(from);
+            var target = entry.LinkTarget ?? throw new IOException($"{Path.GetFileName(link)} is not a link");
+
+            if (!Path.IsPathFullyQualified(target))
+                target = Path.GetFullPath(Path.Combine(Path.GetDirectoryName(NameRules.PlainPath(from))!, target));
+
+            if (folder && ReparseLinks.IsJunction(from)) ReparseLinks.CreateJunction(to, target);
+            else if (folder) Directory.CreateSymbolicLink(to, target);
+            else File.CreateSymbolicLink(to, target);
         }
 
         private static string ResolveConflict(
@@ -423,7 +572,8 @@ namespace ExplorerNative
                 return numbered;
             }
 
-            if (!File.Exists(desired) && !Directory.Exists(desired)) return desired;
+            var exactDesired = NameRules.ExactPath(desired);
+            if (!File.Exists(exactDesired) && !Directory.Exists(exactDesired)) return desired;
 
             var effective = policy;
             if (policy == PasteConflictPolicy.Ask)
@@ -468,7 +618,8 @@ namespace ExplorerNative
         public static string UniqueName(string desired, ISet<string>? claimed = null, bool? folder = null)
         {
             bool Taken(string path) =>
-                (claimed != null && claimed.Contains(path)) || File.Exists(path) || Directory.Exists(path);
+                (claimed != null && claimed.Contains(path)) ||
+                File.Exists(NameRules.ExactPath(path)) || Directory.Exists(NameRules.ExactPath(path));
 
             if (!Taken(desired)) return desired;
 
@@ -477,7 +628,7 @@ namespace ExplorerNative
             // Whether what is *arriving* is a folder, when the caller knows: a new
             // notes.txt beside a folder called notes.txt is a file, and is
             // numbered as one.
-            bool isFolder = folder ?? Directory.Exists(desired);
+            bool isFolder = folder ?? Directory.Exists(NameRules.ExactPath(desired));
 
             var unique = NameRules.UniqueAmong(
                 Path.GetFileName(desired),
@@ -491,9 +642,13 @@ namespace ExplorerNative
             string source, string destination, int bufferSize,
             Action<long> onChunk, CancellationToken token)
         {
-            await using var src = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read,
+            // Exact, so "report." is read and written as itself.
+            var from = NameRules.ExactPath(source);
+            var to = NameRules.ExactPath(destination);
+
+            await using var src = new FileStream(from, FileMode.Open, FileAccess.Read, FileShare.Read,
                 bufferSize, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            await using var dst = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None,
+            await using var dst = new FileStream(to, FileMode.Create, FileAccess.Write, FileShare.None,
                 bufferSize, FileOptions.Asynchronous | FileOptions.SequentialScan);
 
             var buffer = new byte[bufferSize];
@@ -512,13 +667,14 @@ namespace ExplorerNative
                 // the buffer, and a full disk refusing it at close used to leave a
                 // short file that the cleanup below had already been told to keep.
                 await dst.FlushAsync(token);
+                await dst.DisposeAsync();
 
-                // Through the writing handle, and after the flush. Set by path
-                // while the handle was still open, the time was overwritten when
-                // the buffered tail went out at close — every copy dated "now".
-                try { File.SetLastWriteTimeUtc(dst.SafeFileHandle, File.GetLastWriteTimeUtc(src.SafeFileHandle)); }
-                catch { }
-
+                // The rest of what robocopy keeps, which this engine — the one
+                // that makes every " (2)" copy — used to drop: the alternate
+                // streams, both dates and the attributes. The streams are part of
+                // the file, so a copy without them is incomplete and goes the way
+                // of any other incomplete copy.
+                CopyStreams(from, to);
                 complete = true;
             }
             finally
@@ -535,8 +691,86 @@ namespace ExplorerNative
                 if (!complete)
                 {
                     try { await dst.DisposeAsync(); } catch { }
-                    try { File.Delete(destination); } catch { }
+                    try { File.Delete(to); } catch { }
                 }
+            }
+
+            // Dates after the streams, because writing a stream moves the file's
+            // own last-write time; attributes last, because read-only would
+            // refuse the dates. Set by path once every handle that writes is
+            // closed: set through a handle with buffered data still to go out,
+            // the time was overwritten at close and every copy was dated "now".
+            CopyDatesAndAttributes(from, to);
+        }
+
+        /// <summary>Attributes a copy carries over, as robocopy's /COPY:DAT does.</summary>
+        private const FileAttributes KeptAttributes =
+            FileAttributes.ReadOnly | FileAttributes.Hidden | FileAttributes.System |
+            FileAttributes.Archive | FileAttributes.NotContentIndexed;
+
+        private static void CopyDatesAndAttributes(string from, string to)
+        {
+            try
+            {
+                File.SetCreationTimeUtc(to, File.GetCreationTimeUtc(from));
+                File.SetLastWriteTimeUtc(to, File.GetLastWriteTimeUtc(from));
+            }
+            catch { }
+
+            try
+            {
+                var current = File.GetAttributes(to);
+                var wanted = (current & ~KeptAttributes) | (File.GetAttributes(from) & KeptAttributes);
+                if (wanted != current) File.SetAttributes(to, wanted);
+            }
+            catch { }
+        }
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct FindStreamData
+        {
+            public long StreamSize;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 296)]
+            public string StreamName;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr FindFirstStreamW(string fileName, int infoLevel, out FindStreamData data, uint flags);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool FindNextStreamW(IntPtr find, out FindStreamData data);
+
+        [DllImport("kernel32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool FindClose(IntPtr find);
+
+        /// <summary>
+        /// Copies every named data stream — a download's Zone.Identifier, a tag
+        /// some program keeps beside the file — onto the copy. A filesystem with
+        /// no streams to list has nothing to copy.
+        /// </summary>
+        private static void CopyStreams(string from, string to)
+        {
+            var names = new List<string>();
+            var find = FindFirstStreamW(from, 0, out var data, 0);
+            if (find == new IntPtr(-1)) return;
+            try
+            {
+                do
+                {
+                    if (!string.Equals(data.StreamName, "::$DATA", StringComparison.OrdinalIgnoreCase))
+                        names.Add(data.StreamName);
+                }
+                while (FindNextStreamW(find, out data));
+            }
+            finally { FindClose(find); }
+
+            foreach (var name in names)
+            {
+                using var input = new FileStream(from + name, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var output = new FileStream(to + name, FileMode.Create, FileAccess.Write, FileShare.None);
+                input.CopyTo(output);
             }
         }
 
@@ -551,7 +785,7 @@ namespace ExplorerNative
                 var dir = stack.Pop();
 
                 string[] subDirs;
-                try { subDirs = Directory.GetDirectories(dir); }
+                try { subDirs = Plain(Directory.GetDirectories(NameRules.ExactPath(dir))); }
                 catch { continue; }
 
                 foreach (var sub in subDirs)
@@ -560,7 +794,7 @@ namespace ExplorerNative
                     {
                         // A junction is not copied, so its destination is not
                         // created either — the same rule the file walk uses.
-                        if (NameRules.IsLink(new DirectoryInfo(sub))) continue;
+                        if (NameRules.IsLink(new DirectoryInfo(NameRules.ExactPath(sub)))) continue;
                     }
                     catch { continue; }
 
@@ -580,7 +814,7 @@ namespace ExplorerNative
                 var dir = stack.Pop();
 
                 string[] subDirs;
-                try { subDirs = Directory.GetDirectories(dir); }
+                try { subDirs = Plain(Directory.GetDirectories(NameRules.ExactPath(dir))); }
                 catch { unreadable?.Add(dir); continue; }
 
                 foreach (var sub in subDirs)
@@ -588,18 +822,25 @@ namespace ExplorerNative
                     try
                     {
                         // Don't follow junctions: they lead out of the tree or back into it.
-                        if (NameRules.IsLink(new DirectoryInfo(sub))) continue;
+                        if (NameRules.IsLink(new DirectoryInfo(NameRules.ExactPath(sub)))) continue;
                     }
                     catch { continue; }
                     stack.Push(sub);
                 }
 
                 string[] files;
-                try { files = Directory.GetFiles(dir); }
+                try { files = Plain(Directory.GetFiles(NameRules.ExactPath(dir))); }
                 catch { unreadable?.Add(dir); continue; }
 
                 foreach (var f in files) yield return f;
             }
+        }
+
+        /// <summary>Listed through the exact form, handed back in the ordinary one.</summary>
+        private static string[] Plain(string[] paths)
+        {
+            for (int i = 0; i < paths.Length; i++) paths[i] = NameRules.PlainPath(paths[i]);
+            return paths;
         }
 
         private static bool IsEffectivelyEmpty(string dir)
@@ -617,22 +858,18 @@ namespace ExplorerNative
         {
             try
             {
-                var a = Path.GetFullPath(ancestor).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-                var c = Path.GetFullPath(candidate).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-                return c.StartsWith(a, StringComparison.OrdinalIgnoreCase);
+                // Not through GetFullPath when a name ends in a dot, which it
+                // would strip: "a." would then contain everything in "a".
+                static string Full(string p) =>
+                    (NameRules.ExactPath(p) != p ? NameRules.PlainPath(p) : Path.GetFullPath(p))
+                        .TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+                return Full(candidate).StartsWith(Full(ancestor), StringComparison.OrdinalIgnoreCase);
             }
             catch { return false; }
         }
 
-        private static bool SameVolume(string a, string b)
-        {
-            try
-            {
-                var ra = Path.GetPathRoot(Path.GetFullPath(a));
-                var rb = Path.GetPathRoot(Path.GetFullPath(b));
-                return string.Equals(ra, rb, StringComparison.OrdinalIgnoreCase);
-            }
-            catch { return false; }
-        }
+        // By the volume, not the drive letter: a subst drive or a folder that
+        // is a mount point puts one letter's paths on another volume.
+        private static bool SameVolume(string a, string b) => RoboCopyEngine.SameVolume(a, b);
     }
 }

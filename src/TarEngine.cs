@@ -5,6 +5,7 @@ using System.Formats.Tar;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -102,19 +103,30 @@ namespace ExplorerNative
             return ReadIndex(gzip, token);
         }
 
+        /// <param name="estimate">
+        /// Whether the archive was not listed first, so that progress is measured
+        /// through the archive file rather than against totals nobody has.
+        /// </param>
         public static int Extract(string archivePath, ArchiveFormat format,
             ExtractionRules rules, int threads, ArchiveEngine.Reporter reporter, List<string> errors,
-            CancellationToken token)
+            CancellationToken token, bool estimate = false)
         {
-            if (format.SingleFile) return ExpandOneFile(archivePath, rules, reporter, errors, token);
-
             using var file = OpenFile(archivePath);
-            if (format.Id != "tar.gz") return ReadInto(file, rules, threads, reporter, errors, token);
+            var counted = new ReadCounter(file);
+
+            // A bare .gz has no listing worth the name — one entry, and no size
+            // without decompressing it — so it is always measured this way.
+            if (estimate || format.SingleFile)
+                reporter.Estimate(file.Length, () => counted.Consumed);
+
+            if (format.SingleFile) return ExpandOneFile(archivePath, counted, rules, reporter, errors, token);
+
+            if (format.Id != "tar.gz") return ReadInto(counted, rules, threads, reporter, errors, token);
 
             // GZipStream reads every member of a multi-member file and joins
             // them, which is what makes anything ParallelGZip writes readable
             // here — and anything pigz writes, and two .gz files concatenated.
-            using var gzip = new GZipStream(file, CompressionMode.Decompress);
+            using var gzip = new GZipStream(counted, CompressionMode.Decompress, leaveOpen: true);
             return ReadInto(gzip, rules, threads, reporter, errors, token);
         }
 
@@ -134,7 +146,7 @@ namespace ExplorerNative
             return 1;
         }
 
-        private static int ExpandOneFile(string archivePath, ExtractionRules rules,
+        private static int ExpandOneFile(string archivePath, Stream source, ExtractionRules rules,
             ArchiveEngine.Reporter reporter, List<string> errors, CancellationToken token)
         {
             var name = ArchiveFormats.BaseName(archivePath);
@@ -148,23 +160,102 @@ namespace ExplorerNative
 
             reporter.Starting(name);
 
-            ArchiveEngine.WriteCommitted(target, output =>
+            try
             {
-                using var file = OpenFile(archivePath);
-                using var gzip = new GZipStream(file, CompressionMode.Decompress);
-                var buffer = new byte[1 << 20];
-                while (true)
+                ArchiveEngine.WriteCommitted(target, output =>
                 {
-                    token.ThrowIfCancellationRequested();
-                    int got = gzip.Read(buffer, 0, buffer.Length);
-                    if (got <= 0) break;
-                    output.Write(buffer, 0, got);
-                    reporter.Advance(got);
-                }
-            });
+                    using var gzip = new GZipStream(source, CompressionMode.Decompress, leaveOpen: true);
+                    var buffer = new byte[1 << 20];
+                    uint crc = Crc32.Seed;
+                    long length = 0;
+                    while (true)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        int got = gzip.Read(buffer, 0, buffer.Length);
+                        if (got <= 0) break;
+                        output.Write(buffer, 0, got);
+                        crc = Crc32.Append(crc, buffer.AsSpan(0, got));
+                        length += got;
+                        reporter.Advance(got);
+                    }
+
+                    if (!TrailerAgrees(archivePath, output, crc, length, token))
+                        throw new InvalidDataException("the archive ends before the file does");
+                });
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception ex) when (ex is InvalidDataException or EndOfStreamException)
+            {
+                // Half a file under the whole file's name, reported as extracted,
+                // was what a truncated download produced.
+                errors.Add($"This archive is damaged or incomplete, so {name} was not extracted.");
+                rules.Withdraw(target);
+                reporter.Finished(0);
+                return 0;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                errors.Add($"{name}: {ex.Message}");
+                rules.Withdraw(target);
+                reporter.Finished(0);
+                return 0;
+            }
 
             reporter.Finished(0);
             return 1;
+        }
+
+        /// <summary>
+        /// Whether a .gz really ended where it says it did.
+        ///
+        /// GZipStream does not notice a file cut short: it reads what there is,
+        /// returns the end of the stream, and a truncated download extracted as
+        /// half a file with nothing said. Every gzip member ends with the CRC-32
+        /// and length of what it holds, so the last eight bytes of the file are
+        /// the last member's checksum — and in a truncated file they are
+        /// compressed data that matches nothing.
+        ///
+        /// A file of one member is checked against the running figures with no
+        /// further reading. One of several — anything ParallelGZip or pigz
+        /// wrote, or two files joined — has its last member's output read back
+        /// from the end of what was written.
+        /// </summary>
+        internal static bool TrailerAgrees(string archivePath, Stream output, uint crc, long length,
+            CancellationToken token)
+        {
+            Span<byte> trailer = stackalloc byte[8];
+            using (var file = new FileStream(archivePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                // A header, the smallest deflate block and a trailer.
+                if (file.Length < 20) return false;
+                file.Position = file.Length - 8;
+                file.ReadExactly(trailer);
+            }
+
+            uint storedCrc = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(trailer);
+            uint storedSize = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(trailer[4..]);
+
+            if (storedCrc == crc && storedSize == (uint)length) return true;
+            if (storedSize > length || !output.CanRead || !output.CanSeek) return false;
+
+            output.Flush();
+            long end = output.Position;
+            output.Position = length - storedSize;
+
+            var buffer = new byte[1 << 20];
+            uint last = Crc32.Seed;
+            long left = storedSize;
+            while (left > 0)
+            {
+                token.ThrowIfCancellationRequested();
+                int got = output.Read(buffer, 0, (int)Math.Min(buffer.Length, left));
+                if (got <= 0) break;
+                last = Crc32.Append(last, buffer.AsSpan(0, got));
+                left -= got;
+            }
+
+            output.Position = end;
+            return left == 0 && last == storedCrc;
         }
 
         // ---------- The tar layer, over any stream ----------
@@ -244,9 +335,19 @@ namespace ExplorerNative
             using var reader = new TarReader(tar, leaveOpen: true);
             var entries = new List<ArchiveEntryInfo>();
 
-            while (reader.GetNextEntry(copyData: false) is { } entry)
+            while (true)
             {
                 token.ThrowIfCancellationRequested();
+
+                // A damaged or truncated archive ends the listing, not the
+                // extraction: it threw "Unable to read beyond the end of the
+                // stream" before a single good file had been saved. What was
+                // read is enough to ask about collisions, and the extraction
+                // that follows saves what it can and says where it stopped.
+                TarEntry? entry;
+                try { entry = reader.GetNextEntry(copyData: false); }
+                catch (Exception ex) when (ex is not OperationCanceledException) { break; }
+                if (entry == null) break;
 
                 // Not files, as ReadInto already knows: counted here, git
                 // archive's global header made the total one more than anything
@@ -255,15 +356,153 @@ namespace ExplorerNative
                     continue;
 
                 bool isDirectory = entry.EntryType == TarEntryType.Directory;
+                var sparse = SparseOf(entry);
                 entries.Add(new ArchiveEntryInfo(
-                    entry.Name,
-                    isDirectory ? 0 : entry.Length,
+                    sparse?.Name ?? entry.Name,
+                    isDirectory ? 0 : sparse?.RealSize ?? entry.Length,
                     entry.ModificationTime.LocalDateTime,
                     isDirectory));
             }
 
             return entries;
         }
+
+        // ---------- GNU sparse files ----------
+
+        /// <summary>
+        /// A file stored sparse: its real name and size, and where its data goes.
+        ///
+        /// Windows' own tar stores a sparse file this way — a virtual disk, a
+        /// database, anything mostly holes — as PAX "GNU.sparse" 1.0: the
+        /// header is named "GNUSparseFile.0/holes.bin", the real name and size
+        /// are in extended attributes, and the data begins with a map of where
+        /// each stored piece belongs. Read as an ordinary file, a 64MB file
+        /// came out as "GNUSparseFile.0/holes.bin" of 262KB, with nothing said.
+        /// </summary>
+        /// <param name="Map">Offset and length of each stored piece; null when it is at the front of the data (1.0).</param>
+        /// <param name="Refusal">Set for a layout that cannot be rebuilt (0.0, whose map a dictionary cannot hold).</param>
+        private sealed record Sparse(string Name, long RealSize, List<(long Offset, long Length)>? Map, string? Refusal);
+
+        private static Sparse? SparseOf(TarEntry entry)
+        {
+            if (entry is not PaxTarEntry pax) return null;
+            var a = pax.ExtendedAttributes;
+            if (!a.Keys.Any(k => k.StartsWith("GNU.sparse.", StringComparison.Ordinal))) return null;
+
+            var name = a.TryGetValue("GNU.sparse.name", out var n) && !string.IsNullOrEmpty(n) ? n : entry.Name;
+
+            static long Number(IReadOnlyDictionary<string, string> a, string key) =>
+                a.TryGetValue(key, out var v) && long.TryParse(v, System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out var x) ? x : -1;
+
+            if (a.TryGetValue("GNU.sparse.major", out var major) && major == "1")
+            {
+                long real = Number(a, "GNU.sparse.realsize");
+                return real < 0
+                    ? new Sparse(name, 0, null, "it is a sparse file whose real size is not recorded")
+                    : new Sparse(name, real, null, null);
+            }
+
+            if (a.TryGetValue("GNU.sparse.map", out var text))
+            {
+                long size = Number(a, "GNU.sparse.size");
+                var parts = text.Split(',', StringSplitOptions.TrimEntries);
+                var map = new List<(long, long)>();
+                bool ok = size >= 0 && parts.Length % 2 == 0;
+                for (int i = 0; ok && i < parts.Length; i += 2)
+                {
+                    ok = long.TryParse(parts[i], out var offset) & long.TryParse(parts[i + 1], out var length) &&
+                         offset >= 0 && length >= 0 && offset + length <= size;
+                    if (ok) map.Add((offset, length));
+                }
+                return ok
+                    ? new Sparse(name, size, map, null)
+                    : new Sparse(name, 0, null, "it is a sparse file with a map that does not make sense");
+            }
+
+            return new Sparse(name, Math.Max(0, Number(a, "GNU.sparse.size")), null,
+                "it is a sparse file in an old layout this cannot rebuild");
+        }
+
+        /// <summary>Reads the 1.0 map from the front of the data, and the padding after it.</summary>
+        private static List<(long Offset, long Length)> ReadSparseMap(Stream data, long realSize, long dataLength)
+        {
+            long consumed = 0;
+            var line = new StringBuilder();
+
+            long Next()
+            {
+                line.Clear();
+                while (true)
+                {
+                    int b = data.ReadByte();
+                    if (b < 0) throw new InvalidDataException("the archive ends part way through it");
+                    consumed++;
+                    if (b == '\n') break;
+                    if (b < '0' || b > '9' || line.Length >= 20)
+                        throw new InvalidDataException("its sparse map is damaged");
+                    line.Append((char)b);
+                }
+                return line.Length == 0 ? throw new InvalidDataException("its sparse map is damaged") : long.Parse(line.ToString());
+            }
+
+            long count = Next();
+            if (count < 0 || count > dataLength) throw new InvalidDataException("its sparse map is damaged");
+
+            var map = new List<(long, long)>();
+            long stored = 0, previous = 0;
+            for (long i = 0; i < count; i++)
+            {
+                long offset = Next(), length = Next();
+                if (offset < previous || offset + length > realSize) throw new InvalidDataException("its sparse map is damaged");
+                previous = offset + length;
+                stored += length;
+                map.Add((offset, length));
+            }
+
+            long pad = (512 - consumed % 512) % 512;
+            for (long i = 0; i < pad; i++)
+                if (data.ReadByte() < 0) throw new InvalidDataException("the archive ends part way through it");
+
+            if (consumed + pad + stored > dataLength) throw new InvalidDataException("its sparse map is damaged");
+            return map;
+        }
+
+        /// <summary>Writes a sparse entry's pieces where they belong, leaving the holes as holes.</summary>
+        private static void WriteSparse(FileStream output, Stream data, Sparse sparse, long dataLength,
+            ArchiveEngine.Reporter reporter, CancellationToken token)
+        {
+            var map = sparse.Map ?? ReadSparseMap(data, sparse.RealSize, dataLength);
+
+            // Best effort: on NTFS the holes then take no space on disk, which
+            // for a mostly empty virtual disk is the difference between fitting
+            // and not.
+            try { DeviceIoControl(output.SafeFileHandle, 0x000900C4, IntPtr.Zero, 0, IntPtr.Zero, 0, out _, IntPtr.Zero); }
+            catch { }
+
+            var buffer = new byte[1 << 20];
+            foreach (var (offset, length) in map)
+            {
+                output.Position = offset;
+                long left = length;
+                while (left > 0)
+                {
+                    token.ThrowIfCancellationRequested();
+                    int got = data.Read(buffer, 0, (int)Math.Min(buffer.Length, left));
+                    if (got <= 0) throw new InvalidDataException("the archive ends part way through it");
+                    output.Write(buffer, 0, got);
+                    left -= got;
+                    reporter.Advance(got);
+                }
+            }
+
+            output.SetLength(sparse.RealSize);
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+        private static extern bool DeviceIoControl(Microsoft.Win32.SafeHandles.SafeFileHandle device, uint code,
+            IntPtr inBuffer, int inSize, IntPtr outBuffer, int outSize, out int returned, IntPtr overlapped);
 
         /// <summary>
         /// Reads a tar and writes what is in it to disk.
@@ -285,6 +524,12 @@ namespace ExplorerNative
             int lanes = Math.Max(1, threads);
             using var queue = new BlockingCollection<Pending>(lanes * 2);
             int done = 0;
+
+            // Set when the archive itself stops making sense — truncated, or a
+            // compressed stream that will not decompress — as opposed to one
+            // entry that could not be written. Said once at the end, with how
+            // much was saved.
+            bool damaged = false;
 
             // Where each file went, by its name in the archive, for the hard links
             // that name it; and the links, made once every file is written.
@@ -324,9 +569,9 @@ namespace ExplorerNative
 
                     TarEntry? entry;
                     try { entry = reader.GetNextEntry(copyData: false); }
-                    catch (Exception ex)
+                    catch (Exception ex) when (ex is not OperationCanceledException)
                     {
-                        lock (errors) errors.Add($"The archive could not be read past this point: {ex.Message}");
+                        damaged = true;
                         break;
                     }
 
@@ -339,7 +584,9 @@ namespace ExplorerNative
                         continue;
 
                     bool isDirectory = entry.EntryType == TarEntryType.Directory;
-                    var target = rules.TargetFor(entry.Name, isDirectory, out var problem);
+                    var sparse = isDirectory ? null : SparseOf(entry);
+                    var name = sparse?.Name ?? entry.Name;
+                    var target = rules.TargetFor(name, isDirectory, out var problem);
 
                     if (target == null)
                     {
@@ -348,12 +595,43 @@ namespace ExplorerNative
                         continue;
                     }
 
-                    reporter.Starting(entry.Name);
+                    reporter.Starting(name);
 
                     if (isDirectory)
                     {
                         try { Directory.CreateDirectory(target); Interlocked.Increment(ref done); }
                         catch (Exception ex) { lock (errors) errors.Add($"{entry.Name}: {ex.Message}"); }
+                        reporter.Finished(0);
+                        continue;
+                    }
+
+                    if (sparse != null)
+                    {
+                        if (sparse.Refusal != null)
+                        {
+                            lock (errors) errors.Add($"{name}: {sparse.Refusal}, so it was not extracted");
+                            rules.Withdraw(target);
+                        }
+                        else
+                        {
+                            var stored = entry.DataStream ?? Stream.Null;
+                            try
+                            {
+                                ArchiveEngine.WriteCommitted(target,
+                                    output => WriteSparse(output, stored, sparse, entry.Length, reporter, token));
+                                try { File.SetLastWriteTime(target, entry.ModificationTime.LocalDateTime); }
+                                catch { }
+                                Interlocked.Increment(ref done);
+                                lock (extracted) extracted[ArchiveName(name)] = target;
+                            }
+                            catch (OperationCanceledException) { throw; }
+                            catch (Exception ex)
+                            {
+                                if (ex is InvalidDataException or EndOfStreamException) damaged = true;
+                                lock (errors) errors.Add($"{name}: {ex.Message}");
+                                rules.Withdraw(target);
+                            }
+                        }
                         reporter.Finished(0);
                         continue;
                     }
@@ -392,7 +670,19 @@ namespace ExplorerNative
                         // onto the archive that stops being valid the moment the
                         // next entry is read.
                         var buffer = new byte[Math.Max(0, length)];
-                        int filled = data == null ? 0 : ReadFully(data, buffer, token);
+                        int filled;
+                        try { filled = data == null ? 0 : ReadFully(data, buffer, token); }
+                        catch (Exception ex) when (ex is InvalidDataException or EndOfStreamException or IOException)
+                        {
+                            // A gzip stream that stops decompressing said
+                            // "unsupported compression method", from nowhere a
+                            // person could make sense of, and nothing was kept.
+                            lock (errors) errors.Add($"{entry.Name}: the archive is damaged at this point");
+                            rules.Withdraw(target);
+                            reporter.Finished(0);
+                            damaged = true;
+                            break;
+                        }
                         if (filled > 0) reporter.Advance(filled);
 
                         // A truncated archive ends part way through an entry. That
@@ -403,6 +693,7 @@ namespace ExplorerNative
                             lock (errors) errors.Add($"{entry.Name}: the archive ends part way through it");
                             rules.Withdraw(target);
                             reporter.Finished(0);
+                            damaged = true;
                             continue;
                         }
 
@@ -443,7 +734,11 @@ namespace ExplorerNative
                         catch (OperationCanceledException) { throw; }
                         catch (Exception ex)
                         {
-                            lock (errors) errors.Add($"{entry.Name}: {ex.Message}");
+                            bool broken = ex is InvalidDataException or EndOfStreamException;
+                            if (broken) damaged = true;
+                            lock (errors) errors.Add(broken && ex.Message != "the archive ends part way through it"
+                                ? $"{entry.Name}: the archive is damaged at this point"
+                                : $"{entry.Name}: {ex.Message}");
                             rules.Withdraw(target);
                         }
 
@@ -494,6 +789,8 @@ namespace ExplorerNative
                 finally { reporter.Finished(0); }
             }
 
+            if (damaged) lock (errors) errors.Add(ArchiveEngine.DamagedMessage(done));
+
             return done;
         }
 
@@ -529,6 +826,7 @@ namespace ExplorerNative
             TarEntryType.CharacterDevice => "a character device",
             TarEntryType.BlockDevice => "a block device",
             TarEntryType.Fifo => "a named pipe",
+            TarEntryType.SparseFile => "a sparse file in an old layout this cannot rebuild",
             _ => "an entry of a kind Windows has no equivalent for",
         };
 
@@ -552,6 +850,48 @@ namespace ExplorerNative
 
             try { File.SetLastWriteTime(target, modified); }
             catch { }
+        }
+
+        /// <summary>
+        /// A read-only pass-through that counts what has been read from the
+        /// archive file, for progress measured through the compressed bytes.
+        /// The count is read from the reporting thread, so it is interlocked.
+        /// </summary>
+        private sealed class ReadCounter : Stream
+        {
+            private readonly Stream _inner;
+            private long _read;
+
+            public ReadCounter(Stream inner) => _inner = inner;
+
+            public long Consumed => Interlocked.Read(ref _read);
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => _inner.Length;
+            public override long Position
+            {
+                get => _inner.Position;
+                set => throw new NotSupportedException();
+            }
+
+            public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+
+            public override int Read(Span<byte> buffer)
+            {
+                int got = _inner.Read(buffer);
+                if (got > 0) Interlocked.Add(ref _read, got);
+                return got;
+            }
+
+            public override void Flush() { }
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            // The file underneath belongs to the caller, which closes it.
+            protected override void Dispose(bool disposing) { }
         }
 
         /// <summary>

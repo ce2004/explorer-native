@@ -236,7 +236,7 @@ namespace ExplorerNative
             for (int waited = 0; waited < MostNetworkWaits && Health.IsOffline; waited++)
             {
                 token.ThrowIfCancellationRequested();
-                await Task.Delay(NetworkWaitMilliseconds, token);
+                await Pause(TimeSpan.FromMilliseconds(NetworkWaitMilliseconds), token);
 
                 // Cheap, and the only thing that can put Health back online.
                 try { await Whoami(token); }
@@ -408,7 +408,7 @@ namespace ExplorerNative
         /// <see cref="UploadStallSeconds"/>, which asks whether bytes are still
         /// moving rather than how long they have been moving for.
         /// </summary>
-        private readonly HttpClient _uploads = new() { Timeout = Timeout.InfiniteTimeSpan };
+        private readonly HttpClient _uploads;
 
         /// <summary>
         /// Moves a file or folder to the Drive trash.
@@ -426,9 +426,11 @@ namespace ExplorerNative
 
             using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token);
             if (!response.IsSuccessStatusCode)
-                throw new InvalidOperationException(
-                    $"trash failed {(int)response.StatusCode}: " +
-                    Explain((int)response.StatusCode, await response.Content.ReadAsStringAsync(token)));
+            {
+                var body = await response.Content.ReadAsStringAsync(token);
+                throw new DriveStatusException((int)response.StatusCode, body,
+                    $"trash failed {(int)response.StatusCode}: " + Explain((int)response.StatusCode, body));
+            }
         }
 
         /// <summary>
@@ -697,9 +699,11 @@ namespace ExplorerNative
 
             using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token);
             if (!response.IsSuccessStatusCode)
-                throw new InvalidOperationException(
-                    $"move failed {(int)response.StatusCode}: " +
-                    Explain((int)response.StatusCode, await response.Content.ReadAsStringAsync(token)));
+            {
+                var body = await response.Content.ReadAsStringAsync(token);
+                throw new DriveStatusException((int)response.StatusCode, body,
+                    $"move failed {(int)response.StatusCode}: " + Explain((int)response.StatusCode, body));
+            }
         }
 
         /// <summary>
@@ -735,6 +739,19 @@ namespace ExplorerNative
         public async Task<string> Upload(
             string localPath, string name, string parentId,
             Action<UploadProgress>? progress, CancellationToken token,
+            string? resumeSession = null, Action<string>? sessionStarted = null) =>
+            (await UploadDetailed(localPath, name, parentId, progress, token, resumeSession, sessionStarted)).Id;
+
+        /// <summary>
+        /// The same upload, answering with what Drive now holds: its size,
+        /// checksum and modified time as Google recorded them, not as the file
+        /// was read here. The folder monitor records those, because a file that
+        /// changes while it is being sent is otherwise remembered as something
+        /// neither side has, and the next pass calls it changed on both.
+        /// </summary>
+        internal async Task<DriveUploaded> UploadDetailed(
+            string localPath, string name, string parentId,
+            Action<UploadProgress>? progress, CancellationToken token,
             string? resumeSession = null, Action<string>? sessionStarted = null)
         {
             long total;
@@ -749,6 +766,26 @@ namespace ExplorerNative
 
             return await UploadResumable(localPath, name, parentId, total, progress, token,
                 resumeSession, sessionStarted);
+        }
+
+        /// <summary>What an upload left in Drive. Size, time and checksum are null when Drive did not say.</summary>
+        internal sealed record DriveUploaded(string Id, long? Size, DateTime? ModifiedUtc, string? Md5);
+
+        /// <summary>The fields every upload asks to be answered with.</summary>
+        private const string UploadedFields = "id,size,md5Checksum,modifiedTime";
+
+        private static DriveUploaded Uploaded(JsonElement file)
+        {
+            long? size = file.TryGetProperty("size", out var s) && long.TryParse(s.GetString(), out long n) ? n : null;
+            DateTime? modified = file.TryGetProperty("modifiedTime", out var m) &&
+                                 m.ValueKind == JsonValueKind.String &&
+                                 DateTime.TryParse(m.GetString(), System.Globalization.CultureInfo.InvariantCulture,
+                                     System.Globalization.DateTimeStyles.AdjustToUniversal |
+                                     System.Globalization.DateTimeStyles.AssumeUniversal, out var when)
+                ? DateTime.SpecifyKind(when, DateTimeKind.Utc)
+                : null;
+            string? md5 = file.TryGetProperty("md5Checksum", out var h) ? h.GetString() : null;
+            return new DriveUploaded(file.GetProperty("id").GetString() ?? "", size, modified, md5);
         }
 
         /// <summary>
@@ -794,7 +831,7 @@ namespace ExplorerNative
         /// One request, metadata and bytes together, for a file small enough that
         /// a second round trip would be most of the cost of sending it.
         /// </summary>
-        private async Task<string> UploadWhole(
+        private async Task<DriveUploaded> UploadWhole(
             string localPath, string name, string parentId, long total,
             Action<UploadProgress>? progress, CancellationToken token)
         {
@@ -811,6 +848,7 @@ namespace ExplorerNative
             // asking Google how much it kept.
             var random = new Random();
             string lastProblem = "";
+            DriveStatusException? lastRefusal = null;
 
             // What Google asked us to wait, when it said. Carried from the
             // answer that refused us to the top of the next attempt.
@@ -823,11 +861,11 @@ namespace ExplorerNative
             var tag = NewOperationTag();
             bool maybeDone = false;
 
-            async Task<string?> AlreadyUploaded()
+            async Task<DriveUploaded?> AlreadyUploaded()
             {
                 if (!maybeDone) return null;
 
-                var found = await AskWhetherLanded(t => MadeWithTag(tag, parentId, "id,size", t), random, token);
+                var found = await AskWhetherLanded(t => MadeWithTag(tag, parentId, UploadedFields, t), random, token);
                 if (found == null) return null;
 
                 using var doc = JsonDocument.Parse(found);
@@ -837,7 +875,7 @@ namespace ExplorerNative
                 if (!whole) return null;
 
                 progress?.Invoke(new UploadProgress(total, total));
-                return file.GetProperty("id").GetString() ?? "";
+                return Uploaded(file);
             }
 
             for (int attempt = 0; attempt < MaxSmallUploadAttempts; attempt++)
@@ -845,7 +883,7 @@ namespace ExplorerNative
                 token.ThrowIfCancellationRequested();
 
                 if (attempt > 0)
-                    await Task.Delay(RetryDelay(attempt - 1, random, asked), token);
+                    await Pause(RetryDelay(attempt - 1, random, asked), token);
 
                 if (await AlreadyUploaded() is { } uploaded) return uploaded;
 
@@ -857,7 +895,7 @@ namespace ExplorerNative
                 using var source = OpenRead(localPath);
 
                 using var request = await Request(HttpMethod.Post,
-                    $"{UploadEndpoint}?uploadType=multipart&fields=id", token);
+                    $"{UploadEndpoint}?uploadType=multipart&fields={UploadedFields}", token);
 
                 var metadata = new StringContent(
                     MetadataJson(name, parentId, tag, UploadStamp(localPath)), Encoding.UTF8, "application/json");
@@ -881,9 +919,9 @@ namespace ExplorerNative
                     if (response.IsSuccessStatusCode)
                     {
                         using var doc = JsonDocument.Parse(text);
-                        var id = doc.RootElement.GetProperty("id").GetString() ?? "";
+                        var done = Uploaded(doc.RootElement);
                         progress?.Invoke(new UploadProgress(total, total));
-                        return id;
+                        return done;
                     }
 
                     // Read before the response is disposed, and only useful on
@@ -939,7 +977,9 @@ namespace ExplorerNative
                 // request to slow down by failing the file and immediately
                 // asking for the next one.
                 if (!WorthRetrying(status, text))
-                    throw new InvalidOperationException($"upload failed {status}: {lastProblem}");
+                    throw new DriveStatusException(status, text, $"upload failed {status}: {lastProblem}");
+
+                lastRefusal = new DriveStatusException(status, text, $"upload failed {status}: {lastProblem}");
 
                 if (status == 408 || status >= 500) maybeDone = true;
 
@@ -952,8 +992,12 @@ namespace ExplorerNative
             }
 
             if (await AlreadyUploaded() is { } landedLast) return landedLast;
-            throw new InvalidOperationException(
-                $"upload of {name} failed after {MaxSmallUploadAttempts} attempts: {lastProblem}");
+
+            // The status goes with it: the folder monitor waits out a rate limit
+            // or a 5xx for as long as it lasts, and the sentence alone no longer
+            // says which this was.
+            throw new DriveStatusException(lastRefusal?.Status ?? 0, lastRefusal?.Body ?? "",
+                $"upload of {name} failed after {MaxSmallUploadAttempts} attempts: {lastProblem}", lastRefusal);
         }
 
         /// <summary>
@@ -966,7 +1010,7 @@ namespace ExplorerNative
         /// there — which is the one number that may be trusted, and it may
         /// legitimately point *backwards* when a request was half received.
         /// </summary>
-        private async Task<string> UploadResumable(
+        private async Task<DriveUploaded> UploadResumable(
             string localPath, string name, string parentId, long total,
             Action<UploadProgress>? progress, CancellationToken token,
             string? resumeSession = null, Action<string>? sessionStarted = null)
@@ -980,6 +1024,7 @@ namespace ExplorerNative
             using var source = OpenRead(localPath);
             long sent = 0;
             string? lastProblem = null;
+            Exception? lastFailure = null;
             var random = new Random();
 
             // Whether Google's count has to be asked for before anything more is
@@ -993,7 +1038,7 @@ namespace ExplorerNative
 
                 // Spaced out. Going straight back into a connection that has just
                 // broken is how five resumes are spent in a second.
-                if (attempt > 0) await Task.Delay(RetryDelay(attempt - 1, random), token);
+                if (attempt > 0) await Pause(RetryDelay(attempt - 1, random), token);
 
                 if (askFirst)
                 {
@@ -1003,7 +1048,7 @@ namespace ExplorerNative
                         if (held)
                         {
                             progress?.Invoke(new UploadProgress(total, total));
-                            return heldId;
+                            return heldId!;
                         }
                         sent = ConfirmedOffset(sent, heldCount, total);
                         askFirst = false;
@@ -1028,7 +1073,7 @@ namespace ExplorerNative
                     }
                     catch (Exception ex)
                     {
-                        lastProblem = ex.Message;
+                        lastProblem = ex.Message; lastFailure = ex;
                         continue;
                     }
                 }
@@ -1046,7 +1091,7 @@ namespace ExplorerNative
                         if (done)
                         {
                             progress?.Invoke(new UploadProgress(total, total));
-                            return doneId;
+                            return doneId!;
                         }
 
                         // It holds everything and calls the upload unfinished.
@@ -1069,7 +1114,7 @@ namespace ExplorerNative
                     {
                         // The question failed, not the upload: asked again on the
                         // next pass, which is what the attempts are for.
-                        lastProblem = ex.Message;
+                        lastProblem = ex.Message; lastFailure = ex;
                         continue;
                     }
                 }
@@ -1094,7 +1139,7 @@ namespace ExplorerNative
                     if (finished)
                     {
                         progress?.Invoke(new UploadProgress(total, total));
-                        return id;
+                        return id!;
                     }
 
                     sent = ConfirmedOffset(before, confirmed, total);
@@ -1127,7 +1172,7 @@ namespace ExplorerNative
                 }
                 catch (Exception ex)
                 {
-                    lastProblem = ex.Message;
+                    lastProblem = ex.Message; lastFailure = ex;
 
                     // How much of it actually arrived, asked of the only party
                     // that knows — on the next pass, after the pause, so that a
@@ -1148,10 +1193,12 @@ namespace ExplorerNative
                 progress?.Invoke(new UploadProgress(sent, total));
             }
 
+            // The last failure rides along, so whoever decides whether to come
+            // back later can see it was a rate limit or a 5xx rather than prose.
             throw new InvalidOperationException(
                 $"upload stopped at {SizeFormatter.Format(sent, Units)} of " +
                 $"{SizeFormatter.Format(total, Units)} after {MaxUploadAttempts} attempts" +
-                (lastProblem == null ? "" : $": {lastProblem}"));
+                (lastProblem == null ? "" : $": {lastProblem}"), lastFailure);
         }
 
         /// <summary>
@@ -1186,7 +1233,7 @@ namespace ExplorerNative
                 async () =>
                 {
                     var request = await Request(HttpMethod.Post,
-                        $"{UploadEndpoint}?uploadType=resumable&fields=id", token);
+                        $"{UploadEndpoint}?uploadType=resumable&fields={UploadedFields}", token);
                     request.Content = new StringContent(metadata, Encoding.UTF8, "application/json");
                     request.Headers.Add("X-Upload-Content-Length",
                         size.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1218,7 +1265,7 @@ namespace ExplorerNative
         /// one streamed request. Returns whether the upload is complete, the file
         /// id when it is, and how many bytes Google confirms it now holds.
         /// </summary>
-        private async Task<(bool Finished, string Id, long Confirmed)> SendRange(
+        private async Task<(bool Finished, DriveUploaded? Done, long Confirmed)> SendRange(
             string session, Stream source, long offset, long total,
             Action<UploadProgress>? progress, CancellationToken token)
         {
@@ -1248,7 +1295,7 @@ namespace ExplorerNative
         /// upload, which is the case worth catching: the last request can be cut
         /// off on the way home, after every byte arrived.
         /// </summary>
-        private async Task<(bool Finished, string Id, long Confirmed)> QuerySession(
+        private async Task<(bool Finished, DriveUploaded? Done, long Confirmed)> QuerySession(
             string session, long total, CancellationToken token)
         {
             using var request = new HttpRequestMessage(HttpMethod.Put, session);
@@ -1275,7 +1322,7 @@ namespace ExplorerNative
         /// wrong — and carrying on from it writes the rest of the file at an
         /// offset nothing checks.
         /// </summary>
-        private static async Task<(bool Finished, string Id, long Confirmed)> ReadUploadAnswer(
+        private static async Task<(bool Finished, DriveUploaded? Done, long Confirmed)> ReadUploadAnswer(
             HttpResponseMessage response, CancellationToken token)
         {
             // 308 is "keep going", and is the normal answer to anything but a
@@ -1299,7 +1346,7 @@ namespace ExplorerNative
                         confirmed = last + 1;
                 }
 
-                return (false, "", confirmed);
+                return (false, null, confirmed);
             }
 
             var body = await response.Content.ReadAsStringAsync(token);
@@ -1307,7 +1354,41 @@ namespace ExplorerNative
                 throw new UploadRefusedException((int)response.StatusCode, body);
 
             using var doc = JsonDocument.Parse(body);
-            return (true, doc.RootElement.GetProperty("id").GetString() ?? "", -1);
+            return (true, Uploaded(doc.RootElement), -1);
+        }
+
+        /// <summary>
+        /// An answer from Drive that was not a success, kept with its status and
+        /// Google's machine-readable reason.
+        ///
+        /// The message is <see cref="Explain"/>'s prose, which is right for a
+        /// person and useless for deciding anything: it replaces the reason
+        /// ("rateLimitExceeded") and drops the status from some sentences. The
+        /// folder monitor has to tell "not now" from "no" to keep its promise
+        /// that a rate limit is waited out and never fails a file, so the two
+        /// facts that decide it travel here, not in the text.
+        /// </summary>
+        internal class DriveStatusException : InvalidOperationException
+        {
+            public int Status { get; }
+            public string Body { get; }
+
+            /// <summary>Google's reason, such as "rateLimitExceeded", or empty.</summary>
+            public string Reason { get; }
+
+            public DriveStatusException(int status, string body, string message, Exception? inner = null)
+                : base(message, inner)
+            {
+                Status = status;
+                Body = body ?? "";
+                Reason = ErrorReason(Body);
+            }
+
+            /// <summary>
+            /// "Not now": a timeout, a rate limit in either of Google's spellings,
+            /// or one of its own transient failures.
+            /// </summary>
+            public bool Transient => WorthRetrying(Status, Body);
         }
 
         /// <summary>
@@ -1315,16 +1396,11 @@ namespace ExplorerNative
         /// status so the upload can tell "try again" from "stop" from "the
         /// session has gone".
         /// </summary>
-        internal sealed class UploadRefusedException : InvalidOperationException
+        internal sealed class UploadRefusedException : DriveStatusException
         {
-            public int Status { get; }
-            public string Body { get; }
-
             public UploadRefusedException(int status, string body)
-                : base($"upload failed {status}: " + Explain(status, body))
+                : base(status, body, $"upload failed {status}: " + Explain(status, body))
             {
-                Status = status;
-                Body = body;
             }
 
             /// <summary>404 or 410: the session URI no longer means anything.</summary>
