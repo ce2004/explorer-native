@@ -200,8 +200,11 @@ namespace ExplorerNative
 
         // ---------- Hotkey ----------
         public bool GlobalHotkeyEnabled { get; set; } = true;
-        public uint HotkeyModifiers { get; set; } = HotkeyManager.MOD_CONTROL | HotkeyManager.MOD_ALT;
-        public uint HotkeyKey { get; set; } = (uint)System.Windows.Forms.Keys.E;
+        // No global shortcuts on a new install, at Conner's request: none of
+        // them is registered until somebody sets it up in Preferences. A file
+        // that already has them keeps them.
+        public uint HotkeyModifiers { get; set; }
+        public uint HotkeyKey { get; set; }
 
         // ---------- Audio ----------
 
@@ -325,7 +328,7 @@ namespace ExplorerNative
         public bool AudioLimiterWholeRange { get; set; }
 
         /// <summary>Opens the limiter's three controls, to be set while listening.</summary>
-        public string AudioLimiterDialogShortcut { get; set; } = "Ctrl+Alt+Shift+L";
+        public string AudioLimiterDialogShortcut { get; set; } = "";
 
         /// <summary>
         /// Whether the twenty-band equaliser is in the audio path.
@@ -344,7 +347,7 @@ namespace ExplorerNative
         public int[] AudioEqualiserBands { get; set; } = new int[Equaliser.BandCount];
 
         /// <summary>Opens the equaliser, to be set while listening.</summary>
-        public string AudioEqualiserDialogShortcut { get; set; } = "Ctrl+Alt+Shift+E";
+        public string AudioEqualiserDialogShortcut { get; set; } = "";
 
         /// <summary>
         /// How far the pitch is shifted, in semitones. Twelve is an octave.
@@ -359,7 +362,7 @@ namespace ExplorerNative
         public bool AudioPitchMovesTempo { get; set; }
 
         /// <summary>Opens the pitch control, to be set while listening.</summary>
-        public string AudioPitchDialogShortcut { get; set; } = "Ctrl+Alt+Shift+H";
+        public string AudioPitchDialogShortcut { get; set; } = "";
 
         /// <summary>
         /// Whether silence reduction is in the audio path.
@@ -386,7 +389,7 @@ namespace ExplorerNative
         public int AudioSilenceFadeInMilliseconds { get; set; } = 20;
 
         /// <summary>Opens silence reduction, to be set while listening.</summary>
-        public string AudioSilenceDialogShortcut { get; set; } = "Ctrl+Alt+Shift+Q";
+        public string AudioSilenceDialogShortcut { get; set; } = "";
 
         // ---- Holding a key down ----
 
@@ -577,25 +580,25 @@ namespace ExplorerNative
         // navigation, and NVDA's keyboard hook sits above RegisterHotKey — so
         // those registrations succeed, report no conflict, and then never fire.
         // Up, Down, Back and Forward are what the letters stand for.
-        public string AudioPlayPauseShortcut { get; set; } = "Ctrl+Alt+P";
-        public string AudioStopShortcut { get; set; } = "Ctrl+Alt+S";
-        public string AudioVolumeUpShortcut { get; set; } = "Ctrl+Alt+U";
-        public string AudioVolumeDownShortcut { get; set; } = "Ctrl+Alt+D";
-        public string AudioMuteShortcut { get; set; } = "Ctrl+Alt+M";
-        public string AudioSeekBackwardShortcut { get; set; } = "Ctrl+Alt+B";
-        public string AudioSeekForwardShortcut { get; set; } = "Ctrl+Alt+F";
-        public string AudioWhatIsPlayingShortcut { get; set; } = "Ctrl+Alt+W";
+        public string AudioPlayPauseShortcut { get; set; } = "";
+        public string AudioStopShortcut { get; set; } = "";
+        public string AudioVolumeUpShortcut { get; set; } = "";
+        public string AudioVolumeDownShortcut { get; set; } = "";
+        public string AudioMuteShortcut { get; set; } = "";
+        public string AudioSeekBackwardShortcut { get; set; } = "";
+        public string AudioSeekForwardShortcut { get; set; } = "";
+        public string AudioWhatIsPlayingShortcut { get; set; } = "";
 
         // One number each, on the digits: how far in, how far to go, how long.
-        public string AudioSayElapsedShortcut { get; set; } = "Ctrl+Alt+1";
-        public string AudioSayRemainingShortcut { get; set; } = "Ctrl+Alt+2";
-        public string AudioSayTotalShortcut { get; set; } = "Ctrl+Alt+3";
+        public string AudioSayElapsedShortcut { get; set; } = "";
+        public string AudioSayRemainingShortcut { get; set; } = "";
+        public string AudioSayTotalShortcut { get; set; } = "";
 
         /// <summary>Opens the speed list. The speed keys above are the quick way.</summary>
-        public string AudioSpeedDialogShortcut { get; set; } = "Ctrl+Alt+Shift+S";
+        public string AudioSpeedDialogShortcut { get; set; } = "";
 
         /// <summary>Opens the output device list.</summary>
-        public string AudioDeviceDialogShortcut { get; set; } = "Ctrl+Alt+Shift+O";
+        public string AudioDeviceDialogShortcut { get; set; } = "";
 
         /// <summary>
         /// Which device to play through, as the endpoint id Windows gives it.
@@ -610,12 +613,12 @@ namespace ExplorerNative
 
         // The second rank, on the same letters with Shift added, so the long
         // skip sits under the finger already doing the short one.
-        public string AudioSeekBackwardLongShortcut { get; set; } = "Ctrl+Alt+Shift+B";
-        public string AudioSeekForwardLongShortcut { get; set; } = "Ctrl+Alt+Shift+F";
-        public string AudioSpeedUpShortcut { get; set; } = "Ctrl+Alt+Shift+U";
-        public string AudioSpeedDownShortcut { get; set; } = "Ctrl+Alt+Shift+D";
-        public string AudioRestartTrackShortcut { get; set; } = "Ctrl+Alt+0";
-        public string AudioRepeatShortcut { get; set; } = "Ctrl+Alt+R";
+        public string AudioSeekBackwardLongShortcut { get; set; } = "";
+        public string AudioSeekForwardLongShortcut { get; set; } = "";
+        public string AudioSpeedUpShortcut { get; set; } = "";
+        public string AudioSpeedDownShortcut { get; set; } = "";
+        public string AudioRestartTrackShortcut { get; set; } = "";
+        public string AudioRepeatShortcut { get; set; } = "";
 
         // ---------- Startup ----------
         public bool StartWithWindows { get; set; } = true;
@@ -936,6 +939,11 @@ namespace ExplorerNative
         /// because the version stamp records that the correction already
         /// happened.
         /// </summary>
+        /// <summary>
+        /// Brings an older file up to this version without changing anything in
+        /// it. An update never reverts, changes or alters a setting the file
+        /// already has; see the rule inside.
+        /// </summary>
         private void Migrate()
         {
             if (SettingsVersion >= CurrentSettingsVersion)
@@ -949,111 +957,19 @@ namespace ExplorerNative
             // An older file: anything unrecognised is a setting since removed.
             UnknownSettings = null;
 
-            if (SettingsVersion < 3)
-            {
-                // The audio player first shipped with Ctrl+Alt and the four arrow
-                // keys, which is NVDA's table navigation. NVDA's keyboard hook
-                // takes those before RegisterHotKey is consulted, so all four
-                // registered cleanly, reported no conflict, and did nothing at
-                // all. Only a value still sitting on the broken default is moved;
-                // anything chosen since is a decision, not a mistake to correct.
-                if (AudioVolumeUpShortcut == "Ctrl+Alt+Up") AudioVolumeUpShortcut = "Ctrl+Alt+U";
-                if (AudioVolumeDownShortcut == "Ctrl+Alt+Down") AudioVolumeDownShortcut = "Ctrl+Alt+D";
-                if (AudioSeekBackwardShortcut == "Ctrl+Alt+Left") AudioSeekBackwardShortcut = "Ctrl+Alt+B";
-                if (AudioSeekForwardShortcut == "Ctrl+Alt+Right") AudioSeekForwardShortcut = "Ctrl+Alt+F";
-            }
-
-            if (SettingsVersion < 4)
-            {
-                // The player used to say "Playing X" on Enter and "Finished X"
-                // when a track ran out. Both talk over the thing they are
-                // describing: the row was just read aloud, and music starting or
-                // stopping is not something that needs narrating. Off, once, for
-                // anyone who has the old value written down.
-                AudioAnnounceTrackEnd = false;
-                AudioAnnounceStart = false;
-            }
-
-            if (SettingsVersion < 5)
-            {
-                // The rest of it. A global shortcut that speaks is a shortcut
-                // that talks over whatever the screen reader was already saying,
-                // and the shortcuts worth having here all do something you can
-                // hear: the volume moves, the track jumps, the music stops.
-                // Asking what is playing still answers, and so does a key that
-                // could not do anything.
-                AudioAnnounceVolume = false;
-                AudioAnnounceSeek = false;
-                AudioAnnounceTransport = false;
-            }
-
-            // Version 7 corrected the hold-repeat rate and forced acceleration
-            // on. Both of those are constants now — see the note where the
-            // settings used to be — so there is nothing left for it to correct.
-
-            if (SettingsVersion < 8)
-            {
-                // Formats the player can play that the list simply never
-                // mentioned. Appended rather than replaced, so a list somebody
-                // has pruned on purpose keeps its pruning.
-                foreach (var extension in AudioFiles.LaterExtensions)
-                {
-                    if (!AudioFiles.IsAudio("x" + extension, AudioExtensions))
-                        AudioExtensions = AudioExtensions.TrimEnd(';') + ";" + extension;
-                }
-            }
-
-            if (SettingsVersion < 11)
-            {
-                // The MPEG-4 video containers, which the player can play the
-                // audio of and never claimed. The same append as version 8, over
-                // the same list, and it has to be its own block rather than a
-                // widening of that one: everybody is already past 8, so a list
-                // that grows is only ever delivered by a version that has not
-                // run yet.
-                //
-                // Idempotent, so a file old enough to run both blocks ends up
-                // with each extension exactly once.
-                foreach (var extension in AudioFiles.LaterExtensions)
-                {
-                    if (!AudioFiles.IsAudio("x" + extension, AudioExtensions))
-                        AudioExtensions = AudioExtensions.TrimEnd(';') + ";" + extension;
-                }
-            }
-
-            if (SettingsVersion < 12)
-            {
-                // Matroska and AVI. Only these two: everybody is past 11, and
-                // appending the whole later list again would put back what
-                // somebody had pruned from it on purpose.
-                foreach (var extension in AudioFiles.AddedInVersion12)
-                {
-                    if (!AudioFiles.IsAudio("x" + extension, AudioExtensions))
-                        AudioExtensions = AudioExtensions.TrimEnd(';') + ";" + extension;
-                }
-            }
-
-            if (SettingsVersion < 13)
-            {
-                // Audio CDs. The same append, for the same reason.
-                foreach (var extension in AudioFiles.AddedInVersion13)
-                {
-                    if (!AudioFiles.IsAudio("x" + extension, AudioExtensions))
-                        AudioExtensions = AudioExtensions.TrimEnd(';') + ";" + extension;
-                }
-            }
-
-            // Version 9 moved a 400ms hold delay to 200. That setting is gone
-            // too — HoldRepeat.Delay is 200 for everybody now.
-
-            // Version 10 needs no migration and that is the point of the note.
-            // Nine settings were removed in it, and a removed property does not
-            // need bringing forward: the deserialiser ignores what it does not
-            // recognise, and the next save writes the file without it. The
-            // tenth change — notifications becoming speech — is why
-            // SpeechOverrides has a different name from the property it
-            // replaces, rather than a migration that would have to guess which
-            // numbering a saved value came from.
+            // THE RULE (2026-10-05, at Conner's request): an update never
+            // changes a setting the file already has. It may only bring in a
+            // setting that is new, at its default, which happens by itself: a
+            // property the file does not mention keeps the default it was
+            // constructed with. So nothing here forces, resets, rewrites or
+            // appends to a value. The steps that used to (moving old shortcut
+            // defaults, switching announcements off, adding formats to the
+            // list) are gone for that reason, not because they were wrong once.
+            //
+            // Validated may still repair a value that is genuinely broken:
+            // missing, blank, out of any range a version ever allowed, or not a
+            // valid choice. A range is never narrowed in a way that changes a
+            // value an earlier version accepted.
 
             SettingsVersion = CurrentSettingsVersion;
         }

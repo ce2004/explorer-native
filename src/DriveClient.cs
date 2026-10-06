@@ -440,8 +440,8 @@ namespace ExplorerNative
 
             var wait = response.Headers.RetryAfter?.Delta;
             Say("drive.ratelimited", wait == null
-                ? "Google is rate limiting Drive requests"
-                : $"Google is rate limiting Drive requests; retry after {(int)wait.Value.TotalSeconds} seconds");
+                ? "Google asked Explorer Native to slow down"
+                : $"Google asked Explorer Native to slow down; trying again in {(int)wait.Value.TotalSeconds} seconds");
         }
 
         /// <summary>

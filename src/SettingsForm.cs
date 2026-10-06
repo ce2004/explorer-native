@@ -73,6 +73,50 @@ namespace ExplorerNative
         /// <summary>Switches to a category page by name.</summary>
         private Action<string>? _showCategory;
         private readonly List<Control> _panels = new();
+        private Action? _buildAllPages;
+
+        /// <summary>
+        /// Builds every page now. The window builds a page only when it is first
+        /// shown; the tests use this to look at every control at once.
+        /// </summary>
+        internal void BuildAllPages() => _buildAllPages?.Invoke();
+
+        /// <summary>
+        /// Creates the window of a hidden page and of everything on it now,
+        /// rather than when the page is first shown.
+        /// </summary>
+        private static void CreateWindows(Control root)
+        {
+            var pending = new Stack<Control>();
+            pending.Push(root);
+            while (pending.Count > 0)
+            {
+                var control = pending.Pop();
+                _ = control.Handle;
+                foreach (Control child in control.Controls) pending.Push(child);
+            }
+        }
+
+        /// <summary>
+        /// Double-buffers a page and every panel in it, so a page shown for the
+        /// first time or scrolled is drawn once rather than piece by piece.
+        /// DoubleBuffered is protected, hence the reflection.
+        /// </summary>
+        private static void BufferDrawing(Control root)
+        {
+            var property = typeof(Control).GetProperty("DoubleBuffered",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            if (property == null) return;
+
+            var pending = new Stack<Control>();
+            pending.Push(root);
+            while (pending.Count > 0)
+            {
+                var control = pending.Pop();
+                if (control is Panel) property.SetValue(control, true);
+                foreach (Control child in control.Controls) pending.Push(child);
+            }
+        }
 
         public Settings Result => _working;
 
@@ -87,29 +131,72 @@ namespace ExplorerNative
             MaximizeBox = false;
             Width = 720;
             Height = 620;
+            DoubleBuffered = true;
+            SuspendLayout();
 
-            var categories = new (string Name, Control Panel)[]
+            // Each page is built the first time it is shown, not all of them up
+            // front. Building every page made the dialog take half a second to
+            // open and stall on the first visit to each category. A page never
+            // opened has had nothing changed on it, so it has nothing to apply on
+            // OK and nothing to check: its applies and checks are registered by
+            // its builder, which simply never ran.
+            var categories = new (string Name, Func<Control> Build)[]
             {
-                ("Speech", BuildSpeechTab()),
-                ("Display", BuildDisplayTab()),
-                ("Behaviour", BuildBehaviourTab()),
-                ("Folder sizes", BuildFolderSizeTab()),
-                ("Hotkey", BuildHotkeyTab()),
-                ("Audio", BuildAudioTab()),
-                ("Google Drive", BuildGoogleDriveTab()),
-                ("Web app", BuildWebAppTab()),
-                ("Integration", BuildIntegrationTab()),
+                ("Speech", BuildSpeechTab),
+                ("Display", BuildDisplayTab),
+                ("Behaviour", BuildBehaviourTab),
+                ("Folder sizes", BuildFolderSizeTab),
+                ("Hotkey", BuildHotkeyTab),
+                ("Audio", BuildAudioTab),
+                ("Google Drive", BuildGoogleDriveTab),
+                ("Web app", BuildWebAppTab),
+                ("Integration", BuildIntegrationTab),
             };
 
             var host = new Panel { Dock = DockStyle.Fill, Padding = new Padding(8, 0, 0, 0) };
-            foreach (var (name, panel) in categories)
+            Control?[] pages = new Control?[categories.Length];
+            Control? showing = null;
+
+            Control PageAt(int index)
             {
-                panel.Dock = DockStyle.Fill;
-                panel.Visible = false;
-                panel.AccessibleName = name + " settings";
-                _panels.Add(panel);
-                host.Controls.Add(panel);
+                if (pages[index] is { } built) return built;
+
+                host.SuspendLayout();
+                try
+                {
+                    var page = categories[index].Build();
+                    page.Dock = DockStyle.Fill;
+                    page.Visible = false;
+                    page.AccessibleName = categories[index].Name + " settings";
+                    BufferDrawing(page);
+                    pages[index] = page;
+                    _panels.Add(page);
+                    host.Controls.Add(page);
+                    return page;
+                }
+                finally { host.ResumeLayout(false); }
             }
+
+            _buildAllPages = () => { for (int i = 0; i < pages.Length; i++) PageAt(i); };
+
+            // The rest of the pages are built while nobody is waiting: one per
+            // idle moment once the window is up, windows and all, so the first
+            // visit to a page only has to show it. A page's controls get their
+            // windows when it is first made visible otherwise, which for the
+            // Audio page was over a tenth of a second on the arrow press.
+            // A timer rather than Application.Idle: Windows only delivers a timer
+            // message when nothing else is waiting, which is the same thing, and
+            // it also works under a plain message pump.
+            var prebuild = new System.Windows.Forms.Timer { Interval = 1 };
+            prebuild.Tick += (_, _) =>
+            {
+                int next = Array.FindIndex(pages, p => p == null);
+                if (next < 0 || IsDisposed) { prebuild.Stop(); return; }
+                try { CreateWindows(PageAt(next)); }
+                catch { prebuild.Stop(); }
+            };
+            Shown += (_, _) => prebuild.Start();
+            FormClosed += (_, _) => prebuild.Dispose();
 
             var list = new ListBox
             {
@@ -122,8 +209,18 @@ namespace ExplorerNative
 
             list.SelectedIndexChanged += (_, _) =>
             {
-                for (int i = 0; i < _panels.Count; i++)
-                    _panels[i].Visible = i == list.SelectedIndex;
+                if (list.SelectedIndex < 0) return;
+                var next = PageAt(list.SelectedIndex);
+                if (ReferenceEquals(next, showing)) return;
+
+                host.SuspendLayout();
+                try
+                {
+                    next.Visible = true;
+                    if (showing != null) showing.Visible = false;
+                    showing = next;
+                }
+                finally { host.ResumeLayout(true); }
             };
             // Opened from the Audio menu, the dialog should already be on the
             // audio page rather than six categories above it.
@@ -1200,7 +1297,10 @@ namespace ExplorerNative
             // dialog that was built and never shown, as the tests do.
             var timer = new System.Windows.Forms.Timer { Interval = 4000 };
             timer.Tick += (_, _) => { if (panel.Visible) Refresh(); };
-            Shown += (_, _) => { Refresh(); timer.Start(); };
+            // The page is built when it is first shown, which is usually after the
+            // window's Shown has already happened.
+            if (IsHandleCreated && Visible) timer.Start();
+            else Shown += (_, _) => { Refresh(); timer.Start(); };
             panel.VisibleChanged += (_, _) => { if (panel.Visible && IsHandleCreated) Refresh(); };
             FormClosed += (_, _) =>
             {
@@ -1321,12 +1421,39 @@ namespace ExplorerNative
             combo.AccessibleName = label;
 
             var choices = SettingChoices.Between(min, max, value);
-            foreach (var choice in choices) combo.Items.Add(choice.ToString());
+            int chosen = Math.Max(0, choices.IndexOf(Math.Clamp(value, min, max)));
 
-            combo.SelectedIndex = Math.Max(0, choices.IndexOf(Math.Clamp(value, min, max)));
+            // Only the current value until the list is reached. Windows loads
+            // every item of every list when the page appears, and the Audio page
+            // alone has hundreds, which was most of the time it took to open. The
+            // rest are added when the list gets the keyboard, before the screen
+            // reader asks it anything, so it still reads "5 of 183".
+            combo.Items.Add(choices[chosen].ToString());
+            combo.SelectedIndex = 0;
+            bool filled = false;
+
+            void Fill()
+            {
+                if (filled) return;
+                filled = true;
+                combo.BeginUpdate();
+                try
+                {
+                    var all = new object[choices.Count];
+                    for (int i = 0; i < all.Length; i++) all[i] = choices[i].ToString();
+                    combo.Items.Clear();
+                    combo.Items.AddRange(all);
+                    combo.SelectedIndex = chosen;
+                }
+                finally { combo.EndUpdate(); }
+            }
+
+            combo.Enter += (_, _) => Fill();
+            combo.DropDown += (_, _) => Fill();
+            combo.MouseDown += (_, _) => Fill();
 
             AddLabelled(parent, label, combo);
-            _applies.Add(() => apply(choices[Math.Max(0, combo.SelectedIndex)]));
+            _applies.Add(() => apply(filled ? choices[Math.Max(0, combo.SelectedIndex)] : choices[chosen]));
         }
 
         // The ladder itself is SettingChoices.Between, in a file of its own. It
@@ -1454,16 +1581,46 @@ namespace ExplorerNative
 
         private static Label AddInfo(Control parent, string text)
         {
-            var label = new Label
+            var label = new InfoLabel
             {
-                Text = text,
-                AutoSize = true,
-                MaximumSize = new Size(540, 0),
                 Margin = new Padding(3, 12, 3, 4),
                 ForeColor = SystemColors.GrayText,
             };
+            label.Text = text;
             parent.Controls.Add(label);
             return label;
+        }
+
+        /// <summary>
+        /// A wrapping paragraph of help text, measured once when its text or
+        /// font changes. An AutoSize label with a MaximumSize is measured again
+        /// on every layout pass, and a page with two dozen of them spent most of
+        /// its time doing that each time it was shown.
+        /// </summary>
+        private sealed class InfoLabel : Label
+        {
+            private const int Width540 = 540;
+
+            public InfoLabel() => AutoSize = false;
+
+            protected override void OnTextChanged(EventArgs e)
+            {
+                base.OnTextChanged(e);
+                Fit();
+            }
+
+            protected override void OnFontChanged(EventArgs e)
+            {
+                base.OnFontChanged(e);
+                Fit();
+            }
+
+            private void Fit()
+            {
+                var measured = TextRenderer.MeasureText(Text ?? "", Font, new Size(Width540, int.MaxValue),
+                    TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
+                Size = new Size(Width540, Math.Max(measured.Height, Font.Height));
+            }
         }
 
         /// <summary>"AutoRename" -> "Auto rename", so the combo reads as words.</summary>

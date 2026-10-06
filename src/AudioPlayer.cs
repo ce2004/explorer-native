@@ -89,29 +89,16 @@ namespace ExplorerNative
         /// </summary>
 
         private VolumeCurve _curve = VolumeCurve.Linear;
-        private bool _curveKnown;
 
         /// <summary>
         /// Which curve turns the dial into the engine's number.
-        ///
-        /// The owner pushes every audio preference in again on each play, so the
-        /// setter is reached far more often than the curve is actually changed —
-        /// and the first push of all is the saved preference arriving, not somebody
-        /// choosing it. Only a change from a value already known counts as one.
         /// </summary>
         public VolumeCurve Curve
         {
             get => _curve;
-            set
-            {
-                bool changed = _curveKnown && value != _curve;
-                _curve = value;
-                _curveKnown = true;
-
-                if (changed)
-                    Raise("volume.curve", "Volume curve: " +
-                        (value == VolumeCurve.Perceptual ? "perceptual" : "linear"));
-            }
+            // Fixed at Perceptual in the application; only SelfCheck changes it,
+            // so there is nothing to announce.
+            set => _curve = value;
         }
 
         /// <summary>0 for none. Applied when a track starts and when it resumes.</summary>

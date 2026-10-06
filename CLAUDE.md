@@ -5118,17 +5118,22 @@ the hook redirecting the suite away from the real file. It points the tests back
 at the user's own configuration and then writes to it. `PersistedProperties()`
 asks for `Public | Instance` and is the only way these sweeps enumerate.
 
-## Changing a default that is already wrong
+## An update never changes a setting
 
-A default only reaches people who have no settings file yet. Everyone else keeps
-the old value forever, because it was written down once. `Settings.Migrate` fixes
-that: bump `CurrentSettingsVersion`, add a `if (SettingsVersion < n)` block that
-forces only the values that were wrong, and the correction reaches existing
-installs exactly once. A deliberate change made afterwards survives, because the
-version stamp records that the migration already ran.
+The rule since 2.0.0, at Conner's request: an update never reverts, changes or
+alters a setting the file already has. A new setting arrives at its default
+simply because the file does not mention it. `Settings.Migrate` therefore
+forces, resets, rewrites and appends nothing; the old steps that moved shortcut
+defaults, switched announcements off or added formats to the list are gone.
+`Validated` may only repair a value that is genuinely broken (missing, blank,
+outside any range a version ever allowed, or not a valid choice), and a range is
+never narrowed. `UpdatesNeverChangeSettingsTests` loads a file with every setting
+set, stamped as versions 0, 5, 9, 12 and current, and requires every value back
+unchanged.
 
-Files written before the version field existed arrive as version 0, which is the
-signal. `Save` stamps the current version on the way out.
+New installs have no global shortcuts: every audio shortcut defaults to empty
+and the show-window hotkey to unassigned, until somebody sets them in
+Preferences. A file that has them keeps them.
 
 ## Dead code is a build warning
 

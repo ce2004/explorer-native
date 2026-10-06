@@ -83,17 +83,17 @@ namespace ExplorerNative
     /// </summary>
     public static class Notifications
     {
-        public const string AudioTransport = "Audio: playing";
-        public const string AudioVolume = "Audio: volume";
-        public const string AudioPosition = "Audio: position";
-        public const string AudioFiles = "Audio: files";
-        public const string DriveConnection = "Google Drive: connection";
-        public const string DriveOperations = "Google Drive: files";
-        public const string FileOperations = "Files: operations";
-        public const string Navigation = "Navigation";
+        public const string AudioTransport = "Playing audio";
+        public const string AudioVolume = "Volume";
+        public const string AudioPosition = "Position in a track";
+        public const string AudioFiles = "Audio files";
+        public const string DriveConnection = "Google Drive connection";
+        public const string DriveOperations = "Google Drive files and sync";
+        public const string FileOperations = "Files";
+        public const string Navigation = "Moving around";
         public const string Clipboard = "Clipboard and selection";
         public const string Searching = "Searching";
-        public const string Application = "Application";
+        public const string Application = "Explorer Native";
 
         // Five names collapse into two, because the three channels did.
         //
@@ -111,11 +111,6 @@ namespace ExplorerNative
         private const NotificationChannel Say = NotificationChannel.Speech;
         private const NotificationChannel Pop = NotificationChannel.Speech;
         private const NotificationChannel Loud = NotificationChannel.Speech;
-
-        private static NotificationInfo N(
-            string id, string name, string category, NotificationChannel channel,
-            string template, params object[] example) =>
-            new(id, name, category, channel, template, example);
 
         /// <summary>
         /// The same, for one the application actually raises. A test checks that
@@ -135,7 +130,7 @@ namespace ExplorerNative
             Live("audio.stop", "Stopped", AudioTransport, Bar, "Stopped"),
             Live("audio.ended", "Track finished", AudioTransport, Off, "Finished {0}", "your place.flac"),
             Live("audio.failed", "Track would not play", AudioTransport, Say, "Could not play {0}: {1}", "track.flac", "no decoder"),
-            Live("audio.handedover", "Opened in another application", AudioTransport, Bar, "{0} opened in its usual application", "song.ogg"),
+            Live("audio.handedover", "Opened in its usual app instead", AudioTransport, Bar, "{0} opened in its usual application", "song.ogg"),
             Live("audio.repeat.on", "Repeat turned on", AudioTransport, Bar, "Repeating this track"),
             Live("audio.repeat.off", "Repeat turned off", AudioTransport, Bar, "Not repeating"),
             Live("audio.restart", "Back to the start", AudioTransport, Bar, "Back to the start"),
@@ -149,12 +144,12 @@ namespace ExplorerNative
             // normal". True while the media engine owned the playback rate and
             // Windows' FLAC decoder refused everything above normal; the speed
             // is applied to decoded samples now and no format can refuse it.
-            Live("audio.speed.dialog", "Speed chooser opened", AudioTransport, Off, "Playback speed"),
-            Live("audio.device.dialog", "Output device chooser opened", AudioTransport, Off, "Output device"),
-            Live("audio.limiter.dialog", "Limiter settings opened", AudioTransport, Off, "Limiter"),
-            Live("audio.equaliser.dialog", "Equaliser opened", AudioTransport, Off, "Equaliser"),
-            Live("audio.pitch.dialog", "Pitch control opened", AudioTransport, Off, "Pitch"),
-            Live("audio.silence.dialog", "Silence reduction opened", AudioTransport, Off, "Silence reduction"),
+            Live("audio.speed.dialog", "Speed window opened", AudioTransport, Off, "Playback speed"),
+            Live("audio.device.dialog", "Output device window opened", AudioTransport, Off, "Output device"),
+            Live("audio.limiter.dialog", "Limiter window opened", AudioTransport, Off, "Limiter"),
+            Live("audio.equaliser.dialog", "Equaliser window opened", AudioTransport, Off, "Equaliser"),
+            Live("audio.pitch.dialog", "Pitch window opened", AudioTransport, Off, "Pitch"),
+            Live("audio.silence.dialog", "Silence reduction window opened", AudioTransport, Off, "Silence reduction"),
             Live("audio.device.changed", "Output device changed", AudioTransport, Bar, "Playing through {0}", "Headphones"),
             Live("audio.device.failed", "Could not use that device", AudioTransport, Loud, "Could not play through {0}", "Headphones"),
 
@@ -174,7 +169,6 @@ namespace ExplorerNative
             // the message can never be true and an untrue message is worse than
             // a missing one. An override left in a settings file names an id
             // nothing knows and is dropped on load.
-            Live("volume.curve", "Volume curve changed", AudioVolume, Bar, "Volume curve: {0}", "perceptual"),
             Live("volume.fade.in", "Fading in", AudioVolume, Off, "Fading in"),
             Live("volume.fade.out", "Fading out", AudioVolume, Off, "Fading out"),
 
@@ -204,15 +198,13 @@ namespace ExplorerNative
             Live("audiofile.unsupported", "Format not supported", AudioFiles, Say, "Windows cannot decode {0}", ".opus"),
             Live("audiofile.missing", "File has gone", AudioFiles, Say, "{0} is no longer there", "song.flac"),
             Live("audiofile.locked", "File is in use", AudioFiles, Say, "{0} is open in another application", "song.flac"),
-            Live("audiofile.tags", "Tags read", AudioFiles, Off, "{0} by {1}", "your place", "Ashley Cooke"),
-            Live("audiofile.tags.none", "No tags", AudioFiles, Off, "{0} has no tags", "track.wav"),
-            N("audiofile.tags.slow", "Tags are taking a while", AudioFiles, Off, "Still reading the tags"),
-            Live("audiofile.cached", "Track held in memory", AudioFiles, Off, "{0} held in memory", "34 MB"),
-            Live("audiofile.cache.released", "Memory released", AudioFiles, Off, "Released {0} after {1} minutes paused", "34 MB", 10),
+            Live("audiofile.tags", "Song details read", AudioFiles, Off, "{0} by {1}", "your place", "Ashley Cooke"),
+            Live("audiofile.tags.none", "Song has no details", AudioFiles, Off, "{0} has no tags", "track.wav"),
+            Live("audiofile.cached", "Track downloaded into memory", AudioFiles, Off, "{0} held in memory", "34 MB"),
+            Live("audiofile.cache.released", "Track let go of its memory after a pause", AudioFiles, Off, "Released {0} after {1} minutes paused", "34 MB", 10),
             Live("audiofile.cache.full", "Track too big to hold whole", AudioFiles, Bar, "This track is bigger than {0}; that much of it is kept downloaded around where it is playing", "1 gigabyte"),
-            Live("audiofile.prefetch", "Warming a track", AudioFiles, Off, "Reading ahead {0}", "song.flac"),
-            Live("audiofile.remote", "Track is on a slow drive", AudioFiles, Off, "{0} is on a network drive", "song.flac"),
-            N("audiofile.external", "Sent to another player", AudioFiles, Bar, "Opening {0} in its usual application", "song.flac"),
+            Live("audiofile.prefetch", "Getting a track ready", AudioFiles, Off, "Reading ahead {0}", "song.flac"),
+            Live("audiofile.remote", "Track is on a network drive", AudioFiles, Off, "{0} is on a network drive", "song.flac"),
 
             // ---- Google Drive: connection --------------------------------------
             Live("drive.mounting", "Connecting to Drive", DriveConnection, Bar, "Connecting to Google Drive"),
@@ -221,28 +213,28 @@ namespace ExplorerNative
             Live("drive.offline", "Drive went offline", DriveConnection, Loud, "Google Drive is offline ({0})", "timed out"),
             Live("drive.online", "Drive came back", DriveConnection, Pop, "Google Drive is back online"),
             Live("drive.signin.needed", "Sign-in expired", DriveConnection, Loud, "Google Drive sign-in has expired. Open Preferences, Google Drive, to sign in again."),
-            Live("drive.signin.opened", "Consent page opened", DriveConnection, Bar, "Waiting for you to allow access in the browser"),
+            Live("drive.signin.opened", "Waiting for you in the browser", DriveConnection, Bar, "Waiting for you to allow access in the browser"),
             Live("drive.signin.done", "Signed in", DriveConnection, Pop, "Signed in to Google Drive as {0}", "you@example.com"),
             Live("drive.signin.refused", "Sign-in refused", DriveConnection, Loud, "Google Drive sign-in was refused: {0}", "access_denied"),
             Live("drive.signin.timeout", "Sign-in timed out", DriveConnection, Loud, "Google sign-in timed out. Press Connect Google Drive again."),
-            Live("drive.credentials.missing", "No credentials", DriveConnection, Loud, "No client_secret json in {0}", "%APPDATA%\\ExplorerNative"),
+            Live("drive.credentials.missing", "No Google client ID and secret", DriveConnection, Loud, "No Google client ID and secret yet. Enter them in Preferences, Google Drive"),
             Live("drive.letter.taken", "Preferred letter unavailable", DriveConnection, Bar, "{0} was taken, using {1}", "G:", "H:"),
             Live("drive.letter.none", "No drive letter free", DriveConnection, Loud, "No drive letter is free for Google Drive"),
-            Live("drive.root.stuck", "Old mount could not be cleared", DriveConnection, Bar, "A previous mount could not be removed; using {0}", "GoogleDrive-2"),
+            Live("drive.root.stuck", "Old Google Drive folder could not be removed", DriveConnection, Bar, "An old Google Drive folder couldn't be removed, so a new one is used: {0}", "GoogleDrive-2"),
             Live("drive.quota", "Drive storage", DriveConnection, Bar, "{0} used of {1}", "656 GB", "5 TB"),
             Live("drive.quota.low", "Drive nearly full", DriveConnection, Loud, "Google Drive is nearly full: {0} left", "2.1 GB"),
-            Live("drive.ratelimited", "Google is throttling", DriveConnection, Bar, "Google is rate limiting; slowing down"),
+            Live("drive.ratelimited", "Google is slowing things down", DriveConnection, Bar, "Google asked Explorer Native to slow down"),
 
             // ---- Google Drive: files -------------------------------------------
-            Live("sync.done", "Monitored folder synced", DriveOperations, Say, "{0} synced: {1}", "Music", "3 uploaded, 1 downloaded"),
+            Live("sync.done", "Synced folder finished", DriveOperations, Say, "{0} synced: {1}", "Music", "3 uploaded, 1 downloaded"),
             Live("sync.conflict", "Changed in both places", DriveOperations, Say, "{0}: {1} changed in both places; both copies kept", "Music", "notes.txt"),
-            Live("sync.error", "Monitored folder could not sync", DriveOperations, Loud, "{0} could not sync: {1}", "Music", "access denied"),
-            Live("sync.offline", "Drive monitor offline", DriveOperations, Say, "Drive monitor paused, offline"),
-            Live("sync.paused", "Monitored folder is gone", DriveOperations, Loud, "{0} paused: its {1} folder is gone. Remove the sync or restore the folder.", "Music", "Google Drive"),
-            Live("sync.start","A big sync starting", DriveOperations, Say, "{0}: {1}, {2} files", "Music", "214 gigabytes to download", "3,120"),
+            Live("sync.error", "Synced folder could not sync", DriveOperations, Loud, "{0} could not sync: {1}", "Music", "access denied"),
+            Live("sync.offline", "Sync paused while offline", DriveOperations, Say, "Drive monitor paused, offline"),
+            Live("sync.paused", "Synced folder is gone", DriveOperations, Loud, "{0} paused: its {1} folder is gone. Remove the sync or restore the folder.", "Music", "Google Drive"),
+            Live("sync.start","A big sync is starting", DriveOperations, Say, "{0}: {1}, {2} files", "Music", "214 gigabytes to download", "3,120"),
             Live("sync.progress", "Big sync progress", DriveOperations, Say, "{0}: {1} percent synced", "Music", 50),
-            Live("sync.space", "Monitored folder out of space", DriveOperations, Loud, "{0} paused: {1} is out of space, needs {2} more", "Music", "C:", "30 gigabytes"),
-            Live("sync.ratelimited", "Drive monitor waiting on Google", DriveOperations, Say, "{0}: waiting, Google is limiting requests", "Music"),
+            Live("sync.space", "Synced folder out of space", DriveOperations, Loud, "{0} paused: {1} is out of space, needs {2} more", "Music", "C:", "30 gigabytes"),
+            Live("sync.ratelimited", "Sync waiting on Google", DriveOperations, Say, "{0}: waiting, Google is limiting requests", "Music"),
             Live("sync.checking", "Checking what is already there", DriveOperations, Say, "{0}: checking what is already there, {1} files", "Music", "3,120"),
             Live("drive.folder.loading", "Fetching a folder", DriveOperations, Bar, "Fetching {0} from Google Drive", "artists"),
             Live("drive.folder.loaded", "Folder fetched", DriveOperations, Off, "{0}: {1} items", "artists", 2118),
@@ -313,7 +305,6 @@ namespace ExplorerNative
             Live("folder.created", "Folder created", FileOperations, Say, "Created {0}", "New folder"),
             Live("shortcut.created", "Shortcut created", FileOperations, Say, "Created shortcut {0}",
                 "notes.txt - Shortcut.lnk"),
-            N("folder.exists", "Name already used", FileOperations, Say, "{0} already exists here", "New folder"),
             // ---- Files: archives ----
             //
             // Compressing borrows the transfer window and therefore the transfer
@@ -337,21 +328,15 @@ namespace ExplorerNative
             Live("conflict.overwrite", "Overwriting", FileOperations, Bar, "Replacing {0}", "song.flac"),
             Live("conflict.rename", "Renamed to avoid a clash", FileOperations, Bar, "Saved as {0}", "song (2).flac"),
             Live("conflict.skip", "Skipped an existing file", FileOperations, Bar, "Skipped {0}", "song.flac"),
-            N("permission.denied", "Permission denied", FileOperations, Loud, "Access denied: {0}", "C:\\Windows\\System32"),
-            N("disk.full", "Disk full", FileOperations, Loud, "Not enough room on {0}", "E:"),
-            N("path.toolong", "Path too long", FileOperations, Loud, "That path is too long for Windows"),
 
             // ---- Navigation -------------------------------------------------------
             Live("nav.empty", "Folder is empty", Navigation, Say, "{0} is empty", "Downloads"),
             Live("nav.gone", "Folder disappeared", Navigation, Loud, "{0} disappeared, going to {1}", "Old", "Documents"),
             Live("nav.denied", "Folder cannot be opened", Navigation, Loud, "Cannot open {0}: {1}", "System Volume Information", "access denied"),
-            N("nav.slow", "Folder is slow to open", Navigation, Bar, "{0} is taking a while", "\\\\nas\\music"),
             Live("nav.offline", "Network folder unreachable", Navigation, Loud, "{0} is not responding", "\\\\nas\\music"),
-            N("nav.history.back", "Went back", Navigation, Off, "Back to {0}", "Documents"),
-            N("nav.history.forward", "Went forward", Navigation, Off, "Forward to {0}", "Downloads"),
             Live("nav.refreshed", "Folder refreshed", Navigation, Off, "Refreshed, {0} items", 42),
-            Live("nav.changed", "Folder changed underneath", Navigation, Off, "{0} changed", "Downloads"),
-            Live("nav.tab", "Switched pane", Navigation, Say, "{0}", "Right pane"),
+            Live("nav.changed", "Folder changed by another program", Navigation, Off, "{0} changed", "Downloads"),
+            Live("nav.tab", "Switched tab", Navigation, Say, "{0}", "Tab 2"),
             Live("nav.sorted", "Sort order changed", Navigation, Bar, "Sorted by {0}", "date modified"),
 
             // Searching. The count is spoken and the rest is not: a results list
@@ -360,28 +345,25 @@ namespace ExplorerNative
             // tell you, exactly as it is for a selection. "Searching" is said
             // because the answer can be seconds away on Drive and a key that
             // appears to have done nothing is a key somebody presses again.
-            Live("search.started", "Search started", Navigation, Say, "Searching for {0}", "love"),
-            Live("search.results", "Search finished", Navigation, Say, "{0} results for {1}", 12, "love"),
-            Live("search.truncated", "Too many results to show", Navigation, Say,
+            Live("search.started", "Search started", Searching, Say, "Searching for {0}", "love"),
+            Live("search.results", "Search finished", Searching, Say, "{0} results for {1}", 12, "love"),
+            Live("search.truncated", "Too many results to show", Searching, Say,
                  "{0} results for {1}, and there are more", 10000, "love"),
-            Live("search.none", "Search found nothing", Navigation, Say,
+            Live("search.none", "Search found nothing", Searching, Say,
                  "Nothing matching {0} in {1}", "love", "music"),
-            Live("search.left", "Left the results", Navigation, Off, "Left the results for {0}", "love"),
-            Live("search.cancelled", "Search stopped", Navigation, Say, "Search stopped"),
-            Live("search.nowhere", "Nothing to search", Navigation, Say,
+            Live("search.left", "Left the results", Searching, Off, "Left the results for {0}", "love"),
+            Live("search.cancelled", "Search stopped", Searching, Say, "Search stopped"),
+            Live("search.nowhere", "Nothing to search", Searching, Say,
                  "There is nothing to search in the drive list"),
-            Live("search.failed", "Search failed", Navigation, Say, "Could not search: {0}", "the network is down"),
+            Live("search.failed", "Search failed", Searching, Say, "Could not search: {0}", "the network is down"),
 
             // ---- Clipboard and selection -------------------------------------------
             Live("clip.copied", "Copied to the clipboard", Clipboard, Say, "Copied {0} items", 3),
             Live("clip.cut", "Cut to the clipboard", Clipboard, Say, "Cut {0} items", 3),
-            N("clip.pasted", "Pasted", Clipboard, Say, "Pasted {0} items", 3),
             Live("clip.empty", "Nothing to paste", Clipboard, Say, "The clipboard is empty"),
             Live("clip.path", "Path copied", Clipboard, Say, "Copied the path"),
             Live("clip.nothing", "Nothing selected", Clipboard, Say, "Nothing selected"),
             Live("select.all", "Everything selected", Clipboard, Say, "Selected all {0} items", 42),
-            N("select.none", "Selection cleared", Clipboard, Say, "Selection cleared"),
-            N("select.invert", "Selection inverted", Clipboard, Say, "Inverted, {0} selected", 18),
             // On, unlike the rest of this group, and for a measured reason:
             // Shift+arrow and Ctrl+Space say nothing at all by themselves. The
             // control reports those as a change to a range rather than a change
@@ -392,12 +374,11 @@ namespace ExplorerNative
                 "{0} selected, {1} selected", "song.flac", 3),
 
             // ---- Searching -----------------------------------------------------------
-            Live("find.typed", "Jumped to a name", Searching, Off, "{0}", "Program Files"),
-            Live("find.nomatch", "Nothing matches", Searching, Say, "Nothing starts with {0}", "zz"),
-            Live("find.wrapped", "Wrapped to the top", Searching, Off, "Wrapped to the top"),
-            N("find.cleared", "Search text cleared", Searching, Off, "Search cleared"),
-            Live("size.calculating", "Working out a folder size", Searching, Bar, "Measuring {0}", "Program Files"),
-            Live("size.done", "Folder size", Searching, Say, "{0} is {1}", "Program Files", "14.2 GB"),
+            Live("find.typed", "Jumped to a name", Navigation, Off, "{0}", "Program Files"),
+            Live("find.nomatch", "Nothing matches", Navigation, Say, "Nothing starts with {0}", "zz"),
+            Live("find.wrapped", "Wrapped to the top", Navigation, Off, "Wrapped to the top"),
+            Live("size.calculating", "Working out a folder size", FileOperations, Bar, "Measuring {0}", "Program Files"),
+            Live("size.done", "Folder size", FileOperations, Say, "{0} is {1}", "Program Files", "14.2 GB"),
 
             // ---- Application ----------------------------------------------------------
             Live("app.started", "Application started", Application, Off, "Explorer Native ready"),
@@ -411,10 +392,9 @@ namespace ExplorerNative
             Live("webapp.port.failed", "Web app port could not be used", Application, Loud, "{0}", "Port 50000 is already in use by another program."),
             Live("settings.reset", "Preferences reset", Application, Loud, "Preferences reset to their defaults"),
             Live("settings.failed", "Preferences could not be saved", Application, Loud, "Could not save preferences: {0}", "access denied"),
-            Live("hotkey.registered", "Shortcut registered", Application, Off, "{0} registered", "Ctrl+Alt+P"),
-            Live("hotkey.failed", "Shortcut refused", Application, Loud, "{0} is already used by another application", "Ctrl+Alt+P"),
+            Live("hotkey.registered", "Shortcuts set up", Application, Off, "{0} registered", "Ctrl+Alt+P"),
+            Live("hotkey.failed", "Shortcut taken by another app", Application, Loud, "{0} is already used by another application", "Ctrl+Alt+P"),
             Live("hotkey.duplicate", "Shortcut already used here", Application, Say, "{0} is already used by {1}", "Ctrl+Alt+P", "Play or pause"),
-            N("hotkey.silent", "Shortcut may be intercepted", Application, Bar, "{0} registered, but a screen reader may take it first", "Ctrl+Alt+Right"),
             Live("install.done", "Installed", Application, Pop, "Installed to {0}", "%LOCALAPPDATA%\\Programs\\ExplorerNative"),
             Live("install.failed", "Install failed", Application, Loud, "Could not install: {0}", "access denied"),
             Live("shell.default.on", "Now opens folders", Application, Pop, "Explorer Native now opens folders"),
@@ -429,7 +409,7 @@ namespace ExplorerNative
             Live("shell.menu.off", "Context menu entry removed", Application, Bar, "\"Open in Explorer Native\" removed"),
             Live("startup.on", "Starts with Windows", Application, Bar, "Explorer Native will start with Windows"),
             Live("startup.off", "No longer starts with Windows", Application, Bar, "Explorer Native will not start with Windows"),
-            Live("instance.handoff", "Folder opened in the running window", Application, Off, "Opened {0}", "Downloads"),
+            Live("instance.handoff", "Folder opened in the window already open", Application, Off, "Opened {0}", "Downloads"),
             Live("speech.unavailable", "Screen reader not found", Application, Bar, "NVDA is not running; nothing will be spoken"),
             Live("speech.restored", "Screen reader found", Application, Bar, "NVDA found"),
             Live("error.generic", "Something went wrong", Application, Loud, "{0}", "Something went wrong"),

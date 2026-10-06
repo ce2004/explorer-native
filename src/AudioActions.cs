@@ -469,34 +469,6 @@ namespace ExplorerNative
             ".mp4;.mov;.mkv;.avi;.cda";
 
         /// <summary>
-        /// Extensions added after the list first shipped. Anyone already carrying
-        /// the old default gets these appended once, rather than being left
-        /// without formats the player can perfectly well play.
-        ///
-        /// Appending is idempotent — every migration that runs this checks first
-        /// — so a settings file of any age ends up with all of them exactly once,
-        /// and one somebody has pruned on purpose keeps its pruning for anything
-        /// not on this list.
-        /// </summary>
-        public static readonly string[] LaterExtensions = { ".oga", ".m4r", ".mp4", ".mov", ".mkv", ".avi" };
-
-        /// <summary>
-        /// The two added in settings version 12 — Matroska and AVI video, for
-        /// the sound in them. Media Foundation has a byte-stream handler for
-        /// both, and the decoder reads only the first audio stream. A file
-        /// whose audio Windows has no decoder for (Dolby in some MKVs) is handed
-        /// to the application that owns it, as any unplayable file is.
-        /// </summary>
-        public static readonly string[] AddedInVersion12 = { ".mkv", ".avi" };
-
-        /// <summary>
-        /// Audio CD tracks, added in settings version 13. A <c>.cda</c> is a
-        /// pointer to the audio rather than the audio; <see cref="CdTrackStream"/>
-        /// reads the disc it points into.
-        /// </summary>
-        public static readonly string[] AddedInVersion13 = { ".cda" };
-
-        /// <summary>
         /// Whether Media Foundation has anything at all registered that can open
         /// this kind of file — asked of the registry rather than assumed.
         ///

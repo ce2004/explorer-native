@@ -486,15 +486,15 @@ namespace ExplorerNative
             _units = settings.SizeUnits;
             Say("drive.mounting", "Connecting to Google Drive");
 
-            // The client file chosen in Preferences. Nothing is compiled in.
+            // The client ID and secret entered in Preferences. Nothing is compiled in.
             var client = GoogleAuth.Credentials(SafeDirectory());
             if (client == null)
             {
-                Status = "No Google credentials yet. In Preferences, Google Drive, choose your " +
-                         "credentials file, then connect.";
+                Status = "No Google client ID and secret yet. Enter them in Preferences, Google Drive, " +
+                         "then connect.";
 
                 Say("drive.credentials.missing",
-                    "No Google credentials. Choose your credentials file in Preferences, Google Drive");
+                    "No Google client ID and secret yet. Enter them in Preferences, Google Drive");
                 return false;
             }
 
@@ -579,7 +579,7 @@ namespace ExplorerNative
                 // had to.
                 if (!string.Equals(Path.GetFileName(root), "GoogleDrive", StringComparison.Ordinal))
                     Say("drive.root.stuck",
-                        $"A previous mount could not be removed; using {Path.GetFileName(root)}");
+                        $"An old Google Drive folder couldn't be removed, so a new one is used: {Path.GetFileName(root)}");
 
                 var mount = new DriveMount(drive, root, budget, Note)
                 {

@@ -126,11 +126,21 @@ namespace ExplorerNative
 
             StartWatchdog();
 
+            // Just the window timings, for measuring one change at a time.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "speed")
+            {
+                WindowSpeedTests();
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             SizeUnitTests();
             SizeFormatterEdgeTests();
             TimeFormatTests();
             SettingsClampTests();
             SettingsRoundTripTests();
+            UpdatesNeverChangeSettingsTests();
+            NoShortcutsOnFirstLaunchTests();
             QuietByDefaultTests();
             CountedSpeechTests();
             GainHeadroomTests();
@@ -472,7 +482,7 @@ namespace ExplorerNative
         private static void PreferencesShapeTests()
         {
             string error = "";
-            int rows = 0, categories = 0;
+            int rows = 0, categories = 0, checkedRight = 0;
             long buildMs = 0;
 
             var thread = new Thread(() =>
@@ -484,8 +494,18 @@ namespace ExplorerNative
                     clock.Stop();
                     buildMs = clock.ElapsedMilliseconds;
 
-                    rows = FindAll<ComboBox>(window).Count;
-                    foreach (var box in FindAll<ListBox>(window)) categories = box.Items.Count;
+                    // One item per message across every category, and each item
+                    // checked exactly when that message is spoken by default.
+                    var list = window.CategoryList;
+                    categories = list.Items.Count;
+                    for (int c = 0; c < list.Items.Count; c++)
+                    {
+                        list.SelectedIndex = c;
+                        var inCategory = Notifications.All.Where(n => n.Category == Notifications.Categories[c]).ToList();
+                        rows += window.ShownCount;
+                        for (int i = 0; i < window.ShownCount && i < inCategory.Count; i++)
+                            if (window.IsChecked(i) == (inCategory[i].Default == NotificationChannel.Speech)) checkedRight++;
+                    }
                 }
                 catch (Exception ex) { error = ex.GetType().Name + ": " + ex.Message; }
             });
@@ -497,8 +517,12 @@ namespace ExplorerNative
             if (error.Length > 0) return;
 
             Check($"and quickly ({buildMs}ms)", buildMs < 5000, $"{buildMs}ms");
-            Equal($"there is a chooser for every one of the {Notifications.All.Count}",
+            Equal($"there is an item for every one of the {Notifications.All.Count}",
                 Notifications.All.Count.ToString(), rows.ToString());
+            Equal("and each is ticked exactly when it is spoken by default",
+                Notifications.All.Count.ToString(), checkedRight.ToString());
+            Check("every message the catalogue lists is actually raised",
+                Notifications.All.All(n => n.Raised), string.Join(", ", Notifications.All.Where(n => !n.Raised).Select(n => n.Id)));
             Equal("and a category for each group",
                 Notifications.Categories.Count.ToString(), categories.ToString());
 
@@ -508,6 +532,7 @@ namespace ExplorerNative
             UnplayableFormatTests();
             HeldKeyDistanceTests();
             FixedBehaviourTests();
+            WindowSpeedTests();
             DriveLetterMoveTests();
             DriveMonitorTests();
             DriveMonitorResilienceTests();
@@ -1044,6 +1069,7 @@ namespace ExplorerNative
                         try
                         {
                             using var window = new SettingsForm(new Settings(), null);
+                            window.BuildAllPages();
                             foreach (var b in FindAll<Button>(window))
                             {
                                 texts.Add(b.Text);
@@ -1114,6 +1140,107 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// Preferences and the Speech window are walked one control and one
+        /// category at a time under a screen reader, so opening them, switching
+        /// category and tabbing have to be instant. Measured on a real form on
+        /// an STA thread: construction, first show, and every category switch,
+        /// with the layout and the message queue run after each one.
+        /// </summary>
+        private static void WindowSpeedTests()
+        {
+            var scratch = NewTempDir();
+            var previous = Settings.OverrideAppDataDir;
+            Settings.OverrideAppDataDir = scratch;
+            try
+            {
+                // Twice each: the first run pays for compiling the code, which
+                // ReadyToRun takes away in the published build; the second is what
+                // opening the window costs.
+                Measure("Speech window (first)", () => new SpeechForm(new Settings()), 5000, 1000);
+                Measure("Preferences (first)", () => new SettingsForm(new Settings(), null), 5000, 1000);
+                Measure("Speech window", () => new SpeechForm(new Settings()), 150, 30);
+                Measure("Preferences", () => new SettingsForm(new Settings(), null), 150, 30);
+            }
+            finally
+            {
+                Settings.OverrideAppDataDir = previous;
+                try { Directory.Delete(scratch, true); } catch { }
+            }
+
+            static void Measure(string name, Func<Form> make, long openLimit, long switchLimit)
+            {
+                string error = "";
+                long buildMs = 0, showMs = 0, worstSwitch = 0, totalSwitch = 0;
+                int switches = 0, controls = 0;
+
+                var thread = new Thread(() =>
+                {
+                    try
+                    {
+                        var clock = System.Diagnostics.Stopwatch.StartNew();
+                        using var form = make();
+                        buildMs = clock.ElapsedMilliseconds;
+
+                        form.StartPosition = FormStartPosition.Manual;
+                        form.Location = new System.Drawing.Point(-32000, -32000);
+                        form.ShowInTaskbar = false;
+                        clock.Restart();
+                        form.Show();
+                        Application.DoEvents();
+                        showMs = clock.ElapsedMilliseconds;
+
+                        // Let the window settle the way it does on screen: it
+                        // builds its other pages in idle moments after it opens.
+                        for (int settle = 0; settle < 40; settle++)
+                        {
+                            Application.DoEvents();
+                            Thread.Sleep(10);
+                        }
+
+                        var list = FindAll<ListBox>(form).FirstOrDefault(l => l.AccessibleName == "Category");
+                        if (list != null)
+                        {
+                            // Every category twice: the second pass is what a person
+                            // arrowing back and forth actually pays.
+                            for (int pass = 0; pass < 2; pass++)
+                            {
+                                for (int i = 0; i < list.Items.Count; i++)
+                                {
+                                    clock.Restart();
+                                    list.SelectedIndex = i;
+                                    form.PerformLayout();
+                                    Application.DoEvents();
+                                    long ms = clock.ElapsedMilliseconds;
+                                    worstSwitch = Math.Max(worstSwitch, ms);
+                                    totalSwitch += ms;
+                                    switches++;
+                                }
+                            }
+                        }
+
+                        controls = FindAll<Control>(form).Count;
+                        form.Close();
+                    }
+                    catch (Exception ex) { error = ex.GetType().Name + ": " + ex.Message; }
+                });
+                thread.SetApartmentState(ApartmentState.STA);
+                thread.Start();
+                thread.Join(TimeSpan.FromSeconds(60));
+
+                Equal($"the {name} builds and shows", "", error);
+                if (error.Length > 0) return;
+
+                long average = switches == 0 ? 0 : totalSwitch / switches;
+                Console.WriteLine($"  {name}: built {buildMs}ms, shown {showMs}ms, " +
+                                  $"switch average {average}ms worst {worstSwitch}ms over {switches}, {controls} controls");
+                Check($"the {name} opens quickly ({buildMs + showMs}ms)", buildMs + showMs < openLimit,
+                    $"{buildMs + showMs}ms");
+                Check($"and switching category is quick (worst {worstSwitch}ms)", worstSwitch < switchLimit * 3 && average < switchLimit,
+                    $"average {average}ms, worst {worstSwitch}ms");
+            }
+        }
+
+        /// <summary>
         /// The settings removed on 2026-10-05 are now code, and the code has to
         /// do exactly what Conner's own settings did: Name, Size and Modified
         /// columns and no Type; nothing said on entering a folder or selecting a
@@ -1155,6 +1282,7 @@ namespace ExplorerNative
                 try
                 {
                     using var window = new SettingsForm(new Settings(), null);
+                    window.BuildAllPages();
                     foreach (var c in FindAll<Control>(window)) labels.Add(c.Text ?? "");
                     using var picker = new FormatsForm(".mp3;.flac");
                     foreach (var list in FindAll<CheckedListBox>(picker))
@@ -2508,6 +2636,7 @@ namespace ExplorerNative
                 {
                     var clock = System.Diagnostics.Stopwatch.StartNew();
                     using var window = new SettingsForm(settings, null);
+                    window.BuildAllPages();
                     clock.Stop();
                     buildMs = clock.ElapsedMilliseconds;
 
@@ -4651,6 +4780,118 @@ namespace ExplorerNative
         /// somebody's configuration: the file is the contract, and every property
         /// in it has to make the round trip intact.
         /// </summary>
+        /// <summary>
+        /// An update never reverts, changes or alters a setting. A file with
+        /// every setting set to something unusual but valid, stamped as written
+        /// by several older versions, has to come back with every value exactly
+        /// as it was after loading, saving and loading again.
+        /// </summary>
+        private static void UpdatesNeverChangeSettingsTests()
+        {
+            Console.WriteLine("An update never changes a setting:");
+
+            var sandbox = NewTempDir();
+            var previous = Settings.OverrideAppDataDir;
+            Settings.OverrideAppDataDir = sandbox;
+            try
+            {
+                var original = new Settings();
+                foreach (var property in PersistedProperties())
+                {
+                    if (property.Name == nameof(Settings.SettingsVersion)) continue;
+                    if (Attribute.IsDefined(property, typeof(System.Text.Json.Serialization.JsonIgnoreAttribute))) continue;
+                    var current = property.GetValue(original);
+                    object? changed = property.PropertyType switch
+                    {
+                        var t when t == typeof(bool) => !(bool)current!,
+                        var t when t == typeof(int) => DistinctInt(property.Name, (int)current!),
+                        var t when t == typeof(uint) => (uint)((uint)current! + 1),
+                        var t when t == typeof(long) => (long)current! + 12345,
+                        var t when t == typeof(string) => "kept-" + property.Name,
+                        var t when t.IsEnum => NextEnumValue(t, current!),
+                        var t when t == typeof(int[]) => DistinctIntArray(current as int[]),
+                        _ => null,
+                    };
+                    if (changed != null) property.SetValue(original, changed);
+                }
+
+                // The way an old shortcut default looked, which a step used to move.
+                original.AudioVolumeUpShortcut = "Ctrl+Alt+Up";
+                original.AudioExtensions = ".mp3;.flac";
+
+                original.Save();
+                var json = ProtectedFile.ReadAllText(Path.Combine(sandbox, "settings.json"));
+
+                foreach (int version in new[] { 0, 5, 9, 12, Settings.CurrentSettingsVersion })
+                {
+                    var stamped = System.Text.RegularExpressions.Regex.Replace(
+                        json, "\"SettingsVersion\"\\s*:\\s*\\d+", "\"SettingsVersion\": " + version);
+                    File.WriteAllText(Path.Combine(sandbox, "settings.json"), stamped);
+
+                    var loaded = Settings.Load();
+                    loaded.Save();
+                    var reloaded = Settings.Load();
+
+                    int changedCount = 0;
+                    var which = new List<string>();
+                    foreach (var property in PersistedProperties())
+                    {
+                        if (property.Name == nameof(Settings.SettingsVersion)) continue;
+                        if (Attribute.IsDefined(property, typeof(System.Text.Json.Serialization.JsonIgnoreAttribute))) continue;
+                        if (SameSetting(property.GetValue(original), property.GetValue(reloaded))) continue;
+                        changedCount++;
+                        which.Add(property.Name);
+                    }
+                    Equal($"a version {version} file comes back with every setting exactly as it was",
+                        "0", changedCount.ToString() + (which.Count > 0 ? " (" + string.Join(", ", which) + ")" : ""));
+                }
+            }
+            finally
+            {
+                Settings.OverrideAppDataDir = previous;
+                Cleanup(sandbox);
+            }
+
+            Console.WriteLine();
+        }
+
+        /// <summary>
+        /// A new install registers no global shortcuts at all until somebody sets
+        /// them up; a settings file that already has them keeps them.
+        /// </summary>
+        private static void NoShortcutsOnFirstLaunchTests()
+        {
+            var fresh = new Settings();
+            int assigned = AudioActions.All.Count(a => Shortcut.Parse(a.Get(fresh)).IsAssigned);
+            if (new Shortcut(fresh.HotkeyModifiers, fresh.HotkeyKey).IsAssigned) assigned++;
+            Equal("a new install has no keyboard shortcuts set", "0", assigned.ToString());
+
+            var sandbox = NewTempDir();
+            var previous = Settings.OverrideAppDataDir;
+            Settings.OverrideAppDataDir = sandbox;
+            try
+            {
+                var mine = new Settings
+                {
+                    AudioPlayPauseShortcut = "Ctrl+Alt+P",
+                    AudioVolumeUpShortcut = "Ctrl+Up",
+                    HotkeyModifiers = HotkeyManager.MOD_CONTROL | HotkeyManager.MOD_ALT,
+                    HotkeyKey = (uint)Keys.E,
+                };
+                mine.Save();
+                var back = Settings.Load();
+                Check("a settings file that has shortcuts keeps every one of them",
+                    back.AudioPlayPauseShortcut == "Ctrl+Alt+P" && back.AudioVolumeUpShortcut == "Ctrl+Up" &&
+                    back.HotkeyKey == (uint)Keys.E &&
+                    back.HotkeyModifiers == (HotkeyManager.MOD_CONTROL | HotkeyManager.MOD_ALT));
+            }
+            finally
+            {
+                Settings.OverrideAppDataDir = previous;
+                Cleanup(sandbox);
+            }
+        }
+
         private static void SettingsRoundTripTests()
         {
             Console.WriteLine("Settings survive a save and reload:");
@@ -4927,9 +5168,10 @@ namespace ExplorerNative
                     """);
 
                 var loaded = Settings.Load();
-                Check("an older file stops announcing the volume", !loaded.AudioAnnounceVolume);
-                Check("and the position", !loaded.AudioAnnounceSeek);
-                Check("and play, pause and stop", !loaded.AudioAnnounceTransport);
+                // An update never changes a setting: what the file says, it keeps.
+                Check("an older file keeps announcing the volume, as it says", loaded.AudioAnnounceVolume);
+                Check("and the position", loaded.AudioAnnounceSeek);
+                Check("and play, pause and stop", loaded.AudioAnnounceTransport);
                 Equal("while everything else in it is left alone", "42", loaded.AudioVolumePercent.ToString());
                 Equal("and it is stamped as migrated",
                     Settings.CurrentSettingsVersion.ToString(), loaded.SettingsVersion.ToString());
@@ -12428,15 +12670,14 @@ namespace ExplorerNative
             Equal("spaces around the parts", "Ctrl+Alt+P", Shortcut.Parse(" ctrl + alt + p ").ToString());
             Equal("Windows spelled out", "Win+F13", Shortcut.Parse("windows+f13").ToString());
 
-            // Every shipped default has to survive its own round trip, or the
-            // application starts life with shortcuts it cannot register.
+            // A new install has no shortcuts: every default is unset, and unset
+            // survives its own round trip.
             var defaults = new Settings();
             foreach (var action in AudioActions.All)
             {
                 var text = action.Get(defaults);
                 var parsed = Shortcut.Parse(text);
-                Check($"the default for \"{action.Label}\" parses", parsed.IsAssigned, text);
-                Check($"the default for \"{action.Label}\" can be registered", parsed.CanRegister, text);
+                Check($"the default for \"{action.Label}\" is unset", !parsed.IsAssigned, text);
                 Equal($"the default for \"{action.Label}\" round trips", text, parsed.ToString());
             }
 
@@ -12519,7 +12760,7 @@ namespace ExplorerNative
             Settings.OverrideAppDataDir = sandbox;
             try
             {
-                new Settings().Save();
+                new Settings { AudioPlayPauseShortcut = "Ctrl+Alt+P" }.Save();
                 var raw = ProtectedFile.ReadAllText(Path.Combine(sandbox, "settings.json"));
                 Check("shortcuts are readable in settings.json",
                     raw.Contains("\"Ctrl+Alt+P\""),
@@ -12565,59 +12806,22 @@ namespace ExplorerNative
                                            ".ogg", ".oga", ".opus", ".flac", ".aac", ".aif", ".aiff" })
                 Check($"{format} is treated as audio", AudioFiles.IsAudio("track" + format, defaults), format);
 
-            // Added after the list first shipped, so an existing settings file
-            // has to be brought along rather than left without them.
-            foreach (var later in AudioFiles.LaterExtensions)
+            foreach (var later in new[] { ".oga", ".m4r", ".mp4", ".mov", ".mkv", ".avi", ".cda" })
                 Check($"{later} is in the shipped default", AudioFiles.IsAudio("track" + later, defaults), later);
 
-            // Brought along by loading a real older file, which is the only path
-            // that actually runs the migration.
+            // An older file's list is left exactly as it was: an update never
+            // changes a setting the file already has, so nothing is appended.
             var box = NewTempDir();
             Settings.OverrideAppDataDir = box;
             try
             {
-                File.WriteAllText(Path.Combine(box, "settings.json"),
-                    """{ "SettingsVersion": 7, "AudioExtensions": ".mp3;.flac" }""");
-
-                var brought = Settings.Load();
-                Check("an older list gains the newer formats",
-                    AudioFiles.IsAudio("x.oga", brought.AudioExtensions) &&
-                    AudioFiles.IsAudio("x.m4r", brought.AudioExtensions),
-                    brought.AudioExtensions);
-                Check("and keeps what was already in it",
-                    AudioFiles.IsAudio("x.mp3", brought.AudioExtensions) &&
-                    AudioFiles.IsAudio("x.flac", brought.AudioExtensions),
-                    brought.AudioExtensions);
-                Check("without quietly adding back what was pruned out",
-                    !AudioFiles.IsAudio("x.wma", brought.AudioExtensions),
-                    brought.AudioExtensions);
-
-                // And the file that is already current, which is the one every
-                // existing installation actually has. A list that grows reaches
-                // nobody unless the version grows with it: the append lives
-                // behind "SettingsVersion < N", so widening an older block is
-                // writing a migration that has already run everywhere.
-                //
-                // This is the check that would have caught .mp4 and .mov being
-                // added to the list and never arriving.
-                File.WriteAllText(Path.Combine(box, "settings.json"),
-                    """{ "SettingsVersion": 10, "AudioExtensions": ".mp3;.flac" }""");
-
-                var current = Settings.Load();
-                foreach (var later in AudioFiles.LaterExtensions)
-                    Check($"a settings file of the previous version gains {later}",
-                        AudioFiles.IsAudio("x" + later, current.AudioExtensions),
-                        current.AudioExtensions);
-
-                // Twice is once. A file old enough to run both append blocks must
-                // not come out holding ".mp4;.mp4".
-                File.WriteAllText(Path.Combine(box, "settings.json"),
-                    """{ "SettingsVersion": 0, "AudioExtensions": ".mp3" }""");
-
-                var oldest = Settings.Load();
-                foreach (var later in AudioFiles.LaterExtensions)
-                    Equal($"{later} is appended exactly once however old the file",
-                        "1", Occurrences(oldest.AudioExtensions, later).ToString());
+                foreach (int version in new[] { 0, 7, 10, 12 })
+                {
+                    File.WriteAllText(Path.Combine(box, "settings.json"),
+                        "{ \"SettingsVersion\": " + version + ", \"AudioExtensions\": \".mp3;.flac\" }");
+                    Equal($"a version {version} file keeps its list of formats untouched", ".mp3;.flac",
+                        Settings.Load().AudioExtensions);
+                }
             }
             finally
             {
