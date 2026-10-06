@@ -482,8 +482,8 @@ namespace ExplorerNative
         public List<DriveSyncPair> DriveSyncPairs { get; set; } = new();
 
         /// <summary>
-        /// The pairing code Explorer Native Connect on the iPhone has to send with every request. Made on first
-        /// run; the tray's Phone connection item shows it. Not in Preferences: there is nothing to choose.
+        /// The pairing code a tailnet user other than this PC's owner enters once in the web app. Made on first
+        /// run; Preferences, Web app shows it. There is nothing to choose.
         /// </summary>
         public string ConnectCode { get; set; } = "";
 
@@ -492,6 +492,12 @@ namespace ExplorerNative
         /// Tailscale Serve (Preferences, Web app). Off by default.
         /// </summary>
         public bool WebAppEnabled { get; set; }
+
+        /// <summary>
+        /// The port the web app's server listens on, on this PC only (Tailscale Serve
+        /// points at it). Preferences, Web app. 47810 unless another program needs it.
+        /// </summary>
+        public int WebAppPort { get; set; } = ConnectServer.Port;
 
         // ---------- What is spoken ----------
 
@@ -1125,6 +1131,7 @@ namespace ExplorerNative
             Migrate();
 
             FontSize = Math.Clamp(FontSize, 7, 24);
+            if (WebAppPort < ConnectServer.LowestPort || WebAppPort > ConnectServer.HighestPort) WebAppPort = ConnectServer.Port;
 
             // A date in the future would outrank every release for good.
             FoldersTakenAt = Math.Clamp(FoldersTakenAt, 0, DateTime.UtcNow.Ticks);

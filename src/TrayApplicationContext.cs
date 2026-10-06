@@ -78,7 +78,15 @@ namespace ExplorerNative
             menu.Items.Add("&What is playing", null, (_, _) => RunAudioAction(AudioAction.WhatIsPlaying));
             menu.Items.Add(new ToolStripSeparator());
 
-            menu.Items.Add("Phone &connection", null, (_, _) => ShowConnectDetails());
+            // The web app's link, Copy link, status and pairing code all live on
+            // Preferences' Web app page; this is the short way there.
+            menu.Items.Add("&Web app…", null, (_, _) =>
+            {
+                if (_audioDialogOpen) { Notify("error.generic", "Close the audio dialog first"); return; }
+                if (_form?.PreferencesOpen == true) return;
+                ShowWindow();
+                _form?.OpenPreferencesExternally("Web app");
+            });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("E&xit", null, (_, _) => Quit(ask: true));
 
@@ -127,10 +135,12 @@ namespace ExplorerNative
             // Preferences, Web app: Tailscale Serve on or off, from a worker.
             SettingsForm.WebAppApply = on =>
             {
-                if (on) return TailscaleWeb.Enable();
-                TailscaleWeb.Disable();
+                int port = _connect?.ListenPort ?? _settings.WebAppPort;
+                if (on) return TailscaleWeb.Enable(port);
+                TailscaleWeb.Disable(port);
                 return new TailscaleWeb.EnableResult(true, null, null);
             };
+            SettingsForm.CurrentWebPort = () => _connect?.ListenPort ?? _settings.WebAppPort;
 
             // The folder monitor: pairs live in settings, saved at once when the
             // monitor dialog changes them.
@@ -413,8 +423,23 @@ namespace ExplorerNative
         {
             bool driveWasOn = _settings.GoogleDriveEnabled;
             bool webWasOn = _settings.WebAppEnabled;
+            int portWas = _connect?.ListenPort ?? _settings.WebAppPort;
             _settings = settings;
-            if (webWasOn != settings.WebAppEnabled) ReconcileWebApp();
+            bool portMoved = false;
+            if (_connect != null && settings.WebAppPort != portWas)
+            {
+                // Preferences checked the port before OK; it can still have been
+                // taken since, in which case the old one is kept and said.
+                if (_connect.Rebind(settings.WebAppPort)) portMoved = true;
+                else
+                {
+                    Notify("webapp.port.failed", (_connect.ListenProblem ?? "That port could not be used.") +
+                                                 $" The web app stays on port {portWas}.");
+                    settings.WebAppPort = portWas;
+                    settings.Save();
+                }
+            }
+            if (webWasOn != settings.WebAppEnabled || portMoved) ReconcileWebApp(portWas);
 
             // Switched back on in Preferences since: that choice stands over a
             // release still waiting for the file to open — that one setting,
@@ -1802,9 +1827,9 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Explorer Native Connect: this machine's drives for the iPhone app, over Tailscale only. Drive folders
+        /// Explorer Native Connect: this machine's drives for the web app, through Tailscale Serve only. Drive folders
         /// come from the listing the mount already holds. A Drive file is read straight from Google through the
-        /// player's own range source and download window, one shared per path (ConnectStreams), so a phone
+        /// player's own range source and download window, one shared per path (ConnectStreams), so a browser
         /// scrubbing a track hits memory instead of starting a download per drag; a local file is read as a
         /// file. The file actions are ConnectFiles, the application's own machinery.
         /// </summary>
@@ -1836,9 +1861,25 @@ namespace ExplorerNative
                 isDrive: root => _drive.Owns(root),
                 files: new ConnectFiles(_drive, _settings),
                 remote: path => _drive.Owns(path) ? streams.Lease(path) : null,
-                clipboard: _connectClipboard);
+                clipboard: _connectClipboard,
+                port: _settings.WebAppPort);
             _connect.Start();
-            ReconcileWebApp();
+
+            // A saved port another program has taken since: the default instead, said once.
+            if (_connect.ListenProblem != null && _settings.WebAppPort != ConnectServer.Port)
+            {
+                int wanted = _settings.WebAppPort;
+                if (_connect.Rebind(ConnectServer.Port))
+                {
+                    _settings.WebAppPort = ConnectServer.Port;
+                    _settings.Save();
+                    Notify("webapp.port.fallback",
+                        $"Port {wanted} is in use by another program, so the web app is using port {ConnectServer.Port} instead");
+                }
+            }
+            if (_connect.ListenProblem != null)
+                Notify("webapp.port.failed", "The web app could not start. " + _connect.ListenProblem);
+            ReconcileWebApp(_connect.ListenPort);
         }
 
         /// <summary>
@@ -1846,30 +1887,29 @@ namespace ExplorerNative
         /// web app's handler on 443 if it is not there, off takes only ours away.
         /// Run at start and whenever the setting changes.
         /// </summary>
-        private void ReconcileWebApp()
+        private void ReconcileWebApp(int previousPort)
         {
             bool on = _settings.WebAppEnabled;
+            int port = _connect?.ListenPort ?? _settings.WebAppPort;
             _ = System.Threading.Tasks.Task.Run(() =>
             {
                 try
                 {
                     if (!TailscaleWeb.Installed) return;
-                    var serve = TailscaleWeb.ReadServe();
-                    if (on && serve != TailscaleWeb.ServeState.Ours) TailscaleWeb.Enable();
-                    else if (!on && serve == TailscaleWeb.ServeState.Ours) TailscaleWeb.Disable();
+                    var serve = TailscaleWeb.ReadServe(port, previousPort);
+                    if (on && serve != TailscaleWeb.ServeState.Ours)
+                    {
+                        var r = TailscaleWeb.Enable(port, previousPort);
+                        if (!r.Ok && r.Problem != null) PostUi(() => Notify("webapp.failed", r.Problem));
+                    }
+                    else if (!on && serve is TailscaleWeb.ServeState.Ours or TailscaleWeb.ServeState.OursOtherPort)
+                        TailscaleWeb.Disable(port, previousPort);
                 }
-                catch { }
+                catch (Exception ex)
+                {
+                    PostUi(() => Notify("webapp.failed", "Tailscale could not be set up for the web app: " + ex.Message));
+                }
             });
-        }
-
-        private void ShowConnectDetails()
-        {
-            var address = _connect?.TailscaleAddress;
-            string code = _settings.ConnectCode;
-            string text = address == null
-                ? $"Tailscale isn't connected on this computer, so the phone can't reach it yet.\r\n\r\nPairing code: {code[..4]} {code[4..]}"
-                : $"In Explorer Native Connect on the iPhone, use:\r\n\r\nComputer: {Environment.MachineName.ToLowerInvariant()} (or {address})\r\nPairing code: {code[..4]} {code[4..]}";
-            MessageBox.Show(text, "Phone connection", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
         private void ShowWindow()

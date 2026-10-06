@@ -15,7 +15,7 @@ using System.Threading.Tasks;
 
 namespace ExplorerNative
 {
-    /// <summary>One row of a folder, as the phone sees it.</summary>
+    /// <summary>One row of a folder, as the web app sees it.</summary>
     public sealed record ConnectEntry(string Name, bool Folder, long Size, DateTime Modified);
 
     /// <summary>A folder's size, and whether the walk finished inside its budget.</summary>
@@ -44,12 +44,12 @@ namespace ExplorerNative
 
         public int Status { get; }
 
-        /// <summary>For a resumable upload: how many bytes are held, so the phone can carry on from there.</summary>
+        /// <summary>For a resumable upload: how many bytes are held, so the web app can carry on from there.</summary>
         public long? Received { get; }
     }
 
     /// <summary>
-    /// What the phone may do to files, as the application does it. The server parses, validates and routes;
+    /// What the web app may do to files, as the application does it. The server parses, validates and routes;
     /// this does the work, through the same machinery the window uses (Drive trash and rename, the Recycle Bin,
     /// robocopy, DriveUpload). An interface so the server can be tested with a fake and no Drive at all.
     /// </summary>
@@ -105,7 +105,7 @@ namespace ExplorerNative
         Task<Dictionary<string, object?>> DetailsAsync(string path, ConnectStat stat, bool hash, CancellationToken token);
     }
 
-    /// <summary>A copy or move the phone started, polled with <c>/api/job</c>.</summary>
+    /// <summary>A copy or move the web app started, polled with <c>/api/job</c>.</summary>
     public sealed class ConnectJob
     {
         private readonly object _gate = new();
@@ -185,7 +185,7 @@ namespace ExplorerNative
     }
 
     /// <summary>
-    /// Remote files for the phone, one open download per path shared by every request for it.
+    /// Remote files for the web app, one open download per path shared by every request for it.
     ///
     /// A phone scrubbing through a track sends a new Range request per drag, and AVPlayer keeps two
     /// connections to one file. Opened per request, each would start its own download from Google and throw
@@ -332,14 +332,16 @@ namespace ExplorerNative
     }
 
     /// <summary>
-    /// Explorer Native Connect: the drives, folders and files of this machine, for the iPhone app.
+    /// Explorer Native Connect: the drives, folders and files of this machine, for the web app.
     ///
-    /// Plain HTTP on port 47810, listening only on the Tailscale address (and loopback), so nothing outside
-    /// Conner's own tailnet can reach it, and every request must carry the pairing code as well. The contract
-    /// is Documents\explorer_native_connect\API.md (v2): reading (<c>info</c>, <c>drives</c>, <c>list</c>,
-    /// <c>file</c> with byte ranges, <c>size</c>, <c>stat</c>) and writing (<c>rename</c>, <c>delete</c>,
-    /// <c>mkdir</c>, <c>copy</c>/<c>move</c> as polled jobs, <c>upload</c>). The writing is done by an
-    /// <see cref="IConnectFiles"/>; this class is HTTP, validation, the size cache and the job table.
+    /// Plain HTTP on 127.0.0.1 only (port 47810 unless Preferences says otherwise). Nothing on any network
+    /// reaches it directly: the web app arrives through Tailscale Serve, which connects from this machine and
+    /// names the tailnet user. The PC's owner needs no code; anyone else on the tailnet sends the pairing code.
+    /// The web app in web\ is the only client, and what app.js calls is the contract: reading (<c>info</c>,
+    /// <c>drives</c>, <c>list</c>, <c>file</c> with byte ranges, <c>size</c>, <c>details</c>) and writing
+    /// (<c>rename</c>, <c>delete</c>, <c>mkdir</c>, <c>copy</c>/<c>move</c> as polled jobs, <c>upload</c>). The
+    /// writing is done by an <see cref="IConnectFiles"/>; this class is HTTP, validation, the size cache and
+    /// the job table.
     ///
     /// It is its own small HTTP server rather than HttpListener because HttpListener on any address but
     /// localhost needs an administrator to reserve the URL first, and rather than ASP.NET because this
@@ -363,22 +365,21 @@ namespace ExplorerNative
         private readonly IConnectClipboard? _clipboard;
         private readonly string _clipboardSends;
 
-        /// <summary>Files sent from the phone to the clipboard are kept this long, then swept on start.</summary>
+        /// <summary>Files sent from the web app to the clipboard are kept this long, then swept on start.</summary>
         public static readonly TimeSpan ClipboardSendsKeptFor = TimeSpan.FromDays(7);
 
         public static string DefaultClipboardSends => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ExplorerNative", "connect-clipboard");
         private readonly Action<string>? _log;
 
-        /// <summary>What the phone plays straight from <c>/api/file</c>. Everything else in the audio list goes
+        /// <summary>What the web app plays straight from <c>/api/file</c>. Everything else in the audio list goes
         /// through <c>/api/audio</c>; video containers always do, so only sound crosses the network.</summary>
         public static readonly string[] NativeFormats = { ".mp3", ".m4a", ".aac", ".flac", ".wav", ".aif", ".aiff", ".caf", ".alac" };
 
         /// <summary>Resumable uploads nobody has touched for this long are swept when the server starts.</summary>
         public static readonly TimeSpan UploadsKeptFor = TimeSpan.FromHours(24);
-        private readonly bool _loopbackOnly;
         private readonly CancellationTokenSource _stop = new();
-        private readonly Dictionary<IPAddress, TcpListener> _listeners = new();
+        private TcpListener? _listener;
         private readonly object _gate = new();
 
         /// <summary>How long a folder size is remembered, and the local walk's budget.</summary>
@@ -388,7 +389,7 @@ namespace ExplorerNative
         private const int MaxJsonBody = 1 << 20;
 
         /// <summary>An upload refused before its body was read is drained, up to this, so the connection
-        /// stays usable and the phone hears the answer instead of a reset.</summary>
+        /// stays usable and the web app hears the answer instead of a reset.</summary>
         private const long MaxDrain = 256L << 20;
 
         private readonly ConcurrentDictionary<string, (Task<ConnectSize> Task, DateTime At)> _sizes =
@@ -399,7 +400,7 @@ namespace ExplorerNative
         /// them (Drive); null to list it from the file system.</param>
         /// <param name="open">Bytes of a file at any offset.</param>
         /// <param name="code">The pairing code requests must carry.</param>
-        /// <param name="loopbackOnly">Tests: listen on 127.0.0.1 only, on <paramref name="port"/>.</param>
+        /// <param name="loopbackOnly">Tests: do not run tailscale.exe for this PC's login.</param>
         /// <param name="isDrive">Whether a drive root is Google Drive. Windows reports the Drive letter as a
         /// "Local Disk" with C:'s space, because it is a subst of a folder there.</param>
         /// <param name="files">The file actions and Drive's quota; without it those routes answer 503.</param>
@@ -423,34 +424,93 @@ namespace ExplorerNative
             _open = open;
             _code = code;
             _log = log;
-            _loopbackOnly = loopbackOnly;
             ListenPort = port;
         }
 
-        public int ListenPort { get; }
+        /// <summary>The port listened on, on 127.0.0.1. Changed by <see cref="Rebind"/>.</summary>
+        public int ListenPort { get; private set; }
 
-        /// <summary>The Tailscale address being listened on, if any.</summary>
-        public IPAddress? TailscaleAddress { get; private set; }
+        /// <summary>Why the last attempt to listen failed, or null while listening.</summary>
+        public string? ListenProblem { get; private set; }
 
         public void Start()
         {
-            RefreshPaths();
+            RefreshOwnLogin();
             _ = Task.Run(() =>
             {
-                int swept = _uploads.Sweep(UploadsKeptFor);
-                swept += SweepClipboardSends(ClipboardSendsKeptFor);
-                if (swept > 0) _log?.Invoke($"Connect: swept {swept} abandoned upload(s)");
-            });
-
-            // Tailscale can start after this does, or get a new address; look again every thirty seconds.
-            _ = Task.Run(async () =>
-            {
-                while (!_stop.IsCancellationRequested)
+                try
                 {
-                    try { Rebind(); } catch (Exception e) { _log?.Invoke("Connect: " + e.Message); }
-                    try { await Task.Delay(TimeSpan.FromSeconds(30), _stop.Token); } catch { break; }
+                    int swept = _uploads.Sweep(UploadsKeptFor);
+                    swept += SweepClipboardSends(ClipboardSendsKeptFor);
+                    if (swept > 0) _log?.Invoke($"Connect: swept {swept} abandoned upload(s)");
                 }
+                catch (Exception e) { _log?.Invoke("Connect: sweep: " + e.Message); }
             });
+            Rebind(ListenPort);
+        }
+
+        /// <summary>
+        /// Listens on 127.0.0.1:<paramref name="port"/>, and only there. Nothing on any
+        /// network reaches this server directly: the web app arrives through Tailscale
+        /// Serve, which connects from this machine. Moving to another port keeps every
+        /// job and upload. Returns false, with <see cref="ListenProblem"/> saying why,
+        /// when the port cannot be had; the old listener is then kept.
+        /// </summary>
+        public bool Rebind(int port)
+        {
+            lock (_gate)
+            {
+                if (_stop.IsCancellationRequested) return false;
+                if (_listener != null && port == ListenPort) return true;
+
+                var next = new TcpListener(IPAddress.Loopback, port);
+                try { next.Start(); }
+                catch (SocketException e)
+                {
+                    ListenProblem = PortProblem(port, e);
+                    _log?.Invoke("Connect: " + ListenProblem);
+                    return false;
+                }
+
+                var old = _listener;
+                _listener = next;
+                ListenPort = port;
+                ListenProblem = null;
+                try { old?.Stop(); } catch { }
+                _ = AcceptLoop(next);
+                return true;
+            }
+        }
+
+        /// <summary>A port that cannot be listened on, as a sentence.</summary>
+        public static string PortProblem(int port, SocketException e) =>
+            e.SocketErrorCode is SocketError.AddressAlreadyInUse or SocketError.AccessDenied
+                ? $"Port {port} is already in use by another program."
+                : $"Port {port} could not be used: {e.Message}";
+
+        /// <summary>The ports a user may pick for the web app.</summary>
+        public const int LowestPort = 1024, HighestPort = 65535;
+
+        /// <summary>
+        /// Whether <paramref name="port"/> can be used, as a sentence when it cannot.
+        /// <paramref name="current"/> is the port in use now, which is ours and so free.
+        /// Asks Windows which ports have listeners, then tries to bind one briefly.
+        /// </summary>
+        public static string? CheckPort(int port, int current)
+        {
+            if (port < LowestPort || port > HighestPort)
+                return $"Choose a port from {LowestPort} to {HighestPort}.";
+            if (port == current) return null;
+            try
+            {
+                foreach (var l in System.Net.NetworkInformation.IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners())
+                    if (l.Port == port) return $"Port {port} is already in use by another program.";
+            }
+            catch { /* the bind below still answers */ }
+            var probe = new TcpListener(IPAddress.Loopback, port);
+            try { probe.Start(); return null; }
+            catch (SocketException e) { return PortProblem(port, e); }
+            finally { try { probe.Stop(); } catch { } }
         }
 
         /// <summary>A new pairing code: eight digits, shown as two groups of four.</summary>
@@ -462,71 +522,6 @@ namespace ExplorerNative
             return n.ToString("00000000");
         }
 
-        /// <summary>An address in 100.64.0.0/10, the range Tailscale hands out.</summary>
-        public static bool IsTailscale(IPAddress a)
-        {
-            if (a.AddressFamily != AddressFamily.InterNetwork) return false;
-            var b = a.GetAddressBytes();
-            return b[0] == 100 && (b[1] & 0xC0) == 64;
-        }
-
-        /// <summary>The Tailscale virtual adapter (Wintun), by its name or description.</summary>
-        public static bool IsTailscaleAdapter(NetworkInterface ni) =>
-            ni.Name.Contains("Tailscale", StringComparison.OrdinalIgnoreCase)
-            || ni.Description.Contains("Tailscale", StringComparison.OrdinalIgnoreCase);
-
-        /// <summary>
-        /// Who may talk to the server at all: this machine, or a tailnet peer
-        /// (100.64.0.0/10, or Tailscale's IPv6 range fd7a:115c:a1e0::/48). Checked on
-        /// every connection, on top of listening only on loopback and the Tailscale
-        /// adapter, so nothing else on any network reaches it even by mistake.
-        /// </summary>
-        public static bool IsAllowedPeer(IPAddress a)
-        {
-            if (a.IsIPv4MappedToIPv6) a = a.MapToIPv4();
-            if (IPAddress.IsLoopback(a) || IsTailscale(a)) return true;
-            if (a.AddressFamily != AddressFamily.InterNetworkV6) return false;
-            var b = a.GetAddressBytes();
-            return b[0] == 0xfd && b[1] == 0x7a && b[2] == 0x11 && b[3] == 0x5c && b[4] == 0xa1 && b[5] == 0xe0;
-        }
-
-        private void Rebind()
-        {
-            var want = new HashSet<IPAddress> { IPAddress.Loopback };
-            IPAddress? tailscale = null;
-            if (!_loopbackOnly)
-            {
-                foreach (var ni in NetworkInterface.GetAllNetworkInterfaces())
-                {
-                    if (ni.OperationalStatus != OperationalStatus.Up) continue;
-                    // 100.64.0.0/10 is also carrier-grade NAT: a phone hotspot or an ISP can
-                    // hand one out on an ordinary adapter. Only Tailscale's own adapter counts.
-                    if (!IsTailscaleAdapter(ni)) continue;
-                    foreach (var ua in ni.GetIPProperties().UnicastAddresses)
-                        if (IsTailscale(ua.Address)) { tailscale = ua.Address; want.Add(ua.Address); }
-                }
-            }
-            lock (_gate)
-            {
-                if (_stop.IsCancellationRequested) return; // disposed while the interfaces were being asked
-                foreach (var gone in _listeners.Keys.Where(a => !want.Contains(a)).ToList())
-                {
-                    try { _listeners[gone].Stop(); } catch { }
-                    _listeners.Remove(gone);
-                }
-                foreach (var address in want.Where(a => !_listeners.ContainsKey(a)))
-                {
-                    var listener = new TcpListener(address, ListenPort);
-                    try { listener.Start(); }
-                    catch (SocketException e) { _log?.Invoke($"Connect: can't listen on {address}: {e.Message}"); continue; }
-                    _listeners[address] = listener;
-                    _ = AcceptLoop(listener);
-                    if (!IPAddress.IsLoopback(address)) _log?.Invoke($"Connect: listening on {address}:{ListenPort}");
-                }
-            }
-            TailscaleAddress = tailscale;
-        }
-
         private async Task AcceptLoop(TcpListener listener)
         {
             while (!_stop.IsCancellationRequested)
@@ -534,7 +529,8 @@ namespace ExplorerNative
                 TcpClient client;
                 try { client = await listener.AcceptTcpClientAsync(_stop.Token); }
                 catch { return; }
-                if (client.Client.RemoteEndPoint is not IPEndPoint peer || !IsAllowedPeer(peer.Address))
+                // Listening on loopback means only this machine connects; checked anyway.
+                if (client.Client.RemoteEndPoint is not IPEndPoint peer || !IPAddress.IsLoopback(peer.Address.IsIPv4MappedToIPv6 ? peer.Address.MapToIPv4() : peer.Address))
                 {
                     _log?.Invoke($"Connect: refused {client.Client.RemoteEndPoint}");
                     client.Dispose();
@@ -597,7 +593,7 @@ namespace ExplorerNative
             }
             catch (Exception e) when (e is IOException or SocketException or OperationCanceledException or ObjectDisposedException)
             {
-                // The phone went away mid-response: nothing to report.
+                // The web app went away mid-response: nothing to report.
             }
             catch (Exception e)
             {
@@ -671,9 +667,8 @@ namespace ExplorerNative
                     case "/api/size":
                         await Json(s, 200, await Size(path, token), head, token);
                         break;
-                    case "/api/stat":
-                    // The same, under a name ad and tracker blockers leave alone: "/stat?" is a
-                    // common blocking rule, and a blocked request never reaches the PC. The web app uses this.
+                    // Not "/api/stat": "/stat?" is a common blocking rule, and a
+                    // blocked request never reaches the PC.
                     case "/api/details":
                         await Json(s, 200, await Stat(path, r.Query.TryGetValue("hash", out var hv) && hv == "1", token), head, token);
                         break;
@@ -720,10 +715,6 @@ namespace ExplorerNative
                         if (post) await Json(s, 200, new { ok = true, seq = await Clip.SetTextAsync(Str(await ReadJson(r, token), "text") ?? throw new ConnectException(400, "The body needs text.")) }, false, token);
                         else await Json(s, 200, Clip.Current, head, token);
                         break;
-                    case "/api/clipboard/wait":
-                        long since = r.Query.TryGetValue("since", out var sv) && long.TryParse(sv, out var sl) ? sl : -1;
-                        await Json(s, 200, await Clip.WaitAsync(since, ClipboardWait, token), head, token);
-                        break;
                     case "/api/clipboard/image":
                         if (post) await Json(s, 200, new { ok = true, seq = await Clip.SetImageAsync(await ReadAll(r, MaxClipboardImage, token)) }, false, token);
                         else await Png(s, Clip.Png() ?? throw new ConnectException(404, "The clipboard holds no image."), head, token);
@@ -736,18 +727,6 @@ namespace ExplorerNative
                         break;
                     case "/api/clipboard/send/commit":
                         await Json(s, 200, await ClipCommit(await ReadJson(r, token), token), false, token);
-                        break;
-                    case "/api/clipboard/history":
-                        await Json(s, 200, Clip.History(), head, token);
-                        break;
-                    case "/api/clipboard/history/clear":
-                        if (r.Body.HasBody) await r.Body.DrainAsync(MaxJsonBody, token);
-                        Clip.ClearHistory();
-                        await Json(s, 200, new { ok = true }, false, token);
-                        break;
-                    case "/api/ping":
-                        var peerAddress = (r.Socket?.RemoteEndPoint as IPEndPoint)?.Address;
-                        await Json(s, 200, new { time = DateTime.UtcNow, path = TailscalePath(peerAddress) }, head, token);
                         break;
                     case "/api/formats":
                         await Json(s, 200, new { audio = Files.AudioExtensions(), native = NativeFormats }, head, token);
@@ -792,14 +771,12 @@ namespace ExplorerNative
         /// <summary>The one method a route answers (HEAD goes with GET), or "" for no such route.</summary>
         private static string MethodFor(string path) => path switch
         {
-            "/api/info" or "/api/drives" or "/api/list" or "/api/file" or "/api/size" or "/api/stat" or "/api/details" or "/api/job"
+            "/api/info" or "/api/drives" or "/api/list" or "/api/file" or "/api/size" or "/api/details" or "/api/job"
                 or "/api/upload/status" or "/api/formats" or "/api/audio" => "GET",
             "/api/rename" or "/api/delete" or "/api/mkdir" or "/api/copy" or "/api/move" or "/api/job/cancel"
                 or "/api/upload" or "/api/upload/start" or "/api/upload/finish" or "/api/upload/cancel" => "POST",
             "/api/upload/chunk" => "PUT",
-            "/api/ping" => "GET",
-            "/api/clipboard/wait" or "/api/clipboard/history" => "GET",
-            "/api/clipboard/files" or "/api/clipboard/send" or "/api/clipboard/send/commit" or "/api/clipboard/history/clear" => "POST",
+            "/api/clipboard/files" or "/api/clipboard/send" or "/api/clipboard/send/commit" => "POST",
             "/api/clipboard" or "/api/clipboard/image" => "GET|POST",
             _ => "",
         };
@@ -816,7 +793,7 @@ namespace ExplorerNative
 
         // MARK: Actions
 
-        /// <summary>A path the phone sent, checked for shape and for Drive being there to answer it.</summary>
+        /// <summary>A path the web app sent, checked for shape and for Drive being there to answer it.</summary>
         private string CheckPath(string? path, string what = "path")
         {
             if (string.IsNullOrWhiteSpace(path)) throw new ConnectException(400, $"No {what} was given.");
@@ -906,78 +883,50 @@ namespace ExplorerNative
         // MARK: Ping
 
         private readonly Func<string?> _tailscaleStatus;
-        private readonly object _pathsGate = new();
-        private Dictionary<string, string> _paths = new();
-        private DateTime _pathsAt = DateTime.MinValue;
-        private int _refreshingPaths;
+        private DateTime _loginAt = DateTime.MinValue;
+        private int _refreshingLogin;
 
-        /// <summary>How long a Tailscale path is believed before it is asked again.</summary>
-        public static readonly TimeSpan PathsFor = TimeSpan.FromSeconds(10);
+        /// <summary>How long this PC's Tailscale login is believed before it is asked again.</summary>
+        public static readonly TimeSpan LoginFor = TimeSpan.FromSeconds(30);
 
-        /// <summary>How Tailscale reaches <paramref name="peer"/>, from the cache; a stale cache is refreshed behind the answer.</summary>
-        private string TailscalePath(IPAddress? peer)
+        /// <summary>For tests: waits for a login refresh already under way.</summary>
+        internal async Task LoginSettled()
         {
-            if (DateTime.UtcNow - _pathsAt > PathsFor) RefreshPaths();
-            if (peer == null) return "unknown";
-            if (peer.IsIPv4MappedToIPv6) peer = peer.MapToIPv4();
-            lock (_pathsGate) return _paths.TryGetValue(peer.ToString(), out var p) ? p : "unknown";
+            for (int i = 0; i < 100 && Volatile.Read(ref _refreshingLogin) == 1; i++) await Task.Delay(20);
         }
 
-        /// <summary>For tests: waits for a refresh already under way.</summary>
-        internal async Task PathsSettled()
+        /// <summary>
+        /// Reads this PC's own Tailscale login behind the request that wanted it, at
+        /// most every <see cref="LoginFor"/>. Tailscale missing or stopped leaves the
+        /// login unknown, which trusts nobody without the code.
+        /// </summary>
+        private void RefreshOwnLogin()
         {
-            for (int i = 0; i < 100 && Volatile.Read(ref _refreshingPaths) == 1; i++) await Task.Delay(20);
-        }
-
-        private void RefreshPaths()
-        {
-            if (Interlocked.Exchange(ref _refreshingPaths, 1) == 1) return;
+            if (Interlocked.Exchange(ref _refreshingLogin, 1) == 1) return;
             _ = Task.Run(() =>
             {
                 try
                 {
                     var json = _tailscaleStatus();
+                    string? login = null;
                     if (json != null)
                     {
-                        var paths = ParseTailscalePaths(json);
-                        lock (_pathsGate) _paths = paths;
-                        try { Volatile.Write(ref _ownLogin, TailscaleWeb.ParseStatus(json).Login); } catch { }
+                        var status = TailscaleWeb.ParseStatus(json);
+                        if (status.State == TailscaleWeb.State.Running) login = status.Login;
                     }
+                    Volatile.Write(ref _ownLogin, login);
                 }
-                catch (Exception e) { _log?.Invoke("Connect: tailscale status: " + e.Message); }
+                catch (Exception e)
+                {
+                    Volatile.Write(ref _ownLogin, null);
+                    _log?.Invoke("Connect: tailscale status: " + e.Message);
+                }
                 finally
                 {
-                    _pathsAt = DateTime.UtcNow;
-                    Volatile.Write(ref _refreshingPaths, 0);
+                    _loginAt = DateTime.UtcNow;
+                    Volatile.Write(ref _refreshingLogin, 0);
                 }
             });
-        }
-
-        /// <summary>
-        /// Every Tailscale address in <c>tailscale status --json</c> and how it is reached: a peer with a
-        /// current address is direct, one without it goes through its DERP relay, and this machine's own
-        /// addresses (and loopback) are direct.
-        /// </summary>
-        public static Dictionary<string, string> ParseTailscalePaths(string json)
-        {
-            var paths = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { ["127.0.0.1"] = "direct", ["::1"] = "direct" };
-            using var doc = JsonDocument.Parse(json);
-            void Add(JsonElement node, string path)
-            {
-                if (node.TryGetProperty("TailscaleIPs", out var ips) && ips.ValueKind == JsonValueKind.Array)
-                    foreach (var ip in ips.EnumerateArray())
-                        if (ip.GetString() is { Length: > 0 } a) paths[a] = path;
-            }
-            if (doc.RootElement.TryGetProperty("Self", out var self)) Add(self, "direct");
-            if (doc.RootElement.TryGetProperty("Peer", out var peers) && peers.ValueKind == JsonValueKind.Object)
-                foreach (var peer in peers.EnumerateObject())
-                {
-                    var p = peer.Value;
-                    string cur = p.TryGetProperty("CurAddr", out var c) ? c.GetString() ?? "" : "";
-                    string relay = p.TryGetProperty("Relay", out var r) ? r.GetString() ?? "" : "";
-                    Add(p, cur.Length > 0 ? "direct" : relay.Length > 0 ? "relay " + relay : "unknown");
-                }
-            return paths;
         }
 
         /// <summary><c>tailscale status --json</c>, or null. Five seconds at most; nothing inherited, no window.</summary>
@@ -1122,9 +1071,6 @@ namespace ExplorerNative
 
         // MARK: Clipboard
 
-        /// <summary>How long a long poll on the clipboard waits before answering with no change.</summary>
-        public static readonly TimeSpan ClipboardWait = TimeSpan.FromSeconds(25);
-
         private const int MaxClipboardImage = 64 << 20;
 
         private IConnectClipboard Clip => _clipboard ?? throw new ConnectException(503, "The clipboard isn't available on this computer.");
@@ -1160,7 +1106,7 @@ namespace ExplorerNative
             return new { ok = true, seq = await Clip.SetFilesAsync(paths) };
         }
 
-        /// <summary>A batch id the phone chose: letters, digits and dashes, and nothing that can walk a path.</summary>
+        /// <summary>A batch id the web app chose: letters, digits and dashes, and nothing that can walk a path.</summary>
         private static bool BatchId(string? id) =>
             id is { Length: > 0 and <= 64 } && id.All(c => char.IsAsciiLetterOrDigit(c) || c == '-');
 
@@ -1451,7 +1397,7 @@ namespace ExplorerNative
         /// </summary>
         private bool TrustedTailscaleUser(Request r)
         {
-            if (DateTime.UtcNow - _pathsAt > PathsFor) RefreshPaths();
+            if (DateTime.UtcNow - _loginAt > LoginFor) RefreshOwnLogin();
             var peer = (r.Socket?.RemoteEndPoint as IPEndPoint)?.Address;
             string? login = r.Headers.TryGetValue("tailscale-user-login", out var l) ? l : null;
             return TrustsServeUser(peer, login, Volatile.Read(ref _ownLogin));
@@ -1570,7 +1516,7 @@ namespace ExplorerNative
 
             try
             {
-                // The first piece small, so the phone has bytes to decode as soon as there are any; then big.
+                // The first piece small, so the web app has bytes to decode as soon as there are any; then big.
                 var buffer = new byte[256 * 1024];
                 long offset = from, remaining = count;
                 int piece = 64 * 1024;
@@ -1770,7 +1716,7 @@ namespace ExplorerNative
                     foreach (var pair in target[(q + 1)..].Split('&', StringSplitOptions.RemoveEmptyEntries))
                     {
                         int eq = pair.IndexOf('=');
-                        // No '+' to space: file names contain plus signs, and the phone encodes spaces as %20.
+                        // No '+' to space: file names contain plus signs, and the web app encodes spaces as %20.
                         string k = Uri.UnescapeDataString(eq < 0 ? pair : pair[..eq]);
                         string v = eq < 0 ? "" : Uri.UnescapeDataString(pair[(eq + 1)..]);
                         query[k] = v;
@@ -1789,7 +1735,7 @@ namespace ExplorerNative
         /// <summary>
         /// A request's body as a read-only stream: <c>Content-Length</c> bytes, or chunked, or nothing. Sends
         /// <c>100 Continue</c> on the first read when the client asked for it, so a refusal before reading costs
-        /// the phone nothing.
+        /// the web app nothing.
         /// </summary>
         private sealed class RequestBody : Stream
         {
@@ -1905,8 +1851,8 @@ namespace ExplorerNative
             foreach (var job in _jobs.Values) job.Cancel();
             lock (_gate)
             {
-                foreach (var l in _listeners.Values) try { l.Stop(); } catch { }
-                _listeners.Clear();
+                try { _listener?.Stop(); } catch { }
+                _listener = null;
             }
         }
     }

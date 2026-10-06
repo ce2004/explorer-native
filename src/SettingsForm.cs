@@ -43,7 +43,29 @@ namespace ExplorerNative
         internal static Action? DisconnectDrive;
 
         /// <summary>Checked before OK closes the dialog; false keeps it open.</summary>
-        private Func<System.Threading.Tasks.Task<bool>>? _beforeOk;
+        private readonly List<Func<System.Threading.Tasks.Task<bool>>> _beforeOkChecks = new();
+
+        /// <summary>
+        /// Every page's check, in order; false (or a check that throws, which is
+        /// said in a message) keeps the dialog open.
+        /// </summary>
+        private async System.Threading.Tasks.Task<bool> RunBeforeOk()
+        {
+            foreach (var check in _beforeOkChecks)
+            {
+                bool ok;
+                try { ok = await check(); }
+                catch (Exception ex)
+                {
+                    if (!IsDisposed)
+                        MessageBox.Show(this, "Preferences could not be saved: " + ex.Message, "Preferences",
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return false;
+                }
+                if (!ok || IsDisposed) return false;
+            }
+            return true;
+        }
 
         /// <summary>True while Google is being asked; one check at a time, and no closing.</summary>
         private bool _checkingGoogle;
@@ -173,10 +195,17 @@ namespace ExplorerNative
                 closing = true;
                 try
                 {
-                    if (_beforeOk != null && !await _beforeOk()) return;
+                    if (!await RunBeforeOk()) return;
                     foreach (var apply in _applies) apply();
                     DialogResult = DialogResult.OK;
                     Close();
+                }
+                catch (Exception ex)
+                {
+                    // An async void handler: anything escaping it would end the application.
+                    if (!IsDisposed)
+                        MessageBox.Show(this, "Preferences could not be saved: " + ex.Message, "Preferences",
+                            MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
                 finally { closing = false; }
             };
@@ -573,6 +602,9 @@ namespace ExplorerNative
 
             connect.Click += async (_, _) =>
             {
+              // An async void handler: nothing may escape it, or the application ends.
+              try
+              {
                 if (state == DriveAccountState.Connected)
                 {
                     // Off its letter and switched off, signed in still, so
@@ -585,7 +617,7 @@ namespace ExplorerNative
                     return;
                 }
 
-                if (!await _beforeOk!()) return;
+                if (!await RunBeforeOk()) return;
                 if (GoogleAuth.Credentials(GoogleDrive.CredentialsDirectory) == null)
                 {
                     MessageBox.Show(this,
@@ -605,6 +637,13 @@ namespace ExplorerNative
 
                 DialogResult = DialogResult.OK;
                 Close();
+              }
+              catch (Exception ex)
+              {
+                if (!IsDisposed)
+                    MessageBox.Show(this, "Google Drive could not be connected: " + ex.Message, "Google Drive",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+              }
             };
 
             var signOut = new Button
@@ -652,7 +691,7 @@ namespace ExplorerNative
             // fields pass straight through; anything new is checked with Google
             // and the dialog stays open, on the field, if Google refuses it.
             string savedId = idBox.Text, savedSecret = secretBox.Text;
-            _beforeOk = async () =>
+            _beforeOkChecks.Add(async () =>
             {
                 var id = idBox.Text.Trim();
                 var secret = secretBox.Text.Trim();
@@ -709,7 +748,7 @@ namespace ExplorerNative
                 driveBox.Checked = true;
                 Say("Google accepted them. Signing in");
                 return true;
-            };
+            });
 
             row.Controls.Add(connect);
             row.Controls.Add(signOut);
@@ -912,22 +951,26 @@ namespace ExplorerNative
         /// </summary>
         internal static Func<bool, TailscaleWeb.EnableResult>? WebAppApply;
 
+        /// <summary>The port the web app's server is listening on now. Set by the tray; null in tests.</summary>
+        internal static Func<int>? CurrentWebPort;
+
         /// <summary>
-        /// Preferences, Web app: Explorer Connect in Safari, over Tailscale only.
+        /// Preferences, Web app: Explorer Connect in a browser, over Tailscale only.
         ///
         /// It finds Tailscale for itself and says, in one sentence, what is missing
         /// and which button fixes it: Install Tailscale, Sign in to Tailscale,
         /// Enable HTTPS in Tailscale. The status is a read-only box, so it is a tab
         /// stop NVDA reads, and it is checked again every few seconds while
         /// Preferences is open. Turning the box on or off acts at once; Cancel puts
-        /// it back.
+        /// it back. The port is checked when OK is pressed.
         /// </summary>
         private FlowLayoutPanel BuildWebAppTab()
         {
             var panel = NewPage();
             AddInfo(panel,
-                "Use this PC's files and music from Safari on your iPhone or iPad, with nothing to install but " +
-                "Tailscale. It only works over your Tailscale network: nothing is reachable from the internet.");
+                "Use this PC's files and music from Safari or any browser on your phone, tablet or another " +
+                "computer, with nothing to install but Tailscale. It only works over your Tailscale network: " +
+                "nothing is reachable from the internet.");
 
             var status = new TextBox
             {
@@ -960,7 +1003,15 @@ namespace ExplorerNative
             panel.Controls.Add(enable);
             _applies.Add(() => _working.WebAppEnabled = enable.Checked);
 
-            var linkBox = new TextBox { ReadOnly = true, Width = 420, AccessibleName = "Web app link", Visible = false };
+            // The link and Copy link are there whenever the link is known, on or
+            // off, so the button is always found in the same place. Off, it says
+            // why there is nothing to copy rather than being greyed out, which
+            // would take it out of the tab order and out of NVDA's reach.
+            var linkBox = new TextBox
+            {
+                ReadOnly = true, Width = 420, AccessibleName = "Web app link", Visible = false,
+                Margin = new Padding(3, 4, 3, 2),
+            };
             panel.Controls.Add(linkBox);
             var linkRow = new FlowLayoutPanel { AutoSize = true, Margin = new Padding(0, 2, 0, 4), Visible = false };
             var copy = new Button { Text = "&Copy link", AutoSize = true, AccessibleName = "Copy link" };
@@ -970,12 +1021,55 @@ namespace ExplorerNative
             panel.Controls.Add(linkRow);
 
             AddInfo(panel,
-                "On your phone: install Tailscale from the App Store and sign in with the same account as this PC. " +
-                "Open the link in Safari. Tap Share, then Add to Home Screen. That's all; it opens like an app.");
+                "On your phone: install Tailscale and sign in with the same account as this PC. Open the link in " +
+                "Safari. Tap Share, then Add to Home Screen. That's all; it opens like an app. Anybody else on your " +
+                "Tailscale network is asked for this PC's pairing code once: " + PairingCodeText() + ".");
+
+            // The port. Any free one in range works; the default is 47810.
+            int startPort = _working.WebAppPort;
+            var portBox = new TextBox
+            {
+                Text = startPort.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                Width = 90, MaxLength = 5, AccessibleName = "Port",
+                AccessibleDescription = $"The port the web app uses on this PC, {ConnectServer.LowestPort} to " +
+                                        $"{ConnectServer.HighestPort}. Normally {ConnectServer.Port}.",
+            };
+            portBox.KeyPress += (_, e) => { if (!char.IsControl(e.KeyChar) && !char.IsDigit(e.KeyChar)) e.Handled = true; };
+            AddLabelled(panel, "&Port", portBox);
+            AddInfo(panel, $"Normally {ConnectServer.Port}. Change it only if another program needs that port. " +
+                           "It is checked when you press OK.");
+
+            _beforeOkChecks.Add(() =>
+            {
+                var text = portBox.Text.Trim();
+                int current = CurrentWebPort?.Invoke() ?? startPort;
+                string? refusal = !int.TryParse(text, System.Globalization.NumberStyles.None,
+                        System.Globalization.CultureInfo.InvariantCulture, out var port)
+                    ? $"Enter a port number from {ConnectServer.LowestPort} to {ConnectServer.HighestPort}."
+                    : ConnectServer.CheckPort(port, current);
+                if (refusal == null)
+                {
+                    _working.WebAppPort = port;
+                    return System.Threading.Tasks.Task.FromResult(true);
+                }
+                MessageBox.Show(this, refusal + " Choose another port, or put back " + ConnectServer.Port + ".",
+                    "Web app", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                _showCategory?.Invoke("Web app");
+                portBox.Focus();
+                portBox.SelectAll();
+                return System.Threading.Tasks.Task.FromResult(false);
+            });
 
             string? httpsUrl = null, problem = null, link = null;
-            bool checking = false, applying = false;
+            bool checking = false, applying = false, isOn = false;
             DateTime lastTry = DateTime.MinValue;
+
+            // Back on the window's thread, unless the window has gone meanwhile.
+            void OnUi(Action action)
+            {
+                if (IsDisposed || !IsHandleCreated) return;
+                try { BeginInvoke(action); } catch (InvalidOperationException) { }
+            }
 
             void Apply(bool on)
             {
@@ -983,20 +1077,19 @@ namespace ExplorerNative
                 applying = true;
                 lastTry = DateTime.UtcNow;
                 status.Text = on ? "Turning the web app on…" : "Turning the web app off…";
-                System.Threading.Tasks.Task.Run(() => WebAppApply(on)).ContinueWith(t =>
+                System.Threading.Tasks.Task.Run(() => WebAppApply(on)).ContinueWith(t => OnUi(() =>
                 {
-                    if (IsDisposed) return;
-                    BeginInvoke(new Action(() =>
-                    {
-                        applying = false;
-                        var r = t.IsCompletedSuccessfully ? t.Result : new TailscaleWeb.EnableResult(false, "Tailscale did not answer.", null);
-                        httpsUrl = r.EnableHttpsUrl;
-                        problem = r.Ok ? null : r.Problem;
-                        if (on) Say(r.Ok ? "The web app is on" : (r.EnableHttpsUrl != null ? "HTTPS needs switching on in Tailscale" : "The web app could not be turned on"));
-                        else Say("The web app is off");
-                        Refresh();
-                    }));
-                });
+                    applying = false;
+                    var r = t.IsCompletedSuccessfully
+                        ? t.Result
+                        : new TailscaleWeb.EnableResult(false,
+                            "Tailscale did not answer: " + (t.Exception?.InnerException?.Message ?? "no reply") + ".", null);
+                    httpsUrl = r.EnableHttpsUrl;
+                    problem = r.Ok ? null : r.Problem;
+                    if (on) Say(r.Ok ? "The web app is on" : (r.EnableHttpsUrl != null ? "HTTPS needs switching on in Tailscale" : "The web app could not be turned on"));
+                    else Say("The web app is off");
+                    Refresh();
+                }));
             }
 
             void Show(TailscaleWeb.Status s, TailscaleWeb.ServeState serve)
@@ -1006,8 +1099,8 @@ namespace ExplorerNative
                 enable.Enabled = s.State == TailscaleWeb.State.Running;
 
                 string text;
-                link = TailscaleWeb.Link(s);
-                bool on = serve == TailscaleWeb.ServeState.Ours;
+                link = s.State == TailscaleWeb.State.Running ? TailscaleWeb.Link(s) : null;
+                isOn = serve == TailscaleWeb.ServeState.Ours;
                 switch (s.State)
                 {
                     case TailscaleWeb.State.NotInstalled:
@@ -1023,25 +1116,26 @@ namespace ExplorerNative
                         text = $"Tailscale is signed in as {s.Login ?? "you"}. This PC is {s.HostName ?? Environment.MachineName}.";
                         if (enable.Checked)
                         {
-                            if (on) { text += " The web app is on."; problem = null; httpsUrl = null; }
+                            if (isOn) { text += " The web app is on."; problem = null; httpsUrl = null; }
                             else if (applying) text += " Turning the web app on…";
                             else if (problem != null) text += " " + problem;
                             else text += " The web app is not on yet.";
 
                             // Waiting for HTTPS to be switched on, or for Tailscale to come up: try again by itself.
-                            if (!on && !applying && serve != TailscaleWeb.ServeState.TakenByOther &&
+                            if (!isOn && !applying && serve != TailscaleWeb.ServeState.TakenByOther &&
                                 DateTime.UtcNow - lastTry > TimeSpan.FromSeconds(10))
                                 Apply(true);
                         }
-                        else if (on) text += " The web app is off, but its link is still served; it is turned off now.";
+                        else if (isOn) text += " The web app is off, but its link is still served; it is turned off now.";
                         else text += " Turn on the web app to use it from your phone.";
                         break;
                 }
 
-                https.Visible = httpsUrl != null && enable.Checked && !on;
-                bool showLink = on && link != null;
-                linkBox.Visible = linkRow.Visible = showLink;
-                if (showLink && linkBox.Text != link) linkBox.Text = link!;
+                https.Visible = httpsUrl != null && enable.Checked && !isOn;
+                linkBox.Visible = linkRow.Visible = link != null;
+                if (link != null && linkBox.Text != link) linkBox.Text = link;
+                copy.AccessibleDescription = isOn ? link : "Turn on the web app to get a link.";
+                open.AccessibleDescription = isOn ? null : "Turn on the web app first.";
                 if (status.Text != text) status.Text = text;
             }
 
@@ -1049,27 +1143,57 @@ namespace ExplorerNative
             {
                 if (checking || IsDisposed) return;
                 checking = true;
+                int port = CurrentWebPort?.Invoke() ?? startPort;
                 System.Threading.Tasks.Task.Run(() =>
                 {
                     var s = TailscaleWeb.Read();
-                    var serve = s.State == TailscaleWeb.State.Running ? TailscaleWeb.ReadServe() : TailscaleWeb.ServeState.Off;
+                    var serve = s.State == TailscaleWeb.State.Running ? TailscaleWeb.ReadServe(port) : TailscaleWeb.ServeState.Off;
                     return (s, serve);
                 }).ContinueWith(t =>
                 {
                     if (IsDisposed || !IsHandleCreated) { checking = false; return; }
-                    BeginInvoke(new Action(() =>
+                    OnUi(() =>
                     {
                         checking = false;
                         if (t.IsCompletedSuccessfully) Show(t.Result.s, t.Result.serve);
-                    }));
+                        else status.Text = "Tailscale could not be checked: " +
+                                           (t.Exception?.InnerException?.Message ?? "no reply") + ".";
+                    });
                 });
             }
 
             install.Click += (_, _) => { TailscaleWeb.Install(); Say("Installing Tailscale"); };
             signIn.Click += (_, _) => { TailscaleWeb.SignIn(); Say("Opening the Tailscale sign-in"); };
             https.Click += (_, _) => { if (httpsUrl != null) TailscaleWeb.Open(httpsUrl); };
-            copy.Click += (_, _) => { if (link != null) { try { Clipboard.SetText(link); Say("Link copied"); } catch { } } };
-            open.Click += (_, _) => { if (link != null) TailscaleWeb.Open(link); };
+            copy.Click += (_, _) =>
+            {
+                if (!isOn || link == null)
+                {
+                    Speech.Speak("Turn on the web app to get a link", interrupt: true);
+                    status.Text = "Turn on the web app to get a link.";
+                    return;
+                }
+                try
+                {
+                    Clipboard.SetText(link);
+                    Speech.Speak("Link copied", interrupt: true);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, "The link could not be copied: " + ex.Message, "Web app",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            };
+            open.Click += (_, _) =>
+            {
+                if (!isOn || link == null)
+                {
+                    Speech.Speak("Turn on the web app first", interrupt: true);
+                    status.Text = "Turn on the web app first.";
+                    return;
+                }
+                TailscaleWeb.Open(link);
+            };
             enable.CheckedChanged += (_, _) => { problem = null; httpsUrl = null; Apply(enable.Checked); };
 
             // Only while Preferences is on screen: nothing runs tailscale.exe for a
@@ -1085,11 +1209,18 @@ namespace ExplorerNative
                 if (DialogResult != DialogResult.OK && enable.Checked != original && WebAppApply != null)
                 {
                     var apply = WebAppApply;
-                    System.Threading.Tasks.Task.Run(() => apply(original));
+                    System.Threading.Tasks.Task.Run(() => { try { apply(original); } catch { } });
                 }
             };
 
             return panel;
+        }
+
+        /// <summary>The pairing code as it is read out, in two groups of four.</summary>
+        private string PairingCodeText()
+        {
+            var code = _working.ConnectCode ?? "";
+            return code.Length == 8 ? code[..4] + " " + code[4..] : "shown here once Explorer Native has made one";
         }
 
         private FlowLayoutPanel BuildIntegrationTab()

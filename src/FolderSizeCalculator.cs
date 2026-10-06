@@ -70,7 +70,7 @@ namespace ExplorerNative
         public int MaxDepth { get; set; } = 64;
 
         /// <summary>
-        /// Folders the walk must not go into, however they are reached. The phone
+        /// Folders the walk must not go into, however they are reached. The web app
         /// server sets it to the Drive sync root: walking that is one Drive listing
         /// per folder, and measuring C:\Users would otherwise walk all of Drive
         /// through the back door of %APPDATA%. Counted as a folder, not as its size.

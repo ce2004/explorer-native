@@ -110,20 +110,40 @@ class ApiError extends Error {
   constructor(status, message) { super(message); this.status = status; }
 }
 
-async function api(path, { method = 'GET', body, raw = false } = {}) {
+const UNREACHABLE = 'The PC could not be reached. Check that Tailscale is on, on this device and on the PC, ' +
+  'and that Explorer Native is running.';
+
+// fetch with a time limit, so nothing waits for ever on a PC that has gone away.
+async function timedFetch(url, options = {}, ms = 20000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), ms);
+  try {
+    return await fetch(url, { ...options, signal: ctrl.signal, cache: 'no-store' });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function api(path, { method = 'GET', body, raw = false, timeout = 20000 } = {}) {
   const headers = {};
   if (state.code) headers['X-Connect-Code'] = state.code;
   let payload = body;
   if (body !== undefined && !raw) { headers['Content-Type'] = 'application/json'; payload = JSON.stringify(body); }
   let res;
   try {
-    res = await fetch(path, { method, headers, body: payload, cache: 'no-store' });
-  } catch {
-    throw new ApiError(0, 'The PC could not be reached. Check that Tailscale is on.');
+    res = await timedFetch(path, { method, headers, body: payload }, timeout);
+  } catch (e) {
+    throw new ApiError(0, e && e.name === 'AbortError' ? 'The PC took too long to answer. ' + UNREACHABLE : UNREACHABLE);
   }
   const type = res.headers.get('content-type') || '';
   const data = type.includes('json') ? await res.json().catch(() => null) : await res.text().catch(() => '');
-  if (res.status === 401 && !state.trusted) { showCodeScreen(); }
+  if (res.status === 401 && !state.trusted) {
+    showCodeScreen('That pairing code is not right any more. Enter the one shown on the PC.');
+  }
+  if ((res.status === 502 || res.status === 503) && !(data && data.error)) {
+    // Tailscale is up but nothing answers behind it: Explorer Native is closed.
+    throw new ApiError(0, 'The PC answered, but Explorer Native is not running there. Start it, then try again.');
+  }
   if (!res.ok) {
     const err = new ApiError(res.status, (data && data.error) || `The PC answered ${res.status}.`);
     err.data = data;
@@ -149,6 +169,7 @@ let currentTab = 'files';
 function showTab(name, focus = true) {
   currentTab = name;
   $('screen-code').hidden = true;
+  $('screen-offline').hidden = true;
   $('tabs').hidden = false;
   for (const s of SCREENS) $('screen-' + s).hidden = s !== name;
   for (const b of document.querySelectorAll('#tabs button'))
@@ -156,6 +177,7 @@ function showTab(name, focus = true) {
   if (name === 'transfers') renderTransfers();
   if (name === 'settings') renderSettings();
   if (name === 'player') renderPlayer();
+  if (name === 'clipboard') getClipboard();
   pollJobs();
   if (focus) {
     const title = { files: 'files-title', player: 'player-title', transfers: 'transfers-title',
@@ -167,9 +189,21 @@ function showTab(name, focus = true) {
 function showCodeScreen(message) {
   for (const s of SCREENS) $('screen-' + s).hidden = true;
   $('tabs').hidden = true;
+  $('screen-offline').hidden = true;
   $('screen-code').hidden = false;
   $('code-error').textContent = message || '';
   $('code-title').focus();
+}
+
+// The PC cannot be reached at all: one plain sentence and a Retry button.
+function showOffline(message) {
+  for (const s of SCREENS) $('screen-' + s).hidden = true;
+  $('tabs').hidden = true;
+  $('screen-code').hidden = true;
+  $('screen-offline').hidden = false;
+  $('offline-text').textContent = message || UNREACHABLE;
+  $('offline-title').focus();
+  announce(message || UNREACHABLE, true);
 }
 
 // ---------- Dialogs ----------
@@ -258,6 +292,7 @@ async function openFolder(path, { push = true, focusName = null, quiet = false }
     }
   } catch (e) {
     if (e.status === 401) return;
+    if (e.status === 0 && state.entries.length === 0) { showOffline(e.message); return; }
     announce(e.message, true);
     if (path != null && state.path == null && !state.entries.length) openFolder(null, { push: false });
   }
@@ -369,7 +404,7 @@ async function actions(e, full, opener) {
   if (e.folder) items.push(['open', 'Open']); else if (isAudio(e.name)) items.push(['open', 'Play']); else items.push(['open', 'Open']);
   items.push(['details', 'Details'], ['rename', 'Rename'], ['delete', 'Delete'], ['copy', 'Copy'], ['move', 'Move'],
     ['pc', 'Copy on PC']);
-  if (!e.folder) items.push(['save', 'Save to iPhone']);
+  if (!e.folder) items.push(['save', 'Save to this device']);
   if (e.folder) items.push(['size', 'Get size']);
   items.push(['cancel', 'Cancel']);
   const choice = await dialog({ title: shownName(e.name, e.folder), body: null,
@@ -515,7 +550,7 @@ async function details(full) {
     { label: 'Copy all details', value: 'copy' }, { label: 'Done', value: 'done', primary: true }] });
   if (choice === 'copy') {
     try { await navigator.clipboard.writeText(lines.join('\n').trim()); announce('Details copied'); }
-    catch { announce('The iPhone did not allow copying.', true); }
+    catch { announce('This device did not allow copying.', true); }
   }
 }
 
@@ -629,6 +664,7 @@ function pollJobs() {
         }
       } catch (err) {
         if (err.status === 404) finishTransfer(t, 'failed', 'The PC forgot this job; it may have restarted.');
+        else if (err.status === 0 && t.state !== 'waiting') { t.state = 'waiting'; renderTransfers(); }
       }
     }
     renderTransfers();
@@ -639,7 +675,31 @@ function pollJobs() {
 // Uploads, resumable: 4 MB chunks, picking up where the PC says it got to.
 const CHUNK = 4 * 1024 * 1024;
 
+// A file up to one chunk goes in a single request, tried again while the network comes back.
+async function uploadSmall(file, folder) {
+  const t = addTransfer({ kind: 'upload', name: file.name, folder, state: 'running', done: 0, total: file.size });
+  let stopped = false;
+  t.cancel = async () => { stopped = true; finishTransfer(t, 'cancelled'); };
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const url = `/api/upload?folder=${encodeURIComponent(folder)}&name=${encodeURIComponent(file.name)}` +
+        `&conflict=${encodeURIComponent(prefs.conflict)}`;
+      await api(url, { method: 'POST', body: file, raw: true, timeout: 120000 });
+      if (!stopped) { t.done = t.total; finishTransfer(t, 'done'); }
+      return;
+    } catch (err) {
+      if (stopped) return;
+      if (err.status !== 0 || attempt >= 6) { finishTransfer(t, 'failed', err.message); return; }
+      t.state = 'waiting';
+      renderTransfers();
+      await waitForNetwork(Math.min(30000, 2000 * attempt));
+      t.state = 'running';
+    }
+  }
+}
+
 async function upload(file, folder) {
+  if (file.size <= CHUNK) return uploadSmall(file, folder);
   const t = addTransfer({ kind: 'upload', name: file.name, folder, state: 'running', done: 0, total: file.size });
   let stopped = false, id = null;
   t.cancel = async () => {
@@ -655,7 +715,7 @@ async function upload(file, folder) {
     while (offset < file.size && !stopped) {
       try {
         const r = await api(`/api/upload/chunk?id=${encodeURIComponent(id)}&offset=${offset}`,
-          { method: 'PUT', body: file.slice(offset, Math.min(file.size, offset + CHUNK)), raw: true });
+          { method: 'PUT', body: file.slice(offset, Math.min(file.size, offset + CHUNK)), raw: true, timeout: 120000 });
         offset = r.received;
         failures = 0;
         t.state = 'running';
@@ -904,7 +964,10 @@ function setupAudio() {
       setTimeout(async () => { await waitForNetwork(3000); loadTrack(player.index, true, at); }, 1500);
     } else {
       retry = 0;
-      announce(`Could not play ${t.name}.`, true);
+      // Picked up again from here as soon as the connection is back.
+      player.failed = true;
+      player.failedAt = a.currentTime;
+      announce(`Could not play ${t.name}. It carries on when the connection is back.`, true);
     }
   });
   a.addEventListener('playing', () => { retry = 0; });
@@ -933,7 +996,7 @@ async function getClipboard() {
     const c = await api('/api/clipboard');
     if (c.kind === 'text') {
       const pre = document.createElement('pre'); pre.className = 'clip'; pre.textContent = c.text;
-      const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Copy to iPhone';
+      const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Copy to this device';
       b.addEventListener('click', () => copyToPhone(c.text));
       out.append(pre, b);
       announce(`The PC's clipboard has text: ${c.text.length > 200 ? c.text.slice(0, 200) + '…' : c.text}`);
@@ -942,8 +1005,8 @@ async function getClipboard() {
       for (const p of c.files || []) {
         const li = document.createElement('li');
         const name = document.createElement('span'); name.className = 'main'; name.textContent = leaf(p);
-        const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Save to iPhone';
-        b.setAttribute('aria-label', `Save ${leaf(p)} to iPhone`);
+        const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Save to this device';
+        b.setAttribute('aria-label', `Save ${leaf(p)} to this device`);
         b.addEventListener('click', () => saveToPhone(p, leaf(p)));
         li.append(name, b);
         ul.append(li);
@@ -953,20 +1016,24 @@ async function getClipboard() {
     } else if (c.kind === 'image') {
       const img = document.createElement('img'); img.className = 'clip'; img.alt = 'The image on the PC clipboard';
       img.src = codeQuery(`/api/clipboard/image?t=${Date.now()}`);
-      const a = document.createElement('a'); a.href = img.src; a.download = 'clipboard.png'; a.className = 'button'; a.textContent = 'Save image to iPhone';
+      const a = document.createElement('a'); a.href = img.src; a.download = 'clipboard.png'; a.className = 'button'; a.textContent = 'Save image to this device';
       out.append(img, a);
       announce("The PC's clipboard has an image.");
     } else {
-      const p = document.createElement('p'); p.textContent = "The PC's clipboard is empty.";
+      const p = document.createElement('p'); p.textContent = 'The PC clipboard is empty.';
       out.append(p);
-      announce("The PC's clipboard is empty.");
+      announce('The PC clipboard is empty.');
     }
-  } catch (err) { announce(err.message, true); }
+  } catch (err) {
+    const p = document.createElement('p'); p.textContent = err.message;
+    out.replaceChildren(p);
+    announce(err.message, true);
+  }
 }
 
 async function copyToPhone(text) {
-  try { await navigator.clipboard.writeText(text); announce('Copied to the iPhone'); }
-  catch { announce('The iPhone did not allow copying.', true); }
+  try { await navigator.clipboard.writeText(text); announce('Copied to this device'); }
+  catch { announce('This device did not allow copying.', true); }
 }
 
 async function sendText(text) {
@@ -984,29 +1051,6 @@ async function sendFiles(files) {
     }
     await api('/api/clipboard/send/commit', { method: 'POST', body: { batch } });
     announce(`${plural(files.length, 'file is', 'files are')} on the PC clipboard. Paste with Control V.`);
-  } catch (err) { announce(err.message, true); }
-}
-
-async function showHistory() {
-  const list = $('clip-list');
-  try {
-    const items = await api('/api/clipboard/history');
-    const frag = document.createDocumentFragment();
-    for (const it of items) {
-      const li = document.createElement('li');
-      const text = it.kind === 'text' ? it.text : it.kind === 'files' ? (it.files || []).map(leaf).join(', ') : it.kind;
-      const span = document.createElement('span'); span.className = 'main';
-      span.textContent = `${text.length > 160 ? text.slice(0, 160) + '…' : text}, ${new Date(it.time).toLocaleTimeString()}`;
-      li.append(span);
-      if (it.kind === 'text') {
-        const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Copy to iPhone';
-        b.addEventListener('click', () => copyToPhone(it.text));
-        li.append(b);
-      }
-      frag.append(li);
-    }
-    list.replaceChildren(frag);
-    announce(items.length ? plural(items.length, 'item', 'items') : 'The history is empty.');
   } catch (err) { announce(err.message, true); }
 }
 
@@ -1076,8 +1120,26 @@ function bindSettings() {
 // ---------- Start ----------
 
 async function whoami() {
-  const res = await fetch('/api/whoami', { headers: state.code ? { 'X-Connect-Code': state.code } : {}, cache: 'no-store' });
+  const res = await timedFetch('/api/whoami', { headers: state.code ? { 'X-Connect-Code': state.code } : {} }, 15000);
+  if (!res.ok) throw new Error(res.status === 502 || res.status === 503
+    ? 'The PC answered, but Explorer Native is not running there. Start it, then try again.'
+    : UNREACHABLE);
   return res.json();
+}
+
+// Who this is, then the files; or the code screen, or the offline screen.
+async function connect() {
+  let who;
+  try { who = await whoami(); }
+  catch (e) { showOffline(e && e.message && e.name !== 'AbortError' && e.name !== 'TypeError' ? e.message : UNREACHABLE); return; }
+  state.trusted = !who.needsCode;
+  state.user = who.user;
+  state.computer = who.computer;
+  if (!state.trusted && !who.codeOk) {
+    showCodeScreen(state.code ? 'That pairing code is not right any more. Enter the one shown on the PC.' : '');
+    return;
+  }
+  await enter();
 }
 
 async function start() {
@@ -1086,20 +1148,7 @@ async function start() {
   setupAudio();
   setupMediaSession();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => { });
-
-  let who;
-  try { who = await whoami(); }
-  catch {
-    announce('The PC could not be reached. Check that Tailscale is on, and that Explorer Native is running.', true);
-    $('files-title').textContent = 'The PC could not be reached';
-    $('files-path').textContent = 'Check that Tailscale is on, and that Explorer Native is running on the PC. Then pull down or press Refresh.';
-    return;
-  }
-  state.trusted = !who.needsCode;
-  state.user = who.user;
-  state.computer = who.computer;
-  if (!state.trusted && !who.codeOk) { showCodeScreen(); return; }
-  await enter();
+  await connect();
 }
 
 async function enter() {
@@ -1125,8 +1174,8 @@ function bindEvents() {
   $('code-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const code = $('code-input').value.replace(/[\s-]/g, '');
-    const res = await fetch('/api/whoami', { headers: { 'X-Connect-Code': code }, cache: 'no-store' }).then((r) => r.json()).catch(() => null);
-    if (!res) { $('code-error').textContent = 'The PC could not be reached.'; return; }
+    const res = await timedFetch('/api/whoami', { headers: { 'X-Connect-Code': code } }, 15000).then((r) => r.json()).catch(() => null);
+    if (!res) { $('code-error').textContent = UNREACHABLE; announce(UNREACHABLE, true); return; }
     if (!res.codeOk) { $('code-error').textContent = 'That code is not right. Check it on the PC and try again.'; $('code-input').focus(); return; }
     state.code = code;
     store.set('code', code);
@@ -1192,23 +1241,24 @@ function bindEvents() {
   });
 
   $('clip-get').addEventListener('click', getClipboard);
-  $('clip-send').addEventListener('click', () => sendText($('clip-text').value));
-  $('clip-paste').addEventListener('click', async () => {
-    try { const text = await navigator.clipboard.readText(); $('clip-text').value = text; await sendText(text); }
-    catch { announce('The iPhone did not allow reading its clipboard. Paste into the text box instead.', true); }
+  $('offline-retry').addEventListener('click', async () => {
+    $('offline-text').textContent = 'Trying again…';
+    announce('Trying again');
+    await connect();
   });
+  $('clip-send').addEventListener('click', () => sendText($('clip-text').value));
   $('clip-send-files').addEventListener('click', () => $('clip-files').click());
   $('clip-files').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; if (files.length) sendFiles(files); });
-  $('clip-history').addEventListener('click', showHistory);
-  $('clip-clear').addEventListener('click', async () => {
-    try { await api('/api/clipboard/history/clear', { method: 'POST', body: {} }); $('clip-list').replaceChildren(); announce('History cleared'); }
-    catch (err) { announce(err.message, true); }
-  });
 
   window.addEventListener('popstate', (e) => {
     if (!e.state || !('path' in e.state)) return;
     const from = state.path;
     openFolder(e.state.path, { push: false, focusName: from ? leaf(from) || from : null });
+  });
+  window.addEventListener('online', () => {
+    pollJobs();
+    if (player.failed && current()) { player.failed = false; loadTrack(player.index, true, player.failedAt); }
+    if (!$('screen-offline').hidden) connect();
   });
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) { savePosition(true); clearTimeout(jobTimer); }
@@ -1217,4 +1267,15 @@ function bindEvents() {
   window.addEventListener('pagehide', () => savePosition(true));
 }
 
-start();
+// Anything not caught where it happened is still said, in a plain sentence,
+// and never leaves the page stuck.
+window.addEventListener('unhandledrejection', (e) => {
+  const m = e.reason && e.reason.message ? e.reason.message : 'Something went wrong.';
+  announce(m, true);
+  e.preventDefault();
+});
+window.addEventListener('error', (e) => {
+  announce('Something went wrong: ' + (e.message || 'unknown problem') + '. Try again, or reload the page.', true);
+});
+
+start().catch((e) => showOffline(e && e.message ? e.message : UNREACHABLE));

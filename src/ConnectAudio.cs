@@ -77,7 +77,7 @@ namespace ExplorerNative
     }
 
     /// <summary>
-    /// Any file Explorer Native plays, as a WAV the phone can play and seek: the application's own decoder
+    /// Any file Explorer Native plays, as a WAV the web app can play and seek: the application's own decoder
     /// chain (<see cref="TrackDecoder"/>: Media Foundation, then Ogg Opus and Vorbis, AIFF, CD tracks), only the
     /// audio of a video, 24-bit at the file's own rate, stereo at most.
     ///

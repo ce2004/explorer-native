@@ -49,7 +49,6 @@ namespace ExplorerNative
             await ResumableUploadTests();
             await AudioTests();
             await ClipboardTests();
-            await PingTests();
             await DetailsTests();
             await WebAppTests();
         }
@@ -82,26 +81,36 @@ namespace ExplorerNative
             Check("no CertDomains means HTTPS is off",
                 !TailscaleWeb.ParseStatus("""{ "BackendState": "Running", "Self": {} }""").HttpsEnabled);
 
-            Check("an empty Serve config is off", TailscaleWeb.ParseServe("{}") == TailscaleWeb.ServeState.Off);
-            Check("nothing at all is off", TailscaleWeb.ParseServe("") == TailscaleWeb.ServeState.Off);
+            Check("an empty Serve config is off", TailscaleWeb.ParseServe("{}", 47810) == TailscaleWeb.ServeState.Off);
+            Check("nothing at all is off", TailscaleWeb.ParseServe("", 47810) == TailscaleWeb.ServeState.Off);
             Check("our own handler is ours", TailscaleWeb.ParseServe("""
                 { "TCP": { "443": { "HTTPS": true } },
                   "Web": { "laptop.tail3d7403.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:47810" } } } } }
-                """) == TailscaleWeb.ServeState.Ours);
+                """, 47810) == TailscaleWeb.ServeState.Ours);
             Check("somebody else's proxy on 443 is theirs", TailscaleWeb.ParseServe("""
                 { "TCP": { "443": { "HTTPS": true } },
                   "Web": { "laptop.tail3d7403.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:3000" } } } } }
-                """) == TailscaleWeb.ServeState.TakenByOther);
+                """, 47810) == TailscaleWeb.ServeState.TakenByOther);
             Check("ours plus another path on 443 is left alone", TailscaleWeb.ParseServe("""
                 { "Web": { "x.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:47810" }, "/grafana": { "Proxy": "http://127.0.0.1:3000" } } } } }
-                """) == TailscaleWeb.ServeState.TakenByOther);
+                """, 47810) == TailscaleWeb.ServeState.TakenByOther);
             Check("a raw TCP forward on 443 is theirs", TailscaleWeb.ParseServe("""
                 { "TCP": { "443": { "TCPForward": "127.0.0.1:22" } } }
-                """) == TailscaleWeb.ServeState.TakenByOther);
+                """, 47810) == TailscaleWeb.ServeState.TakenByOther);
             Check("Serve on another port does not block 443", TailscaleWeb.ParseServe("""
                 { "TCP": { "8443": { "HTTPS": true } },
                   "Web": { "x.ts.net:8443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:3000" } } } } }
-                """) == TailscaleWeb.ServeState.Off);
+                """, 47810) == TailscaleWeb.ServeState.Off);
+            const string ours47810 = """
+                { "TCP": { "443": { "HTTPS": true } },
+                  "Web": { "x.ts.net:443": { "Handlers": { "/": { "Proxy": "http://127.0.0.1:47810" } } } } }
+                """;
+            Check("our handler on the port used before is ours to move",
+                TailscaleWeb.ParseServe(ours47810, 50123, 47810) == TailscaleWeb.ServeState.OursOtherPort);
+            Check("but not when that port was never ours",
+                TailscaleWeb.ParseServe(ours47810, 50123, 50000) == TailscaleWeb.ServeState.TakenByOther);
+            Equal("the handler points at the port asked for", "http://127.0.0.1:50123", TailscaleWeb.Target(50123));
+
             Equal("the enable-HTTPS link is found in Tailscale's message",
                 "https://login.tailscale.com/f/serve?node=nABC123",
                 TailscaleWeb.EnableLink("Serve is not enabled on your tailnet.\nTo enable, visit:\n\n         https://login.tailscale.com/f/serve?node=nABC123\n") ?? "");
@@ -112,7 +121,7 @@ namespace ExplorerNative
             Check("and matched without regard to case",
                 ConnectServer.TrustsServeUser(loop, "Me@Example.com", "me@example.com"));
             Check("another tailnet user is not", !ConnectServer.TrustsServeUser(loop, "friend@example.com", "me@example.com"));
-            Check("the header straight from a tailnet peer is never believed",
+            Check("the header is only believed from this machine, the only place a connection can come from",
                 !ConnectServer.TrustsServeUser(IPAddress.Parse("100.100.1.1"), "me@example.com", "me@example.com"));
             Check("loopback without the header is not trusted", !ConnectServer.TrustsServeUser(loop, null, "me@example.com"));
             Check("nothing is trusted before the PC's login is known", !ConnectServer.TrustsServeUser(loop, "me@example.com", null));
@@ -126,7 +135,7 @@ namespace ExplorerNative
             {
                 server.Start();
                 if (!await WaitForListener(port)) { Check("the web app server listens", false); return; }
-                await server.PathsSettled();
+                await server.LoginSettled();
                 using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}"), Timeout = TimeSpan.FromSeconds(10) };
 
                 async Task<(int Status, string Type, string Body)> Get(string url, string? login = null, bool code = false)
@@ -181,45 +190,6 @@ namespace ExplorerNative
             {
                 server.Dispose();
             }
-        }
-
-        private static async Task PingTests()
-        {
-            const string status = """
-                { "Self": { "TailscaleIPs": ["100.67.248.25", "fd7a::1"] },
-                  "Peer": {
-                    "a": { "TailscaleIPs": ["100.100.1.1"], "CurAddr": "203.0.113.5:41641", "Relay": "ord" },
-                    "b": { "TailscaleIPs": ["100.100.2.2"], "CurAddr": "", "Relay": "lhr" },
-                    "c": { "TailscaleIPs": ["100.100.3.3"], "CurAddr": "", "Relay": "" } } }
-                """;
-            var paths = ConnectServer.ParseTailscalePaths(status);
-            Check("a peer with a current address is direct", paths["100.100.1.1"] == "direct");
-            Check("one without goes through its relay, named", paths["100.100.2.2"] == "relay lhr");
-            Check("one with neither is unknown", paths["100.100.3.3"] == "unknown");
-            Check("this machine and loopback are direct", paths["100.67.248.25"] == "direct" && paths["127.0.0.1"] == "direct");
-
-            int asked = 0;
-            int port = FreePort();
-            var server = new ConnectServer(_ => null, p => new FileRangeSource(p), () => Code, loopbackOnly: true, port: port,
-                files: new FakeFiles(), tailscaleStatus: () => { Interlocked.Increment(ref asked); Thread.Sleep(300); return status; });
-            try
-            {
-                server.Start();
-                if (!await WaitForListener(port)) { Check("the ping server listens", false); return; }
-                using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}"), Timeout = TimeSpan.FromSeconds(10) };
-                var clock = System.Diagnostics.Stopwatch.StartNew();
-                var (code, body) = await CallAt(http, HttpMethod.Get, "/api/ping");
-                Check("ping answers at once, without waiting for tailscale", code == 200 && clock.ElapsedMilliseconds < 250 && body.TryGetProperty("time", out _),
-                    $"{code} {clock.ElapsedMilliseconds}ms");
-                await server.PathsSettled();
-                (_, body) = await CallAt(http, HttpMethod.Get, "/api/ping");
-                Check("and says how the caller is reached", Prop(body, "path") == "direct", body.ToString());
-                for (int i = 0; i < 5; i++) await CallAt(http, HttpMethod.Get, "/api/ping");
-                Equal("the status is cached, not asked per ping", "1", asked.ToString());
-                (_, body) = await CallAt(http, HttpMethod.Get, "/api/info");
-                Equal("info says apiVersion 4", "4", Prop(body, "apiVersion"));
-            }
-            finally { server.Dispose(); }
         }
 
         // MARK: Fixtures for the details
@@ -555,7 +525,7 @@ namespace ExplorerNative
                     server.Start();
                     if (!await WaitForListener(port)) { Check("the details server listens", false); return; }
                     using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}"), Timeout = TimeSpan.FromSeconds(30) };
-                    var (code, body) = await CallAt(http, HttpMethod.Get, "/api/stat?path=" + Uri.EscapeDataString(mkv));
+                    var (code, body) = await CallAt(http, HttpMethod.Get, "/api/details?path=" + Uri.EscapeDataString(mkv));
                     Check("stat over HTTP keeps the v2 fields and adds file and media, tags as name/value",
                         code == 200 && Prop(body, "name") == "film.mkv" && body.TryGetProperty("file", out _) &&
                         body.GetProperty("media").GetProperty("tags")[0].GetProperty("name").GetString() == "Title" &&
@@ -581,8 +551,6 @@ namespace ExplorerNative
             public ClipState Current => Real.Current;
             public Task<ClipState> WaitAsync(long since, TimeSpan timeout, CancellationToken token) => Real.WaitAsync(since, timeout, token);
             public byte[]? Png() => Real.Png();
-            public IReadOnlyList<ClipHistoryItem> History() => Real.History();
-            public void ClearHistory() => Real.ClearHistory();
 
             public Task<long> SetTextAsync(string text)
             {
@@ -607,31 +575,18 @@ namespace ExplorerNative
 
         private static async Task ClipboardTests()
         {
-            // The real class's bookkeeping, fed by hand: seq, history order, its cap, the text cap, empties.
+            // The real class's bookkeeping, fed by hand: seq on every change, and only the current item kept.
             var real = new ConnectClipboard();
             for (int i = 0; i < 60; i++) real.Observe((new ClipState(0, "text", Text: "item " + i), null));
             real.Observe((new ClipState(0, "empty"), null));
-            real.Observe((new ClipState(0, "text", Text: new string('x', ConnectClipboard.HistoryTextChars + 10)), null));
-            var history = real.History();
-            Check("seq goes up on every change, empty included", real.Current.Seq == 62, real.Current.Seq.ToString());
-            Check("history is newest first and holds the last 50", history.Count == 50 && history[0].Seq == 62 && history[1].Text == "item 59");
-            Check("an empty clipboard is not a history item", history.All(h => h.Kind != "empty"));
-            Check("history text is capped at 1 MB", history[0].Text!.Length == ConnectClipboard.HistoryTextChars);
-            Check("but the clipboard itself is not", real.Current.Text!.Length == ConnectClipboard.HistoryTextChars + 10);
-            real.ClearHistory();
-            Check("clear empties the history", real.History().Count == 0);
-
-            // One copy raises several updates; copying something again moves it to the top.
-            real.Observe((new ClipState(0, "text", Text: "once"), null));
-            real.Observe((new ClipState(0, "text", Text: "once"), null));
-            real.Observe((new ClipState(0, "text", Text: "once"), null));
-            real.Observe((new ClipState(0, "files", Files: new[] { @"C:\a.txt" }), null));
-            real.Observe((new ClipState(0, "files", Files: new[] { @"c:\A.txt" }), null));
-            real.Observe((new ClipState(0, "text", Text: "once"), null));
-            var deduped = real.History();
-            Check("a repeated copy is one history item", deduped.Count == 2);
-            Check("and the repeat moves to the top", deduped[0].Text == "once" && deduped[1].Kind == "files");
-            real.ClearHistory();
+            Check("seq goes up on every change, empty included", real.Current.Seq == 61, real.Current.Seq.ToString());
+            Check("an emptied clipboard reads as empty", real.Current.Kind == "empty" && real.Current.Text == null);
+            real.Observe((new ClipState(0, "text", Text: new string('x', 2_000_000)), null));
+            Check("the current text is kept whole", real.Current.Text!.Length == 2_000_000);
+            Check("and nothing else is kept: no history in the class",
+                typeof(ConnectClipboard).GetMethod("History") == null &&
+                typeof(ConnectClipboard).GetFields(System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
+                    .All(f => !f.Name.Contains("history", StringComparison.OrdinalIgnoreCase)));
 
             var fake = new FakeClipboard();
             fake.Real.Observe((new ClipState(0, "text", Text: "start"), null));
@@ -653,16 +608,12 @@ namespace ExplorerNative
                 (status, body) = await CallAt(http, HttpMethod.Post, "/api/clipboard", new { text = "from the phone" });
                 Check("POST text sets it and answers the seq", status == 200 && Prop(body, "seq") == "2" && fake.Current.Text == "from the phone", $"{status} {body}");
 
-                var clock = System.Diagnostics.Stopwatch.StartNew();
-                var waiting = CallAt(http, HttpMethod.Get, "/api/clipboard/wait?since=2");
-                await Task.Delay(300);
-                Check("a long poll waits while nothing changes", !waiting.IsCompleted);
                 fake.Real.Observe((new ClipState(0, "text", Text: "copied on the PC"), null));
-                (status, body) = await waiting;
-                Check("and answers as soon as it does", status == 200 && Prop(body, "seq") == "3" && Prop(body, "text") == "copied on the PC" && clock.ElapsedMilliseconds < 5000,
-                    $"{body} {clock.ElapsedMilliseconds}ms");
-                (status, body) = await CallAt(http, HttpMethod.Get, "/api/clipboard/wait?since=1");
-                Check("a long poll already behind answers at once", Prop(body, "seq") == "3");
+                (status, body) = await CallAt(http, HttpMethod.Get, "/api/clipboard");
+                Check("GET clipboard shows what was copied on the PC", status == 200 && Prop(body, "text") == "copied on the PC", body.ToString());
+                fake.Real.Observe((new ClipState(0, "empty"), null));
+                (status, body) = await CallAt(http, HttpMethod.Get, "/api/clipboard");
+                Check("and an empty clipboard as empty", status == 200 && Prop(body, "kind") == "empty", body.ToString());
 
                 (status, _) = await CallAt(http, HttpMethod.Get, "/api/clipboard/image");
                 Equal("no image is 404", "404", status.ToString());
@@ -704,14 +655,12 @@ namespace ExplorerNative
                 (status, _) = await CallAt(http, HttpMethod.Post, "/api/clipboard/send/commit", new { batch = "never" });
                 Equal("committing a batch nothing was sent in is 404", "404", status.ToString());
 
-                (status, body) = await CallAt(http, HttpMethod.Get, "/api/clipboard/history");
-                var items = body.EnumerateArray().ToList();
-                Check("history over HTTP is newest first, with kind and time",
-                    status == 200 && items.Count >= 6 && Prop(items[0], "kind") == "files" && items[0].TryGetProperty("time", out _) &&
-                    long.Parse(Prop(items[0], "seq")) > long.Parse(Prop(items[1], "seq")), body.ToString());
-                (status, _) = await CallAt(http, HttpMethod.Post, "/api/clipboard/history/clear", new { });
-                (_, body) = await CallAt(http, HttpMethod.Get, "/api/clipboard/history");
-                Check("clear over HTTP empties it", status == 200 && body.GetArrayLength() == 0);
+                // Gone with the old phone app: no history, no long poll, no ping, no stat.
+                foreach (var gone in new[] { "/api/clipboard/history", "/api/clipboard/wait?since=0", "/api/ping", "/api/stat?path=C%3A%5C" })
+                {
+                    (status, body) = await CallAt(http, HttpMethod.Get, gone);
+                    Check($"{gone.Split('?')[0]} is gone, with a sentence", status == 404 && Prop(body, "error").Length > 5, $"{status} {body}");
+                }
 
                 foreach (var dir in Directory.GetDirectories(sends)) Directory.SetLastWriteTimeUtc(dir, DateTime.UtcNow.AddDays(-8));
                 var fresh = Directory.CreateDirectory(Path.Combine(sends, "fresh"));
@@ -723,6 +672,22 @@ namespace ExplorerNative
                 server.Dispose();
                 try { Directory.Delete(sends, true); } catch { }
             }
+        }
+
+        private static IPAddress? NetworkInterfaceAddress()
+        {
+            try
+            {
+                foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus != System.Net.NetworkInformation.OperationalStatus.Up) continue;
+                    foreach (var ua in ni.GetIPProperties().UnicastAddresses)
+                        if (ua.Address.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(ua.Address))
+                            return ua.Address;
+                }
+            }
+            catch { }
+            return null;
         }
 
         private static async Task<(int Status, JsonElement Body)> CallAt(HttpClient http, HttpMethod method, string url,
@@ -1020,24 +985,49 @@ namespace ExplorerNative
             Check("of several ranges the first is served", ok && from == 0 && to == 0, $"{ok} {from}-{to}");
         }
 
-        /// <summary>100.64.0.0/10 and nothing either side of it.</summary>
+        /// <summary>
+        /// The server listens on loopback only, on the port asked for, and a port is
+        /// checked before it is used: range, in use by another program, ours already.
+        /// </summary>
         private static void TailscaleTests()
         {
-            Check("this machine's Tailscale address is Tailscale", ConnectServer.IsTailscale(IPAddress.Parse("100.67.248.25")));
-            Check("the bottom of the range is", ConnectServer.IsTailscale(IPAddress.Parse("100.64.0.0")));
-            Check("the top of the range is", ConnectServer.IsTailscale(IPAddress.Parse("100.127.255.255")));
-            Check("just above the range is not", !ConnectServer.IsTailscale(IPAddress.Parse("100.128.0.1")));
-            Check("just below the range is not", !ConnectServer.IsTailscale(IPAddress.Parse("100.63.255.255")));
-            Check("a home network is not", !ConnectServer.IsTailscale(IPAddress.Parse("192.168.1.20")));
-            Check("loopback is not", !ConnectServer.IsTailscale(IPAddress.Loopback));
-            Check("IPv6 is not", !ConnectServer.IsTailscale(IPAddress.Parse("fd7a:115c:a1e0::1")));
-            Check("a tailnet peer may connect", ConnectServer.IsAllowedPeer(IPAddress.Parse("100.108.16.12")));
-            Check("a Tailscale IPv6 peer may connect", ConnectServer.IsAllowedPeer(IPAddress.Parse("fd7a:115c:a1e0::b732:f81b")));
-            Check("this machine may connect", ConnectServer.IsAllowedPeer(IPAddress.Loopback) && ConnectServer.IsAllowedPeer(IPAddress.IPv6Loopback));
-            Check("a mapped tailnet address may connect", ConnectServer.IsAllowedPeer(IPAddress.Parse("::ffff:100.108.16.12")));
-            Check("a home network may not", !ConnectServer.IsAllowedPeer(IPAddress.Parse("192.168.1.20")));
-            Check("the internet may not", !ConnectServer.IsAllowedPeer(IPAddress.Parse("8.8.8.8")));
-            Check("other IPv6 may not", !ConnectServer.IsAllowedPeer(IPAddress.Parse("2001:db8::1")));
+            Equal("too low a port is refused", $"Choose a port from {ConnectServer.LowestPort} to {ConnectServer.HighestPort}.",
+                ConnectServer.CheckPort(80, 47810) ?? "");
+            Check("too high a port is refused", ConnectServer.CheckPort(70000, 47810) != null);
+            Check("the port in use now is fine", ConnectServer.CheckPort(47810, 47810) == null);
+
+            var taken = new TcpListener(IPAddress.Loopback, 0);
+            taken.Start();
+            int busy = ((IPEndPoint)taken.LocalEndpoint).Port;
+            try
+            {
+                var refusal = ConnectServer.CheckPort(busy, 47810) ?? "";
+                Check("a port another program listens on is refused in plain words",
+                    refusal == $"Port {busy} is already in use by another program.", refusal);
+                Check("unless it is the one already ours", ConnectServer.CheckPort(busy, busy) == null);
+
+                using var server = new ConnectServer(_ => null, p => new FileRangeSource(p), () => Code, loopbackOnly: true, port: busy);
+                server.Start();
+                Check("starting on a taken port says why", server.ListenProblem == $"Port {busy} is already in use by another program.",
+                    server.ListenProblem ?? "(none)");
+                int free = FreePort();
+                Check("and moving to a free one works", server.Rebind(free) && server.ListenPort == free && server.ListenProblem == null);
+                Check("moving onto a taken one keeps the port it had", !server.Rebind(busy) && server.ListenPort == free);
+                using (var c = new TcpClient())
+                {
+                    c.Connect(IPAddress.Loopback, free);
+                    Check("it answers on loopback at the new port", c.Connected);
+                }
+                var outside = NetworkInterfaceAddress();
+                if (outside != null)
+                {
+                    bool reached;
+                    try { using var c = new TcpClient(); c.Connect(outside, free); reached = true; }
+                    catch (SocketException) { reached = false; }
+                    Check($"and nothing reaches it from this PC's network address ({outside})", !reached);
+                }
+            }
+            finally { taken.Stop(); }
 
             var code = ConnectServer.NewCode();
             Check("a pairing code is eight digits", code.Length == 8 && code.All(char.IsAsciiDigit), code);
@@ -1307,11 +1297,11 @@ namespace ExplorerNative
                 Equal("and is not cached", "3", fake.Sizes.ToString());
 
                 // Stat, with tags only for audio.
-                (status, body) = await Call(HttpMethod.Get, "/api/stat?path=" + Uri.EscapeDataString(@"C:\a\song.flac"));
+                (status, body) = await Call(HttpMethod.Get, "/api/details?path=" + Uri.EscapeDataString(@"C:\a\song.flac"));
                 Check("stat of a track carries its tags as values",
                     status == 200 && body.TryGetProperty("tags", out var tags) && S(tags, "title") == "Song" && S(tags, "durationSeconds") == "181.5" && S(tags, "year") == "2020",
                     body.ToString());
-                (status, body) = await Call(HttpMethod.Get, "/api/stat?path=" + Uri.EscapeDataString(@"C:\a\folder"));
+                (status, body) = await Call(HttpMethod.Get, "/api/details?path=" + Uri.EscapeDataString(@"C:\a\folder"));
                 Check("stat of a folder has no tags, and says readOnly and onDrive",
                     status == 200 && !body.TryGetProperty("tags", out _) && S(body, "readOnly") == "True" && S(body, "onDrive") == "False", body.ToString());
 

@@ -1,3 +1,16 @@
+1.0.7
+The old iPhone app no longer works. Use the web app instead: open the link from Preferences, Web app in Safari and add it to your Home Screen.
+New feature: Port, on the Web app page in Preferences. If another program needs port 47810, pick a different one. Explorer Native checks the port is free when you press OK and tells you if it isn't.
+New feature: Copy link is always on the Web app page once there is a link. If the web app is off, it tells you to turn it on first.
+The tray menu has a Web app item that takes you straight to the Web app page, where the link and the pairing code are.
+The web app's clipboard shows what is on the PC clipboard right now, or says it is empty. It no longer keeps a history of past copies, on the PC or anywhere else.
+If the PC can't be reached, the web app says so plainly and gives you a Retry button, instead of sitting there.
+If your connection drops, uploads, copies and playback carry on by themselves when it comes back.
+Bug fixed: if Tailscale stopped while you were using the web app, some screens waited for ever. Now they tell you what is wrong.
+Bug fixed: if the port the web app used was taken by another program while the PC was off, the web app didn't start. Now it moves back to the usual port and tells you.
+Small files upload from the web app in one go, so they finish faster.
+The web app only listens on this PC itself now. It is reached through Tailscale and nothing else.
+
 1.0.6
 Pairing a folder with a Google Drive folder that already holds the same files adopts them instead of copying them again. Files of the same size are compared by checksum first, two at a time and gently, and each checksum is remembered so it is never worked out twice. The monitor says how far it has got.
 A sync pair keeps what it remembers for as long as it exists. Changing its options keeps it; changing either of its folders starts again, still without copying anything that already matches.

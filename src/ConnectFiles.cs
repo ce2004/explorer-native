@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 namespace ExplorerNative
 {
     /// <summary>
-    /// What the phone may do to files, done the way the window does it: the Drive trash, rename, folder and
+    /// What the web app may do to files, done the way the window does it: the Drive trash, rename, folder and
     /// copy through <see cref="GoogleDrive"/>, uploads through <see cref="DriveUpload"/>, local copies through
     /// robocopy, deletes to the Recycle Bin, names checked by <see cref="NameRules"/>.
     ///

@@ -11,7 +11,7 @@ using System.Threading.Tasks;
 namespace ExplorerNative
 {
     /// <summary>
-    /// The web app's way onto the phone: Tailscale on this PC, and Tailscale Serve
+    /// The web app's way onto your devices: Tailscale on this PC, and Tailscale Serve
     /// putting the Connect server on https://&lt;this pc&gt;.&lt;tailnet&gt;.ts.net/ for the
     /// tailnet only. Never Funnel; nothing is reachable off the tailnet.
     ///
@@ -21,7 +21,7 @@ namespace ExplorerNative
     internal static class TailscaleWeb
     {
         /// <summary>What the web app's Serve handler points at.</summary>
-        public static string Target => $"http://127.0.0.1:{ConnectServer.Port}";
+        public static string Target(int port) => $"http://127.0.0.1:{port}";
 
         public enum State { NotInstalled, NotRunning, NeedsLogin, Running }
 
@@ -33,8 +33,11 @@ namespace ExplorerNative
             string? HostName,
             bool HttpsEnabled);
 
-        /// <summary>Whether our handler is on 443, or something else has it.</summary>
-        public enum ServeState { Off, Ours, TakenByOther }
+        /// <summary>
+        /// Whether our handler is on 443: pointing at the port in use now, at a port
+        /// this application used before (so it can be moved), or something else has it.
+        /// </summary>
+        public enum ServeState { Off, Ours, OursOtherPort, TakenByOther }
 
         /// <summary>The result of turning Serve on.</summary>
         public sealed record EnableResult(bool Ok, string? Problem, string? EnableHttpsUrl);
@@ -103,8 +106,12 @@ namespace ExplorerNative
             return new Status(state, login, dns, host, https);
         }
 
-        /// <summary>Pure: what <c>tailscale serve status --json</c> says about port 443.</summary>
-        public static ServeState ParseServe(string json)
+        /// <summary>
+        /// Pure: what <c>tailscale serve status --json</c> says about port 443, for the
+        /// web app on <paramref name="port"/>. A single "/" handler pointing at one of
+        /// <paramref name="earlierPorts"/> is ours from before and may be moved.
+        /// </summary>
+        public static ServeState ParseServe(string json, int port, params int[] earlierPorts)
         {
             if (string.IsNullOrWhiteSpace(json)) return ServeState.Off;
             using var doc = JsonDocument.Parse(json);
@@ -114,7 +121,7 @@ namespace ExplorerNative
             bool tcp443 = root.TryGetProperty("TCP", out var tcp) && tcp.ValueKind == JsonValueKind.Object &&
                           tcp.TryGetProperty("443", out _);
 
-            bool anyWeb443 = false, ours = false, other = false;
+            bool anyWeb443 = false, ours = false, oursBefore = false, other = false;
             if (root.TryGetProperty("Web", out var web) && web.ValueKind == JsonValueKind.Object)
             {
                 foreach (var site in web.EnumerateObject())
@@ -126,7 +133,8 @@ namespace ExplorerNative
                     foreach (var handler in handlers.EnumerateObject())
                     {
                         string proxy = handler.Value.TryGetProperty("Proxy", out var p) ? p.GetString() ?? "" : "";
-                        if (handler.Name == "/" && IsOurTarget(proxy)) ours = true;
+                        if (handler.Name == "/" && IsTarget(proxy, port)) ours = true;
+                        else if (handler.Name == "/" && earlierPorts.Any(p => p != port && IsTarget(proxy, p))) oursBefore = true;
                         else other = true;
                     }
                 }
@@ -134,24 +142,29 @@ namespace ExplorerNative
 
             if (other) return ServeState.TakenByOther;
             if (ours) return ServeState.Ours;
+            if (oursBefore) return ServeState.OursOtherPort;
             if (tcp443 || anyWeb443) return ServeState.TakenByOther;
             return ServeState.Off;
         }
 
-        private static bool IsOurTarget(string proxy)
+        private static bool IsTarget(string proxy, int port)
         {
             proxy = proxy.TrimEnd('/');
-            return proxy.Equals(Target, StringComparison.OrdinalIgnoreCase) ||
-                   proxy.Equals($"http://localhost:{ConnectServer.Port}", StringComparison.OrdinalIgnoreCase) ||
-                   proxy.Equals($"127.0.0.1:{ConnectServer.Port}", StringComparison.OrdinalIgnoreCase);
+            return proxy.Equals(Target(port), StringComparison.OrdinalIgnoreCase) ||
+                   proxy.Equals($"http://localhost:{port}", StringComparison.OrdinalIgnoreCase) ||
+                   proxy.Equals($"127.0.0.1:{port}", StringComparison.OrdinalIgnoreCase);
         }
 
-        public static ServeState ReadServe()
+        /// <summary>The ports this application may have pointed Serve at before.</summary>
+        private static int[] Earlier(int previous) =>
+            new[] { previous, ConnectServer.Port }.Distinct().ToArray();
+
+        public static ServeState ReadServe(int port, int previous = ConnectServer.Port)
         {
             var exe = FindExe();
             if (exe == null) return ServeState.Off;
             var (_, output) = Run(exe, "serve status --json", TimeSpan.FromSeconds(6));
-            try { return ParseServe(output.Trim()); }
+            try { return ParseServe(output.Trim(), port, Earlier(previous)); }
             catch { return ServeState.Off; }
         }
 
@@ -167,25 +180,31 @@ namespace ExplorerNative
         /// else's Serve config alone: if 443 is already used by something else it
         /// says so and changes nothing.
         /// </summary>
-        public static EnableResult Enable()
+        public static EnableResult Enable(int port, int previous = ConnectServer.Port)
         {
             var exe = FindExe();
             if (exe == null) return new EnableResult(false, "Tailscale is not installed.", null);
 
-            switch (ReadServe())
+            switch (ReadServe(port, previous))
             {
                 case ServeState.Ours: return new EnableResult(true, null, null);
                 case ServeState.TakenByOther:
                     return new EnableResult(false,
                         "Something else on this PC already uses Tailscale Serve on port 443, so the web app was not turned on. " +
                         "Turn that off first, or ask for help.", null);
+                case ServeState.OursOtherPort:
+                    // Ours, on the port used before: taken off so it can be put back on the new one.
+                    Run(exe, "serve --https=443 off", TimeSpan.FromSeconds(10));
+                    break;
             }
 
             // When HTTPS or Serve is off for the tailnet, this prints a link and then
             // waits for it to be enabled. The link is all that is wanted; the wait is cut short.
-            var (code, output) = Run(exe, $"serve --bg --https=443 {Target}", TimeSpan.FromSeconds(12));
+            var (code, output) = Run(exe, $"serve --bg --https=443 {Target(port)}", TimeSpan.FromSeconds(12));
             var link = EnableLink(output);
-            if (ReadServe() == ServeState.Ours) return new EnableResult(true, null, null);
+            if (ReadServe(port, previous) == ServeState.Ours) return new EnableResult(true, null, null);
+            if (code == -1 && output.Length == 0)
+                return new EnableResult(false, "Tailscale did not answer. Check that it is running, then try again.", null);
             if (link != null)
                 return new EnableResult(false,
                     "HTTPS needs to be switched on for your Tailscale network, once. Press Enable HTTPS in Tailscale, " +
@@ -195,11 +214,11 @@ namespace ExplorerNative
         }
 
         /// <summary>Removes only our handler; anything else in Serve is left as it was.</summary>
-        public static void Disable()
+        public static void Disable(int port, int previous = ConnectServer.Port)
         {
             var exe = FindExe();
             if (exe == null) return;
-            if (ReadServe() != ServeState.Ours) return;
+            if (ReadServe(port, previous) is not (ServeState.Ours or ServeState.OursOtherPort)) return;
             Run(exe, "serve --https=443 off", TimeSpan.FromSeconds(10));
         }
 

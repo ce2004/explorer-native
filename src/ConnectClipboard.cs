@@ -13,18 +13,12 @@ using System.Windows.Forms;
 
 namespace ExplorerNative
 {
-    /// <summary>The PC clipboard as the phone sees it. Absent fields are left out of the JSON.</summary>
+    /// <summary>The PC clipboard as the web app sees it. Absent fields are left out of the JSON.</summary>
     public sealed record ClipState(
         long Seq, string Kind,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Text = null,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? Files = null,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? ImageBytes = null);
-
-    public sealed record ClipHistoryItem(
-        long Seq, string Kind,
-        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? Text,
-        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] IReadOnlyList<string>? Files,
-        DateTime Time);
 
     /// <summary>The clipboard behind <c>/api/clipboard</c>; an interface so the routes can be tested without
     /// touching the real one, which may be holding something of Conner's.</summary>
@@ -41,29 +35,22 @@ namespace ExplorerNative
         Task<long> SetTextAsync(string text);
         Task<long> SetImageAsync(byte[] image);
         Task<long> SetFilesAsync(IReadOnlyList<string> paths);
-
-        IReadOnlyList<ClipHistoryItem> History();
-        void ClearHistory();
     }
 
     /// <summary>
     /// The PC clipboard, watched and written from one STA thread of its own — never the window's.
     ///
     /// Change comes from <c>AddClipboardFormatListener</c> on a message-only window that thread owns, so
-    /// nothing polls: each <c>WM_CLIPBOARDUPDATE</c> takes a snapshot, bumps <c>seq</c>, adds to the history
+    /// nothing polls: each <c>WM_CLIPBOARDUPDATE</c> takes a snapshot, bumps <c>seq</c>
     /// and wakes the long polls. Writes are queued onto the same thread and go through
     /// <see cref="ClipboardInterop"/>, whose retries (another application holding the clipboard is normal) and
     /// rewound Preferred DropEffect are the window's own.
     ///
-    /// The history is memory only, 50 items, text capped at 1 MB each, and is never written anywhere.
+    /// No history is kept: only what is on the clipboard now, in memory.
     /// </summary>
     public sealed class ConnectClipboard : IConnectClipboard, IDisposable
     {
-        public const int HistoryLength = 50;
-        public const int HistoryTextChars = 1 << 20;
-
         private readonly object _gate = new();
-        private readonly LinkedList<ClipHistoryItem> _history = new();
         private readonly Queue<Action> _work = new();
         private ClipState _current = new(0, "empty");
         private byte[]? _png;
@@ -142,25 +129,6 @@ namespace ExplorerNative
                 var state = read.State with { Seq = _current.Seq + 1 };
                 _current = state;
                 _png = read.Png;
-                if (state.Kind != "empty")
-                {
-                    var text = state.Text is { Length: > HistoryTextChars } t ? t[..HistoryTextChars] : state.Text;
-                    // One copy in most programs raises several updates, and copying the same
-                    // thing again is not a new item: the one already held moves to the top.
-                    for (var node = _history.First; node is not null; node = node.Next)
-                    {
-                        var h = node.Value;
-                        if (h.Kind == state.Kind && h.Text == text
-                            && (h.Files ?? Array.Empty<string>()).SequenceEqual(state.Files ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase)
-                            && (state.Kind != "image" || node == _history.First))
-                        {
-                            _history.Remove(node);
-                            break;
-                        }
-                    }
-                    _history.AddFirst(new ClipHistoryItem(state.Seq, state.Kind, text, state.Files, DateTime.UtcNow));
-                    while (_history.Count > HistoryLength) _history.RemoveLast();
-                }
                 wake = _changed;
                 _changed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
@@ -183,10 +151,6 @@ namespace ExplorerNative
                 catch (OperationCanceledException) when (!token.IsCancellationRequested) { return Current; }
             }
         }
-
-        public IReadOnlyList<ClipHistoryItem> History() { lock (_gate) return _history.ToList(); }
-
-        public void ClearHistory() { lock (_gate) _history.Clear(); }
 
         // MARK: Writing
 

@@ -427,6 +427,9 @@ namespace ExplorerNative
 
             _ok.Click += async (_, _) =>
             {
+              // An async void handler: nothing may escape it, or the application ends.
+              try
+              {
                 if (_checking) return;
 
                 var problem = DriveMonitor.Refusal(_local.Text.Trim());
@@ -489,6 +492,13 @@ namespace ExplorerNative
                 Pair.Paused = edited.Paused;
                 DialogResult = DialogResult.OK;
                 Close();
+              }
+              catch (Exception ex)
+              {
+                if (IsDisposed) return;
+                _status.Text = "The folder pair could not be saved: " + ex.Message;
+                MessageBox.Show(this, _status.Text, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+              }
             };
         }
 
@@ -610,6 +620,8 @@ namespace ExplorerNative
 
             _list.KeyDown += async (_, e) =>
             {
+              try
+              {
                 if (e.KeyCode == Keys.Enter)
                 {
                     e.Handled = e.SuppressKeyPress = true;
@@ -629,6 +641,11 @@ namespace ExplorerNative
                         await LoadAsync();
                     }
                 }
+              }
+              catch (Exception ex)
+              {
+                if (!IsDisposed) { _where.Text = "Google Drive could not be read: " + ex.Message; Say(_where.Text); }
+              }
             };
 
             use.Click += (_, _) =>

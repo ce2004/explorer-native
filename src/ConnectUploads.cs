@@ -8,8 +8,8 @@ using System.Threading.Tasks;
 namespace ExplorerNative
 {
     /// <summary>
-    /// Uploads from the phone that survive a dropped connection: the bytes go to a partial file of their own
-    /// under <c>%LOCALAPPDATA%\ExplorerNative\connect-uploads\&lt;id&gt;</c>, a chunk at a time, and the phone
+    /// Uploads from the web app that survive a dropped connection: the bytes go to a partial file of their own
+    /// under <c>%LOCALAPPDATA%\ExplorerNative\connect-uploads\&lt;id&gt;</c>, a chunk at a time, and the web app
     /// can always ask how much has arrived and carry on from exactly there.
     ///
     /// Nothing is held in memory: every chunk is streamed from the socket to the end of the file. How much

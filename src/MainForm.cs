@@ -1068,8 +1068,8 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Our own context menu rather than the shell's, so Send to iPhone can
-        /// live in it. The genuine Windows menu is still one item away.
+        /// Our own context menu rather than the shell's, so the application's own
+        /// commands live in it. The genuine Windows menu is still one item away.
         /// </summary>
         private void BuildContextMenu()
         {
@@ -6850,7 +6850,7 @@ namespace ExplorerNative
         /// </summary>
         public void RestoreListFocusExternally() => RestoreListFocus();
 
-        public void OpenPreferencesExternally() => OpenPreferences();
+        public void OpenPreferencesExternally(string? category = null) => OpenPreferences(category);
 
         /// <summary>
         /// Takes on settings changed from outside while quitting, so the save on

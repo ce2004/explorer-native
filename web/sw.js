@@ -1,6 +1,6 @@
 // Explorer Connect service worker: the app shell only. API and audio requests are
 // never cached; they always go to the PC.
-const SHELL = 'shell-v1';
+const SHELL = 'shell-v2';
 const FILES = ['/', '/app/app.js', '/app/app.css', '/manifest.webmanifest',
   '/app/icon-192.png', '/app/icon-512.png', '/apple-touch-icon.png'];
 

@@ -26,9 +26,17 @@
 </nav>
 
 <main id="main">
+  <section id="screen-offline" hidden aria-labelledby="offline-title">
+    <h1 id="offline-title" tabindex="-1">Can't reach the PC</h1>
+    <p id="offline-text">The PC could not be reached.</p>
+    <div class="toolbar">
+      <button type="button" id="offline-retry" class="primary">Retry</button>
+    </div>
+  </section>
+
   <section id="screen-code" hidden aria-labelledby="code-title">
     <h1 id="code-title" tabindex="-1">Pairing code</h1>
-    <p>This PC wants its pairing code once. In Explorer Native on the PC, open the tray menu and choose Phone connection to see it.</p>
+    <p>This PC wants its pairing code once. On the PC, open Explorer Native's Preferences, choose Web app, and read the pairing code there.</p>
     <form id="code-form">
       <label for="code-input">Pairing code</label>
       <input id="code-input" inputmode="numeric" autocomplete="one-time-code" required>
@@ -44,7 +52,7 @@
       <button type="button" id="btn-up">Up</button>
       <button type="button" id="btn-play-folder">Play folder</button>
       <button type="button" id="btn-new-folder">New folder</button>
-      <button type="button" id="btn-upload">Upload from iPhone</button>
+      <button type="button" id="btn-upload">Upload</button>
       <input type="file" id="upload-input" multiple class="visually-hidden" tabindex="-1" aria-hidden="true">
       <button type="button" id="btn-paste" hidden>Paste here</button>
       <button type="button" id="btn-select">Select</button>
@@ -108,26 +116,19 @@
 
   <section id="screen-clipboard" hidden aria-labelledby="clip-title">
     <h1 id="clip-title" tabindex="-1">Clipboard</h1>
-    <h2>The PC's clipboard</h2>
+    <h2>On the PC now</h2>
+    <div id="clip-now" aria-live="polite"></div>
     <div class="toolbar">
-      <button type="button" id="clip-get">Get the PC's clipboard</button>
+      <button type="button" id="clip-get">Refresh</button>
     </div>
-    <div id="clip-now"></div>
     <h2>Send to the PC</h2>
     <label for="clip-text">Text</label>
     <textarea id="clip-text" rows="4"></textarea>
     <div class="toolbar">
       <button type="button" id="clip-send">Send text</button>
-      <button type="button" id="clip-paste">Paste from iPhone and send</button>
-      <button type="button" id="clip-send-files">Send files</button>
+      <button type="button" id="clip-send-files">Send file</button>
       <input type="file" id="clip-files" multiple class="visually-hidden" tabindex="-1" aria-hidden="true">
     </div>
-    <h2>History</h2>
-    <div class="toolbar">
-      <button type="button" id="clip-history">Show history</button>
-      <button type="button" id="clip-clear">Clear history</button>
-    </div>
-    <ul id="clip-list" class="list"></ul>
   </section>
 
   <section id="screen-settings" hidden aria-labelledby="settings-title">

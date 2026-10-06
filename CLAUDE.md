@@ -382,15 +382,19 @@ Resilience rules, at Conner's request, for syncs of hundreds of gigabytes:
 
 The account button reads `SettingsForm.AccountState`, which the tray sets: Connect, Disconnect (Connected) or Reconnect (NeedsSignIn). Disconnect unmounts and switches Drive off, but keeps the sign-in.
 
-## The web app (1.0.6)
+## The web app (1.0.6, 1.0.7)
 
-Explorer Connect also runs as a web app. The files live in web\ (index.html, app.js, app.css, sw.js, manifest, icons), embedded as web/<name> and served by ConnectServer through WebAssets at "/", "/app/...", "/sw.js" and "/manifest.webmanifest", without the pairing code. These are the app shell only; the data is under /api/.
+Explorer Connect is a web app, and it is the only client: the iPhone app and its repository were removed (2026-10-05, Conner's decision). Nothing has to stay compatible with anything but web\app.js. The files live in web\ (index.html, app.js, app.css, sw.js, manifest, icons), embedded as web/<name> and served by ConnectServer through WebAssets at "/", "/app/...", "/sw.js" and "/manifest.webmanifest", without the pairing code. These are the app shell only; the data is under /api/.
+- **The contract is what app.js calls.** Grep it for `/api/` before removing or changing a route. 1.0.7 removed ping, stat (the web app uses `/api/details`, because tracker blockers kill `/stat?`), the clipboard long poll and the clipboard history. `/api/info` (the Retry check) and the one-request `/api/upload` (files up to 4 MB) stay because the web app uses them.
+- **ConnectServer listens on 127.0.0.1 only**, on `Settings.WebAppPort` (47810 by default, 1024 to 65535). Nothing on any network reaches it directly; the web app arrives through Tailscale Serve, which connects from this machine. `Rebind(port)` moves the listener without losing jobs or uploads; a port that cannot be had keeps the old one and says why (`ListenProblem`).
+- **The port is checked on OK** (`ConnectServer.CheckPort`: range, `GetActiveTcpListeners`, a test bind on loopback; the port in use now counts as free). At startup a saved port that has been taken falls back to 47810, saved, and said once (`webapp.port.fallback`).
 - Plain JavaScript, no libraries, no build step. The audio element is the only audio path (no Web Audio graph), so iOS has the best chance of playing in the background. There is no EQ.
-- HTTPS comes from Tailscale Serve: `tailscale serve --bg --https=443 http://127.0.0.1:47810` (TailscaleWeb). Never Funnel.
-  - Enable reads `tailscale serve status --json` first and refuses if 443 is used by anything but our handler (ParseServe). Disable removes only ours.
+- HTTPS comes from Tailscale Serve: `tailscale serve --bg --https=443 http://127.0.0.1:<port>` (TailscaleWeb). Never Funnel.
+  - Enable reads `tailscale serve status --json` first and refuses if 443 is used by anything but our handler (`ParseServe`). Our handler on the previous port, or on 47810, is `OursOtherPort` and is moved. Disable removes only ours.
   - If HTTPS is off for the tailnet, serve prints a login.tailscale.com/f/... link. Preferences shows it as Enable HTTPS in Tailscale and retries every 10 seconds.
-- Auth: Serve connects from loopback with Tailscale-User-Login. ConnectServer.TrustsServeUser accepts that header only from loopback and only when it equals this PC's own login, read from `tailscale status --json` with the ping paths. Everyone else sends the code (header, or code= for media). `/api/whoami` (no auth) tells the page which.
-- Preferences, Web app: the status box re-checks every 4 seconds while Preferences is shown (never in tests, which build the form without showing it). The box acts at once; Cancel puts it back. TrayApplicationContext.ReconcileWebApp makes Serve match the setting at start and on change.
+- Auth: Serve connects from loopback with Tailscale-User-Login. `ConnectServer.TrustsServeUser` accepts that header only when it equals this PC's own login, read from `tailscale status --json` at most every 30 s (`RefreshOwnLogin`); Tailscale stopped leaves the login unknown, which trusts nobody without the code. Everyone else on the tailnet sends the pairing code (header, or code= for media). `/api/whoami` (no auth) tells the page which. The pairing code is shown on Preferences, Web app; the tray's Web app item opens that page.
+- Preferences, Web app: the status box re-checks every 4 seconds while Preferences is shown (never in tests, which build the form without showing it). The box acts at once; Cancel puts it back. `TrayApplicationContext.ReconcileWebApp` makes Serve match the setting at start and on change. Copy link is always there once the link is known; off, it says why instead of being disabled (a disabled button leaves the tab order).
+- **Errors end in a sentence.** Every fetch in the web app has a time limit (`timedFetch`, AbortController). A PC that cannot be reached is the offline screen with Retry; a code that is no longer right is the code screen; 502/503 from Serve with no JSON means Explorer Native is closed. Uploads, jobs and playback pick up again on the browser's `online` event. `unhandledrejection` and `error` are announced rather than lost. On the PC side every `async` event handler in Preferences and the sync configurator has its own try/catch.
 
 ## Rules this codebase lives by
 
@@ -5843,14 +5847,13 @@ playback switches when the default changes.
     default change during a slow open reached nobody.
 
 
-## Explorer Native Connect, the phone server
+## Explorer Native Connect, the web app's server
 
-`ConnectServer` is the HTTP API the iPhone app talks to: port 47810, bound to
-the Tailscale address and loopback only, every request carrying the pairing
-code (`X-Connect-Code`, or `code=` for media URLs). **The contract is
-`Documents\explorer_native_connect\API.md` (v2 to v2.3) and the phone is built
-against it; do not change a route or a field without changing that file and
-the app together.** `/api/info` says `apiVersion: 4`.
+`ConnectServer` is the HTTP API the web app talks to, on 127.0.0.1 only (see
+"The web app" above for the port, Serve and the auth rule). Every request from
+anyone but the PC's owner carries the pairing code (`X-Connect-Code`, or `code=`
+for media URLs). **The only client is web\app.js; what it calls is the
+contract.**
 
 | file | what it owns |
 | --- | --- |
@@ -5880,7 +5883,7 @@ Things that are not obvious:
   500 with the message as a sentence. Once a response's headers are out a
   failure is `ResponseStartedException` and only closes the connection; writing
   an error there would be read as body.
-- **Delete from the phone never deletes for good.** `ShellDelete.Recycle` with
+- **Delete from the web app never deletes for good.** `ShellDelete.Recycle` with
   its nuke warning would put a question on the PC's screen and park the request
   on it, so `HasRecycleBin` (`SHQueryRecycleBinW`, network and CD refused) is
   asked first and a drive with no bin is a per-item failure.
@@ -5923,13 +5926,13 @@ Things that are not obvious:
   digits and nothing else reaches a path. Swept after 24 h untouched, one level
   deep, on start. Measured: 200 MB with a cut and resume, local and into Drive
   (23 s up to Drive), byte-for-byte.
-- **The clipboard (v2.2, `apiVersion: 3`) is `ConnectClipboard`**, on an STA
+- **The clipboard is `ConnectClipboard`**, on an STA
   thread of its own with a message-only window registered through
   `AddClipboardFormatListener`; every `WM_CLIPBOARDUPDATE` is a snapshot, a
-  `seq` and a wake for the long polls, and nothing polls. Writes are queued to
+  `seq` and a wake for its own writes waiting to see them land. Writes are queued to
   that thread and go through `ClipboardInterop` (retries, rewound DropEffect).
   One copy in another program is often several updates, so `seq` can jump by
-  more than one. History is memory only. Phone files sent to the clipboard live
+  more than one. No history is kept, only the current item. Files sent to the clipboard live
   in `%LOCALAPPDATA%\ExplorerNative\connect-clipboard\<seq>-<random>` (or
   `batch-<id>`), swept after 7 days. The suite never touches the real
   clipboard (`FakeClipboard` over the real class's bookkeeping); a live check
@@ -5937,12 +5940,7 @@ Things that are not obvious:
 - **An unread body is drained even on `Connection: close`.** Closing a socket
   with unread bytes is a reset, and the reset can overtake the answer: a POST
   whose route ignored its `{}` body came back to Python as error 10054.
-- **`/api/ping` never waits for Tailscale.** The path comes from
-  `tailscale status --json`, run behind the answer at most every 10 s
-  (`PathsFor`) and read from a cache: a peer with `CurAddr` is direct, one
-  without is `relay <Relay>`, this machine's own addresses and loopback are
-  direct. The first ping after a start can say `unknown`; `Start` warms it.
-- **`/api/stat` (v2.3) keeps the v2 fields and adds sections**, each its own try
+- **`/api/details` (once `/api/stat`) answers the file's basics and sections**, each its own try
   under one 15 s budget (`StatBudget`); what is not done by then goes back with
   `partial: true`, and a section that throws is simply absent. The v2 `tags`
   object is still filled, from the media section when the basics had none.
@@ -5951,7 +5949,7 @@ Things that are not obvious:
     parsers' many small reads of a header and a tail cost a few requests. The
     v2 `StatAsync` no longer reads a Drive file's tags through the property
     system for the same reason. A 15 MB FLAC on G: answers in about 0.7 s, an
-    iPhone MOV in 2-3 s.
+    MOV from a phone camera in 2-3 s.
   - **Media** is the file's own parsers first (FLAC STREAMINFO, MD5, Vorbis
     comments and PICTURE; Ogg Opus/Vorbis heads and comments, `CHAPTERxxx`
     comments; ID3v2 and the Xing/Info/VBRI and LAME header; MP4 atoms, esds
@@ -5975,9 +5973,10 @@ Things that are not obvious:
     `GoogleDrive.LinkFor(path, makePublic: false)`, which only reads.
 - **Drive actions still speak on the PC.** `TrashPath`, `RenameOnDrive` and
   friends announce through `GoogleDrive.Notification` whoever called them, so a
-  delete from the phone is heard on the computer too.
+  delete from the web app is heard on the computer too.
 
 Verifying against the live app: HTTP only, from a script, to
-`http://100.67.248.25:47810` — never read `G:` from your own process. Writes on
+`https://laptop.tail3d7403.ts.net/` (through Serve, as the owner) or
+`http://127.0.0.1:<port>` with the code — never read `G:` from your own process. Writes on
 Drive go in one `zz-connect-test-<random>` folder at the top of My Drive made
 through `/api/mkdir` and deleted through `/api/delete`.
