@@ -1,3 +1,12 @@
+1.0.8
+Bug fixed: while music or an audiobook played in the web app, VoiceOver could stop talking and the page lagged. The page was updating the playback position every second. Now playback leaves VoiceOver alone, and the position only changes when you skip or seek. Press Time on Now Playing to hear where you are.
+The web app looks and works just like the old iPhone app. Tabs along the bottom with icons for Files, Now Playing, Clipboard, Transfers and Settings. Each screen has its big title at the top, and in a folder the Back button names the folder it goes back to. Settings are in rounded groups with switches, folders have arrows, and each file has a More button for its actions. Now Playing has the title, the position slider, big skip and play buttons, then speed and the queue. Menus slide up from the bottom, and it follows your phone's light or dark mode. Each tab keeps its place when you switch away and back. The skip to content link is gone.
+While something plays, a small player sits above the tabs with the title and a Play and Pause button. Tap the title to open Now Playing.
+Bug fixed: in the web app, the drop-down lists in Settings and on Now Playing would not open with VoiceOver, so you couldn't change Sort by, When a name is taken, Skip back, Skip forward, Speed, Repeat or the Sleep timer. They open now.
+New feature: Copy to iPhone, on the web app's Clipboard screen. Whatever is on the PC clipboard comes to your phone in one tap. Text goes straight onto the phone's clipboard and it says "Text copied to iPhone". Files and pictures download to the phone, show their progress in Transfers, and say "Saved to iPhone" when each one is done.
+If the phone won't let the web app copy text, the text appears in a box with its own Copy button, so you can still get it.
+Sending text or a file from the phone to the PC now says "Sent to the PC clipboard" when it arrives.
+
 1.0.7
 The old iPhone app no longer works. Use the web app instead: open the link from Preferences, Web app in Safari and add it to your Home Screen.
 New feature: Port, on the Web app page in Preferences. If another program needs port 47810, pick a different one. Explorer Native checks the port is free when you press OK and tells you if it isn't.

@@ -165,28 +165,60 @@ function codeQuery(url) {
 
 const SCREENS = ['files', 'player', 'transfers', 'clipboard', 'settings'];
 let currentTab = 'files';
+const tabScroll = {};
+const TITLES = { files: 'files-title', player: 'player-title', transfers: 'transfers-title',
+  clipboard: 'clip-title', settings: 'settings-title' };
+
+// The top bar shows the screen's title; the screen's own heading carries it for VoiceOver.
+function setBarTitle(text) { setText($('bar-title'), text); }
+
+// The back button names where it goes, as iOS does: the folder above, or Drives.
+function setBackLabel() {
+  const show = currentTab === 'files' && state.path != null && $('screen-code').hidden && $('screen-offline').hidden;
+  const up = $('btn-up');
+  if (up.hidden === show) up.hidden = !show;
+  if (!show) return;
+  const parent = parentOf(state.path);
+  const to = parent == null ? 'Drives' : (leaf(parent) || parent.replace(/\\$/, ''));
+  setText($('back-label'), to);
+  up.setAttribute('aria-label', `Back to ${to}`);
+}
+
+// The small title in the bar appears once the large one has scrolled away.
+function onMainScroll() {
+  const on = $('main').scrollTop > 30;
+  if (document.body.classList.contains('scrolled') !== on) document.body.classList.toggle('scrolled', on);
+}
 
 function showTab(name, focus = true) {
+  // Each tab keeps its place: where it was scrolled to when it was left.
+  if (currentTab && $('screen-' + currentTab) && !$('screen-' + currentTab).hidden) tabScroll[currentTab] = $('main').scrollTop;
   currentTab = name;
   $('screen-code').hidden = true;
   $('screen-offline').hidden = true;
   $('tabs').hidden = false;
   for (const s of SCREENS) $('screen-' + s).hidden = s !== name;
-  for (const b of document.querySelectorAll('#tabs button'))
-    b.setAttribute('aria-current', b.dataset.tab === name ? 'page' : 'false');
+  for (const b of document.querySelectorAll('#tabs button')) {
+    const on = b.dataset.tab === name;
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+    b.tabIndex = on ? 0 : -1;
+  }
   if (name === 'transfers') renderTransfers();
   if (name === 'settings') renderSettings();
   if (name === 'player') renderPlayer();
   if (name === 'clipboard') getClipboard();
   pollJobs();
-  if (focus) {
-    const title = { files: 'files-title', player: 'player-title', transfers: 'transfers-title',
-      clipboard: 'clip-title', settings: 'settings-title' }[name];
-    $(title).focus();
-  }
+  setBarTitle($(TITLES[name]).textContent);
+  setBackLabel();
+  $('main').scrollTop = tabScroll[name] || 0;
+  onMainScroll();
+  // VoiceOver lands on the new screen's heading, once.
+  if (focus) $(TITLES[name]).focus({ preventScroll: true });
 }
 
 function showCodeScreen(message) {
+  setBarTitle('Pairing code');
+  $('btn-up').hidden = true;
   for (const s of SCREENS) $('screen-' + s).hidden = true;
   $('tabs').hidden = true;
   $('screen-offline').hidden = true;
@@ -197,6 +229,8 @@ function showCodeScreen(message) {
 
 // The PC cannot be reached at all: one plain sentence and a Retry button.
 function showOffline(message) {
+  setBarTitle("Can't reach the PC");
+  $('btn-up').hidden = true;
   for (const s of SCREENS) $('screen-' + s).hidden = true;
   $('tabs').hidden = true;
   $('screen-code').hidden = true;
@@ -280,6 +314,7 @@ async function openFolder(path, { push = true, focusName = null, quiet = false }
     renderFiles();
     const title = path == null ? 'Drives' : leaf(path);
     $('files-title').textContent = title;
+    if (currentTab === 'files') setBarTitle(title);
     $('files-path').textContent = path == null ? state.computer : path;
     document.title = `${title} - Explorer Connect`;
     if (!quiet) {
@@ -329,6 +364,7 @@ function renderFiles() {
   entries.forEach((e) => {
     const li = document.createElement('li');
     li.dataset.name = e.name;
+    if (e.folder || e.drive) li.className = 'folder';
     const full = e.drive ? e.name : join(state.path, e.name);
     if (state.selectMode && !e.drive) {
       const box = document.createElement('input');
@@ -357,8 +393,8 @@ function renderFiles() {
       const more = document.createElement('button');
       more.type = 'button';
       more.className = 'side';
-      more.textContent = 'Actions';
-      more.setAttribute('aria-label', `Actions for ${shownName(e.name, e.folder)}`);
+      more.textContent = 'More';
+      more.setAttribute('aria-label', `More for ${shownName(e.name, e.folder)}`);
       more.addEventListener('click', () => actions(e, full, more));
       li.append(more);
     }
@@ -366,7 +402,7 @@ function renderFiles() {
   });
   list.replaceChildren(frag);
   $('files-empty').hidden = entries.length > 0;
-  $('btn-up').hidden = state.path == null;
+  setBackLabel();
   for (const id of ['btn-play-folder', 'btn-new-folder', 'btn-upload', 'btn-select'])
     $(id).hidden = state.path == null;
   $('btn-paste').hidden = !(state.clip && state.path != null);
@@ -404,7 +440,7 @@ async function actions(e, full, opener) {
   if (e.folder) items.push(['open', 'Open']); else if (isAudio(e.name)) items.push(['open', 'Play']); else items.push(['open', 'Open']);
   items.push(['details', 'Details'], ['rename', 'Rename'], ['delete', 'Delete'], ['copy', 'Copy'], ['move', 'Move'],
     ['pc', 'Copy on PC']);
-  if (!e.folder) items.push(['save', 'Save to this device']);
+  if (!e.folder) items.push(['save', `Save to ${DEVICE}`]);
   if (e.folder) items.push(['size', 'Get size']);
   items.push(['cancel', 'Cancel']);
   const choice = await dialog({ title: shownName(e.name, e.folder), body: null,
@@ -583,7 +619,7 @@ function percent(t) { return t.total > 0 ? Math.floor((t.done / t.total) * 100) 
 function transferText(t) {
   const pct = percent(t);
   switch (t.state) {
-    case 'done': return `${t.name}, done${t.message ? '. ' + t.message : ''}`;
+    case 'done': return t.kind === 'download' ? `${t.name}, ${t.message || 'saved'}` : `${t.name}, done${t.message ? '. ' + t.message : ''}`;
     case 'failed': return `${t.name}, failed: ${t.message || 'unknown problem'}`;
     case 'cancelled': return `${t.name}, stopped`;
     case 'waiting': return `${t.name}, waiting for the PC, ${pct} percent`;
@@ -803,6 +839,7 @@ function loadTrack(index, autoplay, startAt) {
   store.set('session', { queue: player.queue, index, });
   if (autoplay) a.play().catch(() => announce('Press Play to start.'));
   renderPlayer();
+  updatePosition();
   updateMetadata(track);
 }
 
@@ -839,31 +876,47 @@ function savePosition(force = false) {
   const a = audio();
   if (!t || !a.src) return;
   const now = Date.now();
-  if (!force && now - lastSave < 5000) return;
+  if (!force && now - lastSave < 15000) return;
   lastSave = now;
   const nearEnd = a.duration && a.currentTime > a.duration - 10;
   if (nearEnd) store.remove('pos:' + t.path); else store.set('pos:' + t.path, Math.floor(a.currentTime));
 }
 
+// While something plays, nothing on the page may change on its own. Every
+// DOM, ARIA, live-region or Media Session update below happens because of
+// something the person did (play, pause, seek, skip, a track change) or a
+// once-every-5-seconds refresh of the slider while VoiceOver is on it. On an
+// iPhone, rewriting the slider's value every second while audio played was
+// enough to stop VoiceOver talking.
+
+// Changes text only when it is different, so nothing is rewritten for nothing.
+function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
+
+let queueShown = '';
+
 function renderPlayer() {
   const t = current();
   const a = audio();
-  $('np-track').textContent = t ? shownName(t.name, false) : 'Nothing is playing.';
-  $('np-sub').textContent = t ? `Track ${player.index + 1} of ${player.queue.length}, ${leaf(parentOf(t.path) || '')}` : '';
-  $('np-play').textContent = a.src && !a.paused ? 'Pause' : 'Play';
-  $('np-back').textContent = `Back ${prefs.skipBack} seconds`;
-  $('np-fwd').textContent = `Forward ${prefs.skipFwd} seconds`;
-  $('np-speed').value = String(prefs.speed);
-  const s = store.get('session', null);
+  const playing = !!a.src && !a.paused;
+  setText($('np-track'), t ? shownName(t.name, false) : 'Nothing is playing.');
+  setText($('np-sub'), t ? `Track ${player.index + 1} of ${player.queue.length}, ${leaf(parentOf(t.path) || '')}` : '');
+  setText($('np-play'), playing ? 'Pause' : 'Play');
+  setText($('np-back'), `Back ${prefs.skipBack} seconds`);
+  setText($('np-fwd'), `Forward ${prefs.skipFwd} seconds`);
+  if ($('np-speed').value !== String(prefs.speed)) $('np-speed').value = String(prefs.speed);
   const resume = $('np-resume');
-  resume.hidden = !!a.src || !(prefs.continue && s && s.queue && s.queue[s.index]);
-  if (!resume.hidden) {
+  const s = a.src ? null : store.get('session', null);
+  const showResume = !a.src && !!(prefs.continue && s && s.queue && s.queue[s.index]);
+  if (resume.hidden === showResume) resume.hidden = !showResume;
+  if (showResume) {
     const tr = s.queue[s.index];
     const at = store.get('pos:' + tr.path, 0);
-    resume.textContent = `Resume ${shownName(tr.name, false)}${at ? ' at ' + spokenTime(at) : ''}`;
+    setText(resume, `Resume ${shownName(tr.name, false)}${at ? ' at ' + spokenTime(at) : ''}`);
   }
-  updatePosition(true);
-  if (currentTab === 'player') renderQueue();
+  // The queue is rebuilt only when it or the track changes, never on play or pause.
+  const key = player.queue.length + ':' + player.index + ':' + (player.queue[0] && player.queue[0].path);
+  if (key !== queueShown) { queueShown = key; renderQueue(); }
+  renderMini();
 }
 
 function renderQueue() {
@@ -884,22 +937,55 @@ function renderQueue() {
   list.replaceChildren(frag);
 }
 
-let positionShown = 0;
-function updatePosition(force) {
+// The mini player above the tab bar: the title and Play or Pause. No time.
+function renderMini() {
+  const t = current();
+  const a = audio();
+  const mini = $('mini');
+  const show = !!t && !!a.src;
+  if (mini.hidden === show) { mini.hidden = !show; document.body.classList.toggle('has-mini', show); }
+  if (!show) return;
+  setText($('mini-title'), shownName(t.name, false));
+  $('mini-title').setAttribute('aria-label', `Now playing: ${shownName(t.name, false)}. Open Now Playing`);
+  setText($('mini-play'), a.paused ? 'Play' : 'Pause');
+}
+
+// The slider and the time text: only when asked for, never on a tick.
+function updatePosition() {
   const a = audio();
   const range = $('np-position');
-  const now = Date.now();
-  if (!force && now - positionShown < 1000) return;
-  positionShown = now;
   const dur = isFinite(a.duration) ? a.duration : 0;
-  range.max = String(Math.floor(dur));
-  if (document.activeElement !== range) range.value = String(Math.floor(a.currentTime || 0));
-  const text = `${spokenTime(a.currentTime || 0)} of ${spokenTime(dur)}`;
-  range.setAttribute('aria-valuetext', text);
-  $('np-time').textContent = `${clock(a.currentTime || 0)} / ${clock(dur)}`;
-  if ('mediaSession' in navigator && dur > 0 && navigator.mediaSession.setPositionState) {
-    try { navigator.mediaSession.setPositionState({ duration: dur, playbackRate: a.playbackRate, position: Math.min(a.currentTime, dur) }); } catch { }
+  const now = a.currentTime || 0;
+  const max = String(Math.floor(dur));
+  if (range.max !== max) range.max = max;
+  if (document.activeElement !== range) {
+    const v = String(Math.floor(now));
+    if (range.value !== v) range.value = v;
   }
+  const text = `${spokenTime(now)} of ${spokenTime(dur)}`;
+  if (range.getAttribute('aria-valuetext') !== text) range.setAttribute('aria-valuetext', text);
+  setText($('np-time'), `${clock(now)} / ${clock(dur)}`);
+}
+
+// Lock screen and headphones: position only when it changes for a reason.
+function syncSession() {
+  if (!('mediaSession' in navigator)) return;
+  const a = audio();
+  try { navigator.mediaSession.playbackState = a.src ? (a.paused ? 'paused' : 'playing') : 'none'; } catch { }
+  const dur = isFinite(a.duration) ? a.duration : 0;
+  if (dur > 0 && navigator.mediaSession.setPositionState) {
+    try { navigator.mediaSession.setPositionState({ duration: dur, playbackRate: a.playbackRate || 1, position: Math.min(a.currentTime || 0, dur) }); } catch { }
+  }
+}
+
+function sayTime() {
+  const a = audio();
+  if (!a.src) { announce('Nothing is playing.'); return; }
+  const dur = isFinite(a.duration) ? a.duration : 0;
+  updatePosition();
+  announce(dur > 0
+    ? `${spokenTime(a.currentTime)} of ${spokenTime(dur)}, ${spokenTime(Math.max(0, dur - a.currentTime))} left`
+    : spokenTime(a.currentTime));
 }
 
 async function updateMetadata(track) {
@@ -937,16 +1023,28 @@ function setupMediaSession() {
 
 function setupAudio() {
   const a = audio();
+  let sliderShown = 0;
   a.addEventListener('loadedmetadata', () => {
     const at = Number(a.dataset.resume || 0);
     if (at > 5 && (!a.duration || at < a.duration - 10)) { a.currentTime = at; announce(`Resuming at ${spokenTime(at)}`); }
     a.dataset.resume = '0';
-    a.playbackRate = prefs.speed;
-    updatePosition(true);
+    if (a.playbackRate !== prefs.speed) a.playbackRate = prefs.speed;
+    updatePosition();
+    syncSession();
   });
-  a.addEventListener('timeupdate', () => { updatePosition(false); savePosition(false); });
-  a.addEventListener('play', () => { if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'playing'; renderPlayer(); });
-  a.addEventListener('pause', () => { savePosition(true); if ('mediaSession' in navigator) navigator.mediaSession.playbackState = 'paused'; renderPlayer(); });
+  // A tick: the cached number only, the position saved now and then, and the
+  // slider refreshed every 5 seconds while VoiceOver is actually on it.
+  a.addEventListener('timeupdate', () => {
+    savePosition(false);
+    if (document.activeElement === $('np-position')) {
+      const now = Date.now();
+      if (now - sliderShown >= 5000) { sliderShown = now; updatePosition(); }
+    }
+  });
+  a.addEventListener('seeked', () => { updatePosition(); syncSession(); });
+  a.addEventListener('ratechange', syncSession);
+  a.addEventListener('play', () => { renderPlayer(); syncSession(); });
+  a.addEventListener('pause', () => { savePosition(true); renderPlayer(); updatePosition(); syncSession(); });
   a.addEventListener('ended', () => {
     const t = current();
     if (t) store.remove('pos:' + t.path);
@@ -989,57 +1087,190 @@ function setSleep(value) {
 
 // ---------- Clipboard ----------
 
+// What to call the device this page is open on. A browser cannot read the
+// phone's own name, so it is the kind of device.
+const UA = navigator.userAgent || '';
+const IS_IPAD = /iPad/.test(UA) || (/Macintosh/.test(UA) && navigator.maxTouchPoints > 1);
+const DEVICE = /iPhone/.test(UA) ? 'iPhone' : IS_IPAD ? 'iPad' : /Android|Mobile/.test(UA) ? 'this phone' : 'this device';
+
+// The PC clipboard as last fetched, so Copy can act inside the tap itself:
+// iOS only lets a page write the clipboard during the user's gesture.
+let clipNow = null;
+
 async function getClipboard() {
   const out = $('clip-now');
-  out.replaceChildren();
+  const copy = $('clip-copy');
+  copy.textContent = `Copy to ${DEVICE}`;
   try {
     const c = await api('/api/clipboard');
+    clipNow = c;
+    out.replaceChildren();
+    $('clip-fallback').hidden = true;
     if (c.kind === 'text') {
       const pre = document.createElement('pre'); pre.className = 'clip'; pre.textContent = c.text;
-      const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Copy to this device';
-      b.addEventListener('click', () => copyToPhone(c.text));
-      out.append(pre, b);
-      announce(`The PC's clipboard has text: ${c.text.length > 200 ? c.text.slice(0, 200) + '…' : c.text}`);
+      out.append(pre);
+      copy.hidden = false;
+      announce(`The PC clipboard has text: ${c.text.length > 200 ? c.text.slice(0, 200) + '…' : c.text}`);
     } else if (c.kind === 'files') {
+      const files = c.files || [];
       const ul = document.createElement('ul'); ul.className = 'list';
-      for (const p of c.files || []) {
+      for (const p of files) {
         const li = document.createElement('li');
         const name = document.createElement('span'); name.className = 'main'; name.textContent = leaf(p);
-        const b = document.createElement('button'); b.type = 'button'; b.textContent = 'Save to this device';
-        b.setAttribute('aria-label', `Save ${leaf(p)} to this device`);
-        b.addEventListener('click', () => saveToPhone(p, leaf(p)));
-        li.append(name, b);
+        li.append(name);
         ul.append(li);
       }
-      out.append(ul);
-      announce(`The PC's clipboard has ${plural((c.files || []).length, 'file', 'files')}.`);
+      const p = document.createElement('p'); p.textContent = `${plural(files.length, 'file', 'files')} on the PC clipboard:`;
+      out.append(p, ul);
+      copy.hidden = files.length === 0;
+      announce(`The PC clipboard has ${plural(files.length, 'file', 'files')}.`);
     } else if (c.kind === 'image') {
       const img = document.createElement('img'); img.className = 'clip'; img.alt = 'The image on the PC clipboard';
       img.src = codeQuery(`/api/clipboard/image?t=${Date.now()}`);
-      const a = document.createElement('a'); a.href = img.src; a.download = 'clipboard.png'; a.className = 'button'; a.textContent = 'Save image to this device';
-      out.append(img, a);
-      announce("The PC's clipboard has an image.");
+      out.append(img);
+      copy.hidden = false;
+      announce('The PC clipboard has an image.');
     } else {
       const p = document.createElement('p'); p.textContent = 'The PC clipboard is empty.';
       out.append(p);
+      copy.hidden = true;
       announce('The PC clipboard is empty.');
     }
   } catch (err) {
+    clipNow = null;
+    copy.hidden = true;
     const p = document.createElement('p'); p.textContent = err.message;
     out.replaceChildren(p);
     announce(err.message, true);
   }
 }
 
-async function copyToPhone(text) {
-  try { await navigator.clipboard.writeText(text); announce('Copied to this device'); }
-  catch { announce('This device did not allow copying.', true); }
+// Copy to iPhone: one button for whatever is on the PC clipboard.
+function copyClipToPhone() {
+  const c = clipNow;
+  if (!c || c.kind === 'empty') { announce('The PC clipboard is empty.'); return; }
+  if (c.kind === 'text') { copyTextToPhone(c.text); return; }
+  if (c.kind === 'files') {
+    const files = c.files || [];
+    announce(`Copying ${plural(files.length, 'file', 'files')} to ${DEVICE}. See Transfers.`);
+    for (const p of files) downloadToPhone(mediaUrl('/api/file', p), leaf(p));
+    return;
+  }
+  if (c.kind === 'image') {
+    announce(`Copying the image to ${DEVICE}. See Transfers.`);
+    downloadToPhone(codeQuery(`/api/clipboard/image?t=${Date.now()}`), 'clipboard.png');
+  }
+}
+
+function copyTextToPhone(text) {
+  const ok = () => {
+    $('clip-status').textContent = `Text copied to ${DEVICE}`;
+    announce(`Text copied to ${DEVICE}`);
+  };
+  const refused = () => {
+    // iOS can refuse a clipboard write; the text is then here to select and copy.
+    const box = $('clip-fallback-text');
+    box.value = text;
+    $('clip-fallback').hidden = false;
+    $('clip-status').textContent = `${DEVICE === 'iPhone' ? 'The iPhone' : 'This device'} did not allow copying. ` +
+      'The text is in the box below: press Copy, or select it and copy it yourself.';
+    announce($('clip-status').textContent, true);
+    box.focus();
+    box.select();
+  };
+  // Called straight from the tap, so iOS counts it as the user's own copy.
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(ok, () => (legacyCopy(text) ? ok() : refused()));
+  } else if (legacyCopy(text)) ok(); else refused();
+}
+
+// The older way, which iOS still honours inside a tap.
+function legacyCopy(text) {
+  try {
+    const t = document.createElement('textarea');
+    t.value = text;
+    t.setAttribute('readonly', '');
+    t.style.position = 'fixed'; t.style.top = '0'; t.style.opacity = '0';
+    document.body.append(t);
+    t.select();
+    t.setSelectionRange(0, text.length);
+    const done = document.execCommand('copy');
+    t.remove();
+    return done;
+  } catch { return false; }
+}
+
+// A file to the phone, with progress in Transfers, then handed to Safari's
+// download sheet the way Save does. Very big files go straight to Safari's own
+// downloader instead of through memory.
+const MEMORY_DOWNLOAD_LIMIT = 512 * 1024 * 1024;
+
+async function downloadToPhone(url, name) {
+  const t = addTransfer({ kind: 'download', name, state: 'running', done: 0, total: 0 });
+  const ctrl = new AbortController();
+  let stopped = false;
+  t.cancel = async () => { stopped = true; ctrl.abort(); finishTransfer(t, 'cancelled'); };
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const res = await fetch(url, { cache: 'no-store', signal: ctrl.signal });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null);
+        throw new ApiError(res.status, (data && data.error) || `The PC answered ${res.status}.`);
+      }
+      t.total = Number(res.headers.get('content-length')) || 0;
+      if (t.total > MEMORY_DOWNLOAD_LIMIT || !res.body) {
+        ctrl.abort();
+        handToSafari(url, name);
+        finishTransfer(t, 'done', `Saved to ${DEVICE} through Safari's downloads`);
+        return;
+      }
+      const reader = res.body.getReader();
+      const parts = [];
+      t.done = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        parts.push(value);
+        t.done += value.length;
+        transferProgress(t);
+        renderTransfers();
+      }
+      if (stopped) return;
+      const blob = new Blob(parts, { type: res.headers.get('content-type') || 'application/octet-stream' });
+      const href = URL.createObjectURL(blob);
+      handToSafari(href, name);
+      setTimeout(() => URL.revokeObjectURL(href), 60000);
+      t.done = t.total = blob.size;
+      finishTransfer(t, 'done', `Saved to ${DEVICE}`);
+      return;
+    } catch (err) {
+      if (stopped) return;
+      const network = err.name === 'TypeError' || err.status === 0;
+      if (!network || attempt >= 6) { finishTransfer(t, 'failed', network ? UNREACHABLE : err.message); return; }
+      t.state = 'waiting';
+      renderTransfers();
+      await waitForNetwork(Math.min(30000, 2000 * attempt));
+      t.state = 'running';
+    }
+  }
+}
+
+function handToSafari(href, name) {
+  const a = document.createElement('a');
+  a.href = href;
+  a.download = name;
+  document.body.append(a);
+  a.click();
+  a.remove();
 }
 
 async function sendText(text) {
   if (!text) { announce('There is no text to send.'); return; }
-  try { await api('/api/clipboard', { method: 'POST', body: { text } }); announce('Sent. It is on the PC clipboard.'); }
-  catch (err) { announce(err.message, true); }
+  try {
+    await api('/api/clipboard', { method: 'POST', body: { text } });
+    $('clip-status').textContent = 'Sent to the PC clipboard';
+    announce('Sent to the PC clipboard');
+  } catch (err) { announce(err.message, true); }
 }
 
 async function sendFiles(files) {
@@ -1047,10 +1278,12 @@ async function sendFiles(files) {
   try {
     for (const f of files) {
       announce(`Sending ${f.name}`);
-      await api(`/api/clipboard/send?name=${encodeURIComponent(f.name)}&batch=${batch}`, { method: 'POST', body: f, raw: true });
+      await api(`/api/clipboard/send?name=${encodeURIComponent(f.name)}&batch=${batch}`,
+        { method: 'POST', body: f, raw: true, timeout: 300000 });
     }
     await api('/api/clipboard/send/commit', { method: 'POST', body: { batch } });
-    announce(`${plural(files.length, 'file is', 'files are')} on the PC clipboard. Paste with Control V.`);
+    $('clip-status').textContent = 'Sent to the PC clipboard';
+    announce(`Sent to the PC clipboard: ${plural(files.length, 'file', 'files')}. Paste with Control V.`);
   } catch (err) { announce(err.message, true); }
 }
 
@@ -1171,6 +1404,19 @@ async function enter() {
 
 function bindEvents() {
   for (const b of document.querySelectorAll('#tabs button')) b.addEventListener('click', () => showTab(b.dataset.tab));
+  // A tab bar is one stop for the keyboard; the arrows move along it.
+  $('tabs').addEventListener('keydown', (ev) => {
+    const tabs = [...document.querySelectorAll('#tabs button')];
+    const i = tabs.indexOf(document.activeElement);
+    if (i < 0) return;
+    const to = ev.key === 'ArrowRight' ? (i + 1) % tabs.length : ev.key === 'ArrowLeft' ? (i + tabs.length - 1) % tabs.length
+      : ev.key === 'Home' ? 0 : ev.key === 'End' ? tabs.length - 1 : -1;
+    if (to < 0) return;
+    ev.preventDefault();
+    showTab(tabs[to].dataset.tab, false);
+    tabs[to].focus();
+  });
+  $('main').addEventListener('scroll', onMainScroll, { passive: true });
   $('code-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const code = $('code-input').value.replace(/[\s-]/g, '');
@@ -1222,7 +1468,11 @@ function bindEvents() {
   $('np-next').addEventListener('click', () => step(1));
   $('np-back').addEventListener('click', () => skip(-prefs.skipBack));
   $('np-fwd').addEventListener('click', () => skip(prefs.skipFwd));
-  $('np-position').addEventListener('change', (e) => { audio().currentTime = Number(e.target.value); updatePosition(true); });
+  $('np-position').addEventListener('change', (e) => { audio().currentTime = Number(e.target.value); });
+  $('np-position').addEventListener('focus', updatePosition);
+  $('np-time-btn').addEventListener('click', sayTime);
+  $('mini-play').addEventListener('click', togglePlay);
+  $('mini-title').addEventListener('click', () => showTab('player'));
   $('np-repeat').addEventListener('change', (e) => { player.repeat = e.target.value; });
   $('np-shuffle').addEventListener('change', (e) => {
     player.shuffle = e.target.checked;
@@ -1241,6 +1491,16 @@ function bindEvents() {
   });
 
   $('clip-get').addEventListener('click', getClipboard);
+  $('clip-copy').addEventListener('click', copyClipToPhone);
+  $('clip-fallback-copy').addEventListener('click', () => {
+    const box = $('clip-fallback-text');
+    box.focus(); box.select(); box.setSelectionRange(0, box.value.length);
+    let ok = false;
+    try { ok = document.execCommand('copy'); } catch { }
+    const m = ok ? `Text copied to ${DEVICE}` : 'Copying is not allowed here. The text is selected: use the Copy option above it.';
+    $('clip-status').textContent = m;
+    announce(m, !ok);
+  });
   $('offline-retry').addEventListener('click', async () => {
     $('offline-text').textContent = 'Trying again…';
     announce('Trying again');
