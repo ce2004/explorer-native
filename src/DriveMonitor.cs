@@ -91,6 +91,8 @@ namespace ExplorerNative
         private readonly Action<List<DriveSyncPair>> _save;
         private readonly object _gate = new();
         private readonly CancellationTokenSource _stop = new();
+        private CancellationTokenSource _cutWait = new();
+        private readonly HashSet<string> _removed = new();
         private readonly SemaphoreSlim _wake = new(0);
         private readonly Dictionary<string, FileSystemWatcher> _watchers = new();
         private readonly Dictionary<string, PairStatus> _status = new();
@@ -165,7 +167,10 @@ namespace ExplorerNative
         {
             lock (_gate)
             {
+                var before = _pairs;
                 _pairs = pairs.Select(p => p.Copy()).ToList();
+                foreach (var gone in before.Where(old => _pairs.All(p => p.Id != old.Id))) _removed.Add(gone.Id);
+                foreach (var pair in _pairs) _removed.Remove(pair.Id);
 
                 foreach (var gone in _watchers.Keys.Where(id => _pairs.All(p => p.Id != id)).ToList())
                 {
@@ -233,7 +238,38 @@ namespace ExplorerNative
         public void SyncNow()
         {
             lock (_gate) _allDue = true;
+            CutWait();
             Wake();
+        }
+
+        /// <summary>
+        /// Ends a wait for Google that is in progress. Patiently then asks again
+        /// at once, or stops the pair if it has been paused or removed. The wait
+        /// for a daily limit is an hour, and Sync now, Pause and closing the app
+        /// all have to be heard during it.
+        /// </summary>
+        private void CutWait()
+        {
+            CancellationTokenSource old;
+            lock (_gate)
+            {
+                old = _cutWait;
+                _cutWait = new CancellationTokenSource();
+            }
+            try { old.Cancel(); } catch { }
+        }
+
+        /// <summary>Whether a pair has been paused or removed since its pass began.</summary>
+        private bool Stopped(DriveSyncPair pair)
+        {
+            lock (_gate)
+                return _removed.Contains(pair.Id) || _pairs.Any(p => p.Id == pair.Id && p.Paused);
+        }
+
+        /// <summary>A pair paused or removed while its pass was waiting for Google.</summary>
+        private sealed class PairStoppedException : OperationCanceledException
+        {
+            public PairStoppedException() : base("the pair was paused") { }
         }
 
         private void Wake()
@@ -358,6 +394,14 @@ namespace ExplorerNative
                     lock (_gate) _lastChecked[pair.Id] = DateTime.UtcNow;
                     _saidOffline = false;
                 }
+                catch (PairStoppedException)
+                {
+                    // Paused or removed while waiting for Google. What was done
+                    // is saved; the wait's "waiting, ..." is no longer true.
+                    Interlocked.Exchange(ref _waitingEpisode, 0);
+                    lock (_gate) _running = null;
+                    SetStatus(pair.Id, StatusOf(pair.Id) with { Problem = null, Running = false });
+                }
                 catch (Exception ex) when (IsOffline(ex, token) && !SyncBackoff.IsTransient(ex))
                 {
                     // Whatever was done is saved; whatever was not is found
@@ -440,8 +484,26 @@ namespace ExplorerNative
                     });
                     if (Interlocked.Exchange(ref _waitingEpisode, 1) == 0)
                         _notify("sync.ratelimited", $"{DisplayName(pair)}: waiting, {why}");
-                    await Task.Delay(WaitScale == 1 ? wait : TimeSpan.FromTicks((long)(wait.Ticks * WaitScale)), token)
-                        .ConfigureAwait(false);
+
+                    // Taken before the pair is checked, so a pause that lands in
+                    // between still cuts this wait short.
+                    CancellationToken cut;
+                    lock (_gate) cut = _cutWait.Token;
+                    if (Stopped(pair)) throw new PairStoppedException();
+
+                    using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, cut, _stop.Token);
+                    try
+                    {
+                        await Task.Delay(WaitScale == 1 ? wait : TimeSpan.FromTicks((long)(wait.Ticks * WaitScale)),
+                            linked.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException) when (!token.IsCancellationRequested)
+                    {
+                        // Closing the app, pausing or removing the pair: stop.
+                        // Sync now: ask Google again straight away.
+                        if (_stop.IsCancellationRequested) throw;
+                        if (Stopped(pair)) throw new PairStoppedException();
+                    }
                 }
             }
         }
@@ -613,7 +675,8 @@ namespace ExplorerNative
             // What either side holds and leaves out: never planned, so never
             // taken for deleted and never forgotten.
             var skips = new SyncSkips();
-            var local = ScanLocal(root, pair.IncludeSubfolders, skips);
+            var localClashing = new List<string>();
+            var local = ScanLocal(root, pair.IncludeSubfolders, skips, localClashing);
             var unusable = new List<string>();
             var clashing = new List<string>();
             var shadowed = new Dictionary<string, List<SyncFile>>(SyncNameComparer.Instance);
@@ -675,6 +738,7 @@ namespace ExplorerNative
             long uploadedThisPass = 0;
 
             var saved = System.Diagnostics.Stopwatch.StartNew();
+            var listings = new Dictionary<string, List<(string Name, bool Folder)>>(StringComparer.Ordinal);
             try
             {
                 for (int i = 0; i < plan.Count; i++)
@@ -688,7 +752,7 @@ namespace ExplorerNative
                     }
 
                     var path = action.Path;
-                    var localPath = Path.Combine(root, path.Replace('/', Path.DirectorySeparatorChar));
+                    var localPath = LocalPathFor(root, path, listings);
 
                     // Nothing is written, moved or deleted outside the pair's own
                     // folder, whatever a name turned out to say. The scan already
@@ -902,11 +966,12 @@ namespace ExplorerNative
 
             // Everything else is in step; these few never can be, and say so
             // rather than failing on every pass or landing somewhere else.
-            if (unusable.Count > 0 || clashing.Count > 0)
+            if (unusable.Count > 0 || clashing.Count > 0 || localClashing.Count > 0)
             {
                 var left = new List<string>();
                 if (unusable.Count > 0) left.Add(UnusableNames(unusable));
                 if (clashing.Count > 0) left.Add(ClashingNames(clashing));
+                if (localClashing.Count > 0) left.Add(ClashingOnPc(localClashing));
                 Finish(pair, state, string.Join(". ", left), announce: true, synced: true);
                 return;
             }
@@ -923,6 +988,21 @@ namespace ExplorerNative
                 ? $"{names[0]} in Google Drive was left out, because Windows sees another item in that folder as the same name"
                 : $"{names.Count} items in Google Drive were left out, because Windows sees other items in their folders " +
                   $"as the same names: {list}";
+        }
+
+        /// <summary>
+        /// "café.txt on the PC was left out, because another item in that folder
+        /// has the same name with its accents written differently".
+        /// </summary>
+        internal static string ClashingOnPc(IReadOnlyList<string> names)
+        {
+            const int shown = 5;
+            var list = string.Join(", ", names.Take(shown)) + (names.Count > shown ? $" and {names.Count - shown} more" : "");
+            return names.Count == 1
+                ? $"{names[0]} on the PC was left out, because another item in that folder has the same name " +
+                  "written a different way"
+                : $"{names.Count} items on the PC were left out, because Google Drive would see other items in " +
+                  $"their folders as the same names: {list}";
         }
 
         /// <summary>"2 files in Google Drive were left out, because Windows cannot use their names: a:b, x\y".</summary>
@@ -1036,13 +1116,15 @@ namespace ExplorerNative
         /// </summary>
         internal static async Task<(long Down, long Up)> NeedsAsync(DriveClient client, DriveSyncPair pair, CancellationToken token)
         {
+            var skips = new SyncSkips();
             var local = Directory.Exists(pair.LocalFolder)
-                ? ScanLocal(pair.LocalFolder, pair.IncludeSubfolders)
+                ? ScanLocal(pair.LocalFolder, pair.IncludeSubfolders, skips)
                 : new Dictionary<string, SyncFile>(SyncNameComparer.Instance);
-            var (remote, _) = await ScanRemoteAsync(client, pair.DriveFolderId, pair.IncludeSubfolders, token).ConfigureAwait(false);
+            var (remote, _) = await ScanRemoteAsync(client, pair.DriveFolderId, pair.IncludeSubfolders, token,
+                skipped: skips).ConfigureAwait(false);
 
             var plan = SyncPlanner.Plan(SyncRules.For(pair), local, remote,
-                new Dictionary<string, SyncBase>(SyncNameComparer.Instance));
+                new Dictionary<string, SyncBase>(SyncNameComparer.Instance), null, skips);
             long down = 0, up = 0;
             foreach (var a in plan)
             {
@@ -1063,7 +1145,18 @@ namespace ExplorerNative
         /// listed, it looked deleted: with deletes on, marking a file Hidden
         /// sent its Drive copy to the trash.
         /// </summary>
-        internal static Dictionary<string, SyncFile> ScanLocal(string root, bool subfolders, SyncSkips? skipped = null)
+        /// <remarks>
+        /// NTFS holds "café.txt" with the accent as one character and as two
+        /// side by side, and Drive's comparer makes them one name. Kept, the
+        /// second overwrote the first in this table: one entry with one's name
+        /// and the other's size, one file uploaded, nothing said, and two
+        /// folders merged the same way. So every spelling of such a name is
+        /// left out, recorded in <paramref name="skipped"/> (nothing is planned
+        /// for it on either side, so nothing is deleted in Drive for it) and
+        /// listed in <paramref name="clashing"/> to be said.
+        /// </remarks>
+        internal static Dictionary<string, SyncFile> ScanLocal(string root, bool subfolders, SyncSkips? skipped = null,
+            List<string>? clashing = null)
         {
             var files = new Dictionary<string, SyncFile>(SyncNameComparer.Instance);
             var options = new EnumerationOptions { IgnoreInaccessible = false, AttributesToSkip = 0 };
@@ -1086,12 +1179,33 @@ namespace ExplorerNative
                     continue;
                 }
 
+                // Every spelling here of each name, as Drive's comparer sees it.
+                var spellings = new Dictionary<string, HashSet<string>>(SyncNameComparer.Instance);
+                foreach (var entry in entries)
+                {
+                    if (entry is DirectoryInfo && !subfolders) continue;
+                    if (!spellings.TryGetValue(entry.Name, out var set))
+                        spellings[entry.Name] = set = new HashSet<string>(StringComparer.Ordinal);
+                    set.Add(entry.Name);
+                }
+
                 foreach (var entry in entries)
                 {
                     var relative = under.Length == 0 ? entry.Name : under + "/" + entry.Name;
                     FileAttributes attributes;
                     try { attributes = entry.Attributes; }
                     catch { skipped?.File(relative); skipped?.Folder(relative); continue; }
+
+                    // Two spellings of one name: both left out, file or folder.
+                    bool isFolder = (attributes & FileAttributes.Directory) != 0;
+                    if (!(isFolder && !subfolders) &&
+                        spellings.TryGetValue(entry.Name, out var all) && all.Count > 1)
+                    {
+                        if (isFolder) skipped?.Folder(relative);
+                        else skipped?.File(relative);
+                        clashing?.Add(relative + (isFolder ? "/" : ""));
+                        continue;
+                    }
 
                     if ((attributes & FileAttributes.Directory) != 0)
                     {
@@ -1241,6 +1355,60 @@ namespace ExplorerNative
 
         private static DateTime Truncate(DateTime utc) =>
             new(utc.Ticks - utc.Ticks % TimeSpan.TicksPerMillisecond, DateTimeKind.Utc);
+
+        /// <summary>
+        /// Where a pair's relative path is on the PC, in the PC's own spelling.
+        ///
+        /// A path from Drive can spell a name the PC already holds another way
+        /// ("Café" with the accent as two characters, against the PC's one). NTFS
+        /// keeps those apart, so building the path from Drive's spelling put a
+        /// download in a second, look-alike folder beside the PC's. Each segment
+        /// is the one already on disk that Drive's comparer calls the same name;
+        /// only a segment with no such entry keeps the path's own spelling.
+        /// </summary>
+        /// <param name="listings">
+        /// Each folder's entries as first read in this pass, so a thousand
+        /// downloads into one folder list it once. A name that is on disk in the
+        /// spelling asked for is found without it, which covers a folder this
+        /// pass has made since.
+        /// </param>
+        internal static string LocalPathFor(string root, string relative,
+            Dictionary<string, List<(string Name, bool Folder)>>? listings = null)
+        {
+            var at = root;
+            var parts = relative.Split('/');
+            for (int i = 0; i < parts.Length; i++)
+            {
+                var part = parts[i];
+                var exact = Path.Combine(at, part);
+                bool last = i == parts.Length - 1;
+                if (!(last ? File.Exists(exact) || Directory.Exists(exact) : Directory.Exists(exact)))
+                {
+                    List<(string Name, bool Folder)>? entries = null;
+                    if (listings == null || !listings.TryGetValue(at, out entries))
+                    {
+                        entries = new List<(string, bool)>();
+                        try
+                        {
+                            if (Directory.Exists(at))
+                                foreach (var entry in new DirectoryInfo(at).EnumerateFileSystemInfos("*",
+                                             new EnumerationOptions { IgnoreInaccessible = true, AttributesToSkip = 0 }))
+                                    entries.Add((entry.Name, entry is DirectoryInfo));
+                        }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                        if (listings != null) listings[at] = entries;
+                    }
+                    foreach (var (name, folder) in entries)
+                        if ((last || folder) && SyncNameComparer.Instance.Equals(name, part))
+                        {
+                            part = name;
+                            break;
+                        }
+                }
+                at = Path.Combine(at, part);
+            }
+            return at;
+        }
 
         // ---------------- copying ----------------
 

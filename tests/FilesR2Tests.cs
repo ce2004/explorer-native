@@ -32,6 +32,7 @@ namespace ExplorerNative
             Guarded("a summary over 2GB", BigSummaryParseTests);
             await Guarded("a 3GB file through robocopy", BigFileThroughRobocopyTests);
             await Guarded("waiting for an accented name", AccentedRetryNameTests);
+            await Guarded("waiting for a best-fit name", BestFitRetryNameTests);
             await Guarded("streams that cannot come", StreamsBestEffortTests);
             await Guarded("a move by renaming, per item", RenamePerItemTests);
             await Guarded("progress never goes back", MonotonicProgressTests);
@@ -546,6 +547,80 @@ namespace ExplorerNative
             var names = new[] { "Apple", "Æble", "Banana", "Øresund", "Pear" };
             Equal("fold: typing ae finds Æble", "Æble", names[TypeAhead.Find(names.Length, i => names[i], "ae", 0)]);
             Equal("fold: typing or finds Øresund", "Øresund", names[TypeAhead.Find(names.Length, i => names[i], "or", 0)]);
+
+            // A repeat is decided from what was typed, then folded: Æ twice was
+            // "AEAE" and found nothing, and one ß was "ss", a repeated S.
+            var letters = new[] { "Æble", "Ærø", "Apple", "Æsir", "Sand", "ssh", "Straße" };
+            int ae = TypeAhead.Find(letters.Length, i => letters[i], "ÆÆ", 0);
+            Equal("fold: Æ pressed twice moves to the next Æ name", "Ærø", ae < 0 ? "(nothing)" : letters[ae]);
+            int ae3 = TypeAhead.Find(letters.Length, i => letters[i], "æÆæ", 1);
+            Equal("fold: and a third time to the one after", "Æsir", ae3 < 0 ? "(nothing)" : letters[ae3]);
+            int sz = TypeAhead.Find(letters.Length, i => letters[i], "ß", 0);
+            Equal("fold: a lone ß looks for ss, not every S", "ssh", sz < 0 ? "(nothing)" : letters[sz]);
+            int s = TypeAhead.Find(letters.Length, i => letters[i], "s", 4);
+            Equal("fold: a plain s still cycles the S names", "ssh", s < 0 ? "(nothing)" : letters[s]);
+            var es = new[] { "Eclair", "Éclat", "Fig" };
+            int e = TypeAhead.Find(es.Length, i => es[i], "eé", 0);
+            Equal("fold: e then é is still one key pressed twice", "Éclat", e < 0 ? "(nothing)" : es[e]);
+        }
+
+        /// <summary>
+        /// "Waiting for x’y.txt", not "Waiting for x'y.txt": robocopy's OEM output
+        /// best-fits what the page cannot hold, so an all-ASCII name may be no
+        /// file at all. Real robocopy, real locked files.
+        /// </summary>
+        private static async Task BestFitRetryNameTests()
+        {
+            var root = NewDir("bestfit");
+            var held = new List<FileStream>();
+            try
+            {
+                var src = Path.Combine(root, "src");
+                var dst = Path.Combine(root, "dst");
+                Directory.CreateDirectory(src);
+                Directory.CreateDirectory(dst);
+                string quote = "x’y.txt", macron = "aāb.txt", ligature = "œuvre.txt";
+                foreach (var n in new[] { quote, macron })
+                {
+                    var p = Path.Combine(src, n);
+                    File.WriteAllText(p, n);
+                    held.Add(new FileStream(p, FileMode.Open, FileAccess.Read, FileShare.None));
+                }
+                File.WriteAllText(Path.Combine(src, ligature), "o");
+
+                Check("best fit: the OEM page really does flatten these names",
+                    RoboCopyEngine.OemForm(macron) != macron && RoboCopyEngine.OemForm(quote) != quote,
+                    RoboCopyEngine.OemForm(macron) + " / " + RoboCopyEngine.OemForm(quote));
+                Equal("best fit: a flattened name is found in the folder", macron,
+                    RoboCopyEngine.RetryName(Path.Combine(src, RoboCopyEngine.OemForm(macron))));
+                Equal("best fit: a ligature too", ligature,
+                    RoboCopyEngine.RetryName(Path.Combine(src, RoboCopyEngine.OemForm(ligature))));
+                Equal("best fit: from the plan when the folder cannot be read", quote,
+                    RoboCopyEngine.RetryName(Path.Combine(root, "gone", RoboCopyEngine.OemForm(quote)),
+                        new[] { "other.txt", quote }));
+                Equal("best fit: nothing matches, so the file in progress", "song.flac",
+                    RoboCopyEngine.RetryName(Path.Combine(src, "nowhere.txt"), new[] { "other.txt" }, "song.flac"));
+                Equal("best fit: a name that is there is said as it is", ligature,
+                    RoboCopyEngine.RetryName(Path.Combine(src, ligature), null, "song.flac"));
+
+                var progress = new Seen<TransferProgress>();
+                await RoboCopyEngine.RunAsync(new[] { Path.Combine(src, quote), Path.Combine(src, macron) }, dst,
+                    move: false, 4, PasteConflictPolicy.AutoRename, progress, CancellationToken.None);
+
+                var said = progress.Snapshot().Select(p => p.CurrentItem).Where(n => n.StartsWith("Waiting", StringComparison.Ordinal))
+                    .Distinct().ToList();
+                Check("best fit: the window names x’y.txt, not x'y.txt",
+                    said.Any(n => n.StartsWith($"Waiting for {quote} (retry 1", StringComparison.Ordinal)),
+                    string.Join(" / ", said));
+                Check("best fit: and aāb.txt, not aab.txt",
+                    said.Any(n => n.StartsWith($"Waiting for {macron} (retry 1", StringComparison.Ordinal)),
+                    string.Join(" / ", said));
+            }
+            finally
+            {
+                foreach (var h in held) h.Dispose();
+                Remove(root);
+            }
         }
 
         /// <summary>

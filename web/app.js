@@ -725,6 +725,8 @@ let jobTimer = 0;
 function pollJobs() {
   clearTimeout(jobTimer);
   if (document.hidden) return; // battery: nothing runs in the background
+  // On the code screen nothing is asked with the old code: every ask would count as a wrong code on the PC.
+  if (!$('screen-code').hidden) return;
   const running = transfers.filter((t) => t.kind === 'job' && t.state === 'running');
   if (!running.length) return;
   jobTimer = setTimeout(async () => {
@@ -739,6 +741,14 @@ function pollJobs() {
             j.message || (failed ? `${plural(failed, 'item', 'items')} failed: ${j.failed[0].error}` : ''));
         }
       } catch (err) {
+        // The code is not right any more (api() has put the code screen up), or the PC says to wait (said on
+        // the same screen). Stop: polling on with the old code would only be counted against it. A new code
+        // brings the tabs back, and showTab starts polling again.
+        if (err.status === 401 || err.status === 429) {
+          if (err.status === 429) showCodeScreen(err.message);
+          renderTransfers();
+          return;
+        }
         if (err.status === 404) finishTransfer(t, 'failed', 'The PC forgot this job; it may have restarted.');
         else if (err.status === 0 && t.state !== 'waiting') { t.state = 'waiting'; renderTransfers(); }
       }

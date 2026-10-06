@@ -377,18 +377,17 @@ namespace ExplorerNative
                     });
 
                     anyEntry = true;
+                    written++;
                     reporter.Finished(0);
 
                     // The entry is exactly as long as its header says whatever the
                     // file did meanwhile — see CountingStream — so the archive
-                    // stays readable. What it holds is still not the file.
+                    // stays readable. What it holds is still not the file, and
+                    // that is said. It is still an entry written: left out of the
+                    // count, a .tar of one file that grew while it was read was
+                    // taken for "nothing could be read" and deleted.
                     if (counted.Changed != null)
-                    {
                         errors.Add($"{item.Name}: {counted.Changed}");
-                        continue;
-                    }
-
-                    written++;
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex)

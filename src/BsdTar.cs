@@ -348,8 +348,21 @@ namespace ExplorerNative
                 var excluded = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 var unexplained = new List<string>();
 
+                // What this attempt's archive holds: every attempt makes the
+                // archive again from nothing, so only the last one's lines count.
+                var inThisRun = new List<string>();
+
+                // bsdtar abandons the rest of a folder after a file it cannot
+                // open, so each attempt can find only one more locked file. Five
+                // attempts kept an archive holding one file of ten, with the
+                // last four never mentioned. Every attempt that goes round again
+                // has found a new one, so this many always reaches the end.
+                int mostAttempts = plan.Count(p => !p.IsDirectory) + 2;
+
                 for (int attempt = 0; ; attempt++)
                 {
+                    lock (gate) inThisRun.Clear();
+                    unexplained.Clear();
                     var start = NewStartInfo();
                     foreach (var flag in FormatFlags(format)) start.ArgumentList.Add(flag);
                     start.ArgumentList.Add("-c");
@@ -399,6 +412,8 @@ namespace ExplorerNative
                                long charge;
                                lock (gate)
                                {
+                                   inThisRun.Add(name);
+
                                    // A second attempt names everything again.
                                    if (!seen.Add(name)) return;
 
@@ -434,7 +449,6 @@ namespace ExplorerNative
                     // so keeping the archive as it stands would silently lose
                     // the files that came after. So the archive is made again
                     // without the file that could not be opened.
-                    unexplained.Clear();
                     bool added = false;
                     foreach (var message in outcome.Messages)
                     {
@@ -452,21 +466,36 @@ namespace ExplorerNative
                             unexplained.Add(Plain(message));
                     }
 
-                    if (added && attempt < 4) continue;
+                    if (added && attempt < mostAttempts) continue;
                     break;
                 }
 
+                // What the archive really holds is the last attempt's lines,
+                // and every file of the plan that is not among them is said.
+                List<string> held;
+                lock (gate) held = inThisRun.ToList();
+                var missing = NotAdded(plan, held);
+
+                // A folder that could not be opened is said once, as itself;
+                // the files under it are said with it as their reason.
                 foreach (var (name, reason) in excluded)
-                    errors.Add($"{name}: it could not be opened ({reason}), so it was left out");
+                    if (plan.FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
+                            is { IsDirectory: true })
+                        errors.Add($"{name}: it could not be opened ({reason}), so it was left out");
+
+                foreach (var item in missing)
+                {
+                    if (excluded.TryGetValue(item.Name, out var reason))
+                        errors.Add($"{item.Name}: it could not be opened ({reason}), so it was not added");
+                    else if (excluded.Keys.FirstOrDefault(f => item.Name.StartsWith(f + "/", StringComparison.OrdinalIgnoreCase))
+                             is { } folder)
+                        errors.Add($"{item.Name}: it was not added, because its folder {folder} could not be opened");
+                    else
+                        errors.Add($"{item.Name}: it was not added");
+                }
                 errors.AddRange(unexplained);
 
-                // Anything with a name that can be read back and that never went
-                // in, after a run that complained: said, not left to be found.
-                if (unexplained.Count > 0)
-                    foreach (var name in unmatched.Keys.Where(n => !excluded.ContainsKey(n) && n.All(c => c < 128)))
-                        errors.Add($"{name}: it was not added");
-
-                return seen.Count;
+                return held.Count;
             }
             finally
             {
@@ -510,6 +539,46 @@ namespace ExplorerNative
             if (exact != null || printed.All(c => c < 128 && c != '?')) return exact;
             var pattern = MangledPattern(printed);
             return plan.FirstOrDefault(p => pattern.IsMatch(p.Name));
+        }
+
+        /// <summary>
+        /// The files of the plan that no "a" line of the final attempt accounts
+        /// for. A line is matched by name, then by the mangled pattern; a
+        /// non-ASCII line that matches no pattern still accounts for one
+        /// non-ASCII item, so a name printed in another code page is never
+        /// reported missing when it went in.
+        /// </summary>
+        internal static List<ArchiveItem> NotAdded(IReadOnlyList<ArchiveItem> plan, IReadOnlyCollection<string> printed)
+        {
+            var byName = new Dictionary<string, ArchiveItem>(StringComparer.OrdinalIgnoreCase);
+            foreach (var item in plan) byName.TryAdd(item.Name, item);
+
+            var accounted = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var strays = new List<string>();
+            foreach (var name in printed)
+            {
+                if (byName.ContainsKey(name)) accounted.Add(name);
+                else if (!name.All(c => c < 128 && c != '?')) strays.Add(name);
+            }
+
+            if (strays.Count > 0)
+            {
+                var open = plan.Where(p => !accounted.Contains(p.Name) && !p.Name.All(c => c < 128)).ToList();
+                var unclaimed = 0;
+                foreach (var stray in strays)
+                {
+                    var pattern = MangledPattern(stray);
+                    int at = open.FindIndex(p => pattern.IsMatch(p.Name));
+                    if (at < 0) { unclaimed++; continue; }
+                    accounted.Add(open[at].Name);
+                    open.RemoveAt(at);
+                }
+                // Folders first, so a file is only taken as added when the count
+                // of lines says so: a file is what a person goes looking for.
+                foreach (var item in open.OrderByDescending(p => p.IsDirectory).Take(unclaimed)) accounted.Add(item.Name);
+            }
+
+            return plan.Where(p => !p.IsDirectory && !accounted.Contains(p.Name)).ToList();
         }
 
         /// <summary>A plan name as bsdtar sees it: the top segment as it was given on the command line.</summary>

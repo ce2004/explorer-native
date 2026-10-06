@@ -121,6 +121,11 @@ Bug fixed: an upload or a file sent to the PC clipboard that stalled could hold 
 Bug fixed: stopping an upload in the web app while a piece of it was still arriving left that piece on the PC until the next start. It is removed straight away now.
 Bug fixed: in the web app, pressing Select, or Copy and Move while selecting, sent VoiceOver back to the folder's title. Select now lands on the first item to tick, and Copy or Move on the Paste here button.
 Bug fixed: the web app's mini player could make VoiceOver read the track's name again whenever the page updated. It only changes when the track does.
+Bug fixed: two files or folders on your PC whose names look the same but have their accents written differently were synced to Drive as one, and only one of them went up. Now both are left out of the sync and you're told once.
+Bug fixed: when a Drive folder's name had its accent written differently from the same folder on your PC, new files from Drive went into a second folder that looked the same. They now go into your PC's folder.
+Bug fixed: compressing to .7z or .tar.xz when several files were open in another program could leave out files that were fine, without saying so. Now every readable file goes in, and every file left out is named.
+Bug fixed: making a .tar of a file that was still being written could throw the whole archive away. Now the archive is kept and you're told the file changed while it was being read.
+Bug fixed: while a Drive sync pair waited an hour for Google's daily limit, pausing the pair or closing Explorer Native didn't stop the wait. They do now, and Sync now tries again straight away.
 
 1.0.7
 The old iPhone app no longer works. Use the web app instead: open the link from Preferences, Web app in Safari and add it to your Home Screen.

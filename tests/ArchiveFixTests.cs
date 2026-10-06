@@ -43,8 +43,11 @@ namespace ExplorerNative
             EmptyTarHasEndBlocksTests();
             await ProgressEndsAtTheEndTests();
             await GzWithExtraBytesTests();
+            await GrowingFileKeepsTarTests();
 
             if (!BsdTar.Available) return;
+
+            await ManyLockedFilesTests();
 
             await TarDiesWithTheAppTests();
 
@@ -753,6 +756,120 @@ namespace ExplorerNative
                     Check($"{format.Id}: and the files after it in the same folder are still in it",
                         File.Exists(Path.Combine(into, "top", "a.txt")) && File.Exists(Path.Combine(into, "top", "z.txt")) &&
                         !File.Exists(Path.Combine(into, "top", "locked.txt")));
+                }
+            }
+            finally { Cleanup(dir); }
+        }
+
+        /// <summary>
+        /// Six locked files in a folder of ten. bsdtar gives up on the rest of a
+        /// folder after each one, so it takes seven attempts; five kept only the
+        /// first file, and the last four were never mentioned.
+        /// </summary>
+        private static async Task ManyLockedFilesTests()
+        {
+            var dir = NewDir("manylocked");
+            try
+            {
+                var top = Path.Combine(dir, "src", "top");
+                Directory.CreateDirectory(top);
+                var names = Enumerable.Range(1, 10).Select(i => $"f{i:00}.txt").ToList();
+                foreach (var n in names) File.WriteAllText(Path.Combine(top, n), "contents of " + n);
+                var locked = names.Skip(1).Take(6).ToList();
+                var readable = names.Except(locked).ToList();
+
+                foreach (var format in new[] { ArchiveFormats.SevenZip, ArchiveFormats.TarXz })
+                {
+                    var archive = Path.Combine(dir, "many" + format.Extension);
+                    var holds = locked.Select(n => new FileStream(Path.Combine(top, n), FileMode.Open, FileAccess.Read,
+                        FileShare.None)).ToList();
+                    ArchiveResult made;
+                    try
+                    {
+                        made = await ArchiveEngine.CompressAsync(new[] { top }, archive, format, ArchiveLevel.Fastest, 2,
+                            null, CancellationToken.None);
+                    }
+                    finally { foreach (var h in holds) h.Dispose(); }
+
+                    var into = Path.Combine(dir, "out-" + format.Id);
+                    if (File.Exists(archive)) await Extract(archive, into);
+                    var got = Directory.Exists(Path.Combine(into, "top"))
+                        ? Directory.GetFiles(Path.Combine(into, "top")).Select(Path.GetFileName).ToList()
+                        : new List<string?>();
+                    Check($"{format.Id}: every readable file of ten is in it, with six locked",
+                        readable.All(n => got.Contains(n)), $"holds {string.Join(",", got)}; said {Said(made)}");
+                    Check($"{format.Id}: every locked file is named as not added",
+                        locked.All(n => made.Errors.Any(e => e.Contains("top/" + n) && e.Contains("not added"))), Said(made));
+                    Check($"{format.Id}: and every file is either in it or said",
+                        names.All(n => got.Contains(n) || made.Errors.Any(e => e.Contains("top/" + n))), Said(made));
+                }
+
+                // A plan line printed in another code page still accounts for its file.
+                var plan = new List<ArchiveItem>
+                {
+                    new("x", "top", 0, true, DateTime.Now, FileAttributes.Directory),
+                    new("x", "top/日本語.txt", 1, false, DateTime.Now, FileAttributes.Normal),
+                    new("x", "top/plain.txt", 1, false, DateTime.Now, FileAttributes.Normal),
+                    new("x", "top/gone.txt", 1, false, DateTime.Now, FileAttributes.Normal),
+                };
+                var notAdded = BsdTar.NotAdded(plan, new[] { "top", "top/???.txt", "top/plain.txt" });
+                Check("a mangled name is matched to its file, and only the file with no line is missing",
+                    notAdded.Count == 1 && notAdded[0].Name == "top/gone.txt",
+                    string.Join(",", notAdded.Select(p => p.Name)));
+            }
+            finally { Cleanup(dir); }
+        }
+
+        /// <summary>
+        /// A file that grows while it is being read is written to the tar as it
+        /// was when opened. The empty-archive guard did not count it and threw
+        /// the whole archive away.
+        /// </summary>
+        private static async Task GrowingFileKeepsTarTests()
+        {
+            var dir = NewDir("grow");
+            try
+            {
+                var source = Path.Combine(dir, "grow.bin");
+                var data = new byte[4 * 1024 * 1024];
+                new Random(11).NextBytes(data);
+                File.WriteAllBytes(source, data);
+
+                // Called on the compressing thread. Each report waits long enough
+                // for the next to get past the throttle; the first one with bytes
+                // read appends to the file mid-read.
+                bool appended = false;
+                var sink = new Sink(p =>
+                {
+                    if (appended) return;
+                    if (p.CurrentItem.EndsWith("grow.bin", StringComparison.OrdinalIgnoreCase) && p.BytesDone > 0)
+                    {
+                        using var more = new FileStream(source, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+                        more.Write(new byte[1000]);
+                        appended = true;
+                        return;
+                    }
+                    Thread.Sleep(ArchiveEngine.ReportMilliseconds + 50);
+                });
+
+                var archive = Path.Combine(dir, "grow.tar");
+                ArchiveResult? made = null;
+                string? thrown = null;
+                try { made = await ArchiveEngine.CompressAsync(new[] { source }, archive, ArchiveFormats.Tar,
+                        ArchiveLevel.Fastest, 1, sink, CancellationToken.None); }
+                catch (Exception ex) { thrown = ex.Message; }
+
+                Check("a file that grew while it was read is appended to, for this test", appended);
+                Check("a .tar of a file that grew while it was read is kept",
+                    made != null && File.Exists(archive), thrown ?? (made == null ? "" : Said(made)));
+                Check("and says it grew",
+                    made != null && made.Errors.Any(e => e.Contains("grew")), thrown ?? (made == null ? "" : Said(made)));
+                if (made != null && File.Exists(archive))
+                {
+                    var back = await Extract(archive, Path.Combine(dir, "out"));
+                    var file = Path.Combine(dir, "out", "grow.bin");
+                    Check("and holds the file as it was when it was opened",
+                        File.Exists(file) && File.ReadAllBytes(file).AsSpan().SequenceEqual(data), Said(back));
                 }
             }
             finally { Cleanup(dir); }

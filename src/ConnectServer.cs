@@ -617,7 +617,14 @@ namespace ExplorerNative
             {
                 while (!connection.IsCancellationRequested)
                 {
-                    var request = await reader.ReadAsync(connection.Token);
+                    Request? request;
+                    try { request = await reader.ReadAsync(HeadTimeout, IdleTimeout, connection.Token); }
+                    catch (HeadRefusedException e)
+                    {
+                        // Too big, too slow or not HTTP: said, in JSON like every other answer, before closing.
+                        await Refuse(client, stream, e, connection.Token);
+                        return;
+                    }
                     if (request == null) return;
                     bool keepAlive = !(request.Headers.TryGetValue("connection", out var c) && c.Equals("close", StringComparison.OrdinalIgnoreCase));
                     request.Body = RequestBody.For(request.Headers, reader, stream);
@@ -636,7 +643,7 @@ namespace ExplorerNative
                     if (!request.Body.Finished)
                     {
                         if (!request.Body.Started && request.Body.ExpectsContinue) return;
-                        if (!await request.Body.DrainAsync(MaxDrain, connection.Token)) return;
+                        if (!await request.Body.DrainAsync(MaxDrain, _uploads.StallAfter, connection.Token)) return;
                     }
                     if (!keepAlive)
                     {
@@ -839,6 +846,44 @@ namespace ExplorerNative
                 _log?.Invoke($"Connect: {r.Method} {r.Path} failed: {e.Message}");
                 await Error(s, 500, Sentence(e.Message), head, token);
             }
+        }
+
+        /// <summary>A request head refused before it could be routed: answered with its status, then closed.</summary>
+        private sealed class HeadRefusedException : Exception
+        {
+            public HeadRefusedException(int status, string message) : base(message) => Status = status;
+            public int Status { get; }
+        }
+
+        /// <summary>How long a request head may take once its first byte is in. A head trickled a byte at a
+        /// time otherwise held its connection for ever.</summary>
+        internal TimeSpan HeadTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
+        /// <summary>
+        /// How long a kept-alive connection may sit with no request starting. Longer than the 90 s a Go client
+        /// such as Serve keeps an idle connection, so it is the client that lets go first and never sends a
+        /// request into a connection this end is closing.
+        /// </summary>
+        internal TimeSpan IdleTimeout { get; set; } = TimeSpan.FromSeconds(120);
+
+        /// <summary>
+        /// Answers a refused head, then closes: the send side first, and what the client still sends is read
+        /// and thrown away for a moment, because closing with unread bytes is a reset that can overtake the answer.
+        /// </summary>
+        private static async Task Refuse(TcpClient client, NetworkStream stream, HeadRefusedException e, CancellationToken token)
+        {
+            try
+            {
+                await Error(stream, e.Status, e.Message, false, token);
+                client.Client.Shutdown(SocketShutdown.Send);
+                using var linger = CancellationTokenSource.CreateLinkedTokenSource(token);
+                linger.CancelAfter(1000);
+                var scratch = new byte[16 * 1024];
+                long drained = 0;
+                int n;
+                while (drained < (1 << 20) && (n = await stream.ReadAsync(scratch, linger.Token)) > 0) drained += n;
+            }
+            catch { /* closing anyway */ }
         }
 
         /// <summary>A failure after a response's headers were sent, which can only end the connection.</summary>
@@ -1245,6 +1290,14 @@ namespace ExplorerNative
                 }
                 try
                 {
+                    // The one before may have finished, and let go of its claim, between the look above and this
+                    // claim: its answer is the answer, or the upload would be written a second time.
+                    if (AlreadyFinished(key, out var late))
+                    {
+                        var earlier = (late.Status, late.Body);
+                        mine.SetResult(earlier);
+                        return earlier;
+                    }
                     // run() records its own answer with Finished, before this lets go of the claim.
                     var answer = await run();
                     mine.SetResult(answer);
@@ -1272,19 +1325,11 @@ namespace ExplorerNative
             if (!head) await s.WriteAsync(png, token);
         }
 
-        private static async Task<byte[]> ReadAll(Request r, int most, CancellationToken token)
+        private async Task<byte[]> ReadAll(Request r, int most, CancellationToken token)
         {
             if (!r.Body.HasBody) throw new ConnectException(400, "The image goes in the body.");
             if (r.Body.Length > most) throw new ConnectException(400, "That image is too big.");
-            var buffer = new MemoryStream();
-            var chunk = new byte[64 * 1024];
-            int got;
-            while ((got = await r.Body.ReadAsync(chunk, token)) > 0)
-            {
-                buffer.Write(chunk, 0, got);
-                if (buffer.Length > most) throw new ConnectException(400, "That image is too big.");
-            }
-            return buffer.ToArray();
+            return (await ReadBody(r, most, "That image is too big.", token)).ToArray();
         }
 
         private async Task<object> ClipFiles(JsonElement body, CancellationToken token)
@@ -1575,18 +1620,34 @@ namespace ExplorerNative
             catch (Exception e) { return e; }
         }
 
+        /// <summary>
+        /// A request body read whole into memory, given up on when no byte has come for the upload stall: a body
+        /// trickled a byte at a time otherwise held the connection, and the memory, for as long as it liked. A
+        /// stall closes the connection, because the rest of a stalled body could never be told from a next request.
+        /// </summary>
+        private async Task<MemoryStream> ReadBody(Request r, int most, string tooBig, CancellationToken token)
+        {
+            var body = new StallGuard(r.Body, _uploads.StallAfter);
+            var buffer = new MemoryStream();
+            var chunk = new byte[64 * 1024];
+            int got;
+            try
+            {
+                while ((got = await body.ReadAsync(chunk, token)) > 0)
+                {
+                    buffer.Write(chunk, 0, got);
+                    if (buffer.Length > most) throw new ConnectException(400, tooBig);
+                }
+            }
+            catch (TimeoutException e) { throw new ResponseStartedException(e); }
+            return buffer;
+        }
+
         /// <summary>The request's JSON body. Anything else is a 400.</summary>
-        private static async Task<JsonElement> ReadJson(Request r, CancellationToken token)
+        private async Task<JsonElement> ReadJson(Request r, CancellationToken token)
         {
             if (r.Body.Length > MaxJsonBody) throw new ConnectException(400, "That request is too big.");
-            var buffer = new MemoryStream();
-            var chunk = new byte[16 * 1024];
-            int got;
-            while ((got = await r.Body.ReadAsync(chunk, token)) > 0)
-            {
-                buffer.Write(chunk, 0, got);
-                if (buffer.Length > MaxJsonBody) throw new ConnectException(400, "That request is too big.");
-            }
+            var buffer = await ReadBody(r, MaxJsonBody, "That request is too big.", token);
             if (buffer.Length == 0) throw new ConnectException(400, "The request needs a JSON body.");
             try
             {
@@ -1736,7 +1797,12 @@ namespace ExplorerNative
             public DateTime Until = DateTime.MinValue;
             public DateTime Last;
             public bool Said;
+            /// <summary>The wrong codes already counted, so one stale code sent again and again counts once.</summary>
+            public readonly HashSet<string> Codes = new(StringComparer.Ordinal);
         }
+
+        /// <summary>Distinct wrong codes remembered per client; past this every wrong code counts.</summary>
+        private const int MostCodesRemembered = 256;
 
         private readonly Dictionary<string, Strikes> _strikes = new(StringComparer.OrdinalIgnoreCase);
 
@@ -1762,14 +1828,21 @@ namespace ExplorerNative
             }
         }
 
-        /// <summary>A code tried by <paramref name="key"/>: a right one clears its record, a wrong one counts.</summary>
-        internal void CodeTried(string key, bool right, DateTime now)
+        /// <summary>
+        /// A code tried by <paramref name="key"/>: a right one clears its record, a wrong one counts — once per
+        /// distinct <paramref name="code"/>. A page polling with a code that has since changed sends the same
+        /// wrong code every second; that is one stale code, not somebody guessing, and must not set off the
+        /// spoken warning. Null counts every time.
+        /// </summary>
+        internal void CodeTried(string key, bool right, DateTime now, string? code = null)
         {
             bool say = false;
             lock (_strikes)
             {
                 if (right) { _strikes.Remove(key); return; }
                 if (!_strikes.TryGetValue(key, out var s)) _strikes[key] = s = new Strikes();
+                if (code != null && s.Codes.Contains(code)) return;
+                if (code != null && s.Codes.Count < MostCodesRemembered) s.Codes.Add(code);
                 s.Count++;
                 s.Last = now;
                 if (s.Count >= FreeCodeTries)
@@ -1818,7 +1891,7 @@ namespace ExplorerNative
                 if (!head) await s.WriteAsync(body, token);
                 return true;
             }
-            CodeTried(key, CodeMatches(r), now);
+            CodeTried(key, CodeMatches(r), now, GivenCode(r));
             return false;
         }
 
@@ -2077,8 +2150,8 @@ namespace ExplorerNative
         private static string Reason(int status) => status switch
         {
             200 => "OK", 202 => "Accepted", 400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden",
-            404 => "Not Found", 405 => "Method Not Allowed", 409 => "Conflict", 421 => "Misdirected Request", 423 => "Locked",
-            429 => "Too Many Requests", 503 => "Service Unavailable",
+            404 => "Not Found", 405 => "Method Not Allowed", 408 => "Request Timeout", 409 => "Conflict", 421 => "Misdirected Request",
+            423 => "Locked", 429 => "Too Many Requests", 431 => "Request Header Fields Too Large", 503 => "Service Unavailable",
             _ => "Internal Server Error",
         };
 
@@ -2132,8 +2205,15 @@ namespace ExplorerNative
                 }
             }
 
-            public async Task<Request?> ReadAsync(CancellationToken token)
+            /// <summary>
+            /// The next request head. Null when the connection closed, or sat idle with nothing for
+            /// <paramref name="idle"/>; a head that started and has not finished within <paramref name="whole"/>
+            /// is a 408, one too big a 431 and one that is not HTTP a 400, as a <see cref="HeadRefusedException"/>.
+            /// </summary>
+            public async Task<Request?> ReadAsync(TimeSpan whole, TimeSpan idle, CancellationToken token)
             {
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                TimeSpan? started = _count > 0 ? TimeSpan.Zero : null;
                 while (true)
                 {
                     int end = IndexOfHeadEnd();
@@ -2143,11 +2223,29 @@ namespace ExplorerNative
                         int consumed = end + 4;
                         Buffer.BlockCopy(_buffer, consumed, _buffer, 0, _count - consumed);
                         _count -= consumed;
-                        return Parse(head);
+                        return Parse(head) ?? throw new HeadRefusedException(400, "That request could not be understood.");
                     }
-                    if (_count == _buffer.Length) return null; // a head this big isn't ours
-                    int n = await _stream.ReadAsync(_buffer.AsMemory(_count), token);
+                    if (_count == _buffer.Length) throw new HeadRefusedException(431, "The request's headers are too big.");
+                    var left = (started is { } at ? at + whole : idle) - clock.Elapsed;
+                    if (left <= TimeSpan.Zero)
+                    {
+                        if (started == null) return null;
+                        throw new HeadRefusedException(408, "The request's headers took too long to arrive.");
+                    }
+                    int n;
+                    using (var timer = CancellationTokenSource.CreateLinkedTokenSource(token))
+                    {
+                        timer.CancelAfter(left);
+                        try { n = await _stream.ReadAsync(_buffer.AsMemory(_count), timer.Token); }
+                        catch (Exception e) when (e is OperationCanceledException or IOException &&
+                                                  timer.IsCancellationRequested && !token.IsCancellationRequested)
+                        {
+                            if (started == null) return null;
+                            throw new HeadRefusedException(408, "The request's headers took too long to arrive.");
+                        }
+                    }
                     if (n <= 0) return null;
+                    started ??= clock.Elapsed;
                     _count += n;
                 }
             }
@@ -2163,7 +2261,9 @@ namespace ExplorerNative
             {
                 var lines = head.Split("\r\n");
                 var first = lines[0].Split(' ');
-                if (first.Length < 2) return null;
+                // METHOD target HTTP/1.x, nothing else: a request line that is not one is not a request.
+                if (first.Length != 3 || first[0].Length == 0 || !first[0].All(char.IsAsciiLetter) ||
+                    first[1].Length == 0 || !first[2].StartsWith("HTTP/1.", StringComparison.Ordinal)) return null;
                 string target = first[1];
                 int q = target.IndexOf('?');
                 string path = q < 0 ? target : target[..q];
@@ -2275,16 +2375,21 @@ namespace ExplorerNative
             public override int Read(byte[] buffer, int offset, int count) =>
                 ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
 
-            /// <summary>Reads and discards the rest, if there is no more than <paramref name="most"/> of it.</summary>
-            public async Task<bool> DrainAsync(long most, CancellationToken token)
+            /// <summary>
+            /// Reads and discards the rest, if there is no more than <paramref name="most"/> of it and it keeps
+            /// coming: no byte for <paramref name="stall"/> and it is given up on, or a trickled body after a 401
+            /// held the connection for ever.
+            /// </summary>
+            public async Task<bool> DrainAsync(long most, TimeSpan stall, CancellationToken token)
             {
                 if (!_chunked && _remaining > most) return false;
                 var scratch = new byte[64 * 1024];
+                var guarded = new StallGuard(this, stall);
                 long drained = 0;
                 try
                 {
                     int got;
-                    while ((got = await ReadAsync(scratch, token)) > 0)
+                    while ((got = await guarded.ReadAsync(scratch, token)) > 0)
                         if ((drained += got) > most) return false;
                     return true;
                 }

@@ -95,9 +95,13 @@ namespace ExplorerNative
             // "étoile" — which the list sorts among the E names (see
             // NameRules.CompareNames), so the jump lands where the eye and the
             // ear expect the E names to start.
-            var folded = Fold(query);
-            bool cycling = IsAllOneCharacter(folded, out int first);
-            string prefix = cycling ? folded[..first] : folded;
+            //
+            // Whether it is one key pressed again is asked of what was typed, and
+            // only then folded: Æ folds to "AE", so a fold first made Æ twice
+            // "AEAE", which nothing starts with, and a single ß "ss", which looked
+            // like a repeated S and walked every S name.
+            bool cycling = IsAllOneCharacter(query, out int first);
+            string prefix = cycling ? Fold(query[..first]) : Fold(query);
 
             // Cycling must leave the current row; refining may stay on it.
             int start = cycling ? currentIndex + 1 : currentIndex;
@@ -123,6 +127,10 @@ namespace ExplorerNative
         /// units, and "🎶🎶" compared unit by unit was not a repeat, so it
         /// searched for "🎶🎶" and said nothing starts with it.
         /// <paramref name="firstLength"/> is how long the first one is.
+        ///
+        /// Asked of the raw query, one typed character at a time, and two count
+        /// as the same key when they fold to the same letters: "eé" still walks
+        /// the E names, "ÆÆ" walks the Æ names, and a lone "ß" is one key.
         /// </summary>
         private static bool IsAllOneCharacter(string query, out int firstLength)
         {
@@ -135,16 +143,19 @@ namespace ExplorerNative
                 return true;
             }
             firstLength = firstRune.Utf16SequenceLength;
-            var upper = System.Text.Rune.ToUpperInvariant(firstRune);
+            var key = KeyOf(firstRune);
 
             for (int i = firstLength; i < query.Length;)
             {
                 if (!System.Text.Rune.TryGetRuneAt(query, i, out var rune)) return false;
-                if (System.Text.Rune.ToUpperInvariant(rune) != upper) return false;
+                if (!string.Equals(KeyOf(rune), key, StringComparison.Ordinal)) return false;
                 i += rune.Utf16SequenceLength;
             }
             return true;
         }
+
+        private static string KeyOf(System.Text.Rune rune) =>
+            Fold(System.Text.Rune.ToUpperInvariant(rune).ToString()).ToUpperInvariant();
 
         /// <summary>
         /// A name with its accents taken off: "Éclair" is "Eclair", "Ärger" is

@@ -674,6 +674,10 @@ namespace ExplorerNative
             int itemsDone = 0;
             var started = Stopwatch.StartNew();
             string current = "";
+            // The last file named as in progress, without any "Waiting for"
+            // around it: what a retry is said to be waiting for when nothing
+            // else can say which file robocopy meant.
+            string copying = "";
 
             // Bytes written by robocopy jobs that have already finished, and the
             // one running now — see BytesWritten for why the operating system is
@@ -846,6 +850,7 @@ namespace ExplorerNative
                 }
 
                 created[landing] = 0;
+                Volatile.Write(ref copying, Path.GetFileName(landing));
                 Volatile.Write(ref current, Path.GetFileName(landing));
                 Interlocked.Increment(ref filesStarted);
                 ReportSoon();
@@ -1153,6 +1158,7 @@ namespace ExplorerNative
                 {
                     var name = MatchCopiedFile(line, sizeByName, out long size);
                     if (name == null) return;
+                    Volatile.Write(ref copying, name);
                     current = name;
                     Interlocked.Add(ref bytesDone, size);
                     Interlocked.Increment(ref itemsDone);
@@ -1161,7 +1167,10 @@ namespace ExplorerNative
                 (file, attempt) =>
                 {
                     // Said, rather than sitting at a percentage that does not move.
-                    Volatile.Write(ref current, $"Waiting for {RetryName(file)} (retry {attempt} of {retries})");
+                    string[] plan;
+                    lock (sizeByName) plan = sizeByName.Keys.ToArray();
+                    var waitingFor = RetryName(file, plan, Volatile.Read(ref copying));
+                    Volatile.Write(ref current, $"Waiting for {waitingFor} (retry {attempt} of {retries})");
                     Report();
                 },
                 p => Volatile.Write(ref liveJob, p), token);
@@ -1280,25 +1289,113 @@ namespace ExplorerNative
         /// everything else — is still "?", and a name read in the wrong page
         /// is not the file's at all; either way, any "?" or non-ASCII letter is
         /// taken as one unknown character and the folder is asked.
+        ///
+        /// And a name that looks perfectly ordinary may not be the file's either.
+        /// The OEM page best-fits what it cannot hold rather than writing "?":
+        /// measured on 437, "aāb.txt" is printed "aab.txt", "œuvre.txt"
+        /// "ouvre.txt" and "x’y.txt" "x'y.txt". So a name is only said as printed
+        /// when the folder has it. Otherwise the plan's names
+        /// (<paramref name="planNames"/>), then the folder's, are put through
+        /// the same best fit and compared with what robocopy printed; then the
+        /// "?" pattern; and last the file in progress
+        /// (<paramref name="copying"/>), which at least exists.
         /// </summary>
-        internal static string RetryName(string path)
+        internal static string RetryName(string path, IReadOnlyCollection<string>? planNames = null, string? copying = null)
         {
             var name = Path.GetFileName(path);
-            if (name.All(c => c < 0x80 && c != '?')) return name;
+            string? exactFolder = null;
             try
             {
                 var folder = Path.GetDirectoryName(path);
-                if (folder == null || folder.Contains('?')) return name;
-                var exactFolder = NameRules.ExactPath(folder);
-                if (File.Exists(Path.Combine(exactFolder, name))) return name;
-
-                var pattern = new string(name.Select(c => c >= 0x80 || c == '?' ? '?' : c).ToArray());
-                var found = Directory.EnumerateFiles(exactFolder, pattern).Take(2).ToList();
-                if (found.Count == 1) return Path.GetFileName(found[0]);
+                if (folder != null && !folder.Contains('?')) exactFolder = NameRules.ExactPath(folder);
             }
             catch { }
-            return name;
+
+            bool InFolder(string n)
+            {
+                try { return exactFolder != null && File.Exists(Path.Combine(exactFolder, n)); }
+                catch { return false; }
+            }
+
+            if (!name.Contains('?') && InFolder(name)) return name;
+
+            try
+            {
+                // The plan first: already in memory, and nearly always holds it.
+                if (planNames != null && planNames.Count > 0)
+                {
+                    var hits = planNames
+                        .Where(n => PrintsAs(n, name))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Take(MostRetryEntries)
+                        .ToList();
+                    // Two plan names that print alike: the one in this folder.
+                    var here = hits.Where(InFolder).ToList();
+                    if (here.Count == 1) return here[0];
+                    if (here.Count == 0 && hits.Count == 1) return hits[0];
+                }
+
+                if (exactFolder != null)
+                {
+                    string? only = null;
+                    int count = 0, seen = 0;
+                    foreach (var f in Directory.EnumerateFiles(exactFolder))
+                    {
+                        if (++seen > MostRetryEntries) break;
+                        var n = Path.GetFileName(f);
+                        if (!PrintsAs(n, name)) continue;
+                        only = n;
+                        if (++count > 1) break;
+                    }
+                    if (count == 1) return only!;
+
+                    // A name read in the wrong page is no best fit of anything.
+                    if (name.Any(c => c >= 0x80 || c == '?'))
+                    {
+                        var pattern = new string(name.Select(c => c >= 0x80 || c == '?' ? '?' : c).ToArray());
+                        var found = Directory.EnumerateFiles(exactFolder, pattern).Take(2).ToList();
+                        if (found.Count == 1) return Path.GetFileName(found[0]);
+                    }
+                }
+            }
+            catch { }
+
+            return string.IsNullOrEmpty(copying) ? name : copying;
         }
+
+        /// <summary>How many names a retry's lookup will compare before giving up.</summary>
+        private const int MostRetryEntries = 50_000;
+
+        /// <summary>
+        /// Whether robocopy would print <paramref name="actual"/> as
+        /// <paramref name="printed"/>: the name through the OEM page with
+        /// Windows' own best fit, as robocopy's console writes it, and read back
+        /// the way <see cref="RobocopyOutputEncoding"/> reads it.
+        /// </summary>
+        internal static bool PrintsAs(string actual, string printed) =>
+            string.Equals(OemForm(actual), printed, StringComparison.OrdinalIgnoreCase);
+
+        internal static string OemForm(string name)
+        {
+            if (name.Length == 0) return name;
+            try
+            {
+                int length = WideCharToMultiByte(CP_OEMCP, 0, name, name.Length, null, 0, IntPtr.Zero, IntPtr.Zero);
+                if (length <= 0) return name;
+                var bytes = new byte[length];
+                length = WideCharToMultiByte(CP_OEMCP, 0, name, name.Length, bytes, bytes.Length, IntPtr.Zero, IntPtr.Zero);
+                if (length <= 0) return name;
+                return RobocopyOutputEncoding.Value.GetString(bytes, 0, length);
+            }
+            catch { return name; }
+        }
+
+        private const uint CP_OEMCP = 1;
+
+        [DllImport("kernel32.dll")]
+        private static extern int WideCharToMultiByte(uint codePage, uint flags,
+            [MarshalAs(UnmanagedType.LPWStr)] string wide, int wideLength,
+            byte[]? multi, int multiLength, IntPtr defaultChar, IntPtr usedDefaultChar);
 
         /// <summary>
         /// The code page robocopy writes its standard output in: the console's,

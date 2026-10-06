@@ -52,6 +52,7 @@ namespace ExplorerNative
             await DetailsTests();
             await WebAppTests();
             await Round2Tests();
+            await Round3Tests();
         }
 
         /// <summary>
@@ -2267,7 +2268,7 @@ namespace ExplorerNative
                 // 3. Wrong codes, per client.
                 const string friend = "friend@example.com";
                 var answers = new List<int>();
-                for (int i = 0; i < 5; i++) answers.Add(N(await Ask(HttpMethod.Get, "/api/info", login: friend, code: "00000000")));
+                for (int i = 0; i < 5; i++) answers.Add(N(await Ask(HttpMethod.Get, "/api/info", login: friend, code: "0000000" + i)));
                 Check("five wrong codes are each refused as wrong", answers.All(s => s == 401), string.Join(",", answers));
                 var limited = await Ask(HttpMethod.Get, "/api/info", login: friend, code: "00000001");
                 Check("the sixth try is told to wait, with Retry-After", N(limited) == 429 && limited.Headers.RetryAfter?.Delta is { } d && d.TotalSeconds >= 1,
@@ -2358,6 +2359,191 @@ namespace ExplorerNative
                 server.Dispose();
                 try { Directory.Delete(dir, true); } catch { }
             }
+        }
+
+        // MARK: Round 3
+
+        /// <summary>
+        /// The third round: bodies and heads that trickle, protocol errors answered rather than reset, a stale
+        /// code counted once however often it is polled with, and a stall timer that cannot fail a flowing chunk.
+        /// </summary>
+        private static async Task Round3Tests()
+        {
+            Console.WriteLine("Web app, round 3:");
+
+            // 3. One stale code, sent every second, is one wrong code: no wait and nothing said.
+            using (var counting = new ConnectServer(_ => null, p => new FileRangeSource(p), () => Code, loopbackOnly: true, port: FreePort()))
+            {
+                int said = 0;
+                counting.CodeGuessing += _ => said++;
+                var t0 = DateTime.UtcNow;
+                for (int i = 0; i < 30; i++) counting.CodeTried("addr:stale", false, t0, "87654321");
+                Check("the same stale code thirty times costs nothing", counting.CodeWait("addr:stale", t0) == TimeSpan.Zero);
+                Equal("and is not said as somebody guessing", "0", said.ToString());
+                for (int i = 2; i <= 5; i++) counting.CodeTried("addr:stale", false, t0, "8765432" + i);   // 4 more, 5 distinct
+                Check("five different wrong codes still make the next try wait", counting.CodeWait("addr:stale", t0) > TimeSpan.Zero);
+                Equal("and that is said, once", "1", said.ToString());
+            }
+
+            // 4. A read that comes back just after the stall timer fired does not fail the chunk's next read.
+            string store = Path.Combine(Path.GetTempPath(), "en-connect-r3-store-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var uploads = new ConnectUploads(store) { StallAfter = TimeSpan.FromMilliseconds(200) };
+                var id = uploads.Start(new ConnectUploads.Meta(@"C:\b", "late.bin", 30, "rename", DateTime.UtcNow));
+                long total = -1;
+                Exception? failed = null;
+                try { total = await uploads.AppendAsync(id, 0, new LateStream(3, 350), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)); }
+                catch (Exception e) { failed = e; }
+                Check("a chunk whose reads each land just after the stall timer fires is not failed as stalled",
+                    failed == null && total == 30, failed?.GetType().Name + " " + failed?.Message + " " + total);
+            }
+            finally { try { Directory.Delete(store, true); } catch { } }
+
+            // 1, 2. Over real sockets.
+            string dir = Path.Combine(Path.GetTempPath(), "en-connect-r3-srv-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            int port = FreePort();
+            var server = new ConnectServer(_ => null, p => new FileRangeSource(p), () => Code, loopbackOnly: true, port: port,
+                files: new FakeFiles(), clipboard: new FakeClipboard(), clipboardSends: Path.Combine(dir, "sends"));
+            try
+            {
+                server.Start();
+                if (!await WaitForListener(port)) { Check("the round 3 server listens", false); return; }
+                server.UploadStallAfter = TimeSpan.FromSeconds(1);
+                server.HeadTimeout = TimeSpan.FromSeconds(1);
+                server.IdleTimeout = TimeSpan.FromSeconds(1);
+
+                TcpClient Open()
+                {
+                    var c = new TcpClient();
+                    c.Connect(IPAddress.Loopback, port);
+                    c.ReceiveTimeout = 8000;
+                    return c;
+                }
+                static (int Read, TimeSpan After) UntilClosed(NetworkStream s)
+                {
+                    var clock = System.Diagnostics.Stopwatch.StartNew();
+                    int read;
+                    try { read = s.Read(new byte[256], 0, 256); } catch (IOException) { read = 0; }
+                    return (read, clock.Elapsed);
+                }
+
+                // 1. Trickled JSON and image bodies, and a body after a 401.
+                foreach (var (url, code) in new[] { ("/api/mkdir", Code), ("/api/clipboard/image", Code), ("/api/mkdir", "") })
+                {
+                    using var client = Open();
+                    var s = client.GetStream();
+                    var codeLine = code.Length > 0 ? $"X-Connect-Code: {code}\r\n" : "";
+                    s.Write(Encoding.ASCII.GetBytes($"POST {url} HTTP/1.1\r\nHost: 127.0.0.1\r\n{codeLine}Content-Length: 100\r\n\r\n"));
+                    s.Write(Encoding.ASCII.GetBytes("{\"parent\":"));
+                    s.Flush();
+                    string what = code.Length > 0 ? url : "a body after a 401";
+                    if (code.Length == 0)
+                    {
+                        int status = 0;
+                        try { status = ReadResponse(s, head: false).Status; } catch (IOException) { }
+                        Equal("a request with no code is refused without reading its body", "401", status.ToString());
+                    }
+                    var (read, after) = UntilClosed(s);
+                    Check($"{what}: a trickled body is given up on and the connection closed", read == 0 && after < TimeSpan.FromSeconds(6),
+                        $"{read} bytes after {after.TotalSeconds:0.0} s");
+                }
+
+                // 1. A head that never finishes, and a connection that never starts one.
+                using (var client = Open())
+                {
+                    var s = client.GetStream();
+                    s.Write(Encoding.ASCII.GetBytes("GET /api/info HTTP/1.1\r\nHost: 127.0.0.1\r\n"));
+                    int status = 0;
+                    var clock = System.Diagnostics.Stopwatch.StartNew();
+                    try { status = ReadResponse(s, head: false).Status; } catch (IOException) { }
+                    Check("a head that stops arriving is answered 408 and closed", status == 408 && clock.Elapsed < TimeSpan.FromSeconds(6),
+                        $"{status} after {clock.Elapsed.TotalSeconds:0.0} s");
+                }
+                using (var client = Open())
+                {
+                    var (read, after) = UntilClosed(client.GetStream());
+                    Check("a connection that never sends a request is closed, saying nothing", read == 0 && after < TimeSpan.FromSeconds(6),
+                        $"{read} bytes after {after.TotalSeconds:0.0} s");
+                }
+
+                // 2. Protocol errors are answered in JSON, with nosniff, before the close.
+                var cases = new (string Name, string Request, int Status)[]
+                {
+                    ("a head over 16 KB", "GET /api/info HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Big: " + new string('a', 17_000), 431),
+                    ("a request line that is not HTTP", "hello there\r\n\r\n", 400),
+                    ("a request line with no version", "GET /api/info\r\n\r\n", 400),
+                };
+                foreach (var (name, request, expected) in cases)
+                {
+                    using var client = Open();
+                    var s = client.GetStream();
+                    try { s.Write(Encoding.ASCII.GetBytes(request)); } catch (IOException) { }
+                    int status = 0;
+                    var headers = new Dictionary<string, string>();
+                    string body = "";
+                    try
+                    {
+                        var answer = ReadResponse(s, head: false);
+                        status = answer.Status; headers = answer.Headers; body = Encoding.UTF8.GetString(answer.Body);
+                    }
+                    catch (IOException e) { body = e.Message; }
+                    Check($"{name} is answered {expected}, in JSON, with nosniff",
+                        status == expected && body.Contains("\"error\"") && headers.GetValueOrDefault("x-content-type-options") == "nosniff" &&
+                        (headers.GetValueOrDefault("content-type") ?? "").StartsWith("application/json"),
+                        $"{status} {body}");
+                }
+
+                using (var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}"), Timeout = TimeSpan.FromSeconds(10) })
+                {
+                    var request = new HttpRequestMessage(HttpMethod.Get, "/api/info");
+                    request.Headers.Add("X-Connect-Code", Code);
+                    Equal("and an ordinary request is still answered", "200", ((int)(await http.SendAsync(request)).StatusCode).ToString());
+                }
+            }
+            finally
+            {
+                server.Dispose();
+                try { Directory.Delete(dir, true); } catch { }
+            }
+
+            // 3. The web app stops polling jobs on 401 and 429.
+            if (WebAssets.TryGet("/app/app.js", out var appJs, out _))
+            {
+                var js = Encoding.UTF8.GetString(appJs);
+                int poll = js.IndexOf("function pollJobs()", StringComparison.Ordinal);
+                var pollBody = poll < 0 ? "" : js.Substring(poll, Math.Min(2500, js.Length - poll));
+                Check("job polling stops on a code that is not right, or a wait",
+                    pollBody.Contains("err.status === 401 || err.status === 429") && pollBody.Contains("if (!$('screen-code').hidden) return;"));
+            }
+            else Check("app.js is served", false);
+        }
+
+        /// <summary>A body whose every read comes back with bytes a little after the caller's timer fired.</summary>
+        private sealed class LateStream : Stream
+        {
+            private int _left;
+            private readonly int _delayMs;
+            public LateStream(int reads, int delayMs) { _left = reads; _delayMs = delayMs; }
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken token = default)
+            {
+                token.ThrowIfCancellationRequested();
+                if (_left-- <= 0) return 0;
+                await Task.Delay(_delayMs);   // deaf to the token: the bytes were already on their way
+                buffer.Span[..10].Fill(1);
+                return 10;
+            }
+            public override int Read(byte[] buffer, int offset, int count) => ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
         }
 
         private static int FreePort()

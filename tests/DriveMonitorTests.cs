@@ -56,6 +56,7 @@ namespace ExplorerNative
                 await FlakyConnectionTests(sandbox);
                 await CrashTests(sandbox);
                 await SecondReviewTests(sandbox);
+                await ThirdRoundTests(sandbox);
                 NoDialogTests();
                 await CheckClientCancelTests();
             }
@@ -711,6 +712,112 @@ namespace ExplorerNative
                     problem == null && tree.Count == 2 && Text(tree, "song.txt") == "drive's edit" &&
                     tree.Any(kv => kv.Key.Contains("conflict") && Encoding.UTF8.GetString(kv.Value) == "pc's edit"),
                     $"{problem}; PC holds {Names(tree)}");
+            }
+        }
+
+        // ---------------- round 3: spellings on the PC, and the long wait ----------------
+
+        private static async Task ThirdRoundTests(string sandbox)
+        {
+            string nfc = "Café", nfd = "Café";
+
+            // Two PC files whose names differ only in how the accent is written.
+            using (var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true))
+            {
+                rig.Write(nfc + ".txt", "the first one", T0);
+                rig.Write("fine.txt", "fine", T0);
+                await rig.Pass();
+                var before = rig.Counters();
+
+                rig.Write(nfd + ".txt", "the second one, which is longer", T0.AddHours(1));
+                rig.Write("Docs " + nfc + "/a.txt", "a", T0);
+                rig.Write("Docs " + nfd + "/b.txt", "b", T0);
+                var problem = await rig.Pass();
+                await rig.Pass();
+                var drive = rig.DriveTree();
+                Check("two PC files that differ only in how an accent is written are left out, not merged",
+                    Text(drive, nfc + ".txt") == "the first one" && rig.Drive.Uploads == before.Item1 &&
+                    rig.Drive.Trashes == 0,
+                    $"Drive holds {Names(drive)}; {rig.Drive.Uploads - before.Item1} uploads, {rig.Drive.Trashes} trashed");
+                Check("and two such folders are not merged into one in Drive",
+                    !drive.Keys.Any(k => k.StartsWith("Docs", StringComparison.Ordinal)), Names(drive));
+                Check("the pair says which PC names were left out",
+                    problem != null && problem.Contains("on the PC were left out", StringComparison.Ordinal) &&
+                    problem.Contains(nfd + ".txt", StringComparison.Ordinal), problem);
+                Check("once", rig.Said.Count(s => s.Contains("on the PC were left out", StringComparison.Ordinal)) == 1,
+                    string.Join(" | ", rig.Said));
+            }
+
+            // Drive's folder spelled the other way from the PC's: what comes down
+            // goes into the PC's folder, not a second look-alike beside it.
+            using (var rig = new Rig(sandbox, SyncMode.TwoWay))
+            {
+                rig.Write(nfc + "/a.txt", "a", T0);
+                var folder = rig.Drive.AddFolder(nfd, rig.FolderId);
+                rig.Drive.AddFile("a.txt", Encoding.UTF8.GetBytes("a"), T0, folder);
+                rig.Drive.AddFile("b.txt", Encoding.UTF8.GetBytes("b"), T0, folder);
+                var problem = await rig.Pass();
+                var folders = Directory.GetDirectories(rig.Local).Select(Path.GetFileName).ToList();
+                Check("a download into a folder the PC spells differently lands in the PC's folder",
+                    problem == null && folders.Count == 1 && folders[0] == nfc &&
+                    File.Exists(Path.Combine(rig.Local, nfc, "b.txt")),
+                    $"{problem}; PC folders: {string.Join(",", folders.Select(f => string.Join(" ", f!.Select(c => ((int)c).ToString("x")))))}");
+            }
+
+            // The hour's wait for Google's daily limit: Pause, Sync now and closing
+            // the app each end it.
+            var daily = FakeDrive.ErrorBody(403, "dailyLimitExceeded", "Daily Limit Exceeded");
+
+            async Task<(Rig Rig, Task Pass)> Waiting()
+            {
+                var rig = new Rig(sandbox, SyncMode.TwoWay);
+                rig.Monitor.WaitScale = 1;
+                rig.Monitor.Reload(new[] { rig.Pair });
+                rig.Write("a.txt", "a", T0);
+                rig.Drive.AddFault(new FakeDrive.Fault { Kind = "list", Times = 1, Status = 403, Body = daily });
+                var pass = rig.Pass();
+                for (int i = 0; i < 200 && !(rig.Monitor.StatusOf(rig.Pair.Id).Problem ?? "").Contains("daily limit"); i++)
+                    await Task.Delay(25);
+                return (rig, pass);
+            }
+
+            static async Task<bool> EndsSoon(Task pass)
+            {
+                var done = await Task.WhenAny(pass, Task.Delay(5000));
+                if (done != pass) return false;
+                try { await pass; } catch (OperationCanceledException) { }
+                return true;
+            }
+
+            {
+                var (rig, pass) = await Waiting();
+                using (rig)
+                {
+                    var paused = rig.Pair.Copy();
+                    paused.Paused = true;
+                    rig.Monitor.Reload(new[] { paused });
+                    Check("pausing a pair ends its wait for the daily limit", await EndsSoon(pass));
+                    Check("and it no longer says it is waiting",
+                        !(rig.Monitor.StatusOf(rig.Pair.Id).Problem ?? "").Contains("waiting"),
+                        rig.Monitor.StatusOf(rig.Pair.Id).Problem);
+                }
+            }
+            {
+                var (rig, pass) = await Waiting();
+                using (rig)
+                {
+                    rig.Monitor.SyncNow();
+                    Check("Sync now ends the wait for the daily limit and asks again",
+                        await EndsSoon(pass) && Names(rig.DriveTree()) == "a.txt", Names(rig.DriveTree()));
+                }
+            }
+            {
+                var (rig, pass) = await Waiting();
+                using (rig)
+                {
+                    rig.Monitor.Dispose();
+                    Check("closing the app ends the wait for the daily limit", await EndsSoon(pass));
+                }
             }
         }
 

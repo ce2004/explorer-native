@@ -87,18 +87,13 @@ namespace ExplorerNative
                 var buffer = new byte[1 << 20];
                 // A body that stops arriving holds this upload's gate, and every retry meets "still arriving"
                 // until the dead socket is noticed, which took over a minute. No byte for StallAfter and it is
-                // given up on: what landed stays, and the gate is free for the next chunk.
-                using var stall = CancellationTokenSource.CreateLinkedTokenSource(token);
+                // given up on: what landed stays, and the gate is free for the next chunk. Each read has a timer
+                // of its own: one timer re-armed per read could fire between a read finishing and the re-arm,
+                // and fail a chunk that was flowing.
+                var guarded = new ConnectServer.StallGuard(body, StallAfter);
                 while (true)
                 {
-                    stall.CancelAfter(StallAfter);
-                    int got;
-                    try { got = await body.ReadAsync(buffer, stall.Token); }
-                    catch (Exception e) when (e is OperationCanceledException or IOException &&
-                                              stall.IsCancellationRequested && !token.IsCancellationRequested)
-                    {
-                        throw new TimeoutException("the chunk stopped arriving");
-                    }
+                    int got = await guarded.ReadAsync(buffer, token);
                     if (got <= 0) break;
                     if (file.Position + got > meta.Size)
                         throw new ConnectException(400, $"That is more than the {meta.Size} bytes the upload said it would be.", file.Position);
