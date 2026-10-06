@@ -100,12 +100,7 @@ namespace ExplorerNative
             // only then folded: Æ folds to "AE", so a fold first made Æ twice
             // "AEAE", which nothing starts with, and a single ß "ss", which looked
             // like a repeated S and walked every S name.
-            bool cycling = IsAllOneCharacter(query, out int first);
-            string prefix = cycling ? Fold(query[..first]) : Fold(query);
-
-            // Cycling must leave the current row; refining may stay on it.
-            int start = cycling ? currentIndex + 1 : currentIndex;
-            if (start < 0 || start >= count) start = 0;
+            string prefix = PrefixFor(query, currentIndex, count, out int start);
 
             for (int step = 0; step < count; step++)
             {
@@ -116,6 +111,49 @@ namespace ExplorerNative
             }
 
             return -1;
+        }
+
+        /// <summary>A row's name, already through <see cref="Fold"/>.</summary>
+        public delegate ReadOnlySpan<char> FoldedNameAt(int index);
+
+        /// <summary>
+        /// <see cref="Find"/>, over names that were folded once rather than on
+        /// every keystroke.
+        ///
+        /// Folding is a call into Windows for every name that is not plain
+        /// ASCII, and a miss walks the whole folder: in 100,000 rows with one
+        /// accented name in ten, each letter that matched nothing cost about
+        /// 20ms, all of it on the keystroke. The list keeps each row's folded
+        /// name from the moment it is listed (MainForm's Entry), so this is a
+        /// comparison per row and nothing else. Same answers as Find, by
+        /// construction: the same prefix, the same start, the same test.
+        /// </summary>
+        public static int FindFolded(int count, FoldedNameAt foldedAt, string query, int currentIndex)
+        {
+            if (count <= 0 || foldedAt == null || string.IsNullOrEmpty(query)) return -1;
+
+            string prefix = PrefixFor(query, currentIndex, count, out int start);
+
+            for (int step = 0; step < count; step++)
+            {
+                int index = (start + step) % count;
+                if (foldedAt(index).StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                    return index;
+            }
+
+            return -1;
+        }
+
+        /// <summary>The folded prefix to look for, and the row to start at.</summary>
+        private static string PrefixFor(string query, int currentIndex, int count, out int start)
+        {
+            bool cycling = IsAllOneCharacter(query, out int first);
+            string prefix = cycling ? Fold(query[..first]) : Fold(query);
+
+            // Cycling must leave the current row; refining may stay on it.
+            start = cycling ? currentIndex + 1 : currentIndex;
+            if (start < 0 || start >= count) start = 0;
+            return prefix;
         }
 
         /// <summary>

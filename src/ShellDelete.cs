@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 
 namespace ExplorerNative
@@ -63,6 +66,168 @@ namespace ExplorerNative
             if (result != 0)
                 throw new Win32Exception(result, $"the shell could not delete it (error 0x{result:X})");
             return true;
+        }
+
+        /// <summary>
+        /// What a batched recycle reports: whether somebody answered No or Cancel
+        /// to the shell's "delete permanently?" question, and the shell's error
+        /// when it stopped on one (0 when it did not).
+        /// </summary>
+        public readonly record struct BatchOutcome(bool Declined, int Error);
+
+        /// <summary>
+        /// Recycles every path in one shell operation, with exactly the flags
+        /// <see cref="Recycle"/> uses, so the permanent-delete warning still comes
+        /// up for anything the bin cannot take.
+        ///
+        /// One operation rather than one per path because the shell's cost is per
+        /// operation: 500 files took 4.66 s one at a time and 1.28 s queued
+        /// together. The shell does not say which items it did, so the caller
+        /// looks at what is still there afterwards.
+        /// </summary>
+        public static BatchOutcome RecycleMany(IReadOnlyList<string> paths, IntPtr owner)
+        {
+            if (paths.Count == 0) return new BatchOutcome(false, 0);
+
+            var from = new StringBuilder();
+            foreach (var path in paths) from.Append(path).Append('\0');
+            from.Append('\0');
+
+            var operation = new SHFILEOPSTRUCT
+            {
+                hwnd = owner,
+                wFunc = FO_DELETE,
+                pFrom = from.ToString(),
+                fFlags = (ushort)(FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT |
+                                  FOF_NOERRORUI | FOF_WANTNUKEWARNING),
+            };
+
+            int result = SHFileOperationW(ref operation);
+            return new BatchOutcome(operation.fAnyOperationsAborted != 0, result);
+        }
+
+        // ---------------- for good ----------------
+
+        /// <summary>
+        /// Deletes a file, or a folder and everything in it, permanently.
+        ///
+        /// Directory.Delete rather than the VB helper, which went through the
+        /// shell one item at a time: 10,000 files took 1.68 s that way and 0.46 s
+        /// this way. Three things the shell did for free are kept by hand:
+        ///
+        /// - Read-only files and folders still go. The delete is tried as it is,
+        ///   and only when it is refused is the tree walked to clear the flag and
+        ///   the delete tried again, so the ordinary case pays for no walk.
+        /// - A junction or symbolic link inside the tree is removed as a link and
+        ///   never followed. Directory.Delete does not follow one on .NET 8
+        ///   (measured with a junction pointing outside the tree), but it does
+        ///   report a junction as a failure, so that case takes the second
+        ///   attempt; the walk does not step into a link either. A link selected
+        ///   on its own is removed as itself.
+        /// - The path is handed over in its literal \\?\ form, so a name ending in
+        ///   a dot or a space, anywhere in the tree, is the name deleted, and a
+        ///   path past 260 characters works.
+        ///
+        /// Throws when it could not be done; the message is the reason.
+        /// </summary>
+        public static void DeletePermanently(string path)
+        {
+            var exact = Literal(path);
+            var attributes = File.GetAttributes(exact);
+            bool readOnly = (attributes & FileAttributes.ReadOnly) != 0;
+
+            if ((attributes & FileAttributes.Directory) == 0)
+            {
+                if (readOnly) File.SetAttributes(exact, attributes & ~FileAttributes.ReadOnly);
+                File.Delete(exact);
+                return;
+            }
+
+            // A link chosen by itself: the link goes, never what it points at.
+            // A cloud placeholder is a reparse point too, and is a real folder.
+            if ((attributes & FileAttributes.ReparsePoint) != 0 && NameRules.IsLink(new DirectoryInfo(exact)))
+            {
+                if (readOnly) File.SetAttributes(exact, attributes & ~FileAttributes.ReadOnly);
+                Directory.Delete(exact, recursive: false);
+                return;
+            }
+
+            try
+            {
+                Directory.Delete(exact, recursive: true);
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException || ex is IOException)
+            {
+                // Tried once more, after the walk, whatever the walk finds: a
+                // junction in the tree fails the first attempt even though it was
+                // removed (see PrepareForRetry), and the error from a second
+                // attempt is the one still worth reporting.
+                if (!Directory.Exists(exact)) return;
+                PrepareForRetry(exact);
+                Directory.Delete(exact, recursive: true);
+            }
+        }
+
+        private static string Literal(string path)
+        {
+            path = path.Replace('/', '\\');
+            try { return Path.IsPathFullyQualified(path) ? NameRules.LiteralPath(path) : path; }
+            catch (ArgumentException) { return path; }
+        }
+
+        /// <summary>
+        /// Gets a tree ready for a second attempt: takes the read-only flag off
+        /// everything under <paramref name="root"/>, the root included, and
+        /// removes every folder link as a link, without stepping into one.
+        ///
+        /// The links are removed here because Directory.Delete, meeting a
+        /// junction, first asks Windows to unmount it as a volume. Unelevated that
+        /// is refused, and although the junction itself is then removed without
+        /// being followed (measured: the target was untouched), the refusal is
+        /// raised at the end and the folder at the top is left behind. A plain
+        /// RemoveDirectory on the link has no such step.
+        /// </summary>
+        private static void PrepareForRetry(string root)
+        {
+            var options = new EnumerationOptions
+            {
+                AttributesToSkip = 0,
+                IgnoreInaccessible = true,
+                RecurseSubdirectories = false,
+            };
+
+            var rootInfo = new DirectoryInfo(root);
+            if ((rootInfo.Attributes & FileAttributes.ReadOnly) != 0)
+                rootInfo.Attributes &= ~FileAttributes.ReadOnly;
+
+            var folders = new Stack<DirectoryInfo>();
+            folders.Push(rootInfo);
+            while (folders.Count > 0)
+            {
+                var folder = folders.Pop();
+                IEnumerable<FileSystemInfo> entries;
+                try { entries = folder.EnumerateFileSystemInfos("*", options); }
+                catch (IOException) { continue; }
+                catch (UnauthorizedAccessException) { continue; }
+
+                foreach (var entry in entries)
+                {
+                    try
+                    {
+                        var attributes = entry.Attributes;
+                        if ((attributes & FileAttributes.ReadOnly) != 0)
+                            entry.Attributes = attributes & ~FileAttributes.ReadOnly;
+
+                        if ((attributes & FileAttributes.Directory) == 0) continue;
+                        if (NameRules.IsLink(entry))
+                            Directory.Delete(entry.FullName, recursive: false);
+                        else
+                            folders.Push((DirectoryInfo)entry);
+                    }
+                    catch (IOException) { }
+                    catch (UnauthorizedAccessException) { }
+                }
+            }
         }
 
         // ---------------- with no window at all ----------------

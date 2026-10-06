@@ -301,11 +301,18 @@ namespace ExplorerNative
                 }
             }
 
-            bool exists;
-            try { exists = isDirectory ? Directory.Exists(target) : File.Exists(target); }
-            catch { exists = false; }
+            // Asked only when the answer changes something: under Fill gaps and
+            // Replace. A stat per entry, on the one thread that settles every
+            // name before a worker starts, was most of the wait before the first
+            // file of a ten-thousand-entry zip.
+            bool exists = false;
+            if (!isDirectory && (_fillGaps || _overwrite))
+            {
+                try { exists = File.Exists(target); }
+                catch { exists = false; }
+            }
 
-            if (exists && !isDirectory)
+            if (exists)
             {
                 if (_fillGaps)
                 {

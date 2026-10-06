@@ -277,6 +277,16 @@ namespace ExplorerNative
                 main.Contains("_shown = MergeSorted(_shown, fresh, _order);", StringComparison.Ordinal) &&
                 !main.Contains("_form.SortLikeAFolder(new List<Entry>(_shown))", StringComparison.Ordinal));
 
+            Check("type-ahead searches the names folded when the folder was listed",
+                main.Contains("TypeAhead.FindFolded(", StringComparison.Ordinal) &&
+                !main.Contains("TypeAhead.Find(", StringComparison.Ordinal) &&
+                main.Contains("entry.PrepareTypeAhead();", StringComparison.Ordinal));
+
+            Check("a listing is sorted by keys made once per name, and drops them after",
+                main.Contains("PrepareSortKeys(result);", StringComparison.Ordinal) &&
+                main.Contains("PrepareSortKeys(sorted);", StringComparison.Ordinal) &&
+                main.Contains("row.NameKey = null;", StringComparison.Ordinal));
+
             Check("sort by Type goes through SortsAs",
                 main.Contains("ComparerFor(SortColumn column) => NameRules.SortsAs(column) switch", StringComparison.Ordinal));
 

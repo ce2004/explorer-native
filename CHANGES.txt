@@ -1,3 +1,17 @@
+2.0.1
+Big folders open faster. A folder with 100,000 files is ready in about half the time.
+Typing letters to jump to a name keeps up in huge folders, even when many names have accents.
+Measuring how big a folder is takes about half as long when it has lots of folders inside it.
+Explorer Native starts faster: its window and your folder appear about a quarter sooner.
+Making a zip is much faster when it holds a big file. A folder with a 70 megabyte log in it now zips in under a second instead of three.
+Extracting a zip or a .tar.gz full of small files takes about half as long.
+Moving a folder within the same drive when a folder of that name is already there, and you keep both, is now instant. A folder of 10,000 files took 50 seconds.
+Keeping both copies when you paste is faster: about 40 percent quicker for lots of small files, and about a quarter quicker for one big file.
+Deleting many files at once is faster. Sending a big selection to the Recycle Bin, or deleting a folder of 10,000 files permanently, takes under a third of the time it did.
+The web app opens faster on your phone. After the first visit it loads from the phone instead of downloading itself again, and the first visit downloads about a quarter as much.
+Big folders open much faster in the web app over a slow connection. A folder of 10,000 files sends about 22 kilobytes instead of over a megabyte.
+The web app draws a big folder about three times faster, and sorting it by name, date, size or type is just as quick.
+
 2.0.0
 Version 2.0 is the largest release of this program, with many improvements and new features.
 Files sort the way File Explorer sorts them: Track 2 comes before Track 10, and names with accents sit with the other letters instead of at the end.

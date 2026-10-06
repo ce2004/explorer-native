@@ -47,7 +47,10 @@ namespace ExplorerNative
         /// extension box is two things to tab past to do the one thing anybody
         /// wants.
         /// </summary>
-        public static bool Matches(string name, string term) =>
+        public static bool Matches(string name, string term) => Matches(name.AsSpan(), term);
+
+        /// <summary>The same rule, over a name the walk has not made a string of.</summary>
+        public static bool Matches(ReadOnlySpan<char> name, string term) =>
             term.Length == 0 || name.Contains(term, StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
@@ -117,8 +120,28 @@ namespace ExplorerNative
 
                 var folder = pending.Pop();
 
-                IEnumerator<FileSystemInfo> walk;
-                try { walk = new DirectoryInfo(folder).EnumerateFileSystemInfos().GetEnumerator(); }
+                // Each entry is looked at where the scan left it, and only a hit
+                // or a folder to go into is turned into strings. The walk used to
+                // make a FileInfo — an object and two strings — for every file in
+                // the tree in order to read its name and throw it away.
+                //
+                // One folder at a time, deliberately. Reading the next few ahead
+                // on other threads was tried: through a share it saved a quarter,
+                // on a disk it cost half again, because a thread hop per folder
+                // costs about what reading a small folder does. And walking them
+                // out of order would change which hits a search that stops at
+                // the cap keeps.
+                IEnumerator<Found> walk;
+                try
+                {
+                    walk = new System.IO.Enumeration.FileSystemEnumerable<Found>(folder,
+                        (ref System.IO.Enumeration.FileSystemEntry entry) => Look(ref entry, term), WalkOptions)
+                    {
+                        ShouldIncludePredicate = (ref System.IO.Enumeration.FileSystemEntry entry) =>
+                            (showHidden || (entry.Attributes & FileAttributes.Hidden) == 0) &&
+                            (showSystem || (entry.Attributes & FileAttributes.System) == 0),
+                    }.GetEnumerator();
+                }
                 catch { continue; }   // unreadable is skipped, never fatal
 
                 using (walk)
@@ -133,33 +156,15 @@ namespace ExplorerNative
                         try { if (!walk.MoveNext()) break; }
                         catch { break; }
 
-                        var info = walk.Current;
+                        var found = walk.Current;
 
-                        FileAttributes attrs;
-                        try { attrs = info.Attributes; }
-                        catch { continue; }
-
-                        if (!showHidden && (attrs & FileAttributes.Hidden) != 0) continue;
-                        if (!showSystem && (attrs & FileAttributes.System) != 0) continue;
-
-                        bool isDir = (attrs & FileAttributes.Directory) != 0;
-
-                        if (Matches(info.Name, term))
+                        if (found.Hit != null)
                         {
-                            hits.Add(new SearchHit(
-                                info.FullName, info.Name, isDir,
-                                isDir ? -1 : (info is FileInfo f ? SafeLength(f) : 0),
-                                SafeWriteTime(info)));
-
+                            hits.Add(found.Hit);
                             if (hits.Count >= most) return new SearchResult(hits, true);
                         }
 
-                        // A junction is somebody else's tree wearing this one's
-                        // name: following one can circle for ever, and at best it
-                        // searches a whole disk out of a folder of six files.
-                        // DriveUpload.Survey already learned this.
-                        if (isDir && ((attrs & FileAttributes.ReparsePoint) == 0 || !NameRules.IsLink(info)))
-                            pending.Push(info.FullName);
+                        if (found.Folder != null) pending.Push(found.Folder);
                     }
                 }
             }
@@ -167,14 +172,48 @@ namespace ExplorerNative
             return new SearchResult(hits, false);
         }
 
-        private static long SafeLength(FileInfo f)
-        {
-            try { return f.Length; } catch { return 0; }
-        }
+        /// <summary>
+        /// What one entry contributes: a hit, a folder to walk into, both, or
+        /// (for nearly every file) neither.
+        /// </summary>
+        private readonly record struct Found(SearchHit? Hit, string? Folder);
 
-        private static DateTime SafeWriteTime(FileSystemInfo info)
+        /// <summary>
+        /// Everything, nothing skipped, an unreadable folder an exception: what
+        /// <c>DirectoryInfo.EnumerateFileSystemInfos()</c> asks for.
+        /// </summary>
+        private static readonly EnumerationOptions WalkOptions = new()
         {
-            try { return info.LastWriteTime; } catch { return default; }
+            MatchType = MatchType.Win32,
+            AttributesToSkip = 0,
+            IgnoreInaccessible = false,
+        };
+
+        private static Found Look(ref System.IO.Enumeration.FileSystemEntry entry, string term)
+        {
+            bool isDir = entry.IsDirectory;
+            bool hit = Matches(entry.FileName, term);
+            if (!hit && !isDir) return default;
+
+            string path = entry.ToFullPath();
+            SearchHit? found = null;
+            if (hit)
+            {
+                DateTime modified;
+                try { modified = entry.LastWriteTimeUtc.UtcDateTime.ToLocalTime(); }
+                catch { modified = default; }
+                found = new SearchHit(path, entry.FileName.ToString(), isDir, isDir ? -1 : entry.Length, modified);
+            }
+
+            // A junction is somebody else's tree wearing this one's name:
+            // following one can circle for ever, and at best it searches a whole
+            // disk out of a folder of six files. DriveUpload.Survey already
+            // learned this.
+            string? folder = null;
+            if (isDir && ((entry.Attributes & FileAttributes.ReparsePoint) == 0 || !NameRules.IsLink(entry.ToFileSystemInfo())))
+                folder = path;
+
+            return new Found(found, folder);
         }
     }
 }

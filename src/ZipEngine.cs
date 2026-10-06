@@ -53,17 +53,17 @@ namespace ExplorerNative
     ///   the disk either way.
     /// - Ordinary files are compressed by a worker into memory and handed over.
     ///   This is the case that matters and the case that is fast.
-    /// - Files above <see cref="WorkerMaxBytes"/> are deflated by the writer
-    ///   thread as it streams them. One entry is one deflate stream and cannot be
-    ///   split, so buffering a four gigabyte file to compress it in a worker
-    ///   would cost four gigabytes of memory to parallelise nothing. Workers
-    ///   carry on preparing the entries behind it while that happens.
+    /// - Files above <see cref="WorkerMaxBytes"/> are streamed by the writer
+    ///   thread, which reads them and hands two-megabyte pieces to the workers.
+    ///   One entry is one deflate stream, so the pieces are each ended with a
+    ///   sync flush and joined, the way pigz does it (ParallelGZip.Writer, raw
+    ///   mode): one 70MB log had been deflated by the writer alone, and was
+    ///   most of the time of the archive it was in. Buffering the whole file
+    ///   instead would cost its size in memory.
     ///
-    /// The last of those is the honest limit of this format: an archive that is
-    /// one enormous file is single-threaded, here and in every other zip tool,
-    /// because deflate is defined as a single stream of back-references. A
-    /// gzipped tar has no such limit — see <see cref="ParallelGZip"/>, which cuts
-    /// the stream into members — which is why the chooser offers it second.
+    /// Each piece starts without the 32KB of history the one before would have
+    /// given it, which is the same small price a gzipped tar pays — see
+    /// <see cref="ParallelGZip"/>, which cuts its stream into members.
     /// </summary>
     public static class ZipEngine
     {
@@ -353,7 +353,7 @@ namespace ExplorerNative
                             byte[] record;
                             try
                             {
-                                record = WriteEntry(output, prepared, compression, reporter, token);
+                                record = WriteEntry(output, prepared, compression, lanes, reporter, token);
                             }
                             catch (OperationCanceledException) { throw; }
                             catch (IOException ex)
@@ -448,8 +448,9 @@ namespace ExplorerNative
         {
             try
             {
+                // Unbuffered: it is read 64KB at a time into a buffer of its own.
                 using var source = new FileStream(item.Source, FileMode.Open, FileAccess.Read,
-                    FileShare.ReadWrite, 1 << 16, FileOptions.SequentialScan);
+                    FileShare.ReadWrite, 0, FileOptions.SequentialScan);
 
                 // Named as the work on it begins, not when the writer gets to it.
                 //
@@ -469,7 +470,7 @@ namespace ExplorerNative
                 uint crc = Crc32.Seed;
                 long read = 0;
 
-                var buffer = new byte[1 << 16];
+                var buffer = Scratch(1 << 16);
                 using (var deflate = new DeflateStream(into, level, leaveOpen: true))
                 {
                     while (true)
@@ -527,7 +528,7 @@ namespace ExplorerNative
         /// afterwards by adding up sizes is an offset that is wrong the first
         /// time anything is skipped.
         /// </summary>
-        private static byte[] WriteEntry(FileStream output, Prepared prepared, CompressionLevel level,
+        private static byte[] WriteEntry(FileStream output, Prepared prepared, CompressionLevel level, int lanes,
             ArchiveEngine.Reporter reporter, CancellationToken token)
         {
             var item = prepared.Item;
@@ -581,7 +582,7 @@ namespace ExplorerNative
             {
                 (crc, read) = prepared.Method == MethodStored
                     ? CopyStored(item, output, reporter, token)
-                    : CopyDeflated(item, output, level, reporter, token);
+                    : CopyDeflated(item, output, level, lanes, reporter, token);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
@@ -624,13 +625,26 @@ namespace ExplorerNative
                 compressedSize, read, offset, attributes);
         }
 
+        [ThreadStatic] private static byte[]? _scratchSmall;
+        [ThreadStatic] private static byte[]? _scratchLarge;
+
+        /// <summary>
+        /// A read buffer kept per thread. Each entry used to allocate its own —
+        /// a megabyte for every stored file, however small — which for a folder
+        /// of photos was a megabyte of garbage per photo. Only ever used within
+        /// one call on one thread, and never handed on.
+        /// </summary>
+        private static byte[] Scratch(int size) => size <= 1 << 16
+            ? _scratchSmall ??= new byte[1 << 16]
+            : _scratchLarge ??= new byte[1 << 20];
+
         private static (uint crc, long read) CopyStored(ArchiveItem item, Stream output,
             ArchiveEngine.Reporter reporter, CancellationToken token)
         {
             using var source = new FileStream(item.Source, FileMode.Open, FileAccess.Read,
-                FileShare.ReadWrite, 1 << 20, FileOptions.SequentialScan);
+                FileShare.ReadWrite, 0, FileOptions.SequentialScan);
 
-            var buffer = new byte[1 << 20];
+            var buffer = Scratch(1 << 20);
             uint crc = Crc32.Seed;
             long read = 0;
 
@@ -651,16 +665,20 @@ namespace ExplorerNative
         }
 
         private static (uint crc, long read) CopyDeflated(ArchiveItem item, Stream output,
-            CompressionLevel level, ArchiveEngine.Reporter reporter, CancellationToken token)
+            CompressionLevel level, int lanes, ArchiveEngine.Reporter reporter, CancellationToken token)
         {
             using var source = new FileStream(item.Source, FileMode.Open, FileAccess.Read,
-                FileShare.ReadWrite, 1 << 20, FileOptions.SequentialScan);
+                FileShare.ReadWrite, 0, FileOptions.SequentialScan);
 
-            var buffer = new byte[1 << 20];
+            var buffer = Scratch(1 << 20);
             uint crc = Crc32.Seed;
             long read = 0;
 
-            using (var deflate = new DeflateStream(output, level, leaveOpen: true))
+            // Still one deflate stream, as the entry has to be, but deflated by
+            // every worker in two-megabyte pieces: see ParallelGZip.Writer's raw
+            // mode. The pieces are cut at fixed places in the file, so one worker
+            // and sixteen still make the same archive byte for byte.
+            using (var deflate = new ParallelGZip.Writer(output, lanes, level, token, leaveOpen: true, raw: true))
             {
                 while (true)
                 {
@@ -1004,6 +1022,12 @@ namespace ExplorerNative
         /// formats: a compressed tar has no directory and no offsets, so the only
         /// way to reach the last entry is to decompress everything before it.
         /// </summary>
+        private static DateTime? When(ZipArchiveEntry entry)
+        {
+            try { return entry.LastWriteTime.LocalDateTime; }
+            catch { return null; }
+        }
+
         public static int Extract(string archivePath, ExtractionRules rules,
             int threads, ArchiveEngine.Reporter reporter, List<string> errors, CancellationToken token)
         {
@@ -1059,9 +1083,21 @@ namespace ExplorerNative
                 if (targets[i] == null && problem != null) lock (errors) errors.Add(problem);
             }
 
-            int next = -1;
+            // Handed out in runs of neighbouring entries from one folder, not one
+            // entry at a time: ten workers taking the next entry in archive order
+            // were ten workers creating files in the same folder at once, which
+            // Windows does one at a time. Ten thousand small files extracted in
+            // 3.6 seconds that way and 1.6 like this. See FileOperations.RunsByFolder.
+            var runs = FileOperations.RunsByFolder(count, i =>
+            {
+                var name = index.Entries[i].FullName.Replace('\\', '/').TrimEnd('/');
+                int slash = name.LastIndexOf('/');
+                return slash < 0 ? "" : name[..slash];
+            }, i => index.Entries[i].Length);
+
+            int nextRun = -1;
             int done = 0;
-            int lanes = Math.Clamp(threads, 1, Math.Max(1, count));
+            int lanes = Math.Clamp(threads, 1, Math.Max(1, runs.Count));
 
             // Which entries got as far as being written or refused. Every
             // replacement is recorded when its destination is settled above, so a
@@ -1079,13 +1115,19 @@ namespace ExplorerNative
                     using var archive = Open(file);
 
                     var buffer = new byte[1 << 20];
+                    int at = -1, end = -1;
 
                     while (true)
                     {
                         token.ThrowIfCancellationRequested();
 
-                        int at = Interlocked.Increment(ref next);
-                        if (at >= count) return;
+                        // The next entry of this worker's run, or the next run.
+                        if (++at >= end)
+                        {
+                            int run = Interlocked.Increment(ref nextRun);
+                            if (run >= runs.Count) return;
+                            (at, end) = runs[run];
+                        }
 
                         var entry = archive.Entries[at];
                         if (entry.FullName.EndsWith('/') || entry.FullName.EndsWith('\\')) continue;
@@ -1157,12 +1199,14 @@ namespace ExplorerNative
                                         $"the archive holds {entry.Length:N0} bytes of it and {length:N0} came out");
                                 if (crc != entry.Crc32)
                                     throw new InvalidDataException("it is damaged in the archive (its checksum does not match)");
-                            });
-
-                            // After the handle is closed, or the write time is
-                            // whatever closing the file set it to.
-                            try { File.SetLastWriteTime(target, entry.LastWriteTime.LocalDateTime); }
-                            catch { }
+                            },
+                            // Unbuffered: the writes are already a megabyte at a
+                            // time, and a buffered stream took a megabyte of its
+                            // own for every file, however small.
+                            bufferSize: 0,
+                            // Through the handle, after a flush, so closing it
+                            // does not overwrite it.
+                            modified: When(entry));
 
                             Interlocked.Increment(ref done);
                             Volatile.Write(ref settled[at], 1);

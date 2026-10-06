@@ -850,28 +850,61 @@ namespace ExplorerNative
         /// replacing had already been emptied. Now the name is only ever the old
         /// file or the whole new one.
         /// </summary>
-        internal static void WriteCommitted(string target, Action<FileStream> write, int bufferSize = 1 << 20)
+        /// <param name="modified">
+        /// The date to give the file, set through the handle once everything is
+        /// written and flushed, so it is not overwritten when the file closes.
+        /// Setting it by path afterwards was another open and close of every
+        /// file extracted. Best effort, as it always was.
+        /// </param>
+        internal static void WriteCommitted(string target, Action<FileStream> write, int bufferSize = 1 << 20,
+            DateTime? modified = null)
         {
             var folder = Path.GetDirectoryName(target);
-            if (!string.IsNullOrEmpty(folder)) Directory.CreateDirectory(folder);
 
             // Short, and not built from the name: a name of 240 characters is
             // legal and "." + it + ".extracting-12345678" is not.
             var temporary = Path.Combine(folder ?? "",
                 ".extracting-" + Guid.NewGuid().ToString("N")[..12] + ".tmp");
 
+            // Readable as well, so a writer can check what it wrote before it
+            // is given its name — the bare .gz reads back its last member.
+            FileStream Open() => new(temporary, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, bufferSize);
+
+            // The folder is made only when the file cannot be: it is nearly
+            // always there already, and asking for it was a request to the disk
+            // for every file extracted.
+            FileStream opened;
+            try { opened = Open(); }
+            catch (DirectoryNotFoundException) when (!string.IsNullOrEmpty(folder))
+            {
+                Directory.CreateDirectory(folder);
+                opened = Open();
+            }
+
             try
             {
-                // Readable as well, so a writer can check what it wrote before it
-                // is given its name — the bare .gz reads back its last member.
-                using (var output = new FileStream(temporary, FileMode.CreateNew, FileAccess.ReadWrite,
-                           FileShare.None, bufferSize))
+                using (var output = opened)
+                {
                     write(output);
+                    if (modified is { } when)
+                    {
+                        output.Flush();
+                        try { File.SetLastWriteTime(output.SafeFileHandle, when); }
+                        catch { }
+                    }
+                }
 
                 // Replace means replace, a read-only file included; the move is
                 // refused for one otherwise, after "Replaced" has been decided.
-                ClearReadOnly(target);
-                File.Move(temporary, target, overwrite: true);
+                // Cleared only when the move is refused: asked first, the
+                // attributes of a target that was not there were an exception
+                // thrown and caught for every new file.
+                try { File.Move(temporary, target, overwrite: true); }
+                catch (UnauthorizedAccessException)
+                {
+                    ClearReadOnly(target);
+                    File.Move(temporary, target, overwrite: true);
+                }
             }
             catch
             {

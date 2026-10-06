@@ -41,6 +41,7 @@ namespace ExplorerNative
                 LockedFileKeepsPairingCodeTests();
                 BusyPortIsNotReplacedTests();
                 GoogleCheckWaitsForOkTests();
+                GeneratedReaderTests();
             }
             finally
             {
@@ -48,6 +49,113 @@ namespace ExplorerNative
             }
 
             Console.WriteLine();
+        }
+
+        /// <summary>
+        /// settings.json is read and written through metadata generated at build
+        /// time (<see cref="SettingsJson"/>) instead of reflection, because
+        /// reflection was the slowest thing in front of the window. The file has
+        /// to come out exactly as reflection wrote it and read back exactly as
+        /// reflection read it, or an update would quietly change somebody's
+        /// settings. Every persisted property is moved off its default first,
+        /// because a comparison of two default objects proves nothing.
+        /// </summary>
+        private static void GeneratedReaderTests()
+        {
+            var reflectionWrite = new JsonSerializerOptions(Settings.JsonFormat)
+            {
+                TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver(),
+            };
+            var reflectionRead = new JsonSerializerOptions(Settings.ReadFormat)
+            {
+                TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver(),
+            };
+
+            Check("the generated context covers Settings",
+                SettingsJson.Default.GetTypeInfo(typeof(Settings)) != null);
+
+            var odd = new Settings();
+            int moved = 0;
+            foreach (var property in typeof(Settings).GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (!property.CanRead || !property.CanWrite) continue;
+                if (property.GetIndexParameters().Length > 0) continue;
+                if (Attribute.IsDefined(property, typeof(System.Text.Json.Serialization.JsonIgnoreAttribute))) continue;
+
+                var type = property.PropertyType;
+                object? value =
+                    type == typeof(bool) ? !(bool)property.GetValue(odd)! :
+                    type == typeof(int) ? (int)property.GetValue(odd)! + 7 :
+                    type == typeof(long) ? (long)property.GetValue(odd)! + 7 :
+                    type == typeof(uint) ? (uint)property.GetValue(odd)! + 7 :
+                    type == typeof(string) ? "emoji 🎵, 日本語, \"quotes\" and \\back\\slashes\\ " + property.Name :
+                    type == typeof(int[]) ? new[] { 3, -2, 0, 24 } :
+                    type.IsEnum ? Enum.GetValues(type).Cast<object>().Last() :
+                    type == typeof(List<DriveSyncPair>) ? new List<DriveSyncPair>
+                    {
+                        new()
+                        {
+                            Name = "Music é", LocalFolder = @"D:\Music", DriveFolderId = "abc123",
+                            DriveFolderPath = "My Drive/Music", Mode = SyncMode.UploadOnly, CopyDeletes = true,
+                            Paused = true, IncludeSubfolders = false, SkipExtensions = ".tmp;.part",
+                            MaxFileMegabytes = 12, CheckMinutes = 9,
+                        },
+                    } :
+                    type == typeof(Dictionary<string, JsonElement>) ? new Dictionary<string, JsonElement>
+                    {
+                        ["FromANewerBuild"] = JsonDocument.Parse("{\"a\":[1,2,{\"b\":null}]}").RootElement.Clone(),
+                    } :
+                    null;
+                if (value == null)
+                {
+                    Check($"the test knows how to move {property.Name} ({type.Name})", false);
+                    continue;
+                }
+                property.SetValue(odd, value);
+                moved++;
+            }
+            Check("every persisted setting was moved off its default", moved > 100, moved.ToString());
+
+            var generated = JsonSerializer.Serialize(odd, Settings.JsonFormat);
+            var reflected = JsonSerializer.Serialize(odd, reflectionWrite);
+            Check("the file is written exactly as reflection wrote it", generated == reflected,
+                generated.Length + " against " + reflected.Length + " characters");
+
+            var readGenerated = JsonSerializer.Deserialize<Settings>(generated, Settings.ReadFormat)!;
+            var readReflected = JsonSerializer.Deserialize<Settings>(generated, reflectionRead)!;
+            Check("and reads back exactly as reflection read it",
+                JsonSerializer.Serialize(readGenerated, reflectionWrite) == JsonSerializer.Serialize(readReflected, reflectionWrite));
+            Check("which is what was written",
+                JsonSerializer.Serialize(readGenerated, reflectionWrite) == reflected);
+
+            // What people leave in a file they edit by hand reads the same way.
+            var edited = "{\n  // a comment\n  \"FontSize\": 13,\n  \"WindowTitle\": \"Mine\",\n}";
+            var a = JsonSerializer.Deserialize<Settings>(edited, Settings.ReadFormat)!;
+            var b = JsonSerializer.Deserialize<Settings>(edited, reflectionRead)!;
+            Check("comments and a trailing comma read the same",
+                a.FontSize == 13 && a.WindowTitle == "Mine" &&
+                JsonSerializer.Serialize(a, reflectionWrite) == JsonSerializer.Serialize(b, reflectionWrite));
+
+            // And a value of the wrong type is refused the same way, which is what
+            // sends Load to read the file a property at a time.
+            bool generatedThrew = false, reflectionThrew = false;
+            try { JsonSerializer.Deserialize<Settings>("{\"FontSize\":\"big\"}", Settings.ReadFormat); }
+            catch (JsonException) { generatedThrew = true; }
+            try { JsonSerializer.Deserialize<Settings>("{\"FontSize\":\"big\"}", reflectionRead); }
+            catch (JsonException) { reflectionThrew = true; }
+            Check("a value of the wrong type is refused by both", generatedThrew && reflectionThrew);
+
+            // Through the real file, encryption and all.
+            var dir = NewSettingsDir();
+            try
+            {
+                odd.Save();
+                var loaded = Settings.Load(out bool failed);
+                Check("the real file round-trips through the generated reader", !failed &&
+                    loaded.WindowTitle == odd.WindowTitle.Trim() && loaded.DriveSyncPairs.Count == 1 &&
+                    loaded.DriveSyncPairs[0].Name == "Music é" && loaded.DriveSyncPairs[0].Mode == SyncMode.UploadOnly);
+            }
+            finally { Cleanup(dir); }
         }
 
         /// <summary>

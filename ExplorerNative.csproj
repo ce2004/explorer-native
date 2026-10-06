@@ -12,7 +12,7 @@
     <!-- ARM64 by default; "dotnet publish -r win-x64" builds the x64 copy.
          Release builds stamp Version from the git tag (see .github\workflows). -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-arm64</RuntimeIdentifier>
-    <Version>2.0.0</Version>
+    <Version>2.0.1</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <InvariantGlobalization>true</InvariantGlobalization>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
@@ -38,7 +38,22 @@
     <PublishTrimmed>false</PublishTrimmed>
     <DebugType>embedded</DebugType>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+
+    <!-- ReadyToRun: the application's own code is compiled to ARM64 (or x64)
+         at publish, so starting does not wait for the JIT. Measured 2026-10-06,
+         alternating builds, medians of eight: the window 17ms sooner and the
+         first folder 19ms sooner on its own, and it is what lets the settings
+         file's generated reader pay off at all. Still ahead with the
+         executable read cold off the disk. The cost is size: about 3.7MB more.
+         The IL stays in the file, so a runtime that will not take the compiled
+         code (a newer .NET under RollForward) simply compiles it as before.
+         The two audio codecs are left as IL: nothing runs them at startup. -->
+    <PublishReadyToRun>true</PublishReadyToRun>
   </PropertyGroup>
+
+  <ItemGroup>
+    <PublishReadyToRunExclude Include="Concentus.dll;Concentus.OggFile.dll;NVorbis.dll" />
+  </ItemGroup>
 
   <ItemGroup>
     <Compile Include="src\**\*.cs" />

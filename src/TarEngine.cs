@@ -608,7 +608,37 @@ namespace ExplorerNative
             ArchiveEngine.Reporter reporter, List<string> errors, CancellationToken token)
         {
             int lanes = Math.Max(1, threads);
-            using var queue = new BlockingCollection<Pending>(lanes * 2);
+
+            // Runs of files from one folder, not single files: writers each
+            // taking the next file were all creating files in one folder at once,
+            // which Windows does one at a time. A run closes where the folder
+            // changes, at 64 files or at a megabyte — the rule
+            // FileOperations.RunsByFolder explains — so the memory held is about
+            // what it was: a few runs per writer instead of a few files.
+            using var queue = new BlockingCollection<List<Pending>>(lanes * 2);
+            var run = new List<Pending>();
+            long runBytes = 0;
+            string? runFolder = null;
+
+            void Hand()
+            {
+                if (run.Count == 0) return;
+                queue.Add(run, token);
+                run = new List<Pending>();
+                runBytes = 0;
+            }
+
+            void Enqueue(Pending pending)
+            {
+                var folder = Path.GetDirectoryName(pending.Target);
+                if (run.Count > 0 && (run.Count >= 64 || runBytes >= 1 << 20 ||
+                                      !string.Equals(folder, runFolder, StringComparison.OrdinalIgnoreCase)))
+                    Hand();
+                if (run.Count == 0) runFolder = folder;
+                run.Add(pending);
+                runBytes += pending.Length;
+            }
+
             int done = 0;
 
             // Set when the archive itself stops making sense — truncated, or a
@@ -627,7 +657,8 @@ namespace ExplorerNative
             {
                 writers[lane] = Task.Run(() =>
                 {
-                    foreach (var pending in queue.GetConsumingEnumerable())
+                    foreach (var handed in queue.GetConsumingEnumerable())
+                    foreach (var pending in handed)
                     {
                         try
                         {
@@ -786,8 +817,8 @@ namespace ExplorerNative
                             continue;
                         }
 
-                        queue.Add(new Pending(entry.Name, target, buffer, filled,
-                            entry.ModificationTime.LocalDateTime), token);
+                        Enqueue(new Pending(entry.Name, target, buffer, filled,
+                            entry.ModificationTime.LocalDateTime));
                     }
                     else
                     {
@@ -809,10 +840,7 @@ namespace ExplorerNative
 
                                 if (copied < length)
                                     throw new InvalidDataException("the archive ends part way through it");
-                            });
-
-                            try { File.SetLastWriteTime(target, entry.ModificationTime.LocalDateTime); }
-                            catch { }
+                            }, bufferSize: 0, modified: LocalTime(entry));
 
                             Interlocked.Increment(ref done);
 
@@ -834,9 +862,19 @@ namespace ExplorerNative
                         reporter.Finished(0);
                     }
                 }
+
+                // The last run, however short — after the end of the archive or
+                // at the damage, where what was read whole is still written.
+                Hand();
             }
             finally
             {
+                // A run never handed over — the extraction was cancelled while it
+                // was being gathered — is files that will not be written, so a
+                // replacement recorded for any of them is taken back.
+                foreach (var unwritten in run) rules.Withdraw(unwritten.Target);
+                run.Clear();
+
                 queue.CompleteAdding();
 
                 // Waited for even on the way out of a cancellation: these hold
@@ -906,6 +944,13 @@ namespace ExplorerNative
             return at < DateTimeOffset.UnixEpoch ? DateTimeOffset.UnixEpoch : at;
         }
 
+        /// <summary>An entry's date, or null where it will not convert, which leaves the file's own.</summary>
+        private static DateTime? LocalTime(TarEntry entry)
+        {
+            try { return entry.ModificationTime.LocalDateTime; }
+            catch { return null; }
+        }
+
         private sealed record Pending(string Name, string Target, byte[] Data, int Length, DateTime Modified);
 
         private static string Describe(TarEntryType type) => type switch
@@ -934,11 +979,11 @@ namespace ExplorerNative
 
         private static void WriteFile(string target, byte[] data, int length, DateTime modified)
         {
+            // One write of the whole file, so no buffer of the stream's own,
+            // and the date set through the handle rather than by opening the
+            // file again afterwards.
             ArchiveEngine.WriteCommitted(target, output => output.Write(data, 0, length),
-                Math.Max(4096, Math.Min(1 << 20, length + 1)));
-
-            try { File.SetLastWriteTime(target, modified); }
-            catch { }
+                bufferSize: 0, modified: modified);
         }
 
         /// <summary>

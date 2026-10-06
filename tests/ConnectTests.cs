@@ -162,6 +162,88 @@ namespace ExplorerNative
                 }
                 var (_, _, html) = await Get("/");
                 Check("the page is the Explorer Connect app", html.Contains("Explorer Connect") && html.Contains("/app/app.js"));
+
+                // The shell is cached by tag: index.html names app.js and app.css by their tags, which the phone
+                // keeps for good; everything else is asked again and answered with 304 when it has not changed.
+                async Task<HttpResponseMessage> Raw(string url, string? accept = null, string? ifNoneMatch = null, string? login = null)
+                {
+                    var request = new HttpRequestMessage(HttpMethod.Get, url);
+                    if (accept != null) request.Headers.TryAddWithoutValidation("Accept-Encoding", accept);
+                    if (ifNoneMatch != null) request.Headers.TryAddWithoutValidation("If-None-Match", ifNoneMatch);
+                    if (login != null) request.Headers.Add("Tailscale-User-Login", login);
+                    return await http.SendAsync(request);
+                }
+                var jsTag = WebAssets.TagOf("app.js");
+                Check("the page names its script and style sheet by their tags",
+                    jsTag.Length == 16 && html.Contains($"\"/app/app.js?v={jsTag}\"") && html.Contains($"\"/app/app.css?v={WebAssets.TagOf("app.css")}\""), jsTag);
+                using (var versioned = await Raw($"/app/app.js?v={jsTag}"))
+                    Check("the script under its tag is kept for good", versioned.Headers.CacheControl?.MaxAge == TimeSpan.FromDays(365) &&
+                        versioned.Headers.CacheControl.Extensions.Any(e => e.Name == "immutable"), versioned.Headers.CacheControl?.ToString());
+                using (var stale = await Raw("/app/app.js?v=0000000000000000"))
+                    Check("but not under a tag that is not its own", stale.Headers.CacheControl?.NoCache == true, stale.Headers.CacheControl?.ToString());
+                using (var page = await Raw("/"))
+                {
+                    var tag = page.Headers.ETag?.Tag ?? "";
+                    Check("the page is asked again every time, with a tag", page.Headers.CacheControl?.NoCache == true && tag.Length > 2, tag);
+                    using var again = await Raw("/", ifNoneMatch: tag);
+                    var body = await again.Content.ReadAsByteArrayAsync();
+                    Check("and the same page is a 304 with no body", again.StatusCode == HttpStatusCode.NotModified && body.Length == 0, $"{again.StatusCode} {body.Length}");
+                    Check("which still carries the security headers", again.Headers.Contains("Content-Security-Policy") || again.Content.Headers.Contains("Content-Security-Policy") ||
+                        again.Headers.TryGetValues("X-Content-Type-Options", out _), again.Headers.ToString());
+                    using var other = await Raw("/", ifNoneMatch: "\"something-else\"");
+                    Check("a different tag gets the page", other.StatusCode == HttpStatusCode.OK, other.StatusCode.ToString());
+                }
+                using (var br = await Raw("/app/app.js", accept: "gzip, deflate, br"))
+                {
+                    var packed = await br.Content.ReadAsByteArrayAsync();
+                    WebAssets.TryGet("/app/app.js", out var plainJs, out _);
+                    using var unpack = new System.IO.Compression.BrotliStream(new MemoryStream(packed), System.IO.Compression.CompressionMode.Decompress);
+                    using var into = new MemoryStream();
+                    unpack.CopyTo(into);
+                    Check("the script goes compressed to a browser that takes brotli, and unpacks to itself",
+                        br.Content.Headers.ContentEncoding.Contains("br") && packed.Length < plainJs.Length / 2 && into.ToArray().AsSpan().SequenceEqual(plainJs),
+                        $"{packed.Length} of {plainJs.Length}");
+                }
+                using (var gz = await Raw("/app/app.css", accept: "gzip"))
+                    Check("and as gzip to one that takes only that", gz.Content.Headers.ContentEncoding.Contains("gzip"), string.Join(",", gz.Content.Headers.ContentEncoding));
+                using (var none = await Raw("/app/app.css", accept: "br;q=0, gzip;q=0"))
+                    Check("a coding refused with q=0 is not used", none.Content.Headers.ContentEncoding.Count == 0, string.Join(",", none.Content.Headers.ContentEncoding));
+                using (var icon = await Raw("/app/icon-192.png", accept: "br"))
+                    Check("an image is not compressed again", icon.Content.Headers.ContentEncoding.Count == 0);
+
+                // JSON worth it goes compressed too; small answers and clients that did not ask go as they are.
+                var bigFolder = Path.Combine(Path.GetTempPath(), $"en-compress-{Guid.NewGuid():N}");
+                Directory.CreateDirectory(bigFolder);
+                try
+                {
+                    for (int i = 0; i < 200; i++) File.WriteAllBytes(Path.Combine(bigFolder, $"track {i:000} with a longer name.flac"), Array.Empty<byte>());
+                    var listUrl = "/api/list?path=" + Uri.EscapeDataString(bigFolder);
+                    using var plain = await Raw(listUrl, login: "me@example.com");
+                    var plainBody = await plain.Content.ReadAsStringAsync();
+                    using var packedList = await Raw(listUrl, accept: "br", login: "me@example.com");
+                    var packedBytes = await packedList.Content.ReadAsByteArrayAsync();
+                    using var unpack = new System.IO.Compression.BrotliStream(new MemoryStream(packedBytes), System.IO.Compression.CompressionMode.Decompress);
+                    using var reader = new StreamReader(unpack);
+                    var unpacked = reader.ReadToEnd();
+                    Check("a big listing goes compressed, and is the same listing",
+                        packedList.Content.Headers.ContentEncoding.Contains("br") && unpacked == plainBody && packedBytes.Length * 5 < plainBody.Length,
+                        $"{packedBytes.Length} of {plainBody.Length}");
+                    Check("a client that did not ask gets plain JSON", plain.Content.Headers.ContentEncoding.Count == 0 && plainBody.StartsWith("["));
+                    using var gzList = await Raw(listUrl, accept: "gzip", login: "me@example.com");
+                    using var gunzip = new System.IO.Compression.GZipStream(await gzList.Content.ReadAsStreamAsync(), System.IO.Compression.CompressionMode.Decompress);
+                    using var gzReader = new StreamReader(gunzip);
+                    Check("and gzip when that is all it takes", gzList.Content.Headers.ContentEncoding.Contains("gzip") && gzReader.ReadToEnd() == plainBody);
+                    using var small = await Raw("/api/info", accept: "br", login: "me@example.com");
+                    Check("a small answer is not compressed", small.Content.Headers.ContentEncoding.Count == 0);
+                }
+                finally { try { Directory.Delete(bigFolder, true); } catch { } }
+
+                Equal("br is preferred to gzip", "br", WebAssets.PickEncoding("gzip, deflate, br"));
+                Equal("gzip when br is refused", "gzip", WebAssets.PickEncoding("br;q=0, gzip"));
+                Equal("nothing for identity", "", WebAssets.PickEncoding("identity"));
+                Equal("nothing for a bare star", "", WebAssets.PickEncoding("*"));
+                Check("a weak tag matches its strong form", ConnectServer.TagMatches("W/\"abc\", \"def\"", "\"abc\"") && ConnectServer.TagMatches("*", "\"x\"") && !ConnectServer.TagMatches("\"abc\"", "\"abd\""));
+
                 var (missing, _, _) = await Get("/app/../settings.json");
                 Check("a path climbing out of the app is not served", missing != 200, missing.ToString());
 

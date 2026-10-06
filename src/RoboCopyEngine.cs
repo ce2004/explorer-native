@@ -646,16 +646,12 @@ namespace ExplorerNative
                     {
                         if (Directory.Exists(NameRules.ExactPath(source)))
                         {
-                            foreach (var f in SafeEnumerateFiles(source))
+                            // Sizes from the listing, not a FileInfo per file.
+                            foreach (var (f, len) in SafeEnumerateSized(source))
                             {
-                                try
-                                {
-                                    var len = new FileInfo(NameRules.ExactPath(f)).Length;
-                                    Interlocked.Add(ref bytesTotal, len);
-                                    Interlocked.Increment(ref itemsTotal);
-                                    lock (sizeByName) sizeByName[Path.GetFileName(f)] = len;
-                                }
-                                catch { }
+                                Interlocked.Add(ref bytesTotal, len);
+                                Interlocked.Increment(ref itemsTotal);
+                                lock (sizeByName) sizeByName[Path.GetFileName(f)] = len;
                             }
                         }
                         else if (File.Exists(NameRules.ExactPath(source)))
@@ -2224,31 +2220,57 @@ namespace ExplorerNative
             return null;
         }
 
-        private static IEnumerable<string> SafeEnumerateFiles(string root)
+        private static IEnumerable<string> SafeEnumerateFiles(string root) =>
+            SafeEnumerateSized(root).Select(f => f.Path);
+
+        /// <summary>
+        /// Every file under <paramref name="root"/>, links not followed, with its
+        /// size — in the order and with the answers the two-call walk gave, from
+        /// one listing per folder. The size and whether a folder is a reparse
+        /// point come with each name, so nothing is asked of a file twice: a
+        /// FileInfo per file and a DirectoryInfo per folder were a second round
+        /// trip for every entry, and on a share each one is a network request.
+        /// </summary>
+        private static IEnumerable<(string Path, long Length)> SafeEnumerateSized(string root)
         {
             var stack = new Stack<string>();
             stack.Push(root);
+            var options = new EnumerationOptions
+            {
+                AttributesToSkip = 0,
+                IgnoreInaccessible = false,
+                RecurseSubdirectories = false,
+            };
 
             while (stack.Count > 0)
             {
                 var dir = stack.Pop();
 
-                string[] subDirs;
-                try { subDirs = Directory.GetDirectories(NameRules.ExactPath(dir)); }
+                List<(string Path, long Length, bool Folder, bool Reparse)> entries;
+                try
+                {
+                    entries = new System.IO.Enumeration.FileSystemEnumerable<(string, long, bool, bool)>(
+                        NameRules.ExactPath(dir),
+                        (ref System.IO.Enumeration.FileSystemEntry e) => (e.ToFullPath(), e.Length, e.IsDirectory,
+                            (e.Attributes & FileAttributes.ReparsePoint) != 0),
+                        options).ToList();
+                }
                 catch { continue; }
 
-                foreach (var sub in subDirs)
+                foreach (var (sub, _, folder, reparse) in entries)
                 {
-                    try { if (NameRules.IsLink(new DirectoryInfo(NameRules.ExactPath(sub)))) continue; }
-                    catch { continue; }
+                    if (!folder) continue;
+                    // Only a reparse point can be a link, so only one is asked.
+                    if (reparse)
+                    {
+                        try { if (NameRules.IsLink(new DirectoryInfo(sub))) continue; }
+                        catch { continue; }
+                    }
                     stack.Push(NameRules.PlainPath(sub));
                 }
 
-                string[] files;
-                try { files = Directory.GetFiles(NameRules.ExactPath(dir)); }
-                catch { continue; }
-
-                foreach (var f in files) yield return NameRules.PlainPath(f);
+                foreach (var (file, length, folder, _) in entries)
+                    if (!folder) yield return (NameRules.PlainPath(file), length);
             }
         }
 

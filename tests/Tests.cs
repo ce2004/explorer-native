@@ -156,6 +156,13 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "delete")
+            {
+                DeleteTests.RunAll(Check, Equal);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             // Just the second review of copying and the window.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "r2files")
             {
@@ -247,6 +254,7 @@ namespace ExplorerNative
             AudioFixTests.RunAll(Check, Equal);
             await UpdateFixTests.RunAll(Check, Equal);
             MainFixTests.RunAll(Check, Equal);
+            DeleteTests.RunAll(Check, Equal);
             await Round2FixTests.RunAll(Check, Equal);
 
             Console.WriteLine($"\n{_passed} passed, {_failed} failed");
@@ -9850,6 +9858,57 @@ namespace ExplorerNative
             Check("the same folder sorts the same way regardless of enumeration order",
                 first.SequenceEqual(second), string.Join(",", first) + " vs " + string.Join(",", second));
 
+            // Sort keys are a shortcut for StrCmpLogicalW and must never be an
+            // opinion of their own: pair by pair, with keys, without keys, and
+            // with a key on one side only, the answer is Windows' answer.
+            string[] parts =
+            {
+                "a", "A", "b", "z", "-", "'", " ", "_", ".", "0", "00", "1", "01", "007", "10", "2", "9",
+                "99999999999999999999", "é", "E", "É", "ß", "ss", "æ", "ae", "~", "(", "[", "#", "x", "日",
+                "あ", "ア", "😀", "ﬁ", "fi", "²", "½", "１", "٣", "Ⅳ", " ", "​", "Track ", ".flac",
+            };
+            var random = new Random(20261006);
+            var corpus = new List<string>();
+            for (int i = 0; i < 4000; i++)
+            {
+                var name = new System.Text.StringBuilder();
+                int pieces = random.Next(1, 7);
+                for (int k = 0; k < pieces; k++) name.Append(parts[random.Next(parts.Length)]);
+                corpus.Add(name.ToString());
+            }
+            corpus.Add(new string('a', 150) + "1");
+            corpus.Add(new string('a', 150) + "2");
+
+            var keys = corpus.Select(NameRules.LogicalKey).ToArray();
+            int disagreements = 0, keyed = 0;
+            string? example = null;
+            for (int n = 0; n < 60_000; n++)
+            {
+                int i = random.Next(corpus.Count), j = random.Next(corpus.Count);
+                int want = Math.Sign(NameRules.CompareLogical(corpus[i], corpus[j]));
+                int both = Math.Sign(NameRules.CompareNames(corpus[i], keys[i], "p", corpus[j], keys[j], "p"));
+                int left = Math.Sign(NameRules.CompareNames(corpus[i], keys[i], "p", corpus[j], null, "p"));
+                if (keys[i] != null && keys[j] != null) keyed++;
+                if (both != want || left != want)
+                {
+                    disagreements++;
+                    example ??= $"\"{corpus[i]}\" vs \"{corpus[j]}\": {want} {both} {left}";
+                }
+            }
+            Check($"sort keys order {keyed:N0} keyed pairs exactly as StrCmpLogicalW does", disagreements == 0, example);
+            Check("and most names get a key", keys.Count(k => k != null) > corpus.Count / 3);
+            Check("a number written outside ASCII gets no key, so Windows decides it",
+                NameRules.LogicalKey("Track ²") == null && NameRules.LogicalKey("１") == null);
+            Check("a very long name gets no key either", NameRules.LogicalKey(new string('a', 150)) == null);
+
+            // A list sorted with keys is the list sorted without them.
+            var byWindows = corpus.ToList();
+            byWindows.Sort((x, y) => NameRules.CompareNames(x, x, y, y));
+            var keyOf = corpus.Distinct().ToDictionary(c => c, NameRules.LogicalKey);
+            var byKeys = corpus.ToList();
+            byKeys.Sort((x, y) => NameRules.CompareNames(x, keyOf[x], x, y, keyOf[y], y));
+            Check("a folder sorted by keys comes out in the same order", byWindows.SequenceEqual(byKeys));
+
             Console.WriteLine();
         }
 
@@ -10300,6 +10359,36 @@ namespace ExplorerNative
                 Check("walk reported complete", r.Complete);
 
                 Check("result is cached", calc.TryGetCached(temp, out var cached) && cached.Bytes == 3000);
+
+                // A wide, deep tree, which is what makes the walk share folders
+                // between threads: every file and folder counted exactly once,
+                // and the depth limit still honoured part-way down.
+                var wide = Path.Combine(temp, "wide");
+                long wideBytes = 0;
+                int wideFiles = 0, wideFolders = 0;
+                for (int a = 0; a < 12; a++)
+                    for (int b = 0; b < 6; b++)
+                    {
+                        var leaf = Path.Combine(wide, $"a{a}", $"b{b}", "c");
+                        Directory.CreateDirectory(leaf);
+                        File.WriteAllText(Path.Combine(leaf, "f.bin"), new string('w', a * 10 + b + 1));
+                        File.WriteAllText(Path.Combine(wide, $"a{a}", $"b{b}", "g.bin"), "gg");
+                        wideBytes += a * 10 + b + 1 + 2;
+                        wideFiles += 2;
+                        wideFolders += 2;
+                    }
+                wideFolders += 12;
+                using var wideCalc = new FolderSizeCalculator { TimeoutSeconds = 30 };
+                var wideResult = await wideCalc.CalculateAsync(wide);
+                Check("a wide tree is counted exactly once, file by file and folder by folder",
+                    wideResult.Bytes == wideBytes && wideResult.Files == wideFiles &&
+                    wideResult.Folders == wideFolders && wideResult.Complete,
+                    $"{wideResult.Bytes}/{wideBytes} bytes, {wideResult.Files}/{wideFiles} files, {wideResult.Folders}/{wideFolders} folders");
+                using var twoDeep = new FolderSizeCalculator { TimeoutSeconds = 30, MaxDepth = 3 };
+                var twoDeepResult = await twoDeep.CalculateAsync(wide);
+                Check("and a depth limit part-way down still stops there",
+                    twoDeepResult.Files == 72 && !twoDeepResult.Complete,
+                    $"files={twoDeepResult.Files}");
 
                 // MaxDepth must stop the walk short rather than run away.
                 using var shallow = new FolderSizeCalculator { MaxDepth = 1 };

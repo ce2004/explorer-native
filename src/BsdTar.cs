@@ -8,6 +8,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace ExplorerNative
 {
@@ -353,12 +354,7 @@ namespace ExplorerNative
                 // archive again and finds one more locked file at most, so five
                 // locked files out of fifty were six whole compressions; now the
                 // common case is one. The retries stay for a file locked mid-run.
-                foreach (var item in plan)
-                {
-                    token.ThrowIfCancellationRequested();
-                    if (item.IsDirectory) continue;
-                    if (InUse(item.Source) is { } why) excluded.TryAdd(item.Name, why);
-                }
+                foreach (var (name, why) in LockedFiles(plan, token)) excluded.TryAdd(name, why);
 
                 // What this attempt's archive holds: every attempt makes the
                 // archive again from nothing, so only the last one's lines count.
@@ -656,6 +652,33 @@ namespace ExplorerNative
         /// another program holding it; null otherwise. Anything else — gone,
         /// denied — is left for bsdtar to say, as before.
         /// </summary>
+        /// <summary>
+        /// The files of the plan another program is holding, by plan name, in
+        /// plan order. The opens run in parallel: one at a time, twenty thousand
+        /// files were a wait of their own before bsdtar had even started, and an
+        /// open is a round trip the disk answers as well with many in flight.
+        /// The order is the plan's whatever finishes first, so the exclusions on
+        /// the command line come out the same every time.
+        /// </summary>
+        internal static List<(string Name, string Why)> LockedFiles(IReadOnlyList<ArchiveItem> plan,
+            CancellationToken token)
+        {
+            var files = plan.Where(p => !p.IsDirectory).ToArray();
+            var why = new string?[files.Length];
+            Parallel.For(0, files.Length,
+                new ParallelOptions
+                {
+                    MaxDegreeOfParallelism = Math.Clamp(Environment.ProcessorCount, 4, 16),
+                    CancellationToken = token,
+                },
+                i => why[i] = InUse(files[i].Source));
+
+            var locked = new List<(string, string)>();
+            for (int i = 0; i < files.Length; i++)
+                if (why[i] is { } reason) locked.Add((files[i].Name, reason));
+            return locked;
+        }
+
         private static string? InUse(string path)
         {
             try
@@ -1186,6 +1209,10 @@ namespace ExplorerNative
 
             int done = 0;
 
+            // Folders already made, so a file going into one does not ask for it
+            // again — a request to the disk per file, for a folder that is there.
+            var made = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
             // Folders first and shallowest first, so a file never arrives before
             // the folder it goes in.
             foreach (var entry in all.Where(e => e.IsDirectory).OrderBy(e => e.Name.Length))
@@ -1199,7 +1226,7 @@ namespace ExplorerNative
                     continue;
                 }
 
-                try { Directory.CreateDirectory(target); done++; }
+                try { Directory.CreateDirectory(target); done++; made.Add(target); }
                 catch (Exception ex) { errors.Add($"{entry.Name}: {ex.Message}"); }
             }
 
@@ -1273,11 +1300,23 @@ namespace ExplorerNative
                 try
                 {
                     var folder = Path.GetDirectoryName(target);
-                    if (!string.IsNullOrEmpty(folder)) Directory.CreateDirectory(folder);
+                    if (!string.IsNullOrEmpty(folder) && !made.Contains(folder))
+                    {
+                        Directory.CreateDirectory(folder);
+                        made.Add(folder);
+                    }
 
                     reporter.Starting(entry.Name);
-                    ArchiveEngine.ClearReadOnly(target);
-                    File.Move(from, target, overwrite: true);
+
+                    // Read-only cleared only when the move is refused for it:
+                    // asked first, a target that was not there threw and was
+                    // caught for every file.
+                    try { File.Move(from, target, overwrite: true); }
+                    catch (UnauthorizedAccessException)
+                    {
+                        ArchiveEngine.ClearReadOnly(target);
+                        File.Move(from, target, overwrite: true);
+                    }
                     reporter.Advance(entry.Size);
                     done++;
                 }

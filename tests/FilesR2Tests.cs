@@ -366,15 +366,17 @@ namespace ExplorerNative
                 var result = await FileOperations.RunAsync(new[] { album }, dst, true, PasteConflictPolicy.AutoRename,
                     4, 64, null, null, CancellationToken.None);
                 var moved = Path.Combine(dst, "Album (2)");
-                Check("per item: a colliding folder moved on one volume is renamed, file by file",
+                Check("per item: a colliding folder moved on one volume is renamed, not copied",
                     File.Exists(Path.Combine(moved, "a.txt")) && FileId(Path.Combine(moved, "a.txt")) == idA &&
                     File.Exists(Path.Combine(moved, "cd2", "b.txt")) && FileId(Path.Combine(moved, "cd2", "b.txt")) == idB,
                     string.Join(" | ", result.Errors));
                 Check("per item: and the source is gone", !Directory.Exists(album));
 
                 var source = SourceText("FileOperations.cs");
-                var loop = source[source.IndexOf("await Parallel.ForEachAsync(", StringComparison.Ordinal)..];
-                loop = loop[..loop.IndexOf("}).ConfigureAwait(false);", StringComparison.Ordinal)];
+                // The per-file body, which the parallel loop calls for each
+                // file of a run: from CopyOne to the tidying that follows it.
+                var loop = source[source.IndexOf("async ValueTask CopyOne(", StringComparison.Ordinal)..];
+                loop = loop[..loop.IndexOf("// A move leaves the source directory skeletons", StringComparison.Ordinal)];
                 Check("per item: nothing in the per-file loop asks about volumes",
                     loop.Length > 0 && !loop.Contains("SameVolume") && loop.Contains("item.Rename"));
             }
@@ -562,6 +564,21 @@ namespace ExplorerNative
             var es = new[] { "Eclair", "Éclat", "Fig" };
             int e = TypeAhead.Find(es.Length, i => es[i], "eé", 0);
             Equal("fold: e then é is still one key pressed twice", "Éclat", e < 0 ? "(nothing)" : es[e]);
+
+            // The list folds each name once and searches the folded names. It has
+            // to land exactly where folding on every keystroke did.
+            var rows = new[] { "Apple", "Æble", "Banana", "Éclair", "eclat", "Øresund", "Straße", "ssh", "ﬁle", "日本語", "🎶 tune", "zebra", "Zoë" };
+            var folded = rows.Select(TypeAhead.Fold).ToArray();
+            string[] typed = { "a", "ae", "ÆÆ", "e", "é", "eé", "ec", "o", "or", "s", "ß", "st", "fi", "ﬁ", "日", "🎶", "🎶🎶", "z", "zo", "q", "" };
+            int same = 0, asked = 0;
+            foreach (var query in typed)
+                for (int at = -1; at < rows.Length; at++)
+                {
+                    asked++;
+                    if (TypeAhead.Find(rows.Length, i => rows[i], query, at) ==
+                        TypeAhead.FindFolded(rows.Length, i => folded[i], query, at)) same++;
+                }
+            Check("fold: searching names folded once finds what folding per keystroke found", asked == same, $"{same} of {asked}");
         }
 
         /// <summary>

@@ -333,6 +333,13 @@ the machine:
 **Trimming is still not an option.** `PublishTrimmed` fails with NETSDK1175,
 "Windows Forms is not supported or recommended with trimming enabled".
 
+**What does make startup faster.** ReadyToRun is on, so the application's own
+code arrives compiled rather than waiting for the JIT; the Opus and Vorbis
+libraries are left out of it, because they are only reached when an Ogg file
+plays. Settings are read and written through the source-generated JSON
+serializer rather than reflection. And the web server and the clipboard
+listener start on a worker, not on the way to the window appearing.
+
 **And "launched every time a folder is opened" means the messenger, not the
 application.** The application stays resident — tray icon, `CloseToTray`,
 `StartWithWindows` — and what Windows starts per folder is a second copy that
@@ -882,7 +889,9 @@ already expect.
 an ordinal tie-break on the path so the order stays total: "Track 2" before
 "Track 10", "file (2)" before "file (10)", and "Éclair" among the E names rather
 than after "Zebra" and "~tilde" as an ordinal comparison put it. 100,000 names
-sort in about 190ms on the worker, against 70 for the ordinal one. `TypeAhead.Fold`
+sort in about 39ms on the worker, because each name gets a sort key once and the
+keys are compared; `StrCmpLogicalW` itself is only called for names holding
+non-ASCII digits or longer than 100 characters. `TypeAhead.Fold`
 takes accents off both the typed prefix and each name, so "e" lands on the first
 E name in that order whether it has an accent or not. It decomposes through
 Windows' `NormalizeString`: the application runs with `InvariantGlobalization`,
@@ -4493,6 +4502,11 @@ claim — and extraction parallelises for the mirror-image reason, because the
 directory gives every offset and N handles on one read-only file are N
 independent readers.
 
+Extraction, and the managed copy in `FileOperations`, give each worker a run of
+files from one folder rather than dealing single files out in turn, so a worker
+mostly writes into one folder at a time instead of every worker touching every
+folder.
+
 A gzipped tar has no per-entry boundary, so `ParallelGZip` cuts the *stream*
 instead. RFC 1952: "A gzip file consists of a series of members." Each 2MB chunk
 becomes a member of its own, compressed by whichever worker is free, written out
@@ -4500,7 +4514,8 @@ in order. This is what pigz does. The cost is that a chunk cannot refer back int
 the one before it, so the first 32KB of each — the length of deflate's window —
 compresses without history: **measured, 0.09% larger** than the single stream.
 The benefit is that a gzipped tar is fast even when the archive is one enormous
-file, which is the case a zip cannot answer.
+file. A zip now does the same for any file over 64MB (see "A file too big to
+buffer" below).
 
 Measured, 142MB corpus (72 files, half compressible text and half incompressible
 binary), Balanced:
@@ -4615,10 +4630,11 @@ order.
 header patched afterwards — which is why the output has to be seekable. The
 alternative the format offers, a data descriptor after the data, is read
 correctly by everything modern and confuses enough older tools that two seeks
-are worth it. This is also the honest limit of zip: an archive that is one
-enormous file is single-threaded here and in every other zip tool, because
-deflate is defined as a single stream of back-references. A gzipped tar has no
-such limit, which is why the chooser offers it second.
+are worth it. A file over 64MB is no longer one worker's job, though: it is
+deflated by all the workers in 2MB pieces, each ended with a sync flush so the
+pieces join into one valid deflate stream (`ParallelGZip`'s raw mode), and the
+output is byte for byte the same whatever the worker count. The cost is the
+same as the gzip members' — a piece cannot refer back into the one before it.
 
 **The gzip trailer belongs to the last member.** Anything that reads the size of
 a .gz without decompressing it — `gzip -l` — reports the final chunk. Equally
@@ -4630,7 +4646,7 @@ recorded as known rather than discovered later and "fixed".
 one, `Crc32`, is the IEEE 802.3 polynomial — the one zip and gzip use. `Crc32C`
 is Castagnoli, a different checksum, and using it would silently produce archives
 nothing could verify. Measured over 256MB: 134 MB/s a byte at a time, 300 MB/s
-from the slicing-by-eight tables, **2.0 GB/s** from the instruction. What makes
+from the slicing-by-eight tables, **9.8 GB/s** from the instruction. What makes
 that worth having is not the deflate, which is thirty times slower than any of
 the three — it is the *stored* entry, where the only work is a checksum and a
 copy, and at 300 MB/s the checksum was what held back a disk measured at 2.3
@@ -5720,7 +5736,12 @@ found and what was done, most of it now in `OddCaseTests`:
   helper asks the shell for no confirmation, and without confirmation the shell
   does not warn when something cannot be recycled — a share, most USB sticks, a
   file bigger than the bin. `ShellDelete.Recycle` calls the shell itself with
-  `FOF_WANTNUKEWARNING`, so Windows asks exactly in that case.
+  `FOF_WANTNUKEWARNING`, so Windows asks exactly in that case. The window's
+  delete now sends the whole selection in one operation (`RecycleMany`, 500
+  files 4.66 s one at a time against 1.28 s together) and counts what went by
+  what is still there; a permanent delete is `ShellDelete.DeletePermanently`,
+  which is `Directory.Delete` with read-only cleared and junctions removed as
+  links.
 - **Switching output device did nothing, for a whole build** — a flag set by
   `Stop` was never cleared by `Start`. The test now counts `DeviceSwitched`;
   every check it had passed for a player that ignored the switch.

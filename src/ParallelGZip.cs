@@ -115,9 +115,34 @@ namespace ExplorerNative
 
             private sealed record Chunk(byte[] Buffer, int Length);
 
+            /// <summary>
+            /// One raw deflate stream rather than gzip members — what a zip entry
+            /// holds. See the constructor.
+            /// </summary>
+            private readonly bool _raw;
+
+            /// <summary>
+            /// A final, empty fixed-Huffman block: what zlib itself writes to end a
+            /// stream with nothing left to say. BFINAL set, block type 01, and the
+            /// end-of-block code.
+            /// </summary>
+            private static readonly byte[] FinalBlock = { 0x03, 0x00 };
+
+            /// <param name="raw">
+            /// One deflate stream instead of a series of gzip members, for a zip
+            /// entry too big to hand to a worker whole. Each chunk is deflated on
+            /// its own and ended with a sync flush, which leaves it byte-aligned
+            /// and not final, so the chunks joined end to end are one valid stream
+            /// once a final empty block is added — the same cut pigz makes, and
+            /// the same price: each chunk starts without the 32KB of history the
+            /// one before it would have given. A zip of one 70MB log was deflated
+            /// by the writer thread alone, and was most of the time of the whole
+            /// archive.
+            /// </param>
             public Writer(Stream destination, int threads, CompressionLevel level,
-                CancellationToken token, bool leaveOpen = false)
+                CancellationToken token, bool leaveOpen = false, bool raw = false)
             {
+                _raw = raw;
                 _destination = destination;
                 _level = level;
                 _token = token;
@@ -194,6 +219,7 @@ namespace ExplorerNative
                 _used = 0;
 
                 var level = _level;
+                bool raw = _raw;
 
                 _lane.Wait(_token);
 
@@ -201,6 +227,21 @@ namespace ExplorerNative
                 {
                     try
                     {
+                        if (raw)
+                        {
+                            // Flushed, not closed: the flush ends the chunk on a
+                            // byte boundary with a block that is not the last, and
+                            // only what was written by then is kept. Closing it
+                            // would add a final block in the middle of the entry.
+                            var part = new MemoryStream(Math.Max(64, length / 2));
+                            var deflate = new DeflateStream(part, level, leaveOpen: true);
+                            deflate.Write(buffer, 0, length);
+                            deflate.Flush();
+                            int kept = (int)part.Length;
+                            deflate.Dispose();
+                            return new Chunk(part.GetBuffer(), kept);
+                        }
+
                         // A member is a header, a deflate stream and a trailer, and
                         // GZipStream writes all three. Nothing here hand-rolls the
                         // format: the only thing being done by hand is deciding
@@ -305,7 +346,9 @@ namespace ExplorerNative
                     // The tail is a member like any other, however short.
                     // And an empty input is one empty member: a zero-byte .gz is
                     // not a gzip file, and everything refuses to open it.
-                    if (_failure == null && (_used > 0 || _written == 0)) Dispatch(evenIfEmpty: true);
+                    // A raw stream has no members, so nothing is dispatched for
+                    // an empty one: the final block below is the whole of it.
+                    if (_failure == null && (_used > 0 || (_written == 0 && !_raw))) Dispatch(evenIfEmpty: true);
                 }
                 catch (Exception ex) { Interlocked.CompareExchange(ref _failure, ex, null); }
 
@@ -313,6 +356,13 @@ namespace ExplorerNative
 
                 try { _emitter.GetAwaiter().GetResult(); }
                 catch (Exception ex) { Interlocked.CompareExchange(ref _failure, ex, null); }
+
+                // The end of the one deflate stream, after every chunk.
+                if (_raw && _failure == null)
+                {
+                    try { _destination.Write(FinalBlock); }
+                    catch (Exception ex) { Interlocked.CompareExchange(ref _failure, ex, null); }
+                }
 
                 _queue.Dispose();
                 _lane.Dispose();

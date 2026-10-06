@@ -686,13 +686,9 @@ namespace ExplorerNative
             }
 
             // The web app's own files: its shell, no data, so no code needed.
-            if ((r.Method == "GET" || head) && WebAssets.TryGet(r.Path, out var asset, out var assetType))
+            if ((r.Method == "GET" || head) && WebAssets.TryGetAsset(r.Path, out var asset))
             {
-                await Write(s, $"HTTP/1.1 200 OK\r\nContent-Type: {assetType}\r\nContent-Length: {asset.Length}\r\n" +
-                               "Cache-Control: no-cache\r\nX-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n" +
-                               "Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; " +
-                               "connect-src 'self'; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n\r\n", token);
-                if (!head) await s.WriteAsync(asset, token);
+                await Shell(s, r, asset, head, token);
                 return;
             }
 
@@ -733,12 +729,12 @@ namespace ExplorerNative
                         await Json(s, 200, new { name = Environment.MachineName, app = "Explorer Native", version = 1, apiVersion = 4 }, head, token);
                         break;
                     case "/api/drives":
-                        await Json(s, 200, await Drives(), head, token);
+                        await Json(s, 200, await Drives(), head, token, r);
                         break;
                     case "/api/list":
                         var entries = await List(path);
                         if (entries == null) await Error(s, 404, "That folder can't be opened.", head, token);
-                        else await Json(s, 200, entries, head, token);
+                        else await Json(s, 200, entries, head, token, r);
                         break;
                     case "/api/file":
                         await File(r, s, path, token);
@@ -749,7 +745,7 @@ namespace ExplorerNative
                     // Not "/api/stat": "/stat?" is a common blocking rule, and a
                     // blocked request never reaches the PC.
                     case "/api/details":
-                        await Json(s, 200, await Stat(path, r.Query.TryGetValue("hash", out var hv) && hv == "1", token), head, token);
+                        await Json(s, 200, await Stat(path, r.Query.TryGetValue("hash", out var hv) && hv == "1", token), head, token, r);
                         break;
                     case "/api/job":
                         var job = FindJob(r.Query.TryGetValue("id", out var id) ? id : "");
@@ -795,7 +791,7 @@ namespace ExplorerNative
                         break;
                     case "/api/clipboard":
                         if (post) await Json(s, 200, new { ok = true, seq = await Clip.SetTextAsync(Str(await ReadJson(r, token), "text") ?? throw new ConnectException(400, "The body needs text.")) }, false, token);
-                        else await Json(s, 200, Clip.Current, head, token);
+                        else await Json(s, 200, Clip.Current, head, token, r);
                         break;
                     case "/api/clipboard/image":
                         if (post) await Json(s, 200, new { ok = true, seq = await Clip.SetImageAsync(await ReadAll(r, MaxClipboardImage, token)) }, false, token);
@@ -811,7 +807,7 @@ namespace ExplorerNative
                         await Json(s, 200, await ClipCommit(await ReadJson(r, token), token), false, token);
                         break;
                     case "/api/formats":
-                        await Json(s, 200, new { audio = Files.AudioExtensions(), native = NativeFormats }, head, token);
+                        await Json(s, 200, new { audio = Files.AudioExtensions(), native = NativeFormats }, head, token, r);
                         break;
                     case "/api/audio":
                         await Audio(r, s, path, token);
@@ -2136,11 +2132,97 @@ namespace ExplorerNative
 
         private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNamingPolicy = JsonNamingPolicy.CamelCase };
 
-        private static async Task Json(NetworkStream s, int status, object value, bool head, CancellationToken token)
+        /// <summary>
+        /// JSON smaller than this goes as it is: under a packet, compressing it saves nothing on the wire.
+        /// </summary>
+        internal const int CompressAbove = 1400;
+
+        /// <summary>
+        /// Brotli's quality for JSON made per request. Measured on a 10,000-entry listing (1.16 MB): quality 3 is
+        /// 22 KB in 1.3 ms, 1 is 24 KB in 0.6 ms, 9 saves another 3 KB for 23 ms, and gzip at its fastest is 42 KB.
+        /// </summary>
+        internal const int JsonBrotliQuality = 3;
+
+        /// <summary>
+        /// Writes a JSON answer. Given the request, a body worth it is compressed the way the request allows
+        /// (brotli, else gzip): a folder of thousands of files is a megabyte of names that crosses the phone's
+        /// link as a few tens of kilobytes.
+        /// </summary>
+        private static async Task Json(NetworkStream s, int status, object value, bool head, CancellationToken token, Request? r = null)
         {
             var body = JsonSerializer.SerializeToUtf8Bytes(value, JsonOptions);
-            await Write(s, $"HTTP/1.1 {status} {Reason(status)}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {body.Length}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n", token);
-            if (!head) await s.WriteAsync(body, token);
+            string coding = "";
+            if (r != null && body.Length >= CompressAbove)
+            {
+                coding = WebAssets.PickEncoding(r.Headers.GetValueOrDefault("accept-encoding"));
+                if (coding == "br") body = WebAssets.Brotli(body, JsonBrotliQuality);
+                else if (coding == "gzip") body = WebAssets.Gzip(body, System.IO.Compression.CompressionLevel.Fastest);
+            }
+            var headText = $"HTTP/1.1 {status} {Reason(status)}\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {body.Length}\r\n" +
+                           (coding.Length > 0 ? $"Content-Encoding: {coding}\r\n" : "") + (r != null ? "Vary: Accept-Encoding\r\n" : "") +
+                           "Cache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n";
+            await WriteAll(s, Encoding.ASCII.GetBytes(headText), head ? null : body, token);
+        }
+
+        /// <summary>A head and a body in one write when the body is small: one packet, not two, for every answer.</summary>
+        private static async Task WriteAll(NetworkStream s, byte[] head, byte[]? body, CancellationToken token)
+        {
+            if (body == null || body.Length == 0) { await s.WriteAsync(head, token); return; }
+            if (body.Length > 64 * 1024)
+            {
+                await s.WriteAsync(head, token);
+                await s.WriteAsync(body, token);
+                return;
+            }
+            var both = new byte[head.Length + body.Length];
+            head.CopyTo(both, 0);
+            body.CopyTo(both, head.Length);
+            await s.WriteAsync(both, token);
+        }
+
+        /// <summary>
+        /// The web app's own files. Each carries a tag (ETag), so a phone that has the file is told so in a few
+        /// bytes (304) rather than sent it again; app.js and app.css asked for under the tag index.html names them
+        /// by are kept by the phone for good, because that URL can never mean other bytes. Text goes compressed
+        /// when the browser takes it, from copies compressed once.
+        /// </summary>
+        private static async Task Shell(NetworkStream s, Request r, WebAssets.Asset asset, bool head, CancellationToken token)
+        {
+            var coding = WebAssets.PickEncoding(r.Headers.GetValueOrDefault("accept-encoding"));
+            byte[] body = coding == "br" && asset.Brotli != null ? asset.Brotli
+                : coding == "gzip" && asset.Gzip != null ? asset.Gzip
+                : asset.Bytes;
+            if (ReferenceEquals(body, asset.Bytes)) coding = "";
+            // A tag per coding: the same tag on different bytes would let a cache splice one into the other.
+            string etag = coding.Length == 0 ? $"\"{asset.Tag}\"" : $"\"{asset.Tag}-{coding}\"";
+            bool versioned = r.Query.TryGetValue("v", out var v) && v == asset.Tag;
+            var common = $"Content-Type: {asset.Type}\r\nETag: {etag}\r\nVary: Accept-Encoding\r\n" +
+                         (versioned ? "Cache-Control: max-age=31536000, immutable\r\n" : "Cache-Control: no-cache\r\n") +
+                         "X-Content-Type-Options: nosniff\r\nReferrer-Policy: no-referrer\r\n" +
+                         "Content-Security-Policy: default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; " +
+                         "connect-src 'self'; style-src 'self'; script-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'\r\n";
+            if (TagMatches(r.Headers.GetValueOrDefault("if-none-match"), etag))
+            {
+                await Write(s, "HTTP/1.1 304 Not Modified\r\n" + common + "\r\n", token);
+                return;
+            }
+            var headText = "HTTP/1.1 200 OK\r\n" + common + (coding.Length > 0 ? $"Content-Encoding: {coding}\r\n" : "") +
+                           $"Content-Length: {body.Length}\r\n\r\n";
+            await WriteAll(s, Encoding.ASCII.GetBytes(headText), head ? null : body, token);
+        }
+
+        /// <summary>Whether an If-None-Match header names <paramref name="etag"/> (weak or strong) or is "*".</summary>
+        internal static bool TagMatches(string? ifNoneMatch, string etag)
+        {
+            if (string.IsNullOrWhiteSpace(ifNoneMatch)) return false;
+            foreach (var part in ifNoneMatch.Split(','))
+            {
+                var t = part.Trim();
+                if (t == "*") return true;
+                if (t.StartsWith("W/", StringComparison.Ordinal)) t = t[2..];
+                if (t == etag) return true;
+            }
+            return false;
         }
 
         /// <summary>Every error is <c>{ "error": "a sentence" }</c> with a real status.</summary>

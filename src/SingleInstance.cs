@@ -54,7 +54,10 @@ namespace ExplorerNative
         {
             try
             {
-                int session = System.Diagnostics.Process.GetCurrentProcess().SessionId;
+                // Asked of Windows directly rather than through Process, which
+                // a launch handing its folder on would otherwise load for this
+                // one number.
+                if (!ProcessIdToSessionId((uint)Environment.ProcessId, out uint session)) return "";
                 // Session one is the ordinary console on a single-user machine;
                 // it keeps the name scripts and the notes already use.
                 return session <= 1 ? "" : "_s" + session;
@@ -64,6 +67,9 @@ namespace ExplorerNative
                 return "";
             }
         }
+
+        [DllImport("kernel32.dll")]
+        private static extern bool ProcessIdToSessionId(uint processId, out uint sessionId);
 
         /// <summary>
         /// Only this user may serve or reach the pipe. Without it anyone on the

@@ -36,6 +36,10 @@ namespace ExplorerNative
         private ConnectServer? _connect;
         private ConnectStreams? _connectStreams;
         private ConnectClipboard? _connectClipboard;
+
+        /// <summary>The start-up sweeps of what a killed run left behind; see the constructor.</summary>
+        private readonly System.Threading.Tasks.Task _sweeps;
+
         private Settings _settings;
         private MainForm? _form;
 
@@ -49,9 +53,14 @@ namespace ExplorerNative
         /// </summary>
         private readonly SynchronizationContext _ui;
 
-        public TrayApplicationContext(Settings settings)
+        /// <param name="loadSettings">
+        /// The settings, which are still being read on a worker when this starts.
+        /// The menu below needs none of them and is the first use of ToolStrip in
+        /// the process, so it is built while they arrive; nothing reads them
+        /// before this hands them over.
+        /// </param>
+        public TrayApplicationContext(Func<Settings> loadSettings)
         {
-            _settings = settings;
             _ui = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
 
             var menu = new ContextMenuStrip();
@@ -90,14 +99,24 @@ namespace ExplorerNative
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("E&xit", null, (_, _) => Quit(ask: true));
 
+            var settings = loadSettings();
+            _settings = settings;
+
             _tray = new NotifyIcon
             {
                 Icon = SystemIcons.Application,
                 Text = TrayTooltip(settings),
-                Visible = true,
                 ContextMenuStrip = menu,
             };
             _tray.DoubleClick += (_, _) => ShowWindow();
+
+            // Put in the notification area once the message loop first has
+            // nothing to do, which is after the window has painted. Adding an
+            // icon is a call into Explorer that waits for its answer, five to ten
+            // milliseconds measured, and nobody looks for the icon in the moment
+            // the window is appearing. Started minimised, that moment is the
+            // first thing the loop does.
+            Application.Idle += ShowTrayIcon;
 
             _hotkeys.HotkeyPressed += OnHotkey;
 
@@ -164,14 +183,21 @@ namespace ExplorerNative
             RoboCopyEngine.BeforeKill = _drive.StandDownReads;
             RoboCopyEngine.AfterKill = _drive.ForgetReader;
 
-            // Anything left by a run that was killed before it could tidy up.
-            StreamingSource.SweepOldCopies();
+            // On a worker, because both are directory walks, deletes and a pass
+            // over every drive letter, and none of it is needed to put a window
+            // on screen. The mount waits for them; nothing else does.
+            var sweepFor = _settings;
+            _sweeps = System.Threading.Tasks.Task.Run(() =>
+            {
+                // Anything left by a run that was killed before it could tidy up.
+                try { StreamingSource.SweepOldCopies(); } catch { }
 
-            // Same idea, one layer down: a sync root registration and a drive
-            // letter both outlive the process that made them, so a run that was
-            // killed rather than closed leaves a letter pointing at a folder full
-            // of placeholders with nobody left to hydrate them.
-            GoogleDrive.SweepOrphans(_settings);
+                // Same idea, one layer down: a sync root registration and a drive
+                // letter both outlive the process that made them, so a run that was
+                // killed rather than closed leaves a letter pointing at a folder full
+                // of placeholders with nobody left to hydrate them.
+                try { GoogleDrive.SweepOrphans(sweepFor); } catch { }
+            });
 
             // Google expires a refresh token after seven days for an app that has
             // not been through verification, and verification for a Drive scope
@@ -246,6 +272,12 @@ namespace ExplorerNative
             // lookup waits for the message loop and lands after the folder is on
             // screen. The post itself is a queued delegate and nothing else.
             PostUi(() => Notify("app.started", _settings.DisplayTitle + " is ready"));
+        }
+
+        private void ShowTrayIcon(object? sender, EventArgs e)
+        {
+            Application.Idle -= ShowTrayIcon;
+            if (!_quitting) _tray.Visible = true;
         }
 
         private void OnShellRegistrationChanged(string id, string message) => Notify(id, message);
@@ -390,6 +422,9 @@ namespace ExplorerNative
         {
             _ = System.Threading.Tasks.Task.Run(async () =>
             {
+                // A leftover sync root or letter is cleared before a new one is
+                // made, as it was when the sweep ran in the constructor.
+                await _sweeps;
                 bool ok = await _drive.Mount(_settings);
                 PostUi(() =>
                 {
@@ -1860,35 +1895,99 @@ namespace ExplorerNative
             // Not while settings.json could not be read: the code is in that
             // file, and RetrySettings makes one only if it turns out to have none.
             if (_settings.EnsureConnectCode()) _settings.Save();
-            _connectStreams = new ConnectStreams(path => _drive.OpenRange(path));
-            var streams = _connectStreams;
-            // Its own STA thread and message-only window: never the UI thread.
-            _connectClipboard = new ConnectClipboard();
-            _connectClipboard.Start();
-            _connect = new ConnectServer(
-                path =>
-                {
-                    // A Drive folder nobody has opened this session has no listing yet,
-                    // and walking its placeholders reads as empty. Populate asks Drive,
-                    // and costs nothing when the listing is already held.
-                    if (_drive.Owns(path) && !_drive.TryListing(path, out _)) _drive.Populate(path);
-                    return _drive.TryListing(path, out var placed)
-                        ? placed.Select(e => new ConnectEntry(e.Name, e.IsFolder, e.Size, e.Modified)).ToList()
-                        : null;
-                },
-                path => (_drive.Owns(path) ? streams.Lease(path) : null) ?? new FileRangeSource(path),
-                () => _settings.ConnectCode,
-                isDrive: root => _drive.Owns(root),
-                files: new ConnectFiles(_drive, _settings),
-                remote: path => _drive.Owns(path) ? streams.Lease(path) : null,
-                clipboard: _connectClipboard,
-                port: _settings.WebAppPort);
 
-            // Said out loud on the PC, once per guesser: somebody on the tailnet
-            // keeps entering a wrong pairing code, and each try now waits.
-            _connect.CodeGuessing += who => PostUi(() => Notify("webapp.guessing",
-                $"Someone ({who}) keeps entering a wrong web app pairing code. They are being slowed down."));
-            _connect.Start();
+            // Built and started on a worker, and handed to the UI thread running.
+            // Starting the clipboard watcher waits for its thread to read the
+            // clipboard, which another program can hold for as long as it likes,
+            // and opening the listener loads the socket stack: 14 to 25
+            // milliseconds measured, all of it in front of the window, for a
+            // server nobody can reach until Tailscale is asked about it anyway.
+            var settings = _settings;
+            int port = _settings.WebAppPort;
+            _ = System.Threading.Tasks.Task.Run(() =>
+            {
+                ConnectStreams? streams = null;
+                ConnectClipboard? clipboard = null;
+                ConnectServer? server = null;
+                try
+                {
+                    streams = new ConnectStreams(path => _drive.OpenRange(path));
+                    var leased = streams;
+                    // Its own STA thread and message-only window: never the UI thread.
+                    clipboard = new ConnectClipboard();
+                    clipboard.Start();
+                    server = new ConnectServer(
+                        path =>
+                        {
+                            // A Drive folder nobody has opened this session has no listing yet,
+                            // and walking its placeholders reads as empty. Populate asks Drive,
+                            // and costs nothing when the listing is already held.
+                            if (_drive.Owns(path) && !_drive.TryListing(path, out _)) _drive.Populate(path);
+                            return _drive.TryListing(path, out var placed)
+                                ? placed.Select(e => new ConnectEntry(e.Name, e.IsFolder, e.Size, e.Modified)).ToList()
+                                : null;
+                        },
+                        path => (_drive.Owns(path) ? leased.Lease(path) : null) ?? new FileRangeSource(path),
+                        () => _settings.ConnectCode,
+                        isDrive: root => _drive.Owns(root),
+                        files: new ConnectFiles(_drive, settings),
+                        remote: path => _drive.Owns(path) ? leased.Lease(path) : null,
+                        clipboard: clipboard,
+                        port: port);
+
+                    // Said out loud on the PC, once per guesser: somebody on the tailnet
+                    // keeps entering a wrong pairing code, and each try now waits.
+                    server.CodeGuessing += who => PostUi(() => Notify("webapp.guessing",
+                        $"Someone ({who}) keeps entering a wrong web app pairing code. They are being slowed down."));
+                    server.Start();
+                }
+                catch (Exception ex)
+                {
+                    try { server?.Dispose(); } catch { }
+                    try { streams?.Dispose(); } catch { }
+                    try { clipboard?.Dispose(); } catch { }
+                    PostUi(() => Notify("webapp.port.failed", "The web app could not start. " + ex.Message));
+                    return;
+                }
+
+                bool posted = false;
+                try
+                {
+                    _ui.Post(_ => ConnectStarted(server, streams, clipboard, port), null);
+                    posted = true;
+                }
+                catch { }
+                if (!posted) DisposeConnect(server, streams, clipboard);
+            });
+        }
+
+        private static void DisposeConnect(ConnectServer server, ConnectStreams streams, ConnectClipboard clipboard)
+        {
+            try { server.Dispose(); } catch { }
+            try { streams.Dispose(); } catch { }
+            try { clipboard.Dispose(); } catch { }
+        }
+
+        /// <summary>
+        /// The web app's server, now listening, taken on by the UI thread. On
+        /// the way out already, it is closed again instead: Quit has disposed
+        /// whatever it found, and this was not there to be found.
+        /// </summary>
+        private void ConnectStarted(ConnectServer server, ConnectStreams streams, ConnectClipboard clipboard, int startedOn)
+        {
+            if (_quitting)
+            {
+                DisposeConnect(server, streams, clipboard);
+                return;
+            }
+
+            _connectStreams = streams;
+            _connectClipboard = clipboard;
+            _connect = server;
+
+            // A port chosen while it was starting, which ApplySettings had no
+            // server to move yet.
+            if (_settings.WebAppPort != startedOn) _connect.Rebind(_settings.WebAppPort);
 
             // A saved port another program has taken since: the default for this
             // session only, said once. Not saved: the port chosen is still the one

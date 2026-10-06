@@ -1002,6 +1002,24 @@ namespace ExplorerNative
 
         private static void Run(string[] args)
         {
+            // Read on a worker while this thread sets up WinForms and builds the
+            // tray's menu, neither of which needs the settings. Reading them is
+            // about twenty milliseconds of JSON and the menu is about thirty of
+            // first-time ToolStrip work, and done one after the other they were
+            // both in front of the window. The tray waits for the result at the
+            // first moment it needs it.
+            var loading = System.Threading.Tasks.Task.Run(() =>
+            {
+                var loaded = Settings.Load();
+
+                // Launched with a folder argument (the shell verb passes one).
+                var launchPath = FirstPathArgument(args);
+                loaded.InitialFolderOverride =
+                    launchPath == null ? null
+                    : Directory.Exists(launchPath) ? launchPath
+                    : Path.GetDirectoryName(launchPath);
+                return loaded;
+            });
 
             Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
             Application.EnableVisualStyles();
@@ -1015,18 +1033,13 @@ namespace ExplorerNative
             Speech.Init();
             PerfCounters.Start();
 
-            var settings = Settings.Load();
-            RememberTitle(settings);
-
-            // Launched with a folder argument (the shell verb passes one).
-            var launchPath = FirstPathArgument(args);
-            settings.InitialFolderOverride =
-                launchPath == null ? null
-                : Directory.Exists(launchPath) ? launchPath
-                : Path.GetDirectoryName(launchPath);
-
             PublishAudioReport();
-            _context = new TrayApplicationContext(settings);
+            _context = new TrayApplicationContext(() =>
+            {
+                var settings = loading.GetAwaiter().GetResult();
+                RememberTitle(settings);
+                return settings;
+            });
 
             // Now that there is something to hand requests to, start answering
             // them. Later launches send their folder here instead of starting a

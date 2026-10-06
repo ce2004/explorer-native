@@ -64,11 +64,16 @@ function words(bytes) {
   return `${text} ${rounded === 1 ? UNITS[unit][0] : UNITS[unit][1]}`;
 }
 function plural(n, one, many) { return `${n} ${n === 1 ? one : many}`; }
+// Made once: toLocaleDateString and localeCompare with options build a new
+// formatter or collator on every call, which was most of drawing a big folder.
+const DATE_FORMAT = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
+const NAME_ORDER = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+const COLLATOR = new Intl.Collator();
 function dateText(iso) {
   if (!iso) return '';
   const d = new Date(iso);
   if (isNaN(d)) return '';
-  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' });
+  return DATE_FORMAT.format(d);
 }
 function clock(seconds) {
   if (!isFinite(seconds) || seconds < 0) seconds = 0;
@@ -301,7 +306,9 @@ async function confirmBox(title, text, yes) {
 
 // ---------- Files ----------
 
-async function openFolder(path, { push = true, focusName = null, quiet = false } = {}) {
+// ready: something to finish before anything is drawn or said (the start, which
+// fetches the first folder while it is still asking what it can play).
+async function openFolder(path, { push = true, focusName = null, quiet = false, ready = null } = {}) {
   try {
     let entries;
     if (path == null) {
@@ -313,6 +320,7 @@ async function openFolder(path, { push = true, focusName = null, quiet = false }
     } else {
       entries = await api(mediaUrl('/api/list', path).replace(/&code=[^&]*/, ''));
     }
+    if (ready) await ready;
     state.path = path;
     state.entries = entries;
     state.shown = true;
@@ -335,6 +343,7 @@ async function openFolder(path, { push = true, focusName = null, quiet = false }
     }
     return true;
   } catch (e) {
+    if (ready) await ready;
     if (e.status === 401) return false;
     // Nothing on screen yet: the offline screen. A folder already shown,
     // empty or not, stays, and the problem is said over it.
@@ -347,12 +356,16 @@ async function openFolder(path, { push = true, focusName = null, quiet = false }
 
 function sorted(entries) {
   const list = entries.slice();
-  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+  const byName = (a, b) => NAME_ORDER.compare(a.name, b.name);
+  // Each entry's date and extension worked out once, not once per comparison.
+  const key = new Map();
+  if (prefs.sort === 'date') for (const e of list) key.set(e, new Date(e.modified).getTime());
+  if (prefs.sort === 'type') for (const e of list) key.set(e, extOf(e.name));
   const cmp = {
     name: byName,
-    date: (a, b) => (new Date(b.modified) - new Date(a.modified)) || byName(a, b),
+    date: (a, b) => (key.get(b) - key.get(a)) || byName(a, b),
     size: (a, b) => ((b.size || 0) - (a.size || 0)) || byName(a, b),
-    type: (a, b) => extOf(a.name).localeCompare(extOf(b.name)) || byName(a, b),
+    type: (a, b) => COLLATOR.compare(key.get(a), key.get(b)) || byName(a, b),
   }[prefs.sort] || byName;
   list.sort((a, b) => (prefs.foldersFirst && a.folder !== b.folder ? (a.folder ? -1 : 1) : 0) || cmp(a, b));
   return list;
@@ -1485,20 +1498,20 @@ async function start() {
 }
 
 async function enter() {
-  try {
-    const f = await api('/api/formats');
+  // Asked for alongside the first folder rather than before it: one wait on
+  // the network at start instead of two. The folder is still drawn after it.
+  const formats = api('/api/formats').then((f) => {
     if (f.audio) state.audio = new Set(f.audio.map((x) => x.toLowerCase()));
     if (f.native) for (const n of f.native) state.native.add(n.toLowerCase());
-  } catch { }
-  showTab('files', false);
-  history.replaceState({ path: null }, '');
+  }).catch(() => { });
   const last = store.get('lastPath', null);
-  if (last) {
-    history.pushState({ path: last }, '');
-    await openFolder(last, { push: false });
-  } else {
-    await openFolder(null, { push: false });
-  }
+  const ready = formats.then(() => {
+    showTab('files', false);
+    history.replaceState({ path: null }, '');
+    if (last) history.pushState({ path: last }, '');
+  });
+  await openFolder(last || null, { push: false, ready });
+  await ready;
   renderPlayer();
 }
 

@@ -97,6 +97,7 @@
     <Compile Include="VideoContainerTests.cs" />
     <Compile Include="UpdateFixTests.cs" />
     <Compile Include="MainFixTests.cs" />
+    <Compile Include="DeleteTests.cs" />
     <Compile Include="Round2FixTests.cs" />
   </ItemGroup>
 
