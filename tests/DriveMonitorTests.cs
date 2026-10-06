@@ -55,6 +55,7 @@ namespace ExplorerNative
                 await OddNameTests(sandbox);
                 await FlakyConnectionTests(sandbox);
                 await CrashTests(sandbox);
+                await SecondReviewTests(sandbox);
                 NoDialogTests();
                 await CheckClientCancelTests();
             }
@@ -562,6 +563,155 @@ namespace ExplorerNative
             Check("no duplicates came of the retries", rig.Drive.Duplicates(rig.FolderId).Count == 0);
             Check("and nothing was said to have failed", !rig.Said.Any(s => s.StartsWith("sync.error", StringComparison.Ordinal)),
                 string.Join(" | ", rig.Said));
+        }
+
+        // ---------------- the second review of the monitor ----------------
+
+        private static async Task SecondReviewTests(string sandbox)
+        {
+            // A file made Hidden on the PC, and a folder made Hidden, with deletes
+            // on: present, so their Drive copies stay.
+            using (var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true))
+            {
+                rig.Write("a.txt", "a", T0);
+                rig.Write("dir/b.txt", "b", T0);
+                rig.Write("c.txt", "c", T0);
+                await rig.Pass();
+                File.SetAttributes(Path.Combine(rig.Local, "a.txt"), FileAttributes.Hidden);
+                new DirectoryInfo(Path.Combine(rig.Local, "dir")).Attributes |= FileAttributes.Hidden;
+                await rig.Pass();
+                await rig.Pass();
+                Check("a hidden file or folder on the PC is not taken for deleted",
+                    rig.Drive.Trashes == 0 && Names(rig.DriveTree()) == "a.txt,c.txt,dir/b.txt",
+                    $"{rig.Drive.Trashes} trashed; Drive holds {Names(rig.DriveTree())}");
+                File.SetAttributes(Path.Combine(rig.Local, "a.txt"), FileAttributes.Normal);
+                new DirectoryInfo(Path.Combine(rig.Local, "dir")).Attributes &= ~FileAttributes.Hidden;
+                int uploads = rig.Drive.Uploads;
+                var problem = await rig.Pass();
+                Check("and when it is shown again it is still in step, with nothing sent",
+                    problem == null && rig.Drive.Uploads == uploads, $"{problem}; {rig.Drive.Uploads - uploads} uploads");
+            }
+
+            // A 403 rate limit on "did that upload land?" is Google saying not
+            // now, not the network going.
+            using (var rig = new Rig(sandbox, SyncMode.UploadOnly))
+            {
+                var limited = FakeDrive.ErrorBody(403, "rateLimitExceeded", "Rate Limit Exceeded");
+                rig.Write("a.txt", "a", T0);
+                rig.Drive.AddFault(new FakeDrive.Fault { Kind = "multipart", Times = 1, Status = 503, Body = "{}" });
+                rig.Drive.AddFault(new FakeDrive.Fault { Kind = "lookup", Times = 6, Status = 403, Body = limited });
+                var problem = await rig.Pass();
+                Check("a rate limit while checking an upload is waited out, not taken for offline",
+                    problem == null && Names(rig.DriveTree()) == "a.txt" &&
+                    !rig.Said.Any(s => s.StartsWith("sync.offline", StringComparison.Ordinal)),
+                    $"{problem}; Drive holds {Names(rig.DriveTree())}; said {string.Join(" | ", rig.Said)}");
+            }
+
+            // A day's limit is waited out too, for an hour, and said.
+            using (var rig = new Rig(sandbox, SyncMode.TwoWay))
+            {
+                var daily = FakeDrive.ErrorBody(403, "dailyLimitExceeded", "Daily Limit Exceeded");
+                rig.Write("a.txt", "a", T0);
+                rig.Drive.AddFault(new FakeDrive.Fault { Kind = "list", Times = 2, Status = 403, Body = daily });
+                var problem = await rig.Pass();
+                Check("a daily limit does not fail the pair: it waits and carries on",
+                    problem == null && Names(rig.DriveTree()) == "a.txt" && rig.Drive.FaultsLeft == 0,
+                    $"{problem}; Drive holds {Names(rig.DriveTree())}");
+                Check("and says it is the daily limit",
+                    rig.Said.Any(s => s.Contains("daily limit", StringComparison.Ordinal)), string.Join(" | ", rig.Said));
+            }
+
+            // Duplicate cleanup: the older copy holds an edit the PC never had.
+            using (var rig = new Rig(sandbox, SyncMode.TwoWay))
+            {
+                rig.Write("song.txt", "A", T0);
+                await rig.Pass();
+                var x = rig.Drive.Find(rig.FolderId, "song.txt")!;
+                rig.Write("song.txt", "B", T0.AddHours(2));
+                rig.Drive.Edit(x, Encoding.UTF8.GetBytes("C, only in Drive"), T0.AddHours(1));
+                rig.Drive.AddFile("song.txt", Encoding.UTF8.GetBytes("B"), T0.AddHours(3), rig.FolderId);
+                await rig.Pass();
+                await rig.Pass();
+                Check("an older Drive copy with an edit the PC never had is not trashed as a duplicate",
+                    rig.Drive.Get(x) is { Trashed: false }, $"{rig.Drive.Trashes} trashed");
+            }
+
+            // A file and a folder of one name in Drive.
+            using (var rig = new Rig(sandbox, SyncMode.DownloadOnly))
+            {
+                rig.Drive.AddFile("x", Encoding.UTF8.GetBytes("a file called x"), T0, rig.FolderId);
+                var folder = rig.Drive.AddFolder("X", rig.FolderId);
+                rig.Drive.AddFile("y.txt", Encoding.UTF8.GetBytes("y"), T0, folder);
+                var first = await rig.Pass();
+                int reads = rig.Drive.MediaReads;
+                var second = await rig.Pass();
+                int said = rig.Said.Count(s => s.StartsWith("sync.error", StringComparison.Ordinal));
+                Check("a file beside a Drive folder of its name is left out and said, and the folder still comes down",
+                    first != null && first.Contains("x in Google Drive was left out", StringComparison.Ordinal) &&
+                    Names(rig.LocalTree()) == "X/y.txt", $"{first}; PC holds {Names(rig.LocalTree())}");
+                Check("once, without fetching it again on the next pass",
+                    second == first && said == 1 && rig.Drive.MediaReads == reads, $"{said} said; {rig.Drive.MediaReads - reads} reads");
+                Check("and no part of it is left behind",
+                    !Directory.EnumerateFiles(rig.Local, "*.partial", SearchOption.AllDirectories).Any());
+            }
+
+            // Two Drive folders whose names differ only in capitals.
+            using (var rig = new Rig(sandbox, SyncMode.DownloadOnly))
+            {
+                var a = rig.Drive.AddFolder("Docs", rig.FolderId);
+                var b = rig.Drive.AddFolder("docs", rig.FolderId);
+                rig.Drive.AddFile("one.txt", Encoding.UTF8.GetBytes("1"), T0, a);
+                rig.Drive.AddFile("two.txt", Encoding.UTF8.GetBytes("2"), T0, b);
+                rig.Drive.AddFile("fine.txt", Encoding.UTF8.GetBytes("f"), T0, rig.FolderId);
+                var problem = await rig.Pass();
+                Check("two Drive folders differing only in capitals are said, not one silently dropped",
+                    problem != null && problem.Contains("Docs/", StringComparison.Ordinal) &&
+                    problem.Contains("docs/", StringComparison.Ordinal) && Names(rig.LocalTree()) == "fine.txt",
+                    $"{problem}; PC holds {Names(rig.LocalTree())}");
+            }
+
+            // An accented name written the Mac way in Drive and the Windows way on the PC.
+            using (var rig = new Rig(sandbox, SyncMode.TwoWay))
+            {
+                rig.Write("café.txt", "same", T0);
+                rig.Drive.AddFile("café.txt", Encoding.UTF8.GetBytes("same"), T0, rig.FolderId);
+                var problem = await rig.Pass();
+                await rig.Pass();
+                Check("an accent written two ways is one file, not two on each side",
+                    problem == null && rig.LocalTree().Count == 1 && rig.DriveTree().Count == 1 &&
+                    rig.Drive.Uploads == 0 && rig.Drive.MediaReads == 0,
+                    $"{problem}; PC {rig.LocalTree().Count}, Drive {rig.DriveTree().Count}, " +
+                    $"{rig.Drive.Uploads} uploads, {rig.Drive.MediaReads} reads");
+            }
+
+            // Changed on both sides, Drive newer, and Google answering 503 in the
+            // middle of it: the step is tried again, and the PC's copy, already
+            // set aside, is not moved a second time from where it no longer is.
+            // (ReadRange retries a 503 itself for twenty seconds before giving
+            // up, so the 503 is put in at the step's end, where the wait for it
+            // begins.)
+            using (var rig = new Rig(sandbox, SyncMode.TwoWay))
+            {
+                rig.Write("song.txt", "first", T0);
+                await rig.Pass();
+                rig.Write("song.txt", "pc's edit", T0.AddHours(1));
+                rig.Drive.Edit(rig.Drive.Find(rig.FolderId, "song.txt")!, Encoding.UTF8.GetBytes("drive's edit"), T0.AddHours(2));
+                bool refused = false;
+                rig.Monitor.KillPoint = what =>
+                {
+                    if (refused || !what.StartsWith("downloaded ", StringComparison.Ordinal)) return;
+                    refused = true;
+                    throw new System.Net.Http.HttpRequestException("Service Unavailable", null,
+                        System.Net.HttpStatusCode.ServiceUnavailable);
+                };
+                var problem = await rig.Pass();
+                rig.Monitor.KillPoint = null;
+                var tree = rig.LocalTree();
+                Check("a conflict whose download is refused for a while still ends with both copies",
+                    problem == null && tree.Count == 2 && Text(tree, "song.txt") == "drive's edit" &&
+                    tree.Any(kv => kv.Key.Contains("conflict") && Encoding.UTF8.GetString(kv.Value) == "pc's edit"),
+                    $"{problem}; PC holds {Names(tree)}");
+            }
         }
 
         // ---------------- fix 5: a file changed while it went up ----------------

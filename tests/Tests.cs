@@ -151,6 +151,15 @@ namespace ExplorerNative
                 await ConflictSafetyTests();
                 await AwkwardNameTests();
                 await TransferFixTests.RunAll(Check, Equal);
+                await FilesR2Tests.RunAll(Check, Equal);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
+            // Just the second review of copying and the window.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "r2files")
+            {
+                await FilesR2Tests.RunAll(Check, Equal);
                 Console.WriteLine($"\n{_passed} passed, {_failed} failed");
                 return _failed == 0 ? 0 : 1;
             }
@@ -230,6 +239,7 @@ namespace ExplorerNative
             await FakeDriveMonitorTests.RunAll(Check, Equal);
             await OddCaseTests.RunAll(Check, Equal);
             await TransferFixTests.RunAll(Check, Equal);
+            await FilesR2Tests.RunAll(Check, Equal);
             SettingsFixTests.RunAll(Check, Equal);
             SearchTests.RunAll(Check, Equal);
             await ConnectTests.RunAll(Check, Equal);
@@ -237,6 +247,7 @@ namespace ExplorerNative
             AudioFixTests.RunAll(Check, Equal);
             await UpdateFixTests.RunAll(Check, Equal);
             MainFixTests.RunAll(Check, Equal);
+            await Round2FixTests.RunAll(Check, Equal);
 
             Console.WriteLine($"\n{_passed} passed, {_failed} failed");
             return _failed == 0 ? 0 : 1;
@@ -12244,9 +12255,9 @@ namespace ExplorerNative
                 // the listener for ever, and from that moment every folder
                 // double-click on the machine opened nothing at all.
                 //
-                // Only one server instance exists at a time, so the launch below
-                // really is waiting on the silent one: it gets in because the
-                // read gives up before the connect does.
+                // The launch below reaches the instance armed behind the silent
+                // one, writes and leaves before that instance is waited on; it
+                // must still be read once the silent client's deadline passes.
                 var silent = new NamedPipeClientStream(".", SingleInstance.PipeName, PipeDirection.Out);
                 silent.Connect(3000);
 

@@ -9,7 +9,18 @@ The Windows right-click menu opens much faster when many files are selected.
 Bug fixed: pressing Escape to close the Windows right-click menu searched again or reloaded the folder. Now it just closes the menu.
 While Explorer Native is hidden in the tray, it stops checking the folder and watching for changes, and catches up when you open it again.
 Bug fixed: a USB drive could refuse to be safely removed while its folder was open in Explorer Native. Now Explorer Native lets go of it when Windows asks.
-Reset to defaults keeps your web app pairing code, your Google Drive sync pairs, the folders you're in and where the window is. The question now says so.
+Reset to defaults keeps your web app pairing code, your Google Drive sync pairs, the folders you're in and where the window is. It also leaves Google Drive and the web app switched on, and never changes whether Explorer Native opens your folders or is on the right-click menu. The question now says what is kept.
+Bug fixed: resetting preferences while the settings file couldn't be read could wipe the pairing code and sync pairs it promised to keep. Now it waits and says to try again, and it tells you if the reset couldn't be saved.
+Bug fixed: copying or moving more than 2 gigabytes at once could say it failed after it had actually finished, and the rest of a move could be left undone. The same happened in the web app.
+Bug fixed: while waiting for a file that is in use, the copy window garbled names with accents. Names now read correctly.
+Bug fixed: moving a folder into a shortcut folder (a junction) that leads back inside it could copy the folder into itself over and over. It is now refused.
+Moving files from a drive letter made with subst to the disk it stands for is now instant, instead of copying them.
+Bug fixed: the count in the move window could go backwards when part of a move had to be copied instead of renamed.
+Bug fixed: keeping both copies of a file could fail on USB sticks and network drives that don't support Windows' extra file data. The file now copies anyway.
+Bug fixed: for names ending in a dot or a space, the Windows right-click menu could act on a different file with almost the same name. It is no longer offered for those names; the program's own commands work on them.
+Typing a letter now also finds names written in wide letters, ligatures, and letters like Æ, Ø, Ł and ß, so typing AE finds Æble.
+Bug fixed: a file name ending in a dot or a space could show another file's size and date while it was being written to.
+Bug fixed: the list could reload, or say a folder changed, after you had already moved to another folder.
 Bug fixed: cancelling an extract still said which files it had replaced or renamed. Now it just says it was cancelled.
 Bug fixed: the progress window could say things like "3 of 0 items" before it knew how many there were. Now it says "3 items" until it knows.
 A global shortcut message now says it needs Control, Alt or the Windows key, which is what Preferences already allowed.
@@ -78,6 +89,38 @@ Bug fixed: cancelling a zip extraction said files had been replaced when they ha
 Bug fixed: compressing something that had been moved or deleted in the meantime said the archive was created. Now it says the item is no longer there.
 Bug fixed: skipping a folder while extracting counted every file inside it as a separate skip.
 Bug fixed: extracting the same files from a zip and from a tar gave different counts. They match now.
+Bug fixed: if the web app's port was busy when Explorer Native started or reloaded its settings, your chosen port could be replaced with the default for good. Now the default is used until the next start, and your port stays your setting.
+Bug fixed: a name with an ampersand in Preferences, such as a speaker called Tom&Cat, was read as TomCat and took over an Alt shortcut. It shows and reads as written now.
+New: ExplorerNative --help, -h or /? lists the command-line options. A misspelt option with one dash or a slash, such as -install or /help, now says it isn't an option instead of opening the window.
+Bug fixed: opening a lot of folders at once could leave some of them unopened. Every one opens now.
+Bug fixed: pressing OK in Preferences could shorten a window title you set by hand that held unusual characters. The title only changes when you edit it.
+Bug fixed: if every file you chose was in use, re-making an archive could replace the old archive with an empty one. Now the old one is kept and you're told why, and no empty archive is made.
+Bug fixed: if Explorer Native closed unexpectedly while making a 7z, tar.xz, tar.bz2 or tar.zst, the compressing carried on by itself in the background. Now it stops when Explorer Native does.
+Bug fixed: extracting into a folder that already had files in it could finish with the progress short of 100 percent, or at 0 percent when everything was skipped.
+Bug fixed: an Ogg Vorbis file cut from part way through a longer recording could play nothing at all, and skipping in it landed in the wrong place.
+Bug fixed: a .gz file with a few extra bytes after the end, which some downloads add, was refused as damaged. It extracts now, as it does with gzip.
+Bug fixed: a very short sound on repeat always showed its position as 0. It shows where it is now.
+Bug fixed: a hidden file on your PC could be treated as deleted by a two-way sync, sending the Drive copy to the trash. Hidden and system files, and files in folders that can't be read, are now left alone on both sides.
+Bug fixed: when Google asked the Drive sync to slow down at one particular moment, the sync stopped and said it was offline. Now it waits and carries on.
+Bug fixed: when Google's daily limit for your account was reached, a Drive sync pair said it could not sync. Now it waits, says so, and tries again every hour.
+Bug fixed: when a file changed in both places and also had a second copy of the same name in Drive, the Drive sync could send a copy with changes your PC never had to the trash. Now that copy is kept.
+Bug fixed: if Google Drive was briefly unavailable while a sync was keeping both copies of a changed file, the sync failed with "Could not find file". Now it waits and finishes.
+Bug fixed: a file next to a folder with the same name in Google Drive failed to sync on every pass and left a part-downloaded file behind. Now it's left out, you're told once, and the part is removed.
+Bug fixed: two Google Drive folders whose names differ only in capitals, such as Docs and docs, were synced as one, and the second was silently ignored. Now both are left out and you're told.
+Bug fixed: a file whose name has an accent, copied from a Mac, could be synced as two files on each side. Now it's matched as one.
+Bug fixed: copying or moving a file that another program had open showed Done in the web app even though nothing was copied, and replacing one said "1 replaced". Now it says the file is in use by another program, and a move leaves the original where it was.
+Bug fixed: a web page somewhere else could talk to the web app's server on your PC by pointing its own address at your computer. The PC now only answers to its own names, and only takes changes from the web app's own page.
+Bug fixed: there was no limit on guessing the web app's pairing code. After five wrong codes, each try now has to wait, starting at a second and going up to a minute, and the web app says how long. You, as the owner of the PC, are never held up.
+If someone keeps entering a wrong pairing code, Explorer Native also says so out loud on the PC.
+Bug fixed: the web app could be asked to open a network share path, which makes Windows offer your sign-in to that computer. Network paths are now refused; open shares through a mapped drive letter instead.
+Bug fixed: uploading a small file with a very long name from the web app failed, and keeping both copies of a file whose name was nearly as long as Windows allows could fail too. Both work now.
+Bug fixed: playing or replacing a file in the web app that another program had open said it couldn't be decoded, or that access was denied. Now it says the file is in use.
+Bug fixed: a copy in the web app set to skip names that are taken said it failed when everything was already there. Now it finishes and says what it skipped.
+Bug fixed: sending the same upload from the web app several times at once could make several copies. Now it arrives once.
+Bug fixed: an upload or a file sent to the PC clipboard that stalled could hold on for over a minute and leave a hidden part-file in the folder. The PC now gives up after 30 seconds and removes it.
+Bug fixed: stopping an upload in the web app while a piece of it was still arriving left that piece on the PC until the next start. It is removed straight away now.
+Bug fixed: in the web app, pressing Select, or Copy and Move while selecting, sent VoiceOver back to the folder's title. Select now lands on the first item to tick, and Copy or Move on the Paste here button.
+Bug fixed: the web app's mini player could make VoiceOver read the track's name again whenever the page updated. It only changes when the track does.
 
 1.0.7
 The old iPhone app no longer works. Use the web app instead: open the link from Preferences, Web app in Safari and add it to your Home Screen.

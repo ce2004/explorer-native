@@ -149,6 +149,18 @@ namespace ExplorerNative
 
         public void Fail(string path, string error) { lock (_gate) _failed.Add(new ConnectFailure(path, error)); }
 
+        private (int Succeeded, int Failed)? _counted;
+
+        /// <summary>
+        /// What the engine itself says arrived and what did not, in files. Its progress is no guide: robocopy
+        /// counts a file it gave up on (ERROR 32, in use) as one it got through, so a copy of a locked file read
+        /// as done with one item copied.
+        /// </summary>
+        public void Counted(int succeeded, int failed) { lock (_gate) _counted = (Math.Max(0, succeeded), Math.Max(0, failed)); }
+
+        /// <summary>The engine's own count, when it gave one.</summary>
+        public (int Succeeded, int Failed)? Counts { get { lock (_gate) return _counted; } }
+
         /// <summary>A sentence about the job as a whole; the last one said wins.</summary>
         public void Say(string message) { lock (_gate) _message = message; }
 
@@ -162,10 +174,16 @@ namespace ExplorerNative
                 if (message != null) _message = message;
                 // Done with nothing failed is all of it, whatever the engine last got round to reporting: a copy
                 // under keep both goes by another route in robocopy and says nothing on the way.
-                if (state == "done" && _failed.Count == 0)
+                if (state == "done" && _failed.Count == 0 && (_counted == null || _counted.Value.Failed == 0))
                 {
                     _itemsDone = _items;
                     _bytesDone = _bytes;
+                }
+                else if (_counted is { } counted)
+                {
+                    // What arrived, not what the progress got round to: a file that failed is not done.
+                    _itemsDone = counted.Succeeded;
+                    _items = Math.Max(_items, counted.Succeeded + counted.Failed);
                 }
                 _current = "";
                 FinishedAt = DateTime.UtcNow;
@@ -646,6 +664,20 @@ namespace ExplorerNative
             bool post = r.Method == "POST", put = r.Method == "PUT";
             if (r.Method != "GET" && !head && !post && !put) { await Error(s, 405, "Only GET, HEAD, POST and PUT.", false, token); return; }
 
+            // Only under a name this server has, and anything that changes something only from its own page:
+            // a site that points its own name at 127.0.0.1 is otherwise this server's own origin to a browser.
+            var host = r.Headers.GetValueOrDefault("host");
+            if (!HostAllowed(host, ListenPort, Volatile.Read(ref _ownDnsName)))
+            {
+                await Error(s, 421, "This server only answers to this PC's own names.", head, token);
+                return;
+            }
+            if ((post || put) && !OriginAllowed(r.Headers.GetValueOrDefault("origin"), host))
+            {
+                await Error(s, 403, "That request came from another site, so it was refused.", false, token);
+                return;
+            }
+
             // The web app's own files: its shell, no data, so no code needed.
             if ((r.Method == "GET" || head) && WebAssets.TryGet(r.Path, out var asset, out var assetType))
             {
@@ -656,6 +688,10 @@ namespace ExplorerNative
                 if (!head) await s.WriteAsync(asset, token);
                 return;
             }
+
+            // Wrong codes cost time: five free, then a wait that doubles to a minute. Before whoami too, which
+            // checks a code and would otherwise be a way to try them all.
+            if (await CodeThrottled(r, s, head, token)) return;
 
             // Who is asking, before any code: tells the web app whether to ask for one.
             if (r.Path == "/api/whoami")
@@ -741,7 +777,10 @@ namespace ExplorerNative
                         await Json(s, 200, UploadStatus(r.Query.TryGetValue("id", out var uid) ? uid : ""), head, token);
                         break;
                     case "/api/upload/finish":
-                        var (finishStatus, finished) = await UploadFinish(await ReadJson(r, token), token);
+                        var finishBody = await ReadJson(r, token);
+                        var finishId = Str(finishBody, "id");
+                        var (finishStatus, finished) = await Once(string.IsNullOrEmpty(finishId) ? null : "finish-" + finishId,
+                            () => UploadFinish(finishBody, token), token);
                         await Json(s, finishStatus, finished, false, token);
                         break;
                     case "/api/upload/cancel":
@@ -838,11 +877,24 @@ namespace ExplorerNative
         {
             if (string.IsNullOrWhiteSpace(path)) throw new ConnectException(400, $"No {what} was given.");
             if (!Path.IsPathFullyQualified(path)) throw new ConnectException(400, $"The {what} has to be a full path, such as C:\\Music.");
+            if (IsNetworkPath(path)) throw new ConnectException(403, NetworkPathRefusal);
             if (_files == null) throw new ConnectException(503, "This computer can't do that yet.");
             var away = _files.Unavailable(path);
             if (away != null) throw new ConnectException(503, Sentence(away));
             return path;
         }
+
+        /// <summary>
+        /// A share or device path: \\server\share, //server/share, \\?\UNC\..., \\.\... Opening one makes this PC
+        /// connect to that server and offer the signed-in user's Windows credentials (NTLM) to it, so a path
+        /// typed or crafted on a phone could hand them to any machine. The web app only ever browses drive
+        /// letters, and a mapped network drive is one of those.
+        /// </summary>
+        public static bool IsNetworkPath(string? path) =>
+            path != null && path.Length >= 2 && (path[0] is '\\' or '/') && (path[1] is '\\' or '/');
+
+        internal const string NetworkPathRefusal =
+            "Network paths can't be opened from the web app. Map the share to a drive letter on the PC and open that.";
 
         private static void CheckName(string? name)
         {
@@ -948,13 +1000,16 @@ namespace ExplorerNative
                 try
                 {
                     var json = _tailscaleStatus();
-                    string? login = null;
+                    string? login = null, dns = null;
                     if (json != null)
                     {
                         var status = TailscaleWeb.ParseStatus(json);
                         if (status.State == TailscaleWeb.State.Running) login = status.Login;
+                        dns = status.DnsName;
                     }
                     Volatile.Write(ref _ownLogin, login);
+                    // Kept once known: Tailscale stopping for a moment does not change this PC's name.
+                    if (!string.IsNullOrEmpty(dns)) Volatile.Write(ref _ownDnsName, dns.TrimEnd('.'));
                 }
                 catch (Exception e)
                 {
@@ -1067,8 +1122,11 @@ namespace ExplorerNative
             {
                 await Files.TransferAsync(job, paths, destination, move, conflict);
                 if (job.Token.IsCancellationRequested) job.Finish("cancelled", "Cancelled.");
-                else if (job.Failed.Count > 0 && job.ItemsDone == 0) job.Finish("failed", Sentence(job.Failed[0].Error));
-                else job.Finish("done");
+                else
+                {
+                    var (state, message) = Outcome(job, move);
+                    job.Finish(state, message);
+                }
             }
             catch (OperationCanceledException) when (job.Token.IsCancellationRequested)
             {
@@ -1083,6 +1141,29 @@ namespace ExplorerNative
             {
                 Changed();
             }
+        }
+
+        /// <summary>
+        /// How a copy or move that ran to the end came out, from the engine's own counts when it gave them:
+        /// nothing arrived and something failed is failed; some of each is done, saying what did not go; nothing
+        /// failed is done, with whatever the engine said (a skip under Skip is a message, never a failure).
+        /// Without counts (Drive, which reports per item) the progress is all there is to go on.
+        /// </summary>
+        internal static (string State, string? Message) Outcome(ConnectJob job, bool move)
+        {
+            var failures = job.Failed;
+            var counts = job.Counts;
+            int failed = Math.Max(failures.Count, counts?.Failed ?? 0);
+            if (failed == 0) return ("done", null);
+            bool nothing = counts is { } c ? c.Succeeded == 0 : job.ItemsDone == 0;
+            // Filed as sentences already; Sentence again would capitalise a file name at the front of one.
+            string first = failures.Count > 0 && failures[0].Error.Trim().Length > 0
+                ? (failures[0].Error.TrimEnd().EndsWith('.') ? failures[0].Error.Trim() : Sentence(failures[0].Error))
+                : move ? "It could not be moved." : "It could not be copied.";
+            if (nothing) return ("failed", first);
+            int done = counts?.Succeeded ?? job.ItemsDone;
+            return ("done", $"{(move ? "Moved" : "Copied")} {NameRules.Items(done, "file")}; " +
+                            $"{NameRules.Items(failed, "file")} could not be {(move ? "moved" : "copied")}. {first}");
         }
 
         private ConnectJob FindJob(string id) =>
@@ -1124,13 +1205,59 @@ namespace ExplorerNative
             CheckName(name);
             var conflict = Conflict(r.Query.TryGetValue("conflict", out var c) ? c : null);
             string? key = r.Query.TryGetValue("uploadId", out var u) && BatchId(u) ? "upload-" + u : null;
-            if (AlreadyFinished(key, out var done)) return done.Body;
-            // No body is an empty file, which is a file like any other.
-            var path = await Files.UploadAsync(folder, name, conflict, r.Body, token);
-            Changed();
-            var answer = new { ok = true, path };
-            Finished(key, 200, answer);
-            return answer;
+            var (_, body) = await Once(key, async () =>
+            {
+                // No body is an empty file, which is a file like any other. A body that stops arriving is given
+                // up on, and the connection with it: the rest of it could never be told from a next request.
+                string path;
+                try { path = await Files.UploadAsync(folder, name, conflict, new StallGuard(r.Body, _uploads.StallAfter), token); }
+                catch (TimeoutException e) { throw new ResponseStartedException(e); }
+                Changed();
+                var answer = (200, (object)new { ok = true, path });
+                Finished(key, answer.Item1, answer.Item2);
+                return answer;
+            }, token);
+            return body;
+        }
+
+        /// <summary>Requests carrying an id that are being answered now, so a second with the same id waits.</summary>
+        private readonly ConcurrentDictionary<string, Task<(int Status, object Body)>> _inFlight = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Runs <paramref name="run"/> once for <paramref name="key"/>: a request already answered gets that answer,
+        /// and one arriving while the first is still being answered waits for it rather than racing it. Four
+        /// uploads with one id at once made three files. If the first fails, a waiting one tries for itself.
+        /// </summary>
+        private async Task<(int Status, object Body)> Once(string? key, Func<Task<(int Status, object Body)>> run,
+            CancellationToken token)
+        {
+            if (key == null) return await run();
+            while (true)
+            {
+                if (AlreadyFinished(key, out var done)) return (done.Status, done.Body);
+                var mine = new TaskCompletionSource<(int Status, object Body)>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var held = _inFlight.GetOrAdd(key, mine.Task);
+                if (held != mine.Task)
+                {
+                    try { return await held.WaitAsync(token); }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                    catch { continue; }
+                }
+                try
+                {
+                    // run() records its own answer with Finished, before this lets go of the claim.
+                    var answer = await run();
+                    mine.SetResult(answer);
+                    return answer;
+                }
+                catch (Exception e)
+                {
+                    mine.SetException(e);
+                    _ = mine.Task.Exception;   // observed: nobody may be waiting
+                    throw;
+                }
+                finally { _inFlight.TryRemove(new KeyValuePair<string, Task<(int Status, object Body)>>(key, mine.Task)); }
+            }
         }
 
         // MARK: Clipboard
@@ -1192,17 +1319,20 @@ namespace ExplorerNative
                 : $"{clip.Current.Seq + 1}-{Convert.ToHexString(RandomNumberGenerator.GetBytes(3)).ToLowerInvariant()}");
             Directory.CreateDirectory(folder);
             var target = Path.Combine(folder, name);
-            var partial = target + ".partial";
+            // Its own short name, so a long file name still has room; and a body that stops arriving is given
+            // up on after the same stall a chunk is allowed, with the partial taken away.
+            var partial = Path.Combine(folder, ConnectFiles.PartialName());
             try
             {
                 await using (var file = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20, useAsync: true))
-                    await r.Body.CopyToAsync(file, 1 << 20, token);
+                    await new StallGuard(r.Body, _uploads.StallAfter).CopyToAsync(file, 1 << 20, token);
                 System.IO.File.Move(partial, target, overwrite: true);
             }
-            catch
+            catch (Exception e)
             {
                 try { System.IO.File.Delete(partial); } catch { }
                 if (batch == null) try { Directory.Delete(folder, true); } catch { }
+                if (e is TimeoutException) throw new ResponseStartedException(e);
                 throw;
             }
             if (batch != null) return new { ok = true, path = target };
@@ -1391,6 +1521,9 @@ namespace ExplorerNative
             if (audio == null)
             {
                 bool exists = remote != null || await Task.Run(() => System.IO.File.Exists(io), token);
+                // A file another program holds is not one Windows cannot decode: it is in use, and says so.
+                if (exists && remote == null && await Task.Run(() => Unreadable(io), token) is { } held && InUse(held))
+                    throw new ConnectException(423, ConnectFiles.InUseSentence(path));
                 throw new ConnectException(exists ? 500 : 404, exists
                     ? Sentence($"Explorer Native can't decode that: {why}")
                     : "No such file.");
@@ -1399,10 +1532,8 @@ namespace ExplorerNative
             using var _ = audio;
             long length = audio.Plan.TotalBytes;
             long from = 0, to = length - 1;
-            int status = 200;
-            if (r.Headers.TryGetValue("range", out var range) && TryParseRange(range, length, out from, out to))
-                status = 206;
-            else if (r.Headers.ContainsKey("range"))
+            int status = RangeStatus(r.Headers.GetValueOrDefault("range"), length, out from, out to);
+            if (status == 416)
             {
                 await Write(s, $"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{length}\r\nContent-Length: 0\r\n\r\n", token);
                 return;
@@ -1430,6 +1561,18 @@ namespace ExplorerNative
                 gone.Cancel();
                 try { await watch; } catch { }
             }
+        }
+
+        /// <summary>Why a local file cannot be read, opened as the player opens it and one byte read; null if it can.</summary>
+        private static Exception? Unreadable(string io)
+        {
+            try
+            {
+                using var f = new FileStream(io, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1, FileOptions.None);
+                f.ReadByte();
+                return null;
+            }
+            catch (Exception e) { return e; }
         }
 
         /// <summary>The request's JSON body. Anything else is a 400.</summary>
@@ -1475,9 +1618,7 @@ namespace ExplorerNative
 
         private bool CodeMatches(Request r)
         {
-            string given = r.Headers.TryGetValue("x-connect-code", out var h) ? h
-                : r.Query.TryGetValue("code", out var q) ? q : "";
-            var a = Encoding.UTF8.GetBytes(given.Replace(" ", "").Replace("-", ""));
+            var a = Encoding.UTF8.GetBytes(GivenCode(r).Replace(" ", "").Replace("-", ""));
             var b = Encoding.UTF8.GetBytes(_code());
             return b.Length > 0 && CryptographicOperations.FixedTimeEquals(a, b);
         }
@@ -1509,6 +1650,177 @@ namespace ExplorerNative
 
         /// <summary>This PC's Tailscale login, from <c>tailscale status --json</c>; null until read.</summary>
         private string? _ownLogin;
+
+        /// <summary>This PC's ts.net name, which Serve forwards as the Host; null until read.</summary>
+        private string? _ownDnsName;
+
+        // MARK: Who may ask
+
+        /// <summary>
+        /// Whether a request's Host is this server under a name it really has: 127.0.0.1, localhost or [::1] on
+        /// the port it listens on, or this PC's ts.net name, which is what Tailscale Serve forwards. Anything else
+        /// is a page somewhere that has pointed its own name at 127.0.0.1 (DNS rebinding) and would otherwise be
+        /// talking to this server as itself. Before the ts.net name is known, any ts.net name will do: nobody
+        /// outside Tailscale can make one of those resolve here. No Host at all is not a browser.
+        /// </summary>
+        public static bool HostAllowed(string? host, int port, string? ownDnsName)
+        {
+            if (host == null) return true;
+            if (!SplitHost(host, out var name, out var given)) return false;
+            if (name is "127.0.0.1" or "localhost" or "::1")
+                return given == null || given == port;
+            if (!string.IsNullOrEmpty(ownDnsName))
+                return name.Equals(ownDnsName.TrimEnd('.'), StringComparison.OrdinalIgnoreCase) && (given == null || given == 443);
+            return name.EndsWith(".ts.net", StringComparison.OrdinalIgnoreCase) && (given == null || given == 443);
+        }
+
+        /// <summary>
+        /// Whether a request that changes something came from the web app's own page: no Origin (not a browser,
+        /// or a browser that did not say) or one naming the same host and port as the Host header. A page on any
+        /// other origin is refused, whatever it managed to put in the headers.
+        /// </summary>
+        public static bool OriginAllowed(string? origin, string? host)
+        {
+            if (origin == null) return true;
+            if (host == null || !Uri.TryCreate(origin.Trim(), UriKind.Absolute, out var o) || o.Scheme is not ("http" or "https"))
+                return false;
+            if (!SplitHost(host, out var name, out var given)) return false;
+            int hostPort = given ?? (o.Scheme == "https" ? 443 : 80);
+            var originName = o.Host.Trim('[', ']').TrimEnd('.');
+            return originName.Equals(name, StringComparison.OrdinalIgnoreCase) && o.Port == hostPort;
+        }
+
+        /// <summary>A Host header as a name (lower case, no trailing dot, IPv6 without brackets) and a port if given.</summary>
+        private static bool SplitHost(string host, out string name, out int? port)
+        {
+            name = ""; port = null;
+            host = host.Trim();
+            if (host.Length == 0) return false;
+            string portText = "";
+            if (host[0] == '[')
+            {
+                int close = host.IndexOf(']');
+                if (close < 0) return false;
+                name = host[1..close];
+                var rest = host[(close + 1)..];
+                if (rest.Length > 0) { if (rest[0] != ':') return false; portText = rest[1..]; }
+            }
+            else
+            {
+                int colon = host.IndexOf(':');
+                if (colon != host.LastIndexOf(':')) return false;
+                name = colon < 0 ? host : host[..colon];
+                if (colon >= 0) portText = host[(colon + 1)..];
+            }
+            if (portText.Length > 0)
+            {
+                if (!int.TryParse(portText, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var p) || p is < 1 or > 65535) return false;
+                port = p;
+            }
+            name = name.TrimEnd('.').ToLowerInvariant();
+            return name.Length > 0;
+        }
+
+        /// <summary>Wrong codes a client may give before it is made to wait.</summary>
+        public const int FreeCodeTries = 5;
+
+        /// <summary>The longest wait for another try, reached by doubling from a second.</summary>
+        public static readonly TimeSpan LongestCodeWait = TimeSpan.FromSeconds(60);
+
+        /// <summary>Wrong codes are forgotten after this long without another.</summary>
+        public static readonly TimeSpan CodeStrikesKeptFor = TimeSpan.FromMinutes(15);
+
+        private sealed class Strikes
+        {
+            public int Count;
+            public DateTime Until = DateTime.MinValue;
+            public DateTime Last;
+            public bool Said;
+        }
+
+        private readonly Dictionary<string, Strikes> _strikes = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Raised once each time somebody starts guessing the pairing code (the first wait), with who: their
+        /// Tailscale login, or their address.
+        /// </summary>
+        public event Action<string>? CodeGuessing;
+
+        /// <summary>Who a code attempt is counted against: the tailnet user Serve names, or else the address.</summary>
+        private static string ClientKey(Request r) =>
+            r.Headers.TryGetValue("tailscale-user-login", out var l) && l.Length > 0 ? "user:" + l
+                : "addr:" + ((r.Socket?.RemoteEndPoint as IPEndPoint)?.Address.ToString() ?? "?");
+
+        /// <summary>How long <paramref name="key"/> must wait before trying a code again; zero for not at all.</summary>
+        internal TimeSpan CodeWait(string key, DateTime now)
+        {
+            lock (_strikes)
+            {
+                foreach (var old in _strikes.Where(e => now - e.Value.Last > CodeStrikesKeptFor).Select(e => e.Key).ToList())
+                    _strikes.Remove(old);
+                return _strikes.TryGetValue(key, out var s) && s.Until > now ? s.Until - now : TimeSpan.Zero;
+            }
+        }
+
+        /// <summary>A code tried by <paramref name="key"/>: a right one clears its record, a wrong one counts.</summary>
+        internal void CodeTried(string key, bool right, DateTime now)
+        {
+            bool say = false;
+            lock (_strikes)
+            {
+                if (right) { _strikes.Remove(key); return; }
+                if (!_strikes.TryGetValue(key, out var s)) _strikes[key] = s = new Strikes();
+                s.Count++;
+                s.Last = now;
+                if (s.Count >= FreeCodeTries)
+                {
+                    // One second after the fifth, then doubling: 2, 4, ... and never more than a minute.
+                    double seconds = Math.Min(LongestCodeWait.TotalSeconds, Math.Pow(2, Math.Min(30, s.Count - FreeCodeTries)));
+                    s.Until = now + TimeSpan.FromSeconds(seconds);
+                    if (!s.Said) { s.Said = say = true; }
+                }
+            }
+            if (say)
+            {
+                var who = key[5..];   // past "user:" or "addr:"
+                _log?.Invoke($"Connect: {FreeCodeTries} wrong pairing codes from {who}; each try now waits");
+                try { CodeGuessing?.Invoke(who); } catch { }
+            }
+        }
+
+        /// <summary>The code a request carries, as typed: header first, then the query.</summary>
+        private static string GivenCode(Request r) =>
+            r.Headers.TryGetValue("x-connect-code", out var h) ? h
+                : r.Query.TryGetValue("code", out var q) ? q : "";
+
+        /// <summary>
+        /// Refuses a client still waiting out its wrong codes (429, with Retry-After), and counts the code this
+        /// request carries. The owner, who comes in by Serve's identity and not by a code, is never counted and
+        /// never made to wait; nor is a request with no code, which is only asking whether one is needed.
+        /// </summary>
+        private async Task<bool> CodeThrottled(Request r, NetworkStream s, bool head, CancellationToken token)
+        {
+            if (TrustedTailscaleUser(r)) return false;
+            if (GivenCode(r).Length == 0) return false;
+            var key = ClientKey(r);
+            var now = DateTime.UtcNow;
+            var wait = CodeWait(key, now);
+            if (wait > TimeSpan.Zero)
+            {
+                int seconds = (int)Math.Ceiling(wait.TotalSeconds);
+                var body = JsonSerializer.SerializeToUtf8Bytes(new
+                {
+                    error = $"Too many wrong pairing codes. Wait {NameRules.Items(seconds, "second")}, then try again.",
+                    retryAfter = seconds,
+                }, JsonOptions);
+                await Write(s, $"HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json; charset=utf-8\r\nContent-Length: {body.Length}\r\n" +
+                               $"Retry-After: {seconds}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\n\r\n", token);
+                if (!head) await s.WriteAsync(body, token);
+                return true;
+            }
+            CodeTried(key, CodeMatches(r), now);
+            return false;
+        }
 
         // MARK: Drives and folders
 
@@ -1542,7 +1854,7 @@ namespace ExplorerNative
         /// <summary>A folder's entries, folders first then by name, or null if it can't be read in ten seconds.</summary>
         public async Task<List<ConnectEntry>?> List(string path)
         {
-            if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path)) return null;
+            if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path) || IsNetworkPath(path)) return null;
             var listing = Task.Run(() =>
             {
                 var held = _tryListing(path);
@@ -1569,6 +1881,7 @@ namespace ExplorerNative
         {
             bool headOnly = r.Method == "HEAD";
             if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path)) { await Error(s, 404, "No such file.", headOnly, token); return; }
+            if (IsNetworkPath(path)) { await Error(s, 403, NetworkPathRefusal, headOnly, token); return; }
             var away = _files?.Unavailable(path);
             if (away != null) { await Error(s, 503, Sentence(away), headOnly, token); return; }
             IRangeSource source;
@@ -1583,10 +1896,8 @@ namespace ExplorerNative
 
             long length = source.Length;
             long from = 0, to = length - 1;
-            int status = 200;
-            if (r.Headers.TryGetValue("range", out var range) && TryParseRange(range, length, out from, out to))
-                status = 206;
-            else if (r.Headers.ContainsKey("range") && length > 0)
+            int status = length > 0 ? RangeStatus(r.Headers.GetValueOrDefault("range"), length, out from, out to) : 200;
+            if (status == 416)
             {
                 await Write(s, $"HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{length}\r\nContent-Length: 0\r\n\r\n", token);
                 return;
@@ -1650,27 +1961,42 @@ namespace ExplorerNative
         }
 
         /// <summary>One byte range: "bytes=a-b", "bytes=a-" or "bytes=-n".</summary>
-        public static bool TryParseRange(string header, long length, out long from, out long to)
+        public static bool TryParseRange(string header, long length, out long from, out long to) =>
+            RangeStatus(header, length, out from, out to) == 206;
+
+        /// <summary>
+        /// What a Range header asks of a file this long: 206 with the bytes, 416 when it is a range that cannot
+        /// fit (a start at or past the end, a suffix of nothing), and 200 for the whole file when it is not a
+        /// range this server reads at all (another unit, a malformed one, an end before its start), which is
+        /// what RFC 9110 says to do with one. An end too big for a number is the end of the file.
+        /// </summary>
+        public static int RangeStatus(string? header, long length, out long from, out long to)
         {
             from = 0; to = length - 1;
-            if (length <= 0 || !header.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase)) return false;
-            var spec = header[6..].Split(',')[0].Trim();
+            if (string.IsNullOrWhiteSpace(header) || !header.TrimStart().StartsWith("bytes=", StringComparison.OrdinalIgnoreCase)) return 200;
+            var spec = header.TrimStart()[6..].Split(',')[0].Trim();
             int dash = spec.IndexOf('-');
-            if (dash < 0) return false;
+            if (dash < 0) return 200;
             string a = spec[..dash].Trim(), b = spec[(dash + 1)..].Trim();
+            static bool Digits(string s) => s.Length > 0 && s.All(char.IsAsciiDigit);
             if (a.Length == 0)
             {
-                if (!long.TryParse(b, out long suffix) || suffix <= 0) return false;
+                if (!Digits(b)) return 200;
+                // A suffix longer than any number is longer than the file: all of it.
+                long suffix = long.TryParse(b, out var n) ? n : long.MaxValue;
+                if (suffix == 0 || length <= 0) return 416;
                 from = Math.Max(0, length - suffix);
-                return true;
+                return 206;
             }
-            if (!long.TryParse(a, out from) || from >= length) return false;
+            if (!Digits(a) || (b.Length > 0 && !Digits(b))) return 200;
+            if (!long.TryParse(a, out from) || from >= length) { from = 0; return 416; }
             if (b.Length > 0)
             {
-                if (!long.TryParse(b, out to) || to < from) return false;
-                to = Math.Min(to, length - 1);
+                long end = long.TryParse(b, out var e) ? e : long.MaxValue;
+                if (end < from) { from = 0; return 200; }
+                to = Math.Min(end, length - 1);
             }
-            return true;
+            return 206;
         }
 
         /// <summary>
@@ -1751,7 +2077,8 @@ namespace ExplorerNative
         private static string Reason(int status) => status switch
         {
             200 => "OK", 202 => "Accepted", 400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden",
-            404 => "Not Found", 405 => "Method Not Allowed", 409 => "Conflict", 423 => "Locked", 503 => "Service Unavailable",
+            404 => "Not Found", 405 => "Method Not Allowed", 409 => "Conflict", 421 => "Misdirected Request", 423 => "Locked",
+            429 => "Too Many Requests", 503 => "Service Unavailable",
             _ => "Internal Server Error",
         };
 
@@ -1967,6 +2294,47 @@ namespace ExplorerNative
             public override bool CanRead => true;
             public override bool CanSeek => false;
             public override bool CanWrite => false;
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        }
+
+        /// <summary>
+        /// A request body that gives up when no byte has come for <c>after</c>: a <see cref="TimeoutException"/>
+        /// instead of a read that waits until the dead socket is noticed, over a minute later, with a hidden
+        /// partial file sitting in somebody's folder all that time. The same rule a resumable chunk has.
+        /// </summary>
+        internal sealed class StallGuard : Stream
+        {
+            private readonly Stream _inner;
+            private readonly TimeSpan _after;
+
+            public StallGuard(Stream inner, TimeSpan after) { _inner = inner; _after = after; }
+
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken token = default)
+            {
+                using var stall = CancellationTokenSource.CreateLinkedTokenSource(token);
+                stall.CancelAfter(_after);
+                try { return await _inner.ReadAsync(buffer, stall.Token); }
+                catch (Exception e) when (e is OperationCanceledException or IOException &&
+                                          stall.IsCancellationRequested && !token.IsCancellationRequested)
+                {
+                    throw new TimeoutException("the upload stopped arriving");
+                }
+            }
+
+            public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken token) =>
+                ReadAsync(buffer.AsMemory(offset, count), token).AsTask();
+
+            public override int Read(byte[] buffer, int offset, int count) =>
+                ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => _inner.Length;
             public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
             public override void Flush() { }
             public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();

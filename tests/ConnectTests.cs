@@ -51,6 +51,7 @@ namespace ExplorerNative
             await ClipboardTests();
             await DetailsTests();
             await WebAppTests();
+            await Round2Tests();
         }
 
         /// <summary>
@@ -743,7 +744,7 @@ namespace ExplorerNative
                 {
                     client.Connect(IPAddress.Loopback, port);
                     var s = client.GetStream();
-                    s.Write(Encoding.ASCII.GetBytes($"PUT /api/upload/chunk?id={id}&offset=300 HTTP/1.1\r\nHost: x\r\nX-Connect-Code: {Code}\r\nContent-Length: 400\r\n\r\n"));
+                    s.Write(Encoding.ASCII.GetBytes($"PUT /api/upload/chunk?id={id}&offset=300 HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Connect-Code: {Code}\r\nContent-Length: 400\r\n\r\n"));
                     s.Write(payload, 300, 100);
                     s.Flush();
                     await Task.Delay(300);
@@ -779,7 +780,7 @@ namespace ExplorerNative
                 {
                     stalled.Connect(IPAddress.Loopback, port);
                     var ss = stalled.GetStream();
-                    ss.Write(Encoding.ASCII.GetBytes($"PUT /api/upload/chunk?id={stallId}&offset=0 HTTP/1.1\r\nHost: x\r\nX-Connect-Code: {Code}\r\nContent-Length: 400\r\n\r\n"));
+                    ss.Write(Encoding.ASCII.GetBytes($"PUT /api/upload/chunk?id={stallId}&offset=0 HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Connect-Code: {Code}\r\nContent-Length: 400\r\n\r\n"));
                     ss.Write(payload, 0, 100);
                     ss.Flush();
                     await Task.Delay(200);
@@ -1341,9 +1342,13 @@ namespace ExplorerNative
 
             public int Uploads;
 
+            /// <summary>How long an upload takes, so requests can arrive while one is being answered.</summary>
+            public int UploadDelayMs;
+
             public async Task<string> UploadAsync(string folder, string name, PasteConflictPolicy conflict, Stream body, CancellationToken token)
             {
                 Interlocked.Increment(ref Uploads);
+                if (UploadDelayMs > 0) await Task.Delay(UploadDelayMs, token);
                 if (conflict == PasteConflictPolicy.Skip) return Path.Combine(folder, name);   // the body is left unread
                 using var read = new MemoryStream();
                 await body.CopyToAsync(read, token);
@@ -1545,10 +1550,10 @@ namespace ExplorerNative
             client.ReceiveTimeout = 10_000;
             using var s = client.GetStream();
             var payload = new string('z', 5000);
-            s.Write(Encoding.ASCII.GetBytes($"POST /api/upload?folder=C%3A%5Cb&name=e.txt&conflict=skip HTTP/1.1\r\nHost: x\r\nX-Connect-Code: {Code}\r\nContent-Length: {payload.Length}\r\n\r\n{payload}"));
+            s.Write(Encoding.ASCII.GetBytes($"POST /api/upload?folder=C%3A%5Cb&name=e.txt&conflict=skip HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Connect-Code: {Code}\r\nContent-Length: {payload.Length}\r\n\r\n{payload}"));
             var (status, _, body) = ReadResponse(s, head: false);
             Check("a skipped upload answers without reading the body", status == 200 && Encoding.UTF8.GetString(body).Contains("e.txt"), status.ToString());
-            s.Write(Encoding.ASCII.GetBytes($"GET /api/info HTTP/1.1\r\nHost: x\r\nX-Connect-Code: {Code}\r\n\r\n"));
+            s.Write(Encoding.ASCII.GetBytes($"GET /api/info HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Connect-Code: {Code}\r\n\r\n"));
             (status, _, body) = ReadResponse(s, head: false);
             Check("and the next request on the connection is read cleanly", status == 200 && Encoding.UTF8.GetString(body).Contains("apiVersion"), status.ToString());
 
@@ -1557,12 +1562,12 @@ namespace ExplorerNative
                 closing.Connect(IPAddress.Loopback, port);
                 closing.ReceiveTimeout = 10_000;
                 var c = closing.GetStream();
-                c.Write(Encoding.ASCII.GetBytes($"POST /api/upload?folder=C%3A%5Cb&name=g.txt&conflict=skip HTTP/1.1\r\nHost: x\r\nX-Connect-Code: {Code}\r\nConnection: close\r\nContent-Length: {payload.Length}\r\n\r\n{payload}"));
+                c.Write(Encoding.ASCII.GetBytes($"POST /api/upload?folder=C%3A%5Cb&name=g.txt&conflict=skip HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Connect-Code: {Code}\r\nConnection: close\r\nContent-Length: {payload.Length}\r\n\r\n{payload}"));
                 var (closedStatus, _, _) = ReadResponse(c, head: false);
                 Check("an unread body on a closing connection is drained, so the answer is not lost to a reset", closedStatus == 200, closedStatus.ToString());
             }
 
-            s.Write(Encoding.ASCII.GetBytes($"POST /api/upload?folder=C%3A%5Cb&name=f.txt HTTP/1.1\r\nHost: x\r\nX-Connect-Code: {Code}\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n"));
+            s.Write(Encoding.ASCII.GetBytes($"POST /api/upload?folder=C%3A%5Cb&name=f.txt HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Connect-Code: {Code}\r\nContent-Length: 5\r\nExpect: 100-continue\r\n\r\n"));
             var (interim, _, _) = ReadResponse(s, head: true);
             Check("Expect: 100-continue is answered with 100 when the body is wanted", interim == 100, interim.ToString());
             s.Write(Encoding.ASCII.GetBytes("12345"));
@@ -1652,7 +1657,7 @@ namespace ExplorerNative
                 {
                     client.Connect(IPAddress.Loopback, port);
                     var s = client.GetStream();
-                    s.Write(Encoding.ASCII.GetBytes($"GET /api/file?path=C%3A%5Cx.flac HTTP/1.1\r\nHost: x\r\nX-Connect-Code: {Code}\r\nRange: bytes=100-\r\n\r\n"));
+                    s.Write(Encoding.ASCII.GetBytes($"GET /api/file?path=C%3A%5Cx.flac HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Connect-Code: {Code}\r\nRange: bytes=100-\r\n\r\n"));
                     ReadResponse(s, head: true);
                     await Task.Delay(300);
                 }
@@ -1826,7 +1831,7 @@ namespace ExplorerNative
             string target = "/api/file?path=" + Uri.EscapeDataString(bin);
 
             void Ask(string method, string url, string extra = "") =>
-                s.Write(Encoding.ASCII.GetBytes($"{method} {url} HTTP/1.1\r\nHost: x\r\nX-Connect-Code: {Code}\r\n{extra}\r\n"));
+                s.Write(Encoding.ASCII.GetBytes($"{method} {url} HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Connect-Code: {Code}\r\n{extra}\r\n"));
 
             Ask("HEAD", "/api/info");
             var (status, headers, _) = ReadResponse(s, head: true);
@@ -1882,6 +1887,477 @@ namespace ExplorerNative
             request.Headers.Add("X-Connect-Code", code);
             if (range != null) request.Headers.Range = range;
             return http.SendAsync(request);
+        }
+
+        // MARK: Round 2
+
+        /// <summary>
+        /// The second round of web-app findings, each held as it was found: a locked file reported as copied,
+        /// DNS rebinding, unlimited code guessing, long names, Skip called a failure, one upload id raced,
+        /// a stalled body held, a cancelled chunk orphaned, a cache of misses, a Range header answered 416, and
+        /// shares opened on a phone's say-so.
+        /// </summary>
+        private static async Task Round2Tests()
+        {
+            Console.WriteLine("Web app, round 2:");
+            Round2Pure();
+            await Round2LocalFiles();
+            await Round2Server();
+            await Round2ChunkCancelled();
+        }
+
+        private static void Round2Pure()
+        {
+            // 1. The outcome is the engine's count, not its progress.
+            var locked = new ConnectJob("l", "copy");
+            locked.Report(1, 1, 10, 10, "");   // robocopy's progress counts a file it gave up on as done
+            locked.Counted(0, 1);
+            locked.Fail(@"C:\a\x.txt", ConnectFiles.InUseSentence(@"C:\a\x.txt"));
+            var (state, message) = ConnectServer.Outcome(locked, move: false);
+            Check("a copy whose one file was in use fails, saying so, though the progress counted it done",
+                state == "failed" && message != null && message.Contains("x.txt is in use"), $"{state} {message}");
+            locked.Finish(state, message);
+            var snap = JsonSerializer.Serialize(locked.Snapshot());
+            Check("and the job shows nothing done", snap.Contains("\"itemsDone\":0"), snap);
+
+            var some = new ConnectJob("s", "move");
+            some.Report(3, 3, 0, 0, "");
+            some.Counted(2, 1);
+            some.Fail(@"C:\a\y.txt", ConnectFiles.InUseSentence(@"C:\a\y.txt"));
+            (state, message) = ConnectServer.Outcome(some, move: true);
+            Check("some moved and one not is done, saying what stayed and why",
+                state == "done" && message != null && message.StartsWith("Moved 2 files; 1 file could not be moved.") && message.Contains("y.txt is in use"),
+                $"{state} {message}");
+            some.Finish(state, message);
+            snap = JsonSerializer.Serialize(some.Snapshot());
+            Check("with only what went counted as done", snap.Contains("\"itemsDone\":2") && snap.Contains("\"items\":3"), snap);
+
+            // 7. Skip that skipped everything.
+            var skipped = new ConnectJob("k", "copy");
+            skipped.Counted(0, 0);
+            (state, message) = ConnectServer.Outcome(skipped, move: false);
+            Check("a copy under Skip where everything was there already is done, not failed", state == "done" && message == null, $"{state} {message}");
+            Check("Skip's own note is recognised and not filed as a failure",
+                ConnectFiles.IsSkipNote("1 item already existed and was skipped") && ConnectFiles.IsSkipNote("3 items already existed and were skipped") &&
+                !ConnectFiles.IsSkipNote("x.txt: access is denied"));
+            var log = new ConflictLog();
+            log.Skipped(@"C:\b\x.txt");
+            Equal("and what was skipped is said as a sentence", "1 item skipped, because it was already there.",
+                ConnectFiles.CollisionSentence(log.Snapshot()) ?? "(nothing)");
+
+            var f = ConnectFiles.FailureFor(@"ERROR 32 (0x00000020) Copying File C:\src\in use.txt: The process cannot access the file because it is being used by another process.",
+                new[] { @"C:\src\in use.txt" });
+            Check("robocopy's ERROR 32 is filed against the file and says it is in use, naming it",
+                f.Path == @"C:\src\in use.txt" && f.Error == "in use.txt is in use by another program on the PC. Close it there, then try again.", $"{f.Path} | {f.Error}");
+            f = ConnectFiles.FailureFor(@"ERROR 33 (0x00000021) Copying File C:\src\deep\locked.bin: The process cannot access the file because another process has locked a portion of the file.",
+                new[] { @"C:\src" });
+            Check("ERROR 33 is in use too, against the file deep in the folder copied",
+                f.Path == @"C:\src\deep\locked.bin" && f.Error.StartsWith("locked.bin is in use"), $"{f.Path} | {f.Error}");
+            f = ConnectFiles.FailureFor(@"ERROR 5 (0x00000005) Copying File C:\src\no.txt: Access is denied.", new[] { @"C:\src\no.txt" });
+            Check("any other robocopy error keeps its reason", f.Path == @"C:\src\no.txt" && f.Error.EndsWith("Access is denied."), $"{f.Path} | {f.Error}");
+
+            // 2. Host and Origin.
+            const string ts = "laptop.tail3d7403.ts.net";
+            Check("the loopback names on our port are this server",
+                ConnectServer.HostAllowed("127.0.0.1:47810", 47810, ts) && ConnectServer.HostAllowed("localhost:47810", 47810, ts) &&
+                ConnectServer.HostAllowed("[::1]:47810", 47810, ts) && ConnectServer.HostAllowed("LOCALHOST", 47810, ts));
+            Check("a loopback name on another port is not", !ConnectServer.HostAllowed("127.0.0.1:8080", 47810, ts));
+            Check("a name somebody pointed at 127.0.0.1 is not (DNS rebinding)", !ConnectServer.HostAllowed("attacker.example:47810", 47810, ts));
+            Check("the ts.net name Serve forwards is, with or without 443",
+                ConnectServer.HostAllowed(ts, 47810, ts) && ConnectServer.HostAllowed("Laptop.Tail3d7403.ts.net:443", 47810, ts) &&
+                ConnectServer.HostAllowed(ts + ".", 47810, ts + "."));
+            Check("another machine's ts.net name is not, once ours is known", !ConnectServer.HostAllowed("other.tail3d7403.ts.net", 47810, ts));
+            Check("before ours is known a ts.net name is let through, and nothing else",
+                ConnectServer.HostAllowed(ts, 47810, null) && !ConnectServer.HostAllowed("attacker.example", 47810, null));
+            Check("a Host that is not a host is not",
+                !ConnectServer.HostAllowed("", 47810, ts) && !ConnectServer.HostAllowed("a:b:c", 47810, ts) && !ConnectServer.HostAllowed("127.0.0.1:99999", 47810, ts));
+            Check("an Origin naming the same host and port is the web app's own",
+                ConnectServer.OriginAllowed("https://" + ts, ts) && ConnectServer.OriginAllowed("http://127.0.0.1:47810", "127.0.0.1:47810") &&
+                ConnectServer.OriginAllowed(null, "127.0.0.1:47810"));
+            Check("any other Origin is refused",
+                !ConnectServer.OriginAllowed("http://attacker.example:47810", "127.0.0.1:47810") && !ConnectServer.OriginAllowed("null", "127.0.0.1:47810") &&
+                !ConnectServer.OriginAllowed("http://127.0.0.1:47810", ts) && !ConnectServer.OriginAllowed("https://127.0.0.1:47811", "127.0.0.1:47810"));
+
+            // 3. Wrong codes cost time.
+            using (var counting = new ConnectServer(_ => null, p => new FileRangeSource(p), () => Code, loopbackOnly: true, port: FreePort()))
+            {
+                int said = 0;
+                counting.CodeGuessing += _ => said++;
+                var t0 = DateTime.UtcNow;
+                for (int i = 0; i < 4; i++) counting.CodeTried("addr:x", false, t0);
+                Check("four wrong codes cost nothing", counting.CodeWait("addr:x", t0) == TimeSpan.Zero);
+                counting.CodeTried("addr:x", false, t0);
+                Equal("after the fifth the next try waits a second", "1", counting.CodeWait("addr:x", t0).TotalSeconds.ToString());
+                counting.CodeTried("addr:x", false, t0);
+                Equal("after the sixth, two", "2", counting.CodeWait("addr:x", t0).TotalSeconds.ToString());
+                for (int i = 0; i < 30; i++) counting.CodeTried("addr:x", false, t0);
+                Check("and never more than a minute", counting.CodeWait("addr:x", t0) == ConnectServer.LongestCodeWait, counting.CodeWait("addr:x", t0).ToString());
+                Equal("said once, however many", "1", said.ToString());
+                Check("nobody else waits for it", counting.CodeWait("user:friend@example.com", t0) == TimeSpan.Zero);
+                Check("and it is forgotten in time", counting.CodeWait("addr:x", t0 + ConnectServer.CodeStrikesKeptFor + TimeSpan.FromMinutes(1)) == TimeSpan.Zero);
+                counting.CodeTried("addr:y", false, t0);
+                counting.CodeTried("addr:y", true, t0);
+                for (int i = 0; i < 4; i++) counting.CodeTried("addr:y", false, t0);
+                Check("a right code starts the count again", counting.CodeWait("addr:y", t0) == TimeSpan.Zero);
+            }
+
+            // 13. Ranges RFC 9110 says to ignore, and shares.
+            Equal("a Range in another unit is ignored: the whole file", "200", ConnectServer.RangeStatus("items=0-5", 300, out _, out _).ToString());
+            Equal("so is a malformed one", "200", ConnectServer.RangeStatus("bytes=abc", 300, out _, out _).ToString());
+            Equal("and one ending before it starts", "200", ConnectServer.RangeStatus("bytes=20-10", 300, out _, out _).ToString());
+            int rs = ConnectServer.RangeStatus("bytes=10-99999999999999999999999", 300, out long rf, out long rt);
+            Check("an end too big for a number is the end of the file", rs == 206 && rf == 10 && rt == 299, $"{rs} {rf}-{rt}");
+            Equal("a start past the end is still 416", "416", ConnectServer.RangeStatus("bytes=300-", 300, out _, out _).ToString());
+            Equal("and so is one too big for a number", "416", ConnectServer.RangeStatus("bytes=99999999999999999999999-", 300, out _, out _).ToString());
+            Check("shares and device paths are network paths",
+                ConnectServer.IsNetworkPath(@"\\host\share\x") && ConnectServer.IsNetworkPath(@"\\?\UNC\host\share\x") &&
+                ConnectServer.IsNetworkPath("//host/share") && ConnectServer.IsNetworkPath(@"\\.\pipe\x"));
+            Check("a drive letter is not, mapped or not", !ConnectServer.IsNetworkPath(@"Z:\music") && !ConnectServer.IsNetworkPath(@"C:\"));
+
+            // 5. Room for the number.
+            var nearLimit = new string('n', 250) + ".flac";
+            var numbered = ConnectFiles.UniqueLocalName(nearLimit, n => n == nearLimit);
+            Check("a name near the limit is shortened before it is numbered, keeping its extension",
+                numbered.Length <= 255 && numbered.EndsWith(".flac") && numbered != nearLimit, $"{numbered.Length}");
+            Equal("a short name is numbered as always", "song (2).flac", ConnectFiles.UniqueLocalName("song.flac", n => n == "song.flac"));
+
+            // 11. Misses are not remembered.
+            int cached = WebAssets.Cached;
+            for (int i = 0; i < 50; i++) WebAssets.TryGet("/app/nope-" + Guid.NewGuid().ToString("N") + ".js", out _, out _);
+            Check("names that are not the web app's files are not remembered", WebAssets.Cached == cached, $"{cached} -> {WebAssets.Cached}");
+            Check("a name longer than any of ours is not even looked up", !WebAssets.TryGet("/app/" + new string('a', 200) + ".js", out _, out _));
+            Check("and the real files still are", WebAssets.TryGet("/app/app.js", out var appJs, out _) && appJs.Length > 1000);
+
+            // 12. Where focus goes, read from app.js.
+            var js = Encoding.UTF8.GetString(appJs);
+            Check("Select puts focus on the first box to tick, not the heading",
+                js.Contains("$('file-list').querySelector('input[type=\"checkbox\"]')") && js.Contains("(first || $('btn-sel-done')).focus()"));
+            Check("Copy and Move from select put focus on the Paste here button", js.Contains("(paste.hidden ? $('btn-select') : paste).focus()"));
+            Check("the mini player's label is written only when it changes", js.Contains("getAttribute('aria-label') !== label"));
+            Check("too many wrong codes is said on the code screen", js.Contains("res.status === 429") && js.Contains("if (res.error)"));
+        }
+
+        /// <summary>The real ConnectFiles, robocopy and all, against files another program holds.</summary>
+        private static async Task Round2LocalFiles()
+        {
+            string root = Path.Combine(Path.GetTempPath(), "en-connect-r2-" + Guid.NewGuid().ToString("N"));
+            string a = Path.Combine(root, "a"), b = Path.Combine(root, "b");
+            Directory.CreateDirectory(a);
+            Directory.CreateDirectory(b);
+            var files = new ConnectFiles(null, new Settings());
+            try
+            {
+                // 1. A held file is not copied, not moved, and not called done.
+                var held = Path.Combine(a, "held.txt");
+                System.IO.File.WriteAllText(held, "held");
+                using (new FileStream(held, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                {
+                    var copy = new ConnectJob("r2c", "copy");
+                    await files.TransferAsync(copy, new[] { held }, b, false, PasteConflictPolicy.AutoRename);
+                    var (state, message) = ConnectServer.Outcome(copy, move: false);
+                    Check("copying a file another program holds fails, and says it is in use",
+                        state == "failed" && message != null && message.Contains("held.txt is in use") && !System.IO.File.Exists(Path.Combine(b, "held.txt")),
+                        $"{state} | {message} | counts {copy.Counts}");
+
+                    var move = new ConnectJob("r2m", "move");
+                    await files.TransferAsync(move, new[] { held }, b, true, PasteConflictPolicy.AutoRename);
+                    (state, message) = ConnectServer.Outcome(move, move: true);
+                    Check("so does moving it, and it stays where it was",
+                        state == "failed" && message != null && message.Contains("held.txt is in use") && System.IO.File.Exists(held),
+                        $"{state} | {message} | counts {move.Counts}");
+                }
+
+                // 1. Replacing a held file is not "1 replaced".
+                var newer = Path.Combine(a, "over.txt");
+                var older = Path.Combine(b, "over.txt");
+                System.IO.File.WriteAllText(older, "old");
+                System.IO.File.SetLastWriteTimeUtc(older, DateTime.UtcNow.AddDays(-2));
+                System.IO.File.WriteAllText(newer, "the new one");
+                using (new FileStream(older, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                {
+                    var over = new ConnectJob("r2o", "copy");
+                    await files.TransferAsync(over, new[] { newer }, b, false, PasteConflictPolicy.Overwrite);
+                    var (state, message) = ConnectServer.Outcome(over, move: false);
+                    over.Finish(state, message);
+                    var snap = JsonSerializer.Serialize(over.Snapshot());
+                    Check("replacing a file another program holds fails as in use, and does not say replaced",
+                        state == "failed" && snap.Contains("is in use") && !snap.Contains("replaced"), snap);
+                }
+
+                // 7. Skip where it is all there already.
+                System.IO.File.WriteAllText(Path.Combine(a, "same.txt"), "a");
+                System.IO.File.WriteAllText(Path.Combine(b, "same.txt"), "b");
+                var skip = new ConnectJob("r2s", "copy");
+                await files.TransferAsync(skip, new[] { Path.Combine(a, "same.txt") }, b, false, PasteConflictPolicy.Skip);
+                var (skipState, skipMessage) = ConnectServer.Outcome(skip, move: false);
+                skip.Finish(skipState, skipMessage);
+                var skipSnap = JsonSerializer.Serialize(skip.Snapshot());
+                Check("a copy under Skip where it was all there is done, with the skip said and nothing failed",
+                    skipState == "done" && skip.Failed.Count == 0 && skipSnap.Contains("skipped") && System.IO.File.ReadAllText(Path.Combine(b, "same.txt")) == "b",
+                    skipSnap);
+
+                // 4. A long name, small upload.
+                var longName = new string('L', 220) + ".txt";
+                var up = await files.UploadAsync(b, longName, PasteConflictPolicy.AutoRename, new MemoryStream(Encoding.UTF8.GetBytes("long")), CancellationToken.None);
+                Check("a small upload with a 224-character name lands", System.IO.File.ReadAllText(up) == "long", Path.GetFileName(up).Length.ToString());
+
+                // 5. Keeping both of a name at the limit.
+                var nearLimit = new string('N', 250) + ".txt";
+                var first = await files.UploadAsync(b, nearLimit, PasteConflictPolicy.AutoRename, new MemoryStream(Encoding.UTF8.GetBytes("1")), CancellationToken.None);
+                var second = await files.UploadAsync(b, nearLimit, PasteConflictPolicy.AutoRename, new MemoryStream(Encoding.UTF8.GetBytes("2")), CancellationToken.None);
+                Check("keeping both of a 254-character name fits, with its extension",
+                    second != first && Path.GetFileName(second).Length <= 255 && second.EndsWith(".txt") && System.IO.File.ReadAllText(second) == "2" &&
+                    System.IO.File.ReadAllText(first) == "1", Path.GetFileName(second).Length.ToString());
+
+                // 6. Replacing a held file by upload is in use, not "access denied".
+                var busy = Path.Combine(b, "busy.txt");
+                System.IO.File.WriteAllText(busy, "old");
+                using (new FileStream(busy, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                {
+                    int status = 0;
+                    try { await files.UploadAsync(b, "busy.txt", PasteConflictPolicy.Overwrite, new MemoryStream(Encoding.UTF8.GetBytes("new")), CancellationToken.None); }
+                    catch (ConnectException e) { status = e.Status; }
+                    catch (Exception e) when (ConnectServer.InUse(e)) { status = 423; }
+                    Equal("an upload replacing a file another program holds is 423, in use", "423", status.ToString());
+                }
+
+                // 9. A body that stops arriving.
+                Exception? caught = null;
+                try
+                {
+                    await files.UploadAsync(b, "stall.txt", PasteConflictPolicy.AutoRename,
+                        new ConnectServer.StallGuard(new NeverStream(), TimeSpan.FromMilliseconds(500)), CancellationToken.None);
+                }
+                catch (Exception e) { caught = e; }
+                Check("an upload whose body stops arriving is given up on", caught is TimeoutException, caught?.GetType().Name ?? "(nothing)");
+                Check("and leaves no hidden partial in the folder",
+                    !Directory.EnumerateFiles(b, "*.partial", new EnumerationOptions { AttributesToSkip = 0 }).Any());
+            }
+            finally
+            {
+                try { Directory.Delete(@"\\?\" + root, true); } catch { }
+            }
+        }
+
+        /// <summary>A body that never sends a byte.</summary>
+        private sealed class NeverStream : Stream
+        {
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken token = default)
+            {
+                await Task.Delay(Timeout.Infinite, token);
+                return 0;
+            }
+            public override int Read(byte[] buffer, int offset, int count) => ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        }
+
+        /// <summary>A body that sends some bytes and then waits until it is let go.</summary>
+        private sealed class GatedStream : Stream
+        {
+            private readonly TaskCompletionSource<bool> _go = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            private bool _sent;
+            public void Release() => _go.TrySetResult(true);
+            public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken token = default)
+            {
+                if (!_sent) { _sent = true; buffer.Span[..10].Fill(7); return 10; }
+                await _go.Task.WaitAsync(token);
+                return 0;
+            }
+            public override int Read(byte[] buffer, int offset, int count) => ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        }
+
+        /// <summary>10. Cancelled while a chunk is still arriving: the folder goes when the chunk lets go.</summary>
+        private static async Task Round2ChunkCancelled()
+        {
+            string store = Path.Combine(Path.GetTempPath(), "en-connect-r2-store-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var uploads = new ConnectUploads(store);
+                var id = uploads.Start(new ConnectUploads.Meta(@"C:\b", "x.bin", 1000, "rename", DateTime.UtcNow));
+                var body = new GatedStream();
+                var append = uploads.AppendAsync(id, 0, body, CancellationToken.None);
+                for (int i = 0; i < 40 && uploads.Received(id) < 10; i++) await Task.Delay(25);
+                uploads.Delete(id);
+                Check("cancelled mid-chunk, the upload is gone at once to anybody asking", uploads.Find(id) == null);
+                body.Release();
+                try { await append.WaitAsync(TimeSpan.FromSeconds(5)); } catch { }
+                Check("and its folder goes when the chunk lets go, not at the next start-up",
+                    !Directory.Exists(Path.Combine(store, id)), string.Join(", ", Directory.Exists(Path.Combine(store, id)) ? Directory.GetFiles(Path.Combine(store, id)) : Array.Empty<string>()));
+                var idle = uploads.Start(new ConnectUploads.Meta(@"C:\b", "y.bin", 10, "rename", DateTime.UtcNow));
+                uploads.Delete(idle);
+                Check("cancelled with nothing arriving, it goes at once", !Directory.Exists(Path.Combine(store, idle)));
+            }
+            finally { try { Directory.Delete(store, true); } catch { } }
+        }
+
+        /// <summary>The server end of round 2, over real sockets.</summary>
+        private static async Task Round2Server()
+        {
+            const string status = """
+                { "BackendState": "Running",
+                  "Self": { "DNSName": "laptop.tail3d7403.ts.net.", "HostName": "laptop", "UserID": 1 },
+                  "User": { "1": { "LoginName": "me@example.com" } },
+                  "CertDomains": ["laptop.tail3d7403.ts.net"] }
+                """;
+            string dir = Path.Combine(Path.GetTempPath(), "en-connect-r2-srv-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            string sends = Path.Combine(dir, "sends");
+            var data = Enumerable.Range(0, 300).Select(i => (byte)i).ToArray();
+            string bin = Path.Combine(dir, "data.bin");
+            System.IO.File.WriteAllBytes(bin, data);
+            var fake = new FakeFiles();
+            var clip = new FakeClipboard();
+            int port = FreePort();
+            var server = new ConnectServer(_ => null, p => new FileRangeSource(p), () => Code, loopbackOnly: true, port: port,
+                files: fake, clipboard: clip, clipboardSends: sends, tailscaleStatus: () => status);
+            try
+            {
+                server.Start();
+                if (!await WaitForListener(port)) { Check("the round 2 server listens", false); return; }
+                await server.LoginSettled();
+                using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}"), Timeout = TimeSpan.FromSeconds(20) };
+
+                async Task<HttpResponseMessage> Ask(HttpMethod method, string url, string? host = null, string? login = null, string? code = null,
+                    string? origin = null, string? range = null, HttpContent? content = null)
+                {
+                    var request = new HttpRequestMessage(method, url) { Content = content };
+                    if (host != null) request.Headers.Host = host;
+                    if (login != null) request.Headers.Add("Tailscale-User-Login", login);
+                    if (code != null) request.Headers.Add("X-Connect-Code", code);
+                    if (origin != null) request.Headers.Add("Origin", origin);
+                    if (range != null) request.Headers.TryAddWithoutValidation("Range", range);
+                    return await http.SendAsync(request);
+                }
+                static int N(HttpResponseMessage r) => (int)r.StatusCode;
+
+                // 2. DNS rebinding.
+                Equal("a rebinding page's Host is refused, owner's header and all", "421",
+                    N(await Ask(HttpMethod.Get, "/api/drives", host: $"attacker.example:{port}", login: "me@example.com")).ToString());
+                Equal("even for the app's own files", "421", N(await Ask(HttpMethod.Get, "/", host: $"attacker.example:{port}")).ToString());
+                Equal("the ts.net name Serve forwards is answered", "200",
+                    N(await Ask(HttpMethod.Get, "/api/drives", host: "laptop.tail3d7403.ts.net", login: "me@example.com")).ToString());
+                Equal("and plain loopback, with the code", "200", N(await Ask(HttpMethod.Get, "/api/info", code: Code)).ToString());
+                Equal("and localhost", "200", N(await Ask(HttpMethod.Get, "/api/info", host: $"localhost:{port}", code: Code)).ToString());
+                var mkdirBody = () => new StringContent("""{"parent":"C:\\b","name":"made"}""", Encoding.UTF8, "application/json");
+                Equal("a POST from another site's page is refused", "403",
+                    N(await Ask(HttpMethod.Post, "/api/mkdir", code: Code, origin: "http://attacker.example", content: mkdirBody())).ToString());
+                Equal("a POST from the app's own page goes through", "200",
+                    N(await Ask(HttpMethod.Post, "/api/mkdir", code: Code, origin: $"http://127.0.0.1:{port}", content: mkdirBody())).ToString());
+                Equal("and through Serve, from its ts.net page", "200",
+                    N(await Ask(HttpMethod.Post, "/api/mkdir", host: "laptop.tail3d7403.ts.net", login: "me@example.com",
+                        origin: "https://laptop.tail3d7403.ts.net", content: mkdirBody())).ToString());
+
+                // 3. Wrong codes, per client.
+                const string friend = "friend@example.com";
+                var answers = new List<int>();
+                for (int i = 0; i < 5; i++) answers.Add(N(await Ask(HttpMethod.Get, "/api/info", login: friend, code: "00000000")));
+                Check("five wrong codes are each refused as wrong", answers.All(s => s == 401), string.Join(",", answers));
+                var limited = await Ask(HttpMethod.Get, "/api/info", login: friend, code: "00000001");
+                Check("the sixth try is told to wait, with Retry-After", N(limited) == 429 && limited.Headers.RetryAfter?.Delta is { } d && d.TotalSeconds >= 1,
+                    $"{N(limited)} {limited.Headers.RetryAfter}");
+                Equal("the right code waits too while the wait lasts", "429", N(await Ask(HttpMethod.Get, "/api/info", login: friend, code: Code)).ToString());
+                var who = await Ask(HttpMethod.Get, "/api/whoami", login: friend, code: Code);
+                var whoText = await who.Content.ReadAsStringAsync();
+                Check("whoami cannot be used to keep guessing", N(who) == 429 && whoText.Contains("Too many wrong pairing codes"), $"{N(who)} {whoText}");
+                Equal("the owner, by Serve's identity, is never held up", "200", N(await Ask(HttpMethod.Get, "/api/info", login: "me@example.com")).ToString());
+                Equal("nor is somebody else with the right code", "200", N(await Ask(HttpMethod.Get, "/api/info", login: "other@example.com", code: Code)).ToString());
+                await Task.Delay(TimeSpan.FromSeconds((limited.Headers.RetryAfter?.Delta?.TotalSeconds ?? 1) + 0.3));
+                Equal("after the wait the right code is let in", "200", N(await Ask(HttpMethod.Get, "/api/info", login: friend, code: Code)).ToString());
+                Equal("and the count starts again", "401", N(await Ask(HttpMethod.Get, "/api/info", login: friend, code: "00000000")).ToString());
+
+                // 6. /api/audio on a held file.
+                var heldAudio = Path.Combine(dir, "held.wav");
+                System.IO.File.WriteAllBytes(heldAudio, new byte[4096]);
+                using (new FileStream(heldAudio, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                {
+                    var r = await Ask(HttpMethod.Get, "/api/audio?path=" + Uri.EscapeDataString(heldAudio), code: Code);
+                    var t = await r.Content.ReadAsStringAsync();
+                    Check("playing a file another program holds is 423, in use, not \"can't decode\"",
+                        N(r) == 423 && t.Contains("held.wav is in use"), $"{N(r)} {t}");
+                }
+
+                // 13. Shares.
+                const string share = @"\\127.0.0.2\nothing\x.mp3";
+                Equal("a share is not opened", "403", N(await Ask(HttpMethod.Get, "/api/file?path=" + Uri.EscapeDataString(share), code: Code)).ToString());
+                Equal("nor measured", "403", N(await Ask(HttpMethod.Get, "/api/size?path=" + Uri.EscapeDataString(@"\\?\UNC\127.0.0.2\nothing"), code: Code)).ToString());
+                Equal("nor listed", "404", N(await Ask(HttpMethod.Get, "/api/list?path=" + Uri.EscapeDataString(@"\\127.0.0.2\nothing"), code: Code)).ToString());
+
+                // 13. Ranges to ignore.
+                foreach (var junk in new[] { "items=0-5", "bytes=abc", "bytes=20-10" })
+                {
+                    var r = await Ask(HttpMethod.Get, "/api/file?path=" + Uri.EscapeDataString(bin), code: Code, range: junk);
+                    var got = await r.Content.ReadAsByteArrayAsync();
+                    Check($"Range \"{junk}\" is ignored: 200 and the whole file", N(r) == 200 && got.SequenceEqual(data), $"{N(r)} {got.Length}");
+                }
+                var big = await Ask(HttpMethod.Get, "/api/file?path=" + Uri.EscapeDataString(bin), code: Code, range: "bytes=290-99999999999999999999999");
+                var tail = await big.Content.ReadAsByteArrayAsync();
+                Check("an end too big for a number runs to the end of the file", N(big) == 206 && tail.SequenceEqual(data[290..]), $"{N(big)} {tail.Length}");
+
+                // 8. One id, four at once.
+                fake.UploadDelayMs = 400;
+                int before = fake.Uploads;
+                var racing = await Task.WhenAll(Enumerable.Range(0, 4).Select(async _ =>
+                {
+                    var r = await Ask(HttpMethod.Post, "/api/upload?folder=C%3A%5Cb&name=race.txt&uploadId=race-1", code: Code,
+                        content: new ByteArrayContent(Encoding.UTF8.GetBytes("once")));
+                    return (N(r), await r.Content.ReadAsStringAsync());
+                }));
+                fake.UploadDelayMs = 0;
+                Check("four uploads with one id at once write it once, and all four hear the same answer",
+                    fake.Uploads == before + 1 && racing.All(x => x.Item1 == 200 && x.Item2 == racing[0].Item2),
+                    $"{fake.Uploads - before} written; " + string.Join(" | ", racing.Select(x => $"{x.Item1} {x.Item2}")));
+
+                // 9. Stalled bodies on the one-request upload and the clipboard send.
+                server.UploadStallAfter = TimeSpan.FromSeconds(1);
+                foreach (var url in new[] { "/api/upload?folder=C%3A%5Cb&name=stalled.txt", "/api/clipboard/send?name=stalled.txt" })
+                {
+                    using var client = new TcpClient();
+                    client.Connect(IPAddress.Loopback, port);
+                    client.ReceiveTimeout = 8000;
+                    var s = client.GetStream();
+                    s.Write(Encoding.ASCII.GetBytes($"POST {url} HTTP/1.1\r\nHost: 127.0.0.1\r\nX-Connect-Code: {Code}\r\nContent-Length: 100\r\n\r\n"));
+                    s.Write(new byte[10]);
+                    s.Flush();
+                    var clock = System.Diagnostics.Stopwatch.StartNew();
+                    int read;
+                    try { read = s.Read(new byte[256], 0, 256); } catch (IOException) { read = 0; }
+                    Check($"{url.Split('?')[0]} gives up on a stalled body and closes the connection", read == 0 && clock.Elapsed < TimeSpan.FromSeconds(6),
+                        $"{read} bytes after {clock.Elapsed.TotalSeconds:0.0} s");
+                }
+                server.UploadStallAfter = TimeSpan.FromSeconds(30);
+                await Task.Delay(200);
+                Check("and the clipboard send leaves no partial behind",
+                    !Directory.Exists(sends) || !Directory.EnumerateFiles(sends, "*", SearchOption.AllDirectories).Any(),
+                    Directory.Exists(sends) ? string.Join(", ", Directory.EnumerateFiles(sends, "*", SearchOption.AllDirectories)) : "");
+
+                // 4. A long name sent to the clipboard.
+                var longName = new string('c', 230) + ".txt";
+                var sent = await Ask(HttpMethod.Post, "/api/clipboard/send?name=" + Uri.EscapeDataString(longName), code: Code,
+                    content: new ByteArrayContent(Encoding.UTF8.GetBytes("long")));
+                Equal("a long name can be sent to the clipboard", "200", N(sent).ToString());
+            }
+            finally
+            {
+                server.Dispose();
+                try { Directory.Delete(dir, true); } catch { }
+            }
         }
 
         private static int FreePort()

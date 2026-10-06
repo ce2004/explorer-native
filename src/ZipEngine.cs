@@ -1093,7 +1093,10 @@ namespace ExplorerNative
                         var target = targets[at];
                         if (target == null)
                         {
-                            reporter.Finished(0);
+                            // Skipped is dealt with, and charged its size: the
+                            // totals count it, and a skip-everything extract
+                            // finished at 0 percent.
+                            reporter.Finished(Math.Max(0, entry.Length));
                             continue;
                         }
 
@@ -1104,7 +1107,7 @@ namespace ExplorerNative
                             lock (errors) errors.Add($"{entry.FullName}: {ProtectedEntry}");
                             rules.Withdraw(target);
                             Volatile.Write(ref settled[at], 1);
-                            reporter.Finished(0);
+                            reporter.Finished(Math.Max(0, entry.Length));
                             continue;
                         }
 

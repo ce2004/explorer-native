@@ -39,8 +39,14 @@ namespace ExplorerNative
             await SkipAndCountTests();
             await CancelledReplaceTests();
             await FreshFolderSkipsListingTests();
+            await NothingReadableKeepsOldArchiveTests();
+            EmptyTarHasEndBlocksTests();
+            await ProgressEndsAtTheEndTests();
+            await GzWithExtraBytesTests();
 
             if (!BsdTar.Available) return;
+
+            await TarDiesWithTheAppTests();
 
             await BadNamesThroughBsdTarTests();
             await DuplicatesThroughBsdTarTests();
@@ -854,6 +860,182 @@ namespace ExplorerNative
                     back.Failed == 0 && last != null && last.BytesDone == last.BytesTotal && last.BytesTotal > 0 &&
                     Directory.GetFiles(Path.Combine(dir, "out", "top")).Length == 13,
                     last == null ? Said(back) : $"{last.BytesDone}/{last.BytesTotal}; {Said(back)}");
+            }
+            finally { Cleanup(dir); }
+        }
+
+        // ---------- Round 2 ----------
+
+        /// <summary>
+        /// Every chosen file locked by another program: the old archive stays,
+        /// and a new one is not made empty.
+        /// </summary>
+        private static async Task NothingReadableKeepsOldArchiveTests()
+        {
+            var dir = NewDir("allLocked");
+            try
+            {
+                var formats = new List<ArchiveFormat> { ArchiveFormats.Zip, ArchiveFormats.Tar, ArchiveFormats.TarGz };
+                if (BsdTar.Available) formats.AddRange(new[] { ArchiveFormats.SevenZip, ArchiveFormats.TarXz });
+
+                foreach (var format in formats)
+                {
+                    var doc = Path.Combine(dir, $"doc-{format.Id}.txt");
+                    File.WriteAllText(doc, "important contents");
+                    var archive = Path.Combine(dir, "backup" + format.Extension);
+                    await ArchiveEngine.CompressAsync(new[] { doc }, archive, format, ArchiveLevel.Fastest, 2, null, CancellationToken.None);
+                    var before = File.ReadAllBytes(archive);
+
+                    string? refused = null;
+                    var fresh = Path.Combine(dir, "fresh" + format.Extension);
+                    string? refusedFresh = null;
+                    using (new FileStream(doc, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+                    {
+                        try { await ArchiveEngine.CompressAsync(new[] { doc }, archive, format, ArchiveLevel.Fastest, 2, null, CancellationToken.None); }
+                        catch (IOException ex) { refused = ex.Message; }
+                        try { await ArchiveEngine.CompressAsync(new[] { doc }, fresh, format, ArchiveLevel.Fastest, 2, null, CancellationToken.None); }
+                        catch (IOException ex) { refusedFresh = ex.Message; }
+                    }
+
+                    Check($"{format.Id}: re-making it with its only file locked keeps the old archive, and says why",
+                        refused != null && File.ReadAllBytes(archive).AsSpan().SequenceEqual(before) &&
+                        !Directory.EnumerateFiles(dir, "*creating*").Any(),
+                        refused ?? $"{new FileInfo(archive).Length} bytes, was {before.Length}");
+                    Check($"{format.Id}: and a new one is not made empty",
+                        refusedFresh != null && !File.Exists(fresh), refusedFresh ?? "an archive was made");
+                }
+            }
+            finally { Cleanup(dir); }
+        }
+
+        /// <summary>A tar with nothing in it is the two zero blocks, which every reader takes as an empty archive.</summary>
+        private static void EmptyTarHasEndBlocksTests()
+        {
+            using var buffer = new MemoryStream();
+            var errors = new List<string>();
+            TarEngine.WriteTar(buffer, Array.Empty<ArchiveItem>(), new ArchiveEngine.Reporter(null), errors, CancellationToken.None);
+            buffer.Position = 0;
+            int listed = -1;
+            try { listed = TarEngine.ReadIndex(buffer, CancellationToken.None).Count; } catch { }
+            Check("an empty tar ends with its two zero blocks and reads back as empty",
+                buffer.Length == 1024 && listed == 0, $"{buffer.Length} bytes, {listed} entries");
+        }
+
+        /// <summary>A finished extract ends at 100 percent, whatever it skipped.</summary>
+        private static async Task ProgressEndsAtTheEndTests()
+        {
+            var dir = NewDir("progEnd");
+            try
+            {
+                var src = Path.Combine(dir, "p");
+                Directory.CreateDirectory(Path.Combine(src, "sub"));
+                var random = new Random(5);
+                for (int i = 0; i < 12; i++)
+                {
+                    var data = new byte[random.Next(1, 200_000)];
+                    random.NextBytes(data);
+                    File.WriteAllBytes(Path.Combine(src, i % 2 == 0 ? "sub" : "", $"f{i}.bin"), data);
+                }
+
+                foreach (var format in new[] { ArchiveFormats.Zip, ArchiveFormats.Tar, ArchiveFormats.TarGz })
+                {
+                    var archive = Path.Combine(dir, "p" + format.Extension);
+                    await ArchiveEngine.CompressAsync(new[] { src }, archive, format, ArchiveLevel.Fastest, 2, null, CancellationToken.None);
+                    var into = Path.Combine(dir, "out-" + format.Id);
+                    await Extract(archive, into);
+
+                    var seen = new List<TransferProgress>();
+                    var again = await Extract(archive, into, PasteConflictPolicy.Skip, new Sink(p => seen.Add(p)));
+                    var last = seen.LastOrDefault();
+                    Check($"{format.Id}: an extract that skips everything still ends at 100 percent",
+                        last != null && last.BytesTotal > 0 && last.BytesDone == last.BytesTotal,
+                        last == null ? Said(again) : $"{last.BytesDone}/{last.BytesTotal}");
+                }
+
+                // A sparse file into a folder that is not empty, which lists first:
+                // its holes are counted in the total and were never in the bar.
+                var head = Enumerable.Repeat((byte)'H', 4096).ToArray();
+                var tar = Path.Combine(dir, "sparse.tar");
+                File.WriteAllBytes(tar, SparseTar("1.0", "disk/holes.bin", 3 * 1024 * 1024, new[] { (0L, head) }));
+                var full = Path.Combine(dir, "not-empty");
+                Directory.CreateDirectory(full);
+                File.WriteAllText(Path.Combine(full, "already.txt"), "x");
+                var sparseSeen = new List<TransferProgress>();
+                var sparse = await Extract(tar, full, progress: new Sink(p => sparseSeen.Add(p)));
+                var end = sparseSeen.LastOrDefault();
+                Check("a sparse file extracted after listing ends at 100 percent",
+                    end != null && end.BytesTotal > 0 && end.BytesDone == end.BytesTotal,
+                    end == null ? Said(sparse) : $"{end.BytesDone}/{end.BytesTotal}");
+            }
+            finally { Cleanup(dir); }
+        }
+
+        /// <summary>
+        /// A .gz with something after its end extracts, as gzip does; one cut
+        /// short is still refused.
+        /// </summary>
+        private static async Task GzWithExtraBytesTests()
+        {
+            var dir = NewDir("gzJunk");
+            try
+            {
+                var data = new byte[3_000_000];
+                new Random(4).NextBytes(data);
+                foreach (var (name, extra) in new[] { ("junk", Encoding.ASCII.GetBytes("JUNKJUNK")), ("one", new byte[] { 0x1f }) })
+                {
+                    byte[] gz;
+                    using (var memory = new MemoryStream())
+                    {
+                        using (var zip = new GZipStream(memory, CompressionLevel.Fastest, leaveOpen: true)) zip.Write(data);
+                        gz = memory.ToArray();
+                    }
+                    var path = Path.Combine(dir, name + ".bin.gz");
+                    File.WriteAllBytes(path, gz.Concat(extra).ToArray());
+
+                    var into = Path.Combine(dir, "out-" + name);
+                    var result = await Extract(path, into);
+                    var back = Path.Combine(into, name + ".bin");
+                    Check($"a .gz with {extra.Length} extra bytes after its end extracts whole",
+                        result.Failed == 0 && File.Exists(back) && File.ReadAllBytes(back).AsSpan().SequenceEqual(data),
+                        Said(result));
+                }
+            }
+            finally { Cleanup(dir); }
+        }
+
+        /// <summary>
+        /// A tar the app starts is in a job that ends it when the app ends, so
+        /// a crash or Task Manager does not leave it compressing on its own.
+        /// </summary>
+        private static async Task TarDiesWithTheAppTests()
+        {
+            var dir = NewDir("job");
+            try
+            {
+                var src = Path.Combine(dir, "big");
+                Directory.CreateDirectory(src);
+                var block = new byte[1 << 20];
+                var random = new Random(9);
+                using (var file = File.Create(Path.Combine(src, "big.bin")))
+                    for (int i = 0; i < 96; i++) { random.NextBytes(block); file.Write(block); }
+
+                using var cancel = new CancellationTokenSource();
+                var running = ArchiveEngine.CompressAsync(new[] { src }, Path.Combine(dir, "big.tar.xz"), ArchiveFormats.TarXz,
+                    ArchiveLevel.Smallest, 2, null, cancel.Token);
+
+                bool inJob = false;
+                var clock = Stopwatch.StartNew();
+                while (!inJob && !running.IsCompleted && clock.ElapsedMilliseconds < 15_000)
+                {
+                    foreach (var tar in Process.GetProcessesByName("tar"))
+                        using (tar)
+                            try { inJob |= BsdTar.InJob(tar); } catch { }
+                    if (!inJob) await Task.Delay(50);
+                }
+
+                cancel.Cancel();
+                try { await running; } catch { }
+                Check("tar.exe runs in a job that ends it if the app is killed", inJob);
             }
             finally { Cleanup(dir); }
         }

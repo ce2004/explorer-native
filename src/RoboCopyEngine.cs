@@ -501,6 +501,11 @@ namespace ExplorerNative
             // about the volume costs a refused call, never a silent copy.
             //
             // Selected links are moved here too, as themselves.
+            // Items already moved by renaming, carried into the copy's count so
+            // the window never goes backwards — "1 of 3" to "0 of 2" — when
+            // what could not be renamed falls back to copying.
+            int renamedItems = 0;
+
             if (move && (linkMoves.Count > 0 || clean.Count > 0))
             {
                 bool OnCloud(string path)
@@ -511,18 +516,22 @@ namespace ExplorerNative
 
                 var clock = Stopwatch.StartNew();
                 bool renaming = !cloudSource && !OnCloud(destinationDir);
-                var candidates = renaming
-                    ? clean.Where(s =>
-                    {
-                        var target = Path.Combine(destinationDir,
-                            Path.GetFileName(s.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)));
-                        return newRootSources.ContainsKey(target) && !OnCloud(s) && !IsWithin(target, s);
-                    }).ToList()
-                    : new List<string>();
-                int planned = candidates.Count + linkMoves.Count;
 
                 var (moved, movedFiles, problems) = await Task.Run(() =>
                 {
+                    // On the worker: whether a target is inside its source asks
+                    // Windows where each really is, which on a sleeping share is
+                    // not instant.
+                    var candidates = renaming
+                        ? clean.Where(s =>
+                        {
+                            var target = Path.Combine(destinationDir,
+                                Path.GetFileName(s.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)));
+                            return newRootSources.ContainsKey(target) && !OnCloud(s) && !IsWithin(target, s);
+                        }).ToList()
+                        : new List<string>();
+                    int planned = candidates.Count + linkMoves.Count;
+
                     int done = 0, files = 0;
                     var trouble = new List<string>();
 
@@ -566,9 +575,10 @@ namespace ExplorerNative
                 });
 
                 managedFiles += movedFiles;
+                renamedItems = moved;
                 failed += problems.Count;
                 errors.AddRange(problems);
-                Trace($"renamed {moved} of {planned} in {clock.ElapsedMilliseconds}ms");
+                Trace($"renamed {moved} in {clock.ElapsedMilliseconds}ms");
 
                 if (token.IsCancellationRequested)
                     return new TransferResult(managedFiles, failed, true, errors, Collisions());
@@ -604,7 +614,9 @@ namespace ExplorerNative
             // was never shown.
             int beforeRefusals = errors.Count;
             int jobsFailed = 0;
-            var jobs = BuildJobs(clean, destinationDir, errors, refusedSources);
+            // On a worker: the "into itself" check asks Windows where each end
+            // really is (see ReparseLinks.Resolved).
+            var jobs = await Task.Run(() => BuildJobs(clean, destinationDir, errors, refusedSources));
             failed += errors.Count - beforeRefusals;
             if (jobs.Count == 0)
                 return new TransferResult(managedFiles, failed, false, errors, Collisions());
@@ -768,8 +780,8 @@ namespace ExplorerNative
                 progress.Report(new TransferProgress(
                     done,
                     Interlocked.Read(ref bytesTotal),
-                    ItemsFinished(),
-                    Volatile.Read(ref itemsTotal),
+                    renamedItems + ItemsFinished(),
+                    renamedItems + Volatile.Read(ref itemsTotal),
                     Volatile.Read(ref current),
                     speed,
                     started.Elapsed));
@@ -1237,7 +1249,7 @@ namespace ExplorerNative
                 long done = Math.Max(BytesLanded(), 0);
                 progress.Report(new TransferProgress(
                     done, Interlocked.Read(ref bytesTotal),
-                    Volatile.Read(ref itemsDone), Volatile.Read(ref itemsTotal),
+                    renamedItems + Volatile.Read(ref itemsDone), renamedItems + Volatile.Read(ref itemsTotal),
                     Volatile.Read(ref current), done / seconds, started.Elapsed));
             }
 
@@ -1261,23 +1273,54 @@ namespace ExplorerNative
         /// writes its output in the console code page, so anything outside it
         /// arrives as "?" — which is a wildcard for exactly one character, so the
         /// folder is asked which file that was.
+        ///
+        /// The output is now read in the OEM code page it is written in
+        /// (<see cref="RobocopyOutputEncoding"/>), so an accent the code page has
+        /// comes through as itself. What it has not — Japanese, most of
+        /// everything else — is still "?", and a name read in the wrong page
+        /// is not the file's at all; either way, any "?" or non-ASCII letter is
+        /// taken as one unknown character and the folder is asked.
         /// </summary>
-        private static string RetryName(string path)
+        internal static string RetryName(string path)
         {
             var name = Path.GetFileName(path);
-            if (!name.Contains('?')) return name;
+            if (name.All(c => c < 0x80 && c != '?')) return name;
             try
             {
                 var folder = Path.GetDirectoryName(path);
-                if (folder != null && !folder.Contains('?'))
-                {
-                    var found = Directory.EnumerateFiles(NameRules.ExactPath(folder), name).Take(2).ToList();
-                    if (found.Count == 1) return Path.GetFileName(found[0]);
-                }
+                if (folder == null || folder.Contains('?')) return name;
+                var exactFolder = NameRules.ExactPath(folder);
+                if (File.Exists(Path.Combine(exactFolder, name))) return name;
+
+                var pattern = new string(name.Select(c => c >= 0x80 || c == '?' ? '?' : c).ToArray());
+                var found = Directory.EnumerateFiles(exactFolder, pattern).Take(2).ToList();
+                if (found.Count == 1) return Path.GetFileName(found[0]);
             }
             catch { }
             return name;
         }
+
+        /// <summary>
+        /// The code page robocopy writes its standard output in: the console's,
+        /// which for the hidden console it is started with is the OEM page —
+        /// 437 or 850 here, not the ANSI 1252 it was being read as, which turned
+        /// "café" into "caf‚".
+        /// </summary>
+        internal static readonly Lazy<System.Text.Encoding> RobocopyOutputEncoding = new(() =>
+        {
+            try
+            {
+                System.Text.Encoding.RegisterProvider(System.Text.CodePagesEncodingProvider.Instance);
+                int page = 437;
+                try { page = (int)GetOEMCP(); } catch { }
+                try { return System.Text.Encoding.GetEncoding(page); }
+                catch { return System.Text.Encoding.GetEncoding(437); }
+            }
+            catch { return System.Text.Encoding.Latin1; }
+        });
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetOEMCP();
 
         /// <summary>
         /// Calls <paramref name="started"/> with the full path of each file
@@ -1455,7 +1498,7 @@ namespace ExplorerNative
             var log = new RobocopyLog();
             string? reasonFor = null;
             bool inSummary = false;
-            var rows = new List<int[]>();
+            var rows = new List<long[]>();
 
             foreach (var raw in lines)
             {
@@ -1484,9 +1527,16 @@ namespace ExplorerNative
 
                 if (inSummary)
                 {
+                    // As long, and never thrown: the Bytes row of anything over
+                    // 2GB does not fit an int, and parsing it as one threw out of the
+                    // whole transfer after it had finished — "Copy failed", and
+                    // a multi-item move left half done. A number too big even
+                    // for a long is held at the top rather than failing either.
                     var row = SummaryRow.Match(line);
                     if (row.Success)
-                        rows.Add(Enumerable.Range(1, 6).Select(i => int.Parse(row.Groups[i].Value, CultureInfo.InvariantCulture)).ToArray());
+                        rows.Add(Enumerable.Range(1, 6).Select(i =>
+                            long.TryParse(row.Groups[i].Value, NumberStyles.None, CultureInfo.InvariantCulture, out var n)
+                                ? n : long.MaxValue).ToArray());
                     continue;
                 }
 
@@ -1515,8 +1565,10 @@ namespace ExplorerNative
             // in this language: Total, Copied, Skipped, Mismatch, FAILED, Extras.
             if (rows.Count >= 2)
                 log.Counts = new JobCounts(
-                    Copied: rows[1][1], Skipped: rows[1][2], Mismatch: rows[1][3], Failed: rows[1][4],
-                    DirMismatch: rows[0][3], DirFailed: rows[0][4]);
+                    Copied: Count(rows[1][1]), Skipped: Count(rows[1][2]), Mismatch: Count(rows[1][3]),
+                    Failed: Count(rows[1][4]), DirMismatch: Count(rows[0][3]), DirFailed: Count(rows[0][4]));
+
+            static int Count(long n) => (int)Math.Min(n, int.MaxValue);
 
             return log;
         }
@@ -1630,6 +1682,8 @@ namespace ExplorerNative
                 Arguments = string.Join(" ", args),
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
+                StandardOutputEncoding = RobocopyOutputEncoding.Value,
+                StandardErrorEncoding = RobocopyOutputEncoding.Value,
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
@@ -1748,7 +1802,13 @@ namespace ExplorerNative
                     try { log = ParseLog(File.ReadAllLines(logPath, System.Text.Encoding.Unicode)); }
                     catch
                     {
-                        lock (liveLines) log = ParseLog(liveLines.Where(l => !l.Contains(logName, StringComparison.OrdinalIgnoreCase)).ToList());
+                        // Guarded too: whatever the live output holds, a job that
+                        // has finished is reported, never thrown out of RunAsync.
+                        try
+                        {
+                            lock (liveLines) log = ParseLog(liveLines.Where(l => !l.Contains(logName, StringComparison.OrdinalIgnoreCase)).ToList());
+                        }
+                        catch { log = new RobocopyLog(); }
                     }
 
                     var counts = log.Counts;
@@ -1882,23 +1942,31 @@ namespace ExplorerNative
             try
             {
                 var plain = NameRules.PlainPath(path);
-                var buffer = new char[1024];
-                if (!GetVolumePathNameW(plain, buffer, buffer.Length))
+
+                // A subst letter is asked as the folder it stands for, and first.
+                // GetVolumePathName answers for one perfectly happily — "S:\" —
+                // and the volume name of "S:\" is then refused, so a move from a
+                // subst letter to the disk under it was a copy rather than a
+                // rename. "\??\C:\folder" is a subst; a real drive's device is
+                // "\Device\HarddiskVolume3", and anything else is left alone.
+                if (plain.Length >= 2 && plain[1] == ':' && char.IsLetter(plain[0]))
                 {
-                    // A subst letter has no volume path of its own — measured:
-                    // GetVolumePathName fails outright — so it is asked as the
-                    // folder it stands for. "\??\C:\folder" is a subst; anything
-                    // else (a device, a share) is left unknown.
-                    if (plain.Length < 2 || plain[1] != ':' || !char.IsLetter(plain[0])) return null;
                     var target = new char[1024];
-                    if (QueryDosDeviceW(plain[..2], target, target.Length) == 0) return null;
-                    int stop = Array.IndexOf(target, '\0');
-                    var device = new string(target, 0, stop < 0 ? target.Length : stop);
-                    if (!device.StartsWith(@"\??\", StringComparison.Ordinal) || device.Length < 6 || device[5] != ':') return null;
-                    var resolved = device[4..].TrimEnd('\\') + "\\" + plain[2..].TrimStart('\\');
-                    if (string.Equals(resolved[..2], plain[..2], StringComparison.OrdinalIgnoreCase)) return null;
-                    return depth < 4 ? VolumePathOf(resolved, depth + 1) : null;
+                    if (QueryDosDeviceW(plain[..2], target, target.Length) != 0)
+                    {
+                        int stop = Array.IndexOf(target, '\0');
+                        var device = new string(target, 0, stop < 0 ? target.Length : stop);
+                        if (device.StartsWith(@"\??\", StringComparison.Ordinal) && device.Length >= 6 && device[5] == ':')
+                        {
+                            var resolved = device[4..].TrimEnd('\\') + "\\" + plain[2..].TrimStart('\\');
+                            if (!string.Equals(resolved[..2], plain[..2], StringComparison.OrdinalIgnoreCase))
+                                return depth < 4 ? VolumePathOf(resolved, depth + 1) : null;
+                        }
+                    }
                 }
+
+                var buffer = new char[1024];
+                if (!GetVolumePathNameW(plain, buffer, buffer.Length)) return null;
                 int end = Array.IndexOf(buffer, '\0');
                 return new string(buffer, 0, end < 0 ? buffer.Length : end);
             }
@@ -2093,9 +2161,13 @@ namespace ExplorerNative
             {
                 var a = Path.GetFullPath(ancestor).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
                 var c = Path.GetFullPath(candidate).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-                return c.StartsWith(a, StringComparison.OrdinalIgnoreCase);
+                if (c.StartsWith(a, StringComparison.OrdinalIgnoreCase)) return true;
             }
-            catch { return false; }
+            catch { }
+
+            // And by where they really are: a junction in the destination that
+            // leads back inside the source is the same recursion in other letters.
+            return ReparseLinks.ResolvedWithin(candidate, ancestor);
         }
 
         private static string Quote(string s) => "\"" + s + "\"";
@@ -2198,6 +2270,84 @@ namespace ExplorerNative
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool DeviceIoControl(Microsoft.Win32.SafeHandles.SafeFileHandle device, uint code,
             byte[] input, int inputLength, IntPtr output, int outputLength, out int returned, IntPtr overlapped);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandleW(Microsoft.Win32.SafeHandles.SafeFileHandle file,
+            char[] path, uint length, uint flags);
+
+        /// <summary>
+        /// Where a path really is, every junction and symbolic link on the way
+        /// to it followed: the deepest part of it that exists is asked of
+        /// Windows (GetFinalPathNameByHandle) and the rest, not made yet, is put
+        /// back on the end. The path as given when nothing can be asked.
+        ///
+        /// For the "into itself" checks. A folder moved into a junction that
+        /// points inside it looked, by its letters, like a move somewhere else
+        /// entirely — and the copy then walked into its own output, S\inner\S\
+        /// inner\S, until the paths were too long.
+        /// </summary>
+        public static string Resolved(string path)
+        {
+            try
+            {
+                var plain = NameRules.PlainPath(path);
+                if (!Path.IsPathFullyQualified(plain)) return path;
+                plain = plain.Replace('/', '\\');
+
+                var existing = plain.TrimEnd('\\');
+                var tail = "";
+                while (existing.Length > 0)
+                {
+                    var exact = NameRules.ExactPath(existing.Length == 2 && existing[1] == ':' ? existing + "\\" : existing);
+                    if (Directory.Exists(exact) || File.Exists(exact)) break;
+                    int cut = existing.LastIndexOf('\\');
+                    if (cut <= 0) return path;
+                    tail = existing[(cut + 1)..] + (tail.Length > 0 ? "\\" + tail : "");
+                    existing = existing[..cut];
+                }
+                if (existing.Length == 0) return path;
+
+                var open = NameRules.ExactPath(existing.Length == 2 && existing[1] == ':' ? existing + "\\" : existing);
+                using var handle = CreateFileW(open, 0, 7 /* read, write, delete */, IntPtr.Zero, OpenExisting,
+                    BackupSemantics, IntPtr.Zero);
+                if (handle.IsInvalid) return path;
+
+                var buffer = new char[1024];
+                uint length = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Length, 0);
+                if (length > buffer.Length)
+                {
+                    buffer = new char[length + 1];
+                    length = GetFinalPathNameByHandleW(handle, buffer, (uint)buffer.Length, 0);
+                }
+                if (length == 0 || length > buffer.Length) return path;
+
+                var final = new string(buffer, 0, (int)length);
+                if (final.StartsWith(@"\\?\UNC\", StringComparison.Ordinal)) final = @"\\" + final[8..];
+                else if (final.StartsWith(@"\\?\", StringComparison.Ordinal)) final = final[4..];
+                // A volume with no letter has no path the rest of the application
+                // can compare against; the letters as given are the best answer.
+                if (final.StartsWith("Volume{", StringComparison.OrdinalIgnoreCase)) return path;
+
+                final = final.TrimEnd('\\');
+                return tail.Length > 0 ? final + "\\" + tail : (final.Length == 2 ? final + "\\" : final);
+            }
+            catch { return path; }
+        }
+
+        /// <summary>
+        /// Whether <paramref name="candidate"/> is <paramref name="ancestor"/> or
+        /// inside it, by where both really are — see <see cref="Resolved"/> —
+        /// as well as by their letters.
+        /// </summary>
+        public static bool ResolvedWithin(string candidate, string ancestor)
+        {
+            static string Slashed(string p) => p.TrimEnd('\\') + "\\";
+            try
+            {
+                return Slashed(Resolved(candidate)).StartsWith(Slashed(Resolved(ancestor)), StringComparison.OrdinalIgnoreCase);
+            }
+            catch { return false; }
+        }
 
         /// <summary>A junction (a mount point to a folder), as against a symbolic link.</summary>
         public static bool IsJunction(string path)

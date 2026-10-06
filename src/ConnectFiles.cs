@@ -741,9 +741,48 @@ namespace ExplorerNative
             public void Report(T value) { try { _report(value); } catch { } }
         }
 
-        /// <summary>An engine's "name: what went wrong" line as a failure against the source it names.</summary>
+        private static readonly System.Text.RegularExpressions.Regex RobocopyError =
+            new(@"^ERROR (\d+) \(0x[0-9A-Fa-f]+\) (.*)$", System.Text.RegularExpressions.RegexOptions.Singleline);
+
+        private static readonly System.Text.RegularExpressions.Regex SkipNote =
+            new(@"^\d+ items? already existed and (was|were) skipped$");
+
+        /// <summary>The engine's note that Skip left something alone. That is what Skip is for, not a failure.</summary>
+        internal static bool IsSkipNote(string error) => SkipNote.IsMatch(error.Trim());
+
+        /// <summary>
+        /// What a sharing or lock violation (Windows errors 32 and 33) is called here, naming the file:
+        /// robocopy says "ERROR 32 (0x00000020) Copying File C:\x: The process cannot access the file...".
+        /// </summary>
+        internal static string InUseSentence(string path) =>
+            $"{Leaf(path)} is in use by another program on the PC. Close it there, then try again.";
+
+        /// <summary>
+        /// An engine's error line as a failure against the source it is about: robocopy's "ERROR 32 (...) Copying
+        /// File C:\a\b.txt: reason", or the engines' own "name: what went wrong".
+        /// </summary>
         internal static ConnectFailure FailureFor(string error, IReadOnlyList<string> sources)
         {
+            var robocopy = RobocopyError.Match(error.Trim());
+            if (robocopy.Success)
+            {
+                int code = int.Parse(robocopy.Groups[1].Value, System.Globalization.CultureInfo.InvariantCulture);
+                var rest = robocopy.Groups[2].Value;
+                int start = rest.IndexOf(":\\", StringComparison.Ordinal);
+                start = start > 0 ? start - 1 : rest.IndexOf("\\\\", StringComparison.Ordinal);
+                if (start >= 0)
+                {
+                    var tail = rest[start..];
+                    int sep = tail.IndexOf(": ", 2, StringComparison.Ordinal);
+                    var file = (sep > 0 ? tail[..sep] : tail).Trim();
+                    var reason = sep > 0 ? tail[(sep + 2)..].Trim() : "";
+                    // Filed against the source as the web app sent it, or the file itself when it is inside one.
+                    var path = sources.FirstOrDefault(s => s.Equals(file, StringComparison.OrdinalIgnoreCase)) ?? file;
+                    if (code is 32 or 33) return new ConnectFailure(path, InUseSentence(file));
+                    return new ConnectFailure(path, ConnectServer.Sentence(reason.Length > 0 ? $"{Leaf(file)}: {reason}" : $"{Leaf(file)} could not be copied (Windows error {code})"));
+                }
+            }
+
             int colon = error.IndexOf(": ", StringComparison.Ordinal);
             if (colon > 0)
             {
@@ -793,7 +832,15 @@ namespace ExplorerNative
                 paths, destination, move && !fromDrive, fromDrive ? 1 : FileOperations.RecommendedThreads,
                 conflict, progress, token, _settings.CopyBufferKilobytes, cloudSource: fromDrive);
 
-            foreach (var error in result.Errors) { var f = FailureFor(error, paths); job.Fail(f.Path, f.Error); }
+            // The engine's count of what arrived and what did not is the outcome; its progress counted a file it
+            // gave up on (in use) as done. Skip's note that it left something alone is said, not failed.
+            job.Counted(result.Copied, result.Failed);
+            foreach (var error in result.Errors)
+            {
+                if (IsSkipNote(error)) continue;
+                var f = FailureFor(error, paths);
+                job.Fail(f.Path, f.Error);
+            }
             if (result.Cancelled) throw new OperationCanceledException(token);
 
             if (move && fromDrive && result.Failed == 0)
@@ -801,8 +848,23 @@ namespace ExplorerNative
                 job.Current("Checking the copies before removing the originals");
                 await FinishMoveOutOfDrive(job, paths, destination, result.Collisions, renamedAway, token);
             }
-            if (result.Collisions.Total > 0)
-                job.Say($"{result.Collisions.RenamedCount} renamed, {result.Collisions.SkippedCount} skipped, {result.Collisions.OverwrittenCount} replaced.");
+            var said = CollisionSentence(result.Collisions, result.AlreadyThere, move);
+            if (said != null) job.Say(said);
+        }
+
+        /// <summary>
+        /// What the conflict setting did, as a sentence, or null when it did nothing. Only what happened: a
+        /// copy that failed is not "1 replaced", so the caller says this only alongside what did arrive.
+        /// </summary>
+        internal static string? CollisionSentence(ConflictOutcomes c, int alreadyThere = 0, bool move = false)
+        {
+            var parts = new List<string>();
+            if (c.RenamedCount > 0) parts.Add($"{NameRules.Items(c.RenamedCount, "item")} kept under a new name");
+            if (c.SkippedCount > 0) parts.Add($"{NameRules.Items(c.SkippedCount, "item")} skipped, because {(c.SkippedCount == 1 ? "it was" : "they were")} already there");
+            if (c.OverwrittenCount > 0) parts.Add($"{NameRules.Items(c.OverwrittenCount, "item")} replaced");
+            if (alreadyThere > 0)
+                parts.Add($"{NameRules.Items(alreadyThere, "file")} already there {(alreadyThere == 1 ? "was" : "were")} left alone{(move ? ", and the original" + (alreadyThere == 1 ? " stays" : "s stay") : "")}");
+            return parts.Count == 0 ? null : ConnectServer.Sentence(string.Join("; ", parts));
         }
 
         /// <summary>
@@ -874,7 +936,7 @@ namespace ExplorerNative
                 foreach (var error in upload.Errors) { var f = FailureFor(error, paths); job.Fail(f.Path, f.Error); }
             }
             var c = upload.Collisions;
-            if (c.Total > 0) job.Say($"{c.RenamedCount} renamed, {c.SkippedCount} skipped, {c.OverwrittenCount} replaced.");
+            if (CollisionSentence(c) is { } said) job.Say(said);
         }
 
         /// <summary>A copy or move with both ends on Drive, reported as Google answers.</summary>
@@ -914,7 +976,7 @@ namespace ExplorerNative
             if (move) { handled = paths.Length; Show(""); }
 
             var c = log.Snapshot();
-            if (c.Total > 0) job.Say($"{c.RenamedCount} renamed, {c.SkippedCount} skipped, {c.OverwrittenCount} replaced.");
+            if (CollisionSentence(c) is { } said) job.Say(said);
         }
 
         private static bool ParentIs(string path, string folder)
@@ -1165,8 +1227,9 @@ namespace ExplorerNative
                 throw new ConnectException(409, $"A folder called {name} is already there.");
 
             // Written beside its destination under a hidden name, and renamed into place only once every byte
-            // has arrived: a phone that goes away mid-upload leaves nothing that looks like the file.
-            var partial = Path.Combine(folder, $".{name}.{Guid.NewGuid():N}.partial");
+            // has arrived: a phone that goes away mid-upload leaves nothing that looks like the file. Not the
+            // name and a guid: that is 42 characters more than the name, and a name of 214 failed.
+            var partial = Path.Combine(folder, PartialName());
             try
             {
                 await using (var file = new FileStream(Io(partial), FileMode.CreateNew, FileAccess.Write, FileShare.None, 1 << 20, useAsync: true))
@@ -1180,17 +1243,52 @@ namespace ExplorerNative
                     return MoveIntoPlace(partial, folder, name, conflict);
                 }, CancellationToken.None);
             }
-            catch (UnauthorizedAccessException e) { throw new ConnectException(403, ConnectServer.Sentence(e.Message)); }
+            catch (UnauthorizedAccessException e) { throw Refused(e, wanted, conflict); }
             finally
             {
                 try { if (File.Exists(Io(partial))) File.Delete(Io(partial)); } catch { }
             }
         }
 
+        /// <summary>A hidden partial's name: 41 characters whatever the file is called.</summary>
+        internal static string PartialName() => $".{Guid.NewGuid():N}.partial";
+
+        /// <summary>
+        /// Access denied putting a file in place. Replacing a file another program holds open says access denied
+        /// too, not "in use", and that is a 423 naming the file rather than a 403 about permissions.
+        /// </summary>
+        private static ConnectException Refused(UnauthorizedAccessException e, string target, PasteConflictPolicy conflict) =>
+            conflict == PasteConflictPolicy.Overwrite && HeldOpen(target)
+                ? new ConnectException(423, InUseSentence(target))
+                : new ConnectException(403, ConnectServer.Sentence(e.Message));
+
+        /// <summary>Whether another program has a file open so that it may not be replaced: a sharing violation.</summary>
+        internal static bool HeldOpen(string path)
+        {
+            try
+            {
+                var io = Io(path);
+                if (!File.Exists(io)) return false;
+                using (new FileStream(io, FileMode.Open, FileAccess.Read, FileShare.None)) { }
+                return false;
+            }
+            catch (Exception e) { return ConnectServer.InUse(e); }
+        }
+
         private static bool Exists(string path)
         {
             var io = Io(path);
             return File.Exists(io) || Directory.Exists(io);
+        }
+
+        /// <summary>
+        /// A free name for a file, numbered as the window numbers, with room left for the number: a name near
+        /// the 255-character limit has its stem shortened before " (2)" goes on, never the extension.
+        /// </summary>
+        internal static string UniqueLocalName(string name, Func<string, bool> taken)
+        {
+            if (!taken(name)) return name;
+            return NameRules.UniqueAmong(DriveMount.RoomForNumber(name), taken, folder: false);
         }
 
         private static bool AlreadyExists(Exception e) =>
@@ -1210,8 +1308,10 @@ namespace ExplorerNative
                 if (Exists(target))
                 {
                     if (conflict == PasteConflictPolicy.Skip) return target;
+                    // The stem is shortened first, so " (2)" never takes a name past the 255 characters a
+                    // name may have; the extension is kept.
                     if (conflict == PasteConflictPolicy.AutoRename)
-                        target = Path.Combine(folder, NameRules.UniqueAmong(name, n => Exists(Path.Combine(folder, n)), folder: false));
+                        target = Path.Combine(folder, UniqueLocalName(name, n => Exists(Path.Combine(folder, n))));
                     else if (Directory.Exists(Io(target)))
                         throw new ConnectException(409, $"A folder called {name} is already there.");
                 }
@@ -1294,7 +1394,7 @@ namespace ExplorerNative
                     if (!File.Exists(Io(file)))
                         try { File.SetAttributes(Io(target), File.GetAttributes(Io(target)) & ~FileAttributes.Hidden); } catch { }
                 }
-                catch (UnauthorizedAccessException e) { throw new ConnectException(403, ConnectServer.Sentence(e.Message)); }
+                catch (UnauthorizedAccessException e) { throw Refused(e, Path.Combine(folder, name), conflict); }
                 return target;
             }, token);
         }

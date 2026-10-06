@@ -141,8 +141,13 @@ namespace ExplorerNative
         /// counted on it is the ordinary rounding of block boundaries, not a
         /// stream that started late — and treating it as an offset would move
         /// every seek of every ordinary file.
+        ///
+        /// One long block: the start is worked out from the page's own packet
+        /// counts, so an ordinary file comes to within a block of zero. It was
+        /// 96,000, and a file cut a second and a half in (ffmpeg -ss 1.5
+        /// -copyts) was under it, so every seek in it was off by the cut.
         /// </summary>
-        private const long LateStartSamples = 96_000;
+        private const long LateStartSamples = 8192;
 
         private void EnsureBase(GetPacketGranuleCount count)
         {

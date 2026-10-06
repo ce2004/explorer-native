@@ -64,13 +64,31 @@ namespace ExplorerNative
             // A switch nobody knows is a typo, and a typo must not start the
             // application: --unistall used to bring the running copy to the
             // front, or start a new one, and say nothing about why.
+            // --help, -h and /? list the options and stop, exit code 0: printed to
+            // the console that started this, or a notice that closes itself.
+            if (LaunchArguments.WantsHelp(args))
+            {
+                AttachToParentConsole();
+                var help = LaunchArguments.HelpText();
+                if (_console)
+                {
+                    try { Console.Out.WriteLine(help); } catch { }
+                }
+                else if (!_quiet) ShowNotice("Options", help);
+                Environment.ExitCode = 0;
+                return;
+            }
+
+            // One dash or a slash counts as well (-h, -install, /help): anything
+            // that looks like a switch and is not a real path.
             var unknown = LaunchArguments.UnknownOption(args);
             if (unknown != null)
             {
                 AttachToParentConsole();
                 Deliver("Unknown option",
                     $"{unknown} is not an option Explorer Native knows. The options are " +
-                    string.Join(", ", CommandLineSwitches.Concat(LaunchArguments.Modifiers)) + ".",
+                    string.Join(", ", CommandLineSwitches.Concat(LaunchArguments.Modifiers)
+                        .Concat(LaunchArguments.HelpSwitches)) + ".",
                     failed: true);
                 Environment.ExitCode = 2;
                 return;

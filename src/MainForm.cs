@@ -2053,7 +2053,9 @@ namespace ExplorerNative
                     {
                         try
                         {
-                            var info = new FileInfo(path);
+                            // Exact, so "report." is asked about itself and not
+                            // its sibling "report".
+                            var info = new FileInfo(NameRules.ExactPath(path));
                             var attrs = info.Attributes;
                             bool exists = (int)attrs != -1;
                             bool shown = exists &&
@@ -2072,10 +2074,14 @@ namespace ExplorerNative
 
             if (IsDisposed) return;
 
-            bool reload = false;
+            // The pane has moved on, or is reading its folder afresh: these
+            // facts are about a list that is no longer on screen. Marking a
+            // reload here marked the *new* folder, for a reload that was not the
+            // quiet kind, and announced it as changed when nothing had.
             if (!string.Equals(pane.CurrentPath, folder, StringComparison.OrdinalIgnoreCase) || pane.Loading)
-                reload = true;
-            else
+                return;
+
+            bool reload = false;
             {
                 foreach (var (path, keep, size, modified) in facts)
                 {
@@ -6950,6 +6956,14 @@ namespace ExplorerNative
                              isError: true);
                     break;
 
+                // Windows reads "report." as "report", so its Delete could act
+                // on a file nobody selected. Refused, with the way round it.
+                case ShellContextMenu.MenuOutcome.AwkwardName:
+                    Announce("The Windows menu is not offered for a name ending in a dot or a space, " +
+                             "because Windows could act on a different file. Use this application's own commands instead.",
+                             isError: true);
+                    break;
+
                 default:
                     Announce("Windows menu unavailable here", isError: true);
                     break;
@@ -7116,9 +7130,21 @@ namespace ExplorerNative
             {
                 // The window's geometry is taken first, so what is kept is where
                 // the window is now rather than where it was at the last save.
+                // Not while settings.json cannot be read: what this session holds
+                // then are defaults standing in for it, and saving a reset built
+                // from them wiped the pairing code and the sync pairs it keeps.
+                if (SettingsReset.Refusal(_settings) is { } refused)
+                {
+                    AnnounceOperation("settings.failed", refused);
+                    return;
+                }
+
                 CaptureWindowGeometry();
-                Program.ApplySettings(SettingsReset.Defaults(_settings, _panes[0].CurrentPath, _panes[1].CurrentPath));
-                AnnounceOperation("settings.reset", "Preferences reset to defaults");
+                if (Program.ApplySettings(SettingsReset.Defaults(_settings, _panes[0].CurrentPath, _panes[1].CurrentPath)))
+                    AnnounceOperation("settings.reset", "Preferences reset to defaults");
+                else
+                    AnnounceOperation("settings.failed",
+                        "Preferences were reset for this session, but could not be saved. They come back on the next launch.");
                 return;
             }
 

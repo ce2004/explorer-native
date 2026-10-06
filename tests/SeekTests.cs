@@ -111,6 +111,16 @@ namespace ExplorerNative
 
                 foreach (var path in files.Where(f => f.EndsWith(".opus") || f.EndsWith(".ogg")))
                     LateStartTests(dir, path);
+
+                // A Vorbis file cut a second and a half in, which was under the
+                // old late-start threshold: it opened and played nothing. And
+                // one cut a few milliseconds in, under the new one, which has to
+                // play even though its seeks are out by the cut.
+                foreach (var path in files.Where(f => f.EndsWith(".ogg")))
+                {
+                    LateStartTests(dir, path, 66_150);
+                    StartsSoonAfterZero(dir, path, 3_000);
+                }
             }
             finally
             {
@@ -251,15 +261,24 @@ namespace ExplorerNative
         /// part way through a broadcast — plays, measures and seeks exactly like
         /// the same audio starting at zero.
         /// </summary>
-        private static void LateStartTests(string dir, string original)
+        private static void LateStartTests(string dir, string original, long offset = 10_000_000)
         {
-            var name = Path.GetFileName(original);
-            var shifted = Path.Combine(dir, "late-" + name);
-            File.WriteAllBytes(shifted, ShiftGranules(File.ReadAllBytes(original), 10_000_000));
+            var name = Path.GetFileName(original) + (offset == 10_000_000 ? "" : $" ({offset:N0} samples in)");
+            var shifted = Path.Combine(dir, $"late{offset}-" + Path.GetFileName(original));
+            File.WriteAllBytes(shifted, ShiftGranules(File.ReadAllBytes(original), offset));
 
             using var plain = TrackDecoder.Open(original, null, 48000, 2, out _);
             using var late = TrackDecoder.Open(shifted, null, 48000, 2, out string why);
             if (plain == null || late == null) { Check($"{name} starting late: it opens", false, why); return; }
+
+            if (offset != 10_000_000)
+            {
+                var first = Take(late, 4800);
+                Check($"{name} starting late: it plays from the start",
+                    Same(Take(plain, 4800), first, out string played), played);
+                plain.SeekTo(0);
+                late.SeekTo(0);
+            }
 
             Check($"{name} starting late: the length is the audio's, not the broadcast's",
                 Math.Abs(plain.Duration - late.Duration) < 0.002,
@@ -272,6 +291,24 @@ namespace ExplorerNative
             var got = Take(late, 4800);
             Check($"{name} starting late: a seek lands where it does in the ordinary file",
                 Same(expected, got, out string detail), detail);
+        }
+
+        /// <summary>
+        /// A stream that starts too little way in to count as a late start
+        /// still plays, from its first sample.
+        /// </summary>
+        private static void StartsSoonAfterZero(string dir, string original, long offset)
+        {
+            var name = $"{Path.GetFileName(original)} ({offset:N0} samples in)";
+            var shifted = Path.Combine(dir, $"soon{offset}-" + Path.GetFileName(original));
+            File.WriteAllBytes(shifted, ShiftGranules(File.ReadAllBytes(original), offset));
+
+            using var plain = TrackDecoder.Open(original, null, 48000, 2, out _);
+            using var soon = TrackDecoder.Open(shifted, null, 48000, 2, out string why);
+            if (plain == null || soon == null) { Check($"{name}: it opens", false, why); return; }
+
+            Check($"{name}: it plays from the start",
+                Same(Take(plain, 4800), Take(soon, 4800), out string detail), detail);
         }
 
         /// <summary>Adds <paramref name="offset"/> to every audio page's granule, fixing the checksums.</summary>

@@ -170,14 +170,39 @@ namespace ExplorerNative
                 if (category is System.Globalization.UnicodeCategory.NonSpacingMark
                     or System.Globalization.UnicodeCategory.SpacingCombiningMark
                     or System.Globalization.UnicodeCategory.EnclosingMark) continue;
+
+                // Letters no decomposition takes apart, written the way the sort
+                // reads them: Windows' comparison puts "Æble" among the AE names
+                // and "Straße" with "Strasse", so typing those letters has to
+                // land there too.
+                switch (c)
+                {
+                    case 'Æ': kept.Append("AE"); continue;
+                    case 'æ': kept.Append("ae"); continue;
+                    case 'Œ': kept.Append("OE"); continue;
+                    case 'œ': kept.Append("oe"); continue;
+                    case 'Ø': kept.Append('O'); continue;
+                    case 'ø': kept.Append('o'); continue;
+                    case 'Ł': kept.Append('L'); continue;
+                    case 'ł': kept.Append('l'); continue;
+                    case 'Đ': kept.Append('D'); continue;
+                    case 'đ': kept.Append('d'); continue;
+                    case 'ß': kept.Append("ss"); continue;
+                    case 'ẞ': kept.Append("SS"); continue;
+                }
                 kept.Append(c);
             }
             return kept.ToString();
         }
 
+        /// <summary>
+        /// Compatibility decomposition (NFKD), not just canonical: fullwidth
+        /// "Ａ" becomes "A" and the ligature "ﬁ" becomes "fi", where the canonical
+        /// form left both as letters nothing typed could ever match.
+        /// </summary>
         private static string Decompose(string text)
         {
-            const int NormalizationD = 2;
+            const int NormalizationD = 6; // NormalizationKD
             try
             {
                 int size = NormalizeString(NormalizationD, text, text.Length, null, 0);

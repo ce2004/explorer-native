@@ -386,6 +386,8 @@ namespace ExplorerNative
             Live("app.restored", "Window restored", Application, Off, "Explorer Native"),
             Live("app.quitting", "Closing", Application, Off, "Closing"),
             Live("settings.saved", "Preferences saved", Application, Say, "Preferences saved"),
+            Live("webapp.guessing", "Someone is guessing the web app code", Application, Loud,
+                "Someone ({0}) keeps entering a wrong web app pairing code. They are being slowed down.", "100.101.102.103"),
             Live("webapp.failed", "Web app could not be turned on", Application, Loud, "{0}", "Tailscale did not answer. Check that it is running, then try again."),
             Live("webapp.port.fallback", "Web app port taken, default used", Application, Loud,
                 "Port {0} is in use by another program, so the web app is using port {1} instead", 50000, 47810),

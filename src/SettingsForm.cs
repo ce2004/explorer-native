@@ -297,17 +297,11 @@ namespace ExplorerNative
             var reset = new Button { Text = "&Reset to defaults", AutoSize = true };
             reset.Click += (_, _) =>
             {
-                // Spelled out, because a reset quietly hands folders back to File
-                // Explorer and removes the context-menu entry — the two settings
-                // here that change things outside this application, and the two
-                // nobody expects "reset preferences" to touch.
-                var warning = "Reset every preference to its default?";
-                if (ShellRegistration.IsDefaultFileExplorer())
-                    warning += "\n\nThis will also stop Explorer Native opening folders; " +
-                               "Windows Explorer will take them back.";
-                if (ShellRegistration.IsContextMenuRegistered())
-                    warning += "\n\nThe \"Open in Explorer Native\" menu entry will be removed.";
-                warning += "\n\n" + SettingsReset.KeptSentence;
+                // What is kept and what goes back, in plain words. A reset never
+                // changes how this PC opens folders, the context-menu entry,
+                // Google Drive or the web app (see SettingsReset), so there is
+                // nothing outside this application to warn about.
+                var warning = "Reset your preferences to their defaults?\n\n" + SettingsReset.KeptSentence;
 
                 if (MessageBox.Show(this, warning, "Reset",
                         MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
@@ -1588,7 +1582,12 @@ namespace ExplorerNative
             var box = new TextBox { Text = value, Width = 200 };
             box.AccessibleName = label;
             AddLabelled(parent, label, box);
-            _applies.Add(() => { if (box.Text != value) apply(box.Text); });
+            // Written only when somebody typed in it. Comparing the text is not
+            // enough: an edit box stops at a NUL, so a saved value holding one
+            // reads back shorter and OK on any page cut it short.
+            bool edited = false;
+            box.TextChanged += (_, _) => edited = true;
+            _applies.Add(() => { if (edited && box.Text != value) apply(box.Text); });
         }
 
         private void Say(string message)
@@ -1770,7 +1769,14 @@ namespace ExplorerNative
         {
             private const int Width540 = 540;
 
-            public InfoLabel() => AutoSize = false;
+            // These show data as well as help - a device name, a link, an
+            // account - and an & in "Tom&Cat" would otherwise be an access key
+            // that steals Alt+C and is read as "TomCat".
+            public InfoLabel()
+            {
+                AutoSize = false;
+                UseMnemonic = false;
+            }
 
             protected override void OnTextChanged(EventArgs e)
             {
@@ -1787,7 +1793,7 @@ namespace ExplorerNative
             private void Fit()
             {
                 var measured = TextRenderer.MeasureText(Text ?? "", Font, new Size(Width540, int.MaxValue),
-                    TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
+                    TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl | TextFormatFlags.NoPrefix);
                 Size = new Size(Width540, Math.Max(measured.Height, Font.Height));
             }
         }

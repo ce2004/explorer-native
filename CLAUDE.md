@@ -5770,8 +5770,9 @@ off its first audio page. Vorbis can only count a packet with NVorbis's own
 delegate, so the base is found on the first seek, which `OpenVorbis` makes on
 purpose. The base leaves out the first packet, which produces nothing, and
 adds the long-before-short shift that `TrailingShift` describes. Without that
-shift the length was 448 samples long at 44.1kHz. Below 96,000 samples a
-difference is block rounding, not a late start. The suite shifts the granules
+shift the length was 448 samples long at 44.1kHz. Below 8,192 samples a
+difference is block rounding, not a late start (it was 96,000 until 2.0, which
+made files starting up to two seconds late play nothing). The suite shifts the granules
 of its two fixtures and compares.
 
 **Intermittent:** "nothing incomplete was left behind" in the cancel test failed

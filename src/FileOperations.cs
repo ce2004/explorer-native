@@ -107,7 +107,13 @@ namespace ExplorerNative
         /// </summary>
         public static int RecommendedThreads => Math.Clamp(Environment.ProcessorCount, 4, 16);
 
-        private sealed record PlannedCopy(string Source, string Destination, long Size);
+        /// <param name="Rename">
+        /// A move that can be a rename, decided once for the top-level item the
+        /// file belongs to. It was asked per file, at about 0.8ms a call, which
+        /// for a folder of thirty thousand files was most of half a minute of
+        /// asking Windows the same question.
+        /// </param>
+        private sealed record PlannedCopy(string Source, string Destination, long Size, bool Rename = false);
 
         /// <summary>
         /// Folders the plan must create even though no file lands in them.
@@ -273,7 +279,7 @@ namespace ExplorerNative
                         {
                             Directory.CreateDirectory(NameRules.ExactPath(Path.GetDirectoryName(item.Destination)!));
 
-                            if (move && SameVolume(item.Source, item.Destination))
+                            if (item.Rename)
                             {
                                 // Same-volume move is a rename: no bytes travel.
                                 File.Move(NameRules.ExactPath(item.Source), NameRules.ExactPath(item.Destination), overwrite: true);
@@ -454,6 +460,7 @@ namespace ExplorerNative
                         directories.Add(new PlannedDirectory(Path.Combine(destRoot, relative)));
                     }
 
+                    bool rename = move && SameVolume(source, destRoot);
                     foreach (var file in SafeEnumerateFiles(source, unreadable))
                     {
                         token.ThrowIfCancellationRequested();
@@ -461,7 +468,7 @@ namespace ExplorerNative
                         var dest = Path.Combine(destRoot, relative);
                         long size = 0;
                         try { size = new FileInfo(NameRules.ExactPath(file)).Length; } catch { }
-                        plan.Add(new PlannedCopy(file, dest, size));
+                        plan.Add(new PlannedCopy(file, dest, size, rename));
                     }
                 }
                 else if (File.Exists(exact))
@@ -473,7 +480,7 @@ namespace ExplorerNative
 
                     long size = 0;
                     try { size = new FileInfo(exact).Length; } catch { }
-                    plan.Add(new PlannedCopy(source, dest, size));
+                    plan.Add(new PlannedCopy(source, dest, size, move && SameVolume(source, dest)));
                 }
 
                 // Neither a file nor a folder: gone since it was picked. This had
@@ -749,28 +756,46 @@ namespace ExplorerNative
         /// Copies every named data stream — a download's Zone.Identifier, a tag
         /// some program keeps beside the file — onto the copy. A filesystem with
         /// no streams to list has nothing to copy.
+        ///
+        /// Best effort, every step of it. FAT, exFAT and plenty of NAS shares have
+        /// no streams at all, and refuse one being written; a stream another
+        /// program holds cannot be read. Either used to throw out of here and
+        /// fail — and delete — a keep-both copy whose file had arrived whole.
+        /// The file is the copy; a stream that cannot come with it is left behind.
         /// </summary>
-        private static void CopyStreams(string from, string to)
+        internal static void CopyStreams(string from, string to)
         {
             var names = new List<string>();
-            var find = FindFirstStreamW(from, 0, out var data, 0);
-            if (find == new IntPtr(-1)) return;
             try
             {
-                do
+                var find = FindFirstStreamW(from, 0, out var data, 0);
+                if (find == new IntPtr(-1)) return;
+                try
                 {
-                    if (!string.Equals(data.StreamName, "::$DATA", StringComparison.OrdinalIgnoreCase))
-                        names.Add(data.StreamName);
+                    do
+                    {
+                        if (!string.Equals(data.StreamName, "::$DATA", StringComparison.OrdinalIgnoreCase))
+                            names.Add(data.StreamName);
+                    }
+                    while (FindNextStreamW(find, out data));
                 }
-                while (FindNextStreamW(find, out data));
+                finally { FindClose(find); }
             }
-            finally { FindClose(find); }
+            catch { return; }
 
             foreach (var name in names)
             {
-                using var input = new FileStream(from + name, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                using var output = new FileStream(to + name, FileMode.Create, FileAccess.Write, FileShare.None);
-                input.CopyTo(output);
+                try
+                {
+                    using var input = new FileStream(from + name, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                    using var output = new FileStream(to + name, FileMode.Create, FileAccess.Write, FileShare.None);
+                    input.CopyTo(output);
+                }
+                catch
+                {
+                    // Half a stream is worse than none.
+                    try { File.Delete(to + name); } catch { }
+                }
             }
         }
 
@@ -845,10 +870,22 @@ namespace ExplorerNative
 
         private static bool IsEffectivelyEmpty(string dir)
         {
+            // Walked by hand, never through a link: AllDirectories went through
+            // junctions, and one pointing back up the tree recursed until the
+            // path was too long. A link is something in the folder, so a folder
+            // holding one is not empty.
             try
             {
-                foreach (var _ in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
-                    return false;
+                var stack = new Stack<string>();
+                stack.Push(dir);
+                while (stack.Count > 0)
+                {
+                    foreach (var entry in new DirectoryInfo(stack.Pop()).EnumerateFileSystemInfos())
+                    {
+                        if (entry is not DirectoryInfo sub || NameRules.IsLink(sub)) return false;
+                        stack.Push(sub.FullName);
+                    }
+                }
                 return true;
             }
             catch { return false; }
@@ -863,9 +900,13 @@ namespace ExplorerNative
                 static string Full(string p) =>
                     (NameRules.ExactPath(p) != p ? NameRules.PlainPath(p) : Path.GetFullPath(p))
                         .TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-                return Full(candidate).StartsWith(Full(ancestor), StringComparison.OrdinalIgnoreCase);
+                if (Full(candidate).StartsWith(Full(ancestor), StringComparison.OrdinalIgnoreCase)) return true;
             }
-            catch { return false; }
+            catch { }
+
+            // By where both really are, too: a junction in the destination that
+            // leads back inside the source made the copy walk into its own output.
+            return ReparseLinks.ResolvedWithin(candidate, ancestor);
         }
 
         // By the volume, not the drive letter: a subst drive or a folder that

@@ -47,6 +47,7 @@ namespace ExplorerNative
                 FailedSeekLeavesNoDeadReaderTests(dir);
                 SkipAfterResumeTests(fixtures);
                 StopWhilePausedTests(fixtures);
+                ShortTrackOnRepeatTests(dir);
 
                 int copies = SuiteCopies, playerCopies = SuitePlayerCopies, seconds = SuiteFuzzSeconds;
                 if (int.TryParse(Environment.GetEnvironmentVariable("EXPLORERNATIVE_AUDIOFUZZ"), out int asked) && asked > 0)
@@ -262,6 +263,41 @@ namespace ExplorerNative
 
             times.Sort();
             Check("Stop while paused is quick", times[1] < 60, string.Join(", ", times) + " ms");
+        }
+
+        // ---------- A sound shorter than the ring, on repeat ----------
+
+        /// <summary>
+        /// Several passes of a short sound are in the ring at once, and the
+        /// clock measured back from the end by all of them: it went below
+        /// zero and read 0 for as long as the sound repeated.
+        /// </summary>
+        private static void ShortTrackOnRepeatTests(string dir)
+        {
+            const int rate = 44100;
+            // Shorter than the fifth of a second a local file keeps in the ring,
+            // so more than one pass is always in it.
+            var pcm = ExactSeekTests.Signal(rate, 1).Take(rate * 2 * 8 / 100).ToArray();
+            var wav = Path.Combine(dir, "short.wav");
+            ExactSeekTests.WriteWav(wav, pcm, rate);
+
+            using var player = new AudioPlayer();
+            player.VolumePercent = 0;
+            player.RepeatTrack = true;
+            if (player.Play(wav) == null) { Check("a short sound plays on repeat", false, player.Diagnostic); return; }
+            WaitFor(() => player.DurationSeconds > 0, 3000);
+            Thread.Sleep(500);
+
+            var seen = new List<double>();
+            for (int i = 0; i < 30; i++) { seen.Add(player.PositionSeconds); Thread.Sleep(67); }
+            double duration = player.DurationSeconds;
+            player.Stop();
+
+            int zeros = seen.Count(s => s <= 0.0001);
+            Check("a short sound on repeat shows where it is, not 0 every time",
+                zeros <= 5 && seen.Max() > 0.01 && seen.All(s => s <= duration + 0.01),
+                $"{zeros} of 30 at 0, up to {seen.Max():0.###}s of {duration:0.###}s: " +
+                string.Join(" ", seen.Take(10).Select(s => s.ToString("0.###"))));
         }
 
         // ---------- Damaged files ----------

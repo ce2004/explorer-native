@@ -1024,7 +1024,9 @@ function renderMini() {
   if (mini.hidden === show) { mini.hidden = !show; document.body.classList.toggle('has-mini', show); }
   if (!show) return;
   setText($('mini-title'), shownName(t.name, false));
-  $('mini-title').setAttribute('aria-label', `Now playing: ${shownName(t.name, false)}. Open Now Playing`);
+  // Only when it changes: rewriting it on every render is a change VoiceOver may read out again.
+  const label = `Now playing: ${shownName(t.name, false)}. Open Now Playing`;
+  if ($('mini-title').getAttribute('aria-label') !== label) $('mini-title').setAttribute('aria-label', label);
   setText($('mini-play'), a.paused ? 'Play' : 'Pause');
 }
 
@@ -1439,6 +1441,8 @@ function bindSettings() {
 
 async function whoami() {
   const res = await timedFetch('/api/whoami', { headers: state.code ? { 'X-Connect-Code': state.code } : {} }, 15000);
+  // Too many wrong codes: the PC says how long to wait, and that goes on the code screen.
+  if (res.status === 429) return res.json().catch(() => ({ error: 'Too many wrong pairing codes. Wait a minute, then try again.' }));
   if (!res.ok) throw new Error(res.status === 502 || res.status === 503
     ? 'The PC answered, but Explorer Native is not running there. Start it, then try again.'
     : UNREACHABLE);
@@ -1450,6 +1454,7 @@ async function connect() {
   let who;
   try { who = await whoami(); }
   catch (e) { showOffline(e && e.message && e.name !== 'AbortError' && e.name !== 'TypeError' ? e.message : UNREACHABLE); return; }
+  if (who.error) { showCodeScreen(who.error); return; }
   state.trusted = !who.needsCode;
   state.user = who.user;
   state.computer = who.computer;
@@ -1507,6 +1512,7 @@ function bindEvents() {
     const code = $('code-input').value.replace(/[\s-]/g, '');
     const res = await timedFetch('/api/whoami', { headers: { 'X-Connect-Code': code } }, 15000).then((r) => r.json()).catch(() => null);
     if (!res) { $('code-error').textContent = UNREACHABLE; announce(UNREACHABLE, true); return; }
+    if (res.error) { $('code-error').textContent = res.error; $('code-input').focus(); return; }
     if (!res.codeOk) { $('code-error').textContent = 'That code is not right. Check it on the PC and try again.'; $('code-input').focus(); return; }
     state.code = code;
     store.set('code', code);
@@ -1530,11 +1536,26 @@ function bindEvents() {
   $('btn-upload').addEventListener('click', () => $('upload-input').click());
   $('upload-input').addEventListener('change', (e) => { const files = [...e.target.files]; e.target.value = ''; if (files.length) uploadFiles(files); });
   $('btn-paste').addEventListener('click', paste);
-  $('btn-select').addEventListener('click', () => { state.selectMode = true; state.selected.clear(); renderFiles(); announce('Select items, then choose an action.'); });
+  // Select hides the button that was pressed, and Copy and Move hide the select bar, so each puts focus
+  // somewhere that is still there: the first box to tick, and the Paste or Move here button.
+  $('btn-select').addEventListener('click', () => {
+    state.selectMode = true; state.selected.clear(); renderFiles();
+    const first = $('file-list').querySelector('input[type="checkbox"]');
+    (first || $('btn-sel-done')).focus();
+    announce('Select items, then choose an action.');
+  });
   $('btn-sel-done').addEventListener('click', () => { state.selectMode = false; renderFiles(); $('files-title').focus(); });
   const selected = () => { const p = [...state.selected]; if (!p.length) announce('Nothing is selected.'); return p; };
-  $('btn-sel-copy').addEventListener('click', () => { const p = selected(); if (p.length) { state.selectMode = false; hold(p, false); } });
-  $('btn-sel-cut').addEventListener('click', () => { const p = selected(); if (p.length) { state.selectMode = false; hold(p, true); } });
+  const holdSelected = (cut) => {
+    const p = selected();
+    if (!p.length) return;
+    state.selectMode = false;
+    hold(p, cut);
+    const paste = $('btn-paste');
+    (paste.hidden ? $('btn-select') : paste).focus();
+  };
+  $('btn-sel-copy').addEventListener('click', () => holdSelected(false));
+  $('btn-sel-cut').addEventListener('click', () => holdSelected(true));
   $('btn-sel-pc').addEventListener('click', () => { const p = selected(); if (p.length) copyOnPc(p); });
   $('btn-sel-delete').addEventListener('click', () => { const p = selected(); if (p.length) remove(p); });
 

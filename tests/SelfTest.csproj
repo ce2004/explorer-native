@@ -91,11 +91,13 @@
     <Compile Include="DriveMonitorTests.cs" />
     <Compile Include="EdgeCaseTests.cs" />
     <Compile Include="TransferFixTests.cs" />
+    <Compile Include="FilesR2Tests.cs" />
     <Compile Include="SettingsFixTests.cs" />
     <Compile Include="AudioFixTests.cs" />
     <Compile Include="VideoContainerTests.cs" />
     <Compile Include="UpdateFixTests.cs" />
     <Compile Include="MainFixTests.cs" />
+    <Compile Include="Round2FixTests.cs" />
   </ItemGroup>
 
   <!-- The managed Ogg Vorbis and Opus decoders, which the suite exercises the

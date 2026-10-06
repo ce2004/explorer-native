@@ -16,6 +16,12 @@ namespace ExplorerNative
     {
         private static readonly Dictionary<string, (byte[] Bytes, string Type)?> Cache = new(StringComparer.Ordinal);
 
+        /// <summary>The longest name of a file in web\; anything longer is not one of them.</summary>
+        internal const int MaxName = 64;
+
+        /// <summary>How many names are remembered, for tests: never more than the files that exist.</summary>
+        internal static int Cached { get { lock (Cache) return Cache.Count; } }
+
         /// <summary>The embedded file for a request path, or false when the path is not part of the web app.</summary>
         public static bool TryGet(string path, out byte[] bytes, out string contentType)
         {
@@ -31,7 +37,10 @@ namespace ExplorerNative
                 _ when path.StartsWith("/app/", StringComparison.Ordinal) && !path.Contains("..") => path[5..],
                 _ => null,
             };
-            if (name == null || name.Length == 0) return false;
+            // This runs before the pairing code is asked for, so anybody can ask for any name: only a name that
+            // could be one of ours is looked up, and only what was found is remembered. Remembering every miss
+            // was a cache that grew by one entry per made-up name for as long as the application ran.
+            if (name == null || name.Length == 0 || name.Length > MaxName) return false;
 
             (byte[] Bytes, string Type)? found;
             lock (Cache)
@@ -39,7 +48,7 @@ namespace ExplorerNative
                 if (!Cache.TryGetValue(name, out found))
                 {
                     found = Load(name);
-                    Cache[name] = found;
+                    if (found != null) Cache[name] = found;
                 }
             }
             if (found == null) return false;

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Text;
 
 namespace ExplorerNative
 {
@@ -123,6 +124,71 @@ namespace ExplorerNative
     public sealed record SyncAction(SyncActionKind Kind, string Path);
 
     /// <summary>
+    /// Names compared the way both sides mean them: capitals ignored, and an
+    /// accent written as one character the same as a letter followed by the
+    /// accent on its own.
+    ///
+    /// macOS writes "café" the second way and Windows the first, so a library
+    /// copied from a Mac had every accented name twice over — the PC's sent up
+    /// beside Drive's, and Drive's brought down beside the PC's. The names are
+    /// kept as each side spells them; only the comparing is normalised.
+    /// </summary>
+    public sealed class SyncNameComparer : IEqualityComparer<string>, IComparer<string>
+    {
+        public static readonly SyncNameComparer Instance = new();
+
+        internal static string Key(string name)
+        {
+            try { return name.IsNormalized(NormalizationForm.FormC) ? name : name.Normalize(NormalizationForm.FormC); }
+            catch (ArgumentException) { return name; }      // half a surrogate pair: compared as it is
+        }
+
+        public bool Equals(string? a, string? b) =>
+            a == null || b == null ? a == b : StringComparer.OrdinalIgnoreCase.Equals(Key(a), Key(b));
+
+        public int GetHashCode(string name) => StringComparer.OrdinalIgnoreCase.GetHashCode(Key(name));
+
+        public int Compare(string? a, string? b) =>
+            a == null || b == null ? string.CompareOrdinal(a, b) : StringComparer.OrdinalIgnoreCase.Compare(Key(a), Key(b));
+    }
+
+    /// <summary>
+    /// What one side holds and leaves out of the sync: a hidden or system
+    /// file on the PC, a folder that could not be read, a Drive name that
+    /// clashes with another. Present, so never mistaken for deleted.
+    /// </summary>
+    public sealed class SyncSkips
+    {
+        private readonly HashSet<string> _files = new(SyncNameComparer.Instance);
+        private readonly List<string> _folders = new();
+
+        public void File(string path) => _files.Add(path);
+
+        /// <summary>Everything under a folder, by its relative path ("" for the whole pair).</summary>
+        public void Folder(string relative) =>
+            _folders.Add(relative.Length == 0 ? "" : SyncNameComparer.Key(relative.TrimEnd('/')) + "/");
+
+        public bool IsEmpty => _files.Count == 0 && _folders.Count == 0;
+
+        /// <summary>Everything the other side's scan left out as well.</summary>
+        public void Include(SyncSkips other)
+        {
+            _files.UnionWith(other._files);
+            _folders.AddRange(other._folders);
+        }
+
+        public bool Covers(string path)
+        {
+            if (_files.Contains(path)) return true;
+            if (_folders.Count == 0) return false;
+            var key = SyncNameComparer.Key(path);
+            foreach (var folder in _folders)
+                if (folder.Length == 0 || key.StartsWith(folder, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+    }
+
+    /// <summary>
     /// Decides what a sync does, from what each side holds now and what both
     /// held at the last sync. Pure: no files, no network, so every rule here is
     /// tested directly.
@@ -238,21 +304,26 @@ namespace ExplorerNative
         /// A file the rules skip (its type, its size on either side, or a
         /// subfolder when subfolders are off) gets no action at all and keeps
         /// whatever was remembered about it, so skipping a file never reads as
-        /// deleting it.
+        /// deleting it. The same goes for anything in <paramref name="skipped"/>:
+        /// a hidden file on the PC is there, just not synced, and taking it for
+        /// deleted sent the Drive copy to the trash.
         /// </summary>
         public static List<SyncAction> Plan(
             SyncRules rules,
             IReadOnlyDictionary<string, SyncFile> local,
             IReadOnlyDictionary<string, SyncFile> remote,
             IReadOnlyDictionary<string, SyncBase> last,
-            IReadOnlyDictionary<string, string>? localMd5 = null)
+            IReadOnlyDictionary<string, string>? localMd5 = null,
+            SyncSkips? skipped = null)
         {
             var mode = rules.Mode;
             bool copyDeletes = rules.CopyDeletes;
             bool up = mode != SyncMode.DownloadOnly;
             bool down = mode != SyncMode.UploadOnly;
 
-            var paths = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
+            // The PC's spelling first, so a path both sides hold under two
+            // spellings is acted on under the one that finds the PC's file.
+            var paths = new SortedSet<string>(SyncNameComparer.Instance);
             paths.UnionWith(local.Keys);
             paths.UnionWith(remote.Keys);
             paths.UnionWith(last.Keys);
@@ -263,6 +334,7 @@ namespace ExplorerNative
             foreach (var path in paths)
             {
                 if (IsSkippedPath(path)) continue;
+                if (skipped != null && skipped.Covers(path)) continue;
                 if (!rules.IncludeSubfolders && path.Contains('/')) continue;
                 if (rules.SkipsType(path)) continue;
 
@@ -429,11 +501,32 @@ namespace ExplorerNative
         /// resets by itself), or 500, 502, 503, 504. Not a full account, not a
         /// missing file, and not the connection being down, which is offline.
         /// </summary>
+        /// <summary>
+        /// How long to wait out a daily limit: an hour, not the five-minute cap,
+        /// because asking every five minutes is how a day's limit stays spent.
+        /// </summary>
+        public static readonly TimeSpan DailyLimitWait = TimeSpan.FromHours(1);
+
+        /// <summary>Google's per-day limit for the account, in either of the forms it arrives in.</summary>
+        public static bool IsDailyLimit(Exception error)
+        {
+            for (var e = error; e != null; e = e.InnerException)
+            {
+                if (e is DriveQuotaException { ResetsOnItsOwn: true }) return true;
+                if (e is DriveClient.DriveStatusException { Status: 403, Reason: "dailyLimitExceeded" }) return true;
+            }
+            return false;
+        }
+
         public static bool IsTransient(Exception error)
         {
             for (var e = error; e != null; e = e.InnerException)
             {
                 if (e is DriveQuotaException quota) return quota.ResetsOnItsOwn;
+
+                // A day's limit resets by itself. As a plain refusal it failed
+                // the pair, which then said "could not sync" until tomorrow.
+                if (e is DriveClient.DriveStatusException { Status: 403, Reason: "dailyLimitExceeded" }) return true;
 
                 // The status and Google's reason, carried as facts. The message
                 // is prose by now and no longer names either.

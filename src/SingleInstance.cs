@@ -118,6 +118,18 @@ namespace ExplorerNative
             Microsoft.Win32.SafeHandles.SafePipeHandle pipe, IntPtr buffer, uint size,
             IntPtr bytesRead, out uint totalAvailable, IntPtr bytesLeftThisMessage);
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool ConnectNamedPipe(
+            Microsoft.Win32.SafeHandles.SafePipeHandle pipe, IntPtr overlapped);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool ReadFile(
+            Microsoft.Win32.SafeHandles.SafePipeHandle file, [Out] byte[] buffer, int toRead,
+            out int read, IntPtr overlapped);
+
+        [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern bool WaitNamedPipe(string name, int timeoutMs);
+
         private const int ASFW_ANY = -1;
 
         // ---------- Server side (the instance that owns the lock) ----------
@@ -183,57 +195,110 @@ namespace ExplorerNative
             }
         }
 
+        /// <summary>
+        /// Two instances of the pipe at most: the one being read, and the next one
+        /// already listening behind it.
+        /// </summary>
+        private const int ServerInstances = 2;
+
+        private const int ERROR_NO_DATA = 232;
+        private const int ERROR_PIPE_CONNECTED = 535;
+
+        /// <summary>
+        /// Waits for a client on this instance, by ConnectNamedPipe directly
+        /// rather than WaitForConnection. With the next instance armed early, a
+        /// launch can connect, write its folder and close before the wait is even
+        /// begun, and the pipe then answers ERROR_NO_DATA: WaitForConnection
+        /// throws on that, and the folder already written was lost. Here it is a
+        /// client like any other, and what it wrote is still there to read.
+        /// </summary>
+        private static void Accept(NamedPipeServerStream server)
+        {
+            if (ConnectNamedPipe(server.SafePipeHandle, IntPtr.Zero)) return;
+            int error = Marshal.GetLastWin32Error();
+            if (error == ERROR_PIPE_CONNECTED || error == ERROR_NO_DATA) return;
+            throw new IOException("The pipe could not take a connection.", error);
+        }
+
+        private static NamedPipeServerStream NewInstance(string pipe) =>
+            new NamedPipeServerStream(pipe, PipeDirection.In, ServerInstances,
+                PipeTransmissionMode.Byte, Restricted);
+
+        private static void Deliver(Action<string> onRequest, string? line)
+        {
+            if (string.IsNullOrWhiteSpace(line)) return;
+            try { onRequest(line.Trim()); }
+            catch { /* a bad request must not stop us listening */ }
+        }
+
         private static void Listen(Action<string> onRequest, string pipe, CancellationToken token)
         {
-            while (!token.IsCancellationRequested)
+            // The instance armed while the last client was being read. Without it
+            // there was a moment after every connection with no pipe at all, and a
+            // launch arriving then spun in Connect until the server came round
+            // again: a burst of folder opens queued behind each other and the
+            // later ones ran out of time.
+            NamedPipeServerStream? next = null;
+            try
             {
-                try
+                while (!token.IsCancellationRequested)
                 {
-                    // Rebuilt per connection. A single reused instance would have
-                    // to be disconnected and re-armed between clients anyway, and
-                    // getting that wrong wedges the pipe for the whole session.
-                    //
-                    // Synchronous, on this thread of its own. An asynchronous pipe
-                    // completes on the thread pool, so a busy pool starved the
-                    // handoff: twenty launches at once from a process whose pool
-                    // was full lost half of them to the connect timeout, every
-                    // one a folder double-clicked that opened nothing.
-                    using var server = new NamedPipeServerStream(
-                        pipe, PipeDirection.In, 1,
-                        PipeTransmissionMode.Byte, Restricted);
-
-                    // Not cancelled by the token. A cancelled wait leaves the pipe
-                    // listening until it is disposed, and a launcher that connected
-                    // in that moment took its folder as delivered while nothing
-                    // read it. StopServer connects instead, and whoever connected
-                    // is read before the token is looked at.
-                    server.WaitForConnection();
-
-                    // A client that connected is read and handed on even when
-                    // stopping has begun: its launcher takes the connection as
-                    // the folder taken and exits, and the application routes a
-                    // folder that arrives while quitting to the copy after it.
-                    // The read keeps its own deadline, not the server's token.
-                    var line = ReadRequest(server);
-
-                    if (!string.IsNullOrWhiteSpace(line))
+                    try
                     {
-                        try { onRequest(line.Trim()); }
-                        catch { /* a bad request must not stop us listening */ }
-                    }
+                        // Rebuilt per connection. A single reused instance would have
+                        // to be disconnected and re-armed between clients anyway, and
+                        // getting that wrong wedges the pipe for the whole session.
+                        //
+                        // Synchronous, on this thread of its own. An asynchronous pipe
+                        // completes on the thread pool, so a busy pool starved the
+                        // handoff: twenty launches at once from a process whose pool
+                        // was full lost half of them to the connect timeout, every
+                        // one a folder double-clicked that opened nothing.
+                        using var server = next ?? NewInstance(pipe);
+                        next = null;
 
-                    if (token.IsCancellationRequested) return;
+                        // Not cancelled by the token. A cancelled wait leaves the pipe
+                        // listening until it is disposed, and a launcher that connected
+                        // in that moment took its folder as delivered while nothing
+                        // read it. StopServer connects instead, and whoever connected
+                        // is read before the token is looked at.
+                        Accept(server);
+
+                        // The next one listens before this one is read.
+                        try { next = NewInstance(pipe); }
+                        catch { next = null; }
+
+                        // A client that connected is read and handed on even when
+                        // stopping has begun: its launcher takes the connection as
+                        // the folder taken and exits, and the application routes a
+                        // folder that arrives while quitting to the copy after it.
+                        // The read keeps its own deadline, not the server's token.
+                        Deliver(onRequest, ReadRequest(server));
+
+                        if (token.IsCancellationRequested)
+                        {
+                            // And anybody who reached the armed instance meanwhile,
+                            // for the same reason. One still only listening answers
+                            // at once: the pipe says it has no client.
+                            if (next != null) Deliver(onRequest, ReadRequest(next));
+                            return;
+                        }
+                    }
+                    catch (OperationCanceledException) { return; }
+                    catch
+                    {
+                        if (token.IsCancellationRequested) return;
+                        // Something transient — a client that died mid-write, a pipe
+                        // in a bad state. Pause briefly rather than spin the CPU
+                        // rebuilding a pipe that is going to fail again immediately.
+                        try { Task.Delay(250, token).GetAwaiter().GetResult(); }
+                        catch { return; }
+                    }
                 }
-                catch (OperationCanceledException) { return; }
-                catch
-                {
-                    if (token.IsCancellationRequested) return;
-                    // Something transient — a client that died mid-write, a pipe
-                    // in a bad state. Pause briefly rather than spin the CPU
-                    // rebuilding a pipe that is going to fail again immediately.
-                    try { Task.Delay(250, token).GetAwaiter().GetResult(); }
-                    catch { return; }
-                }
+            }
+            finally
+            {
+                try { next?.Dispose(); } catch { }
             }
         }
 
@@ -281,6 +346,8 @@ namespace ExplorerNative
             using var collected = new MemoryStream();
             var buffer = new byte[512];
             bool complete = false;
+            var waiting = new SpinWait();
+            long started = Environment.TickCount64;
 
             try
             {
@@ -294,12 +361,23 @@ namespace ExplorerNative
 
                     if (available == 0)
                     {
-                        if (Environment.TickCount64 >= deadline) return null;
-                        Thread.Sleep(2);
+                        long now = Environment.TickCount64;
+                        if (now >= deadline) return null;
+                        // A launcher writes the moment it connects, so its line is
+                        // microseconds away: spin and yield for the first few
+                        // milliseconds. Thread.Sleep(2) was a whole 15.6ms timer
+                        // tick per connection, which held the handoff to about
+                        // sixty a second and lost launches in a burst.
+                        if (now - started < 20) waiting.SpinOnce(sleep1Threshold: -1);
+                        else Thread.Sleep(1);
                         continue;
                     }
 
-                    int n = server.Read(buffer, 0, (int)Math.Min(available, (uint)buffer.Length));
+                    // ReadFile rather than the stream: an instance accepted by
+                    // ConnectNamedPipe directly is not marked connected by .NET.
+                    if (!ReadFile(server.SafePipeHandle, buffer, (int)Math.Min(available, (uint)buffer.Length),
+                            out int n, IntPtr.Zero))
+                        break;
                     if (n <= 0) break;
 
                     for (int i = 0; i < n; i++)
@@ -334,12 +412,53 @@ namespace ExplorerNative
             return Send(PipeName, request, ConnectTimeoutMs);
         }
 
-        private static bool Send(string pipe, string request, int timeoutMs)
+        /// <summary>
+        /// How long a launch keeps trying while the running copy's pipe is there
+        /// and busy. A burst of folder opens queues on one listener, and a launch
+        /// that gave up after one connect timeout fell back to raising a window,
+        /// which opens nothing. Only while the pipe exists: with nobody
+        /// listening the first timeout is the answer.
+        /// </summary>
+        private const int HandoffBudgetMs = 10_000;
+
+        /// <summary>True when an instance of the pipe exists, free or busy.</summary>
+        private static bool PipeExists(string pipe)
         {
             try
             {
+                if (WaitNamedPipe(@"\\.\pipe\" + pipe, 1)) return true;
+                int error = Marshal.GetLastWin32Error();
+                return error != 2; // ERROR_FILE_NOT_FOUND: nobody is listening
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool Send(string pipe, string request, int timeoutMs)
+        {
+            long giveUp = Environment.TickCount64 + HandoffBudgetMs;
+            while (true)
+            {
+                var sent = TrySend(pipe, request, timeoutMs, out bool timedOut);
+                if (sent) return true;
+                if (!timedOut || Environment.TickCount64 >= giveUp || !PipeExists(pipe)) return false;
+            }
+        }
+
+        private static bool TrySend(string pipe, string request, int timeoutMs, out bool timedOut)
+        {
+            timedOut = false;
+            try
+            {
                 using var client = new NamedPipeClientStream(".", pipe, PipeDirection.Out, Restricted);
-                client.Connect(timeoutMs);
+                try { client.Connect(timeoutMs); }
+                catch (TimeoutException)
+                {
+                    timedOut = true;
+                    return false;
+                }
 
                 // We were started by the user's own click, so we hold the right to
                 // set the foreground window and the running instance does not.
@@ -385,14 +504,68 @@ namespace ExplorerNative
             CommandLineSwitches.Contains(arg.Trim(), StringComparer.OrdinalIgnoreCase) ||
             Modifiers.Contains(arg.Trim(), StringComparer.OrdinalIgnoreCase);
 
+        /// <summary>The ways of asking for the list of options. Each prints it and exits 0.</summary>
+        public static readonly string[] HelpSwitches = { "--help", "-h", "/?" };
+
+        public static bool IsHelp(string arg) =>
+            HelpSwitches.Contains(arg.Trim(), StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>True when one of the arguments asks for the list of options.</summary>
+        public static bool WantsHelp(IEnumerable<string> args) => args.Any(IsHelp);
+
         /// <summary>
         /// The first argument that looks like a switch and is not one, or null.
         /// A typo such as --unistall used to fall through to an ordinary launch,
-        /// which brought the running copy to the front or started a new one.
+        /// which brought the running copy to the front or started a new one, and
+        /// so did anything with one dash or a slash: /?, -h, -install. Anything
+        /// starting with - or / is a switch unless it names something that exists
+        /// (a folder really can be called "-drafts", and "/" is the current drive's
+        /// root). The name after --read-log is a log, not a switch.
         /// </summary>
-        public static string? UnknownOption(IEnumerable<string> args) =>
-            args.Select(a => a.Trim())
-                .FirstOrDefault(a => a.StartsWith("--", StringComparison.Ordinal) && !IsKnown(a));
+        public static string? UnknownOption(IEnumerable<string> args, Func<string, bool>? exists = null)
+        {
+            exists ??= PathExists;
+            string? previous = null;
+            foreach (var raw in args)
+            {
+                var a = raw.Trim();
+                bool afterReadLog = previous != null &&
+                                    previous.Equals("--read-log", StringComparison.OrdinalIgnoreCase);
+                previous = a;
+                if (a.Length == 0 || IsKnown(a) || IsHelp(a)) continue;
+                if (!a.StartsWith('-') && !a.StartsWith('/')) continue;
+                if (afterReadLog && !a.StartsWith("--", StringComparison.Ordinal)) continue;
+                bool isPath;
+                try { isPath = exists(a); }
+                catch { isPath = false; }
+                if (!isPath) return a;
+            }
+            return null;
+        }
+
+        private static bool PathExists(string arg)
+        {
+            var candidate = NameRules.NormaliseLaunchPath(arg);
+            if (candidate.Length == 0) return false;
+            return Directory.Exists(candidate) || File.Exists(candidate);
+        }
+
+        /// <summary>
+        /// What --help prints: every option and what it does, one to a line.
+        /// </summary>
+        public static string HelpText() =>
+            "Usage: ExplorerNative [folder or file] [option]" + Environment.NewLine +
+            "  --install             install this copy and open folders with it" + Environment.NewLine +
+            "  --install-only        install this copy and leave folder opening alone" + Environment.NewLine +
+            "  --update              install this copy and restart the running one on it" + Environment.NewLine +
+            "  --uninstall           stop opening folders and remove the installed copy" + Environment.NewLine +
+            "  --register-default    open folders with Explorer Native" + Environment.NewLine +
+            "  --unregister-default  give folders back to File Explorer" + Environment.NewLine +
+            "  --unregister-all      remove every registry entry Explorer Native made" + Environment.NewLine +
+            "  --read-log [name]     print a log (install.log when no name is given)" + Environment.NewLine +
+            "  --licence             write out the licences" + Environment.NewLine +
+            "  --quiet               no notice window for a command-line run" + Environment.NewLine +
+            "  --help, -h, /?        show this list";
 
         /// <summary>
         /// The log --read-log was asked for: the first argument after it that is

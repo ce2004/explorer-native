@@ -396,7 +396,15 @@ namespace ExplorerNative
                 if (lastPass > 0)
                 {
                     double behind = lastPass * speed * RateConversion / rate;
-                    double atEnd = decoder.Duration - behind;
+
+                    // A track shorter than the ring has several passes in it at
+                    // once, and the play head is that far back from the end of
+                    // the latest one — whole passes and all. Without the
+                    // remainder a one-second sound on repeat sat at 0 for good.
+                    double duration = decoder.Duration;
+                    if (duration > 0 && behind > duration) behind %= duration;
+
+                    double atEnd = duration - behind;
                     return atEnd < 0 ? 0 : atEnd;
                 }
 

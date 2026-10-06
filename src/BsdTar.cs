@@ -239,6 +239,10 @@ namespace ExplorerNative
 
         private static void RequireAvailable()
         {
+            // The first tar run in this process clears what a killed one left,
+            // whether or not this run needs a junction of its own.
+            if (Interlocked.Exchange(ref _swept, 1) == 0) SweepLinks();
+
             if (!Available)
                 throw new NotSupportedException(
                     $"This format needs the tar that Windows ships, and {Executable} is not there.");
@@ -1222,7 +1226,9 @@ namespace ExplorerNative
                 Directory.CreateDirectory(LinkRoot);
                 if (Interlocked.Exchange(ref _swept, 1) == 0) SweepLinks();
 
-                var link = Path.Combine(LinkRoot, Guid.NewGuid().ToString("N")[..8]);
+                // Named after this process, so a sweep can tell a link whose
+                // owner is gone from one still in use.
+                var link = Path.Combine(LinkRoot, $"{Environment.ProcessId}-{Guid.NewGuid().ToString("N")[..8]}");
                 CreateJunction(link, full);
                 aliases.Add(new Alias { Link = link });
                 return link;
@@ -1235,18 +1241,40 @@ namespace ExplorerNative
         }
 
         /// <summary>Removes junctions a crashed run left, as links and nothing else.</summary>
-        private static void SweepLinks()
+        internal static void SweepLinks()
         {
             try
             {
+                if (!Directory.Exists(LinkRoot)) return;
                 foreach (var old in new DirectoryInfo(LinkRoot).EnumerateDirectories())
                 {
                     if ((old.Attributes & FileAttributes.ReparsePoint) == 0) continue;
-                    if (DateTime.UtcNow - old.CreationTimeUtc < TimeSpan.FromHours(1)) continue;
+                    if (!Abandoned(old)) continue;
                     try { Directory.Delete(old.FullName, recursive: false); } catch { }
                 }
             }
             catch { }
+        }
+
+        /// <summary>
+        /// Whether nothing can still be using a link: the process named in it
+        /// has gone, or the number now belongs to a process started after the
+        /// link was made. A name from before links carried one waits an hour.
+        /// </summary>
+        private static bool Abandoned(DirectoryInfo link)
+        {
+            int dash = link.Name.IndexOf('-');
+            if (dash <= 0 || !int.TryParse(link.Name.AsSpan(0, dash), out int pid))
+                return DateTime.UtcNow - link.CreationTimeUtc >= TimeSpan.FromHours(1);
+
+            if (pid == Environment.ProcessId) return false;
+            try
+            {
+                using var owner = Process.GetProcessById(pid);
+                return owner.StartTime.ToUniversalTime() > link.CreationTimeUtc.AddSeconds(1);
+            }
+            catch (ArgumentException) { return true; }        // no such process
+            catch { return false; }                            // there, and not ours to read
         }
 
         private static void CreateJunction(string link, string target)
@@ -1361,10 +1389,121 @@ namespace ExplorerNative
             };
 
             process.Start();
+            KeepWithUs(process);
             process.BeginErrorReadLine();
 
             return new Run { Process = process, Errors = collected };
         }
+
+        // ---------- Dying with the app ----------
+
+        /// <summary>
+        /// One job for every tar this process starts, closed only by Windows
+        /// when this process ends — however it ends.
+        ///
+        /// Kill on close is the point: a crash, Task Manager, or a log-off took
+        /// the app away and left tar.exe compressing on its own for as long as
+        /// the archive took, holding the half-written file and, for a long
+        /// folder, the junction it was started in. Cancel and Stop still kill
+        /// it as before; this is for when nobody is left to.
+        ///
+        /// Windows 8 and later allow nested jobs, so it works when the app is
+        /// itself in one (a terminal, a scheduler). If the assignment is
+        /// refused anyway, the tar runs as it always did.
+        /// </summary>
+        private static readonly Lazy<IntPtr> TarJob = new(CreateTarJob);
+
+        private static IntPtr CreateTarJob()
+        {
+            var job = CreateJobObjectW(IntPtr.Zero, null);
+            if (job == IntPtr.Zero)
+            {
+                RoboCopyEngine.Trace($"bsdtar: no job object: error {Marshal.GetLastWin32Error()}");
+                return IntPtr.Zero;
+            }
+
+            var limits = new JobExtendedLimits();
+            limits.Basic.LimitFlags = JobObjectLimitKillOnJobClose;
+            if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref limits,
+                    Marshal.SizeOf<JobExtendedLimits>()))
+            {
+                RoboCopyEngine.Trace($"bsdtar: job limits refused: error {Marshal.GetLastWin32Error()}");
+                CloseHandle(job);
+                return IntPtr.Zero;
+            }
+
+            // Never closed: the handle closing as this process exits is what
+            // ends the tars.
+            return job;
+        }
+
+        private static void KeepWithUs(Process process)
+        {
+            try
+            {
+                var job = TarJob.Value;
+                if (job == IntPtr.Zero) return;
+                if (!AssignProcessToJobObject(job, process.Handle))
+                    RoboCopyEngine.Trace($"bsdtar: not in the job: error {Marshal.GetLastWin32Error()}");
+            }
+            catch (Exception ex) { RoboCopyEngine.Trace($"bsdtar: not in the job: {ex.Message}"); }
+        }
+
+        /// <summary>Whether a tar this process started would end with it. For the tests.</summary>
+        internal static bool InJob(Process process)
+        {
+            var job = TarJob.Value;
+            return job != IntPtr.Zero && IsProcessInJob(process.Handle, job, out bool inside) && inside;
+        }
+
+        private const uint JobObjectLimitKillOnJobClose = 0x2000;
+        private const int JobObjectExtendedLimitInformation = 9;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JobBasicLimits
+        {
+            public long PerProcessUserTimeLimit;
+            public long PerJobUserTimeLimit;
+            public uint LimitFlags;
+            public UIntPtr MinimumWorkingSetSize;
+            public UIntPtr MaximumWorkingSetSize;
+            public uint ActiveProcessLimit;
+            public UIntPtr Affinity;
+            public uint PriorityClass;
+            public uint SchedulingClass;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct JobExtendedLimits
+        {
+            public JobBasicLimits Basic;
+            public IoCounters IoInfo;
+            public UIntPtr ProcessMemoryLimit;
+            public UIntPtr JobMemoryLimit;
+            public UIntPtr PeakProcessMemoryUsed;
+            public UIntPtr PeakJobMemoryUsed;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr CreateJobObjectW(IntPtr attributes, string? name);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool SetInformationJobObject(IntPtr job, int infoClass,
+            ref JobExtendedLimits info, int length);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool AssignProcessToJobObject(IntPtr job, IntPtr process);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool IsProcessInJob(IntPtr process, IntPtr job,
+            [MarshalAs(UnmanagedType.Bool)] out bool result);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool CloseHandle(IntPtr handle);
 
         private static void Stop(Run run)
         {

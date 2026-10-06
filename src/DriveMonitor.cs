@@ -51,12 +51,12 @@ namespace ExplorerNative
 
         private sealed class PairState
         {
-            public Dictionary<string, SyncBase> Files { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-            public Dictionary<string, PartialDownload> Partials { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-            public Dictionary<string, UploadSession> Uploads { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, SyncBase> Files { get; set; } = new(SyncNameComparer.Instance);
+            public Dictionary<string, PartialDownload> Partials { get; set; } = new(SyncNameComparer.Instance);
+            public Dictionary<string, UploadSession> Uploads { get; set; } = new(SyncNameComparer.Instance);
 
             /// <summary>PC files' MD5s, so none is hashed twice. See <see cref="SyncHashes"/>.</summary>
-            public Dictionary<string, SyncHashEntry> Hashes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+            public Dictionary<string, SyncHashEntry> Hashes { get; set; } = new(SyncNameComparer.Instance);
 
             /// <summary>Which two folders this state is about. Changing either starts it again.</summary>
             public string? LocalFolder { get; set; }
@@ -427,9 +427,13 @@ namespace ExplorerNative
                     var (asked, at) = client.LastRetryAfter;
                     var retryAfter = Environment.TickCount64 - at < 15_000 ? asked : null;
                     var wait = SyncBackoff.Delay(attempt++, retryAfter, random.NextDouble());
+                    bool daily = SyncBackoff.IsDailyLimit(ex);
+                    if (daily && wait < SyncBackoff.DailyLimitWait) wait = SyncBackoff.DailyLimitWait;
                     bool limited = ex.ToString().Contains("429") || ex.ToString().Contains("ateLimitExceeded") ||
                                    Limited(ex);
-                    var why = limited ? "Google is limiting requests" : "Google Drive is having trouble";
+                    var why = daily ? "Google's daily limit for this account has been reached"
+                        : limited ? "Google is limiting requests"
+                        : "Google Drive is having trouble";
                     SetStatus(pair.Id, StatusOf(pair.Id) with
                     {
                         Problem = $"waiting, {why}, trying again in {Seconds(wait)}",
@@ -557,8 +561,14 @@ namespace ExplorerNative
         {
             if (token.IsCancellationRequested) return false;
             for (var e = ex; e != null; e = e.InnerException)
-                if (e is HttpRequestException or SocketException or TaskCanceledException or TimeoutException)
-                    return true;
+            {
+                if (e is SocketException or TaskCanceledException or TimeoutException) return true;
+
+                // Only one that never got an answer. One with a status is
+                // Google's answer — a 403 rate limit among them, which is waited
+                // out, not mistaken for the connection going.
+                if (e is HttpRequestException { StatusCode: null }) return true;
+            }
             return false;
         }
 
@@ -600,24 +610,42 @@ namespace ExplorerNative
                 return;
             }
 
-            var local = ScanLocal(root, pair.IncludeSubfolders);
+            // What either side holds and leaves out: never planned, so never
+            // taken for deleted and never forgotten.
+            var skips = new SyncSkips();
+            var local = ScanLocal(root, pair.IncludeSubfolders, skips);
             var unusable = new List<string>();
-            var shadowed = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            var clashing = new List<string>();
+            var shadowed = new Dictionary<string, List<SyncFile>>(SyncNameComparer.Instance);
+            var remoteSkips = new SyncSkips();
             var (remote, folders) = await Patiently(pair,
                 () =>
                 {
                     unusable.Clear();
+                    clashing.Clear();
                     shadowed.Clear();
-                    return ScanRemoteAsync(client, pair.DriveFolderId, pair.IncludeSubfolders, token, unusable, shadowed);
+                    remoteSkips = new SyncSkips();
+                    return ScanRemoteAsync(client, pair.DriveFolderId, pair.IncludeSubfolders, token, unusable, shadowed,
+                        clashing, remoteSkips);
                 }, client, token)
                 .ConfigureAwait(false);
+            skips.Include(remoteSkips);
+
+            // A download of a name that clashes left its part behind, and it
+            // would be continued for ever. The clash is said instead.
+            foreach (var path in state.Partials.Keys.Where(remoteSkips.Covers).ToList())
+            {
+                var part = Path.Combine(root, path.Replace('/', Path.DirectorySeparatorChar)) + ".partial";
+                try { if (IsInside(root, part)) File.Delete(part); } catch { }
+                state.Partials.Remove(path);
+            }
 
             // Files already on both sides with nothing remembered about them (a
             // first sync over two copies of one library) are compared by MD5
             // before anything is planned, so a match is adopted, never copied.
             var rules = SyncRules.For(pair);
             var md5 = await CheckWhatIsThereAsync(pair, state, rules, local, remote, token).ConfigureAwait(false);
-            var plan = SyncPlanner.Ordered(SyncPlanner.Plan(rules, local, remote, state.Files, md5), local, remote);
+            var plan = SyncPlanner.Ordered(SyncPlanner.Plan(rules, local, remote, state.Files, md5, skips), local, remote);
 
             // How big this pass is, for the progress said along the way.
             long downBytes = 0, upBytes = 0;
@@ -705,6 +733,17 @@ namespace ExplorerNative
 
                     try
                     {
+                        // The PC's copy steps aside once, before Drive is asked
+                        // for anything. Inside the retried part, a 503 on the
+                        // download moved it again from where it no longer was,
+                        // and the conflict failed with "Could not find file".
+                        if (action.Kind == SyncActionKind.KeepBothRemoteWins)
+                        {
+                            var aside = SyncPlanner.ConflictName(path, DateTime.Now, p => remote.ContainsKey(p) || local.ContainsKey(p));
+                            File.Move(localPath, Path.Combine(root, aside.Replace('/', Path.DirectorySeparatorChar)));
+                            Kill("set aside on the PC " + path);
+                        }
+
                         await Patiently(pair, async () =>
                         {
                         switch (action.Kind)
@@ -776,10 +815,7 @@ namespace ExplorerNative
 
                             case SyncActionKind.KeepBothRemoteWins:
                             {
-                                // The PC's copy steps aside under the conflict name; Drive's comes down.
-                                var aside = SyncPlanner.ConflictName(path, DateTime.Now, p => remote.ContainsKey(p) || local.ContainsKey(p));
-                                File.Move(localPath, Path.Combine(root, aside.Replace('/', Path.DirectorySeparatorChar)));
-                                Kill("set aside on the PC " + path);
+                                // The PC's copy has stepped aside (above); Drive's comes down.
                                 var got = await DownloadAsync(client, pair.Id, state, path, remote[path],
                                     localPath, Moved, token).ConfigureAwait(false);
                                 Kill("downloaded " + path);
@@ -795,9 +831,15 @@ namespace ExplorerNative
                                 // copy is the very file this pair last synced, now
                                 // hidden behind a newer one of the same name that
                                 // matches the PC. Finished as the replace would have.
+                                //
+                                // Only while it still holds what was synced. Edited
+                                // in Drive since, it is an edit the PC never had,
+                                // and it stays where it is.
                                 if (state.Files.TryGetValue(path, out var was) &&
                                     was.RemoteId != remote[path].Id &&
-                                    shadowed.TryGetValue(path, out var hidden) && hidden.Contains(was.RemoteId))
+                                    shadowed.TryGetValue(path, out var hidden) &&
+                                    hidden.FirstOrDefault(h => h.Id == was.RemoteId) is { Id: not null } synced &&
+                                    StillAsSynced(synced, was))
                                     await client.Trash(was.RemoteId, token).ConfigureAwait(false);
                                 state.Files[path] = new SyncBase(local[path].Size, local[path].ModifiedUtc,
                                     remote[path].Size, remote[path].ModifiedUtc, remote[path].Id ?? "", remote[path].Md5);
@@ -860,13 +902,27 @@ namespace ExplorerNative
 
             // Everything else is in step; these few never can be, and say so
             // rather than failing on every pass or landing somewhere else.
-            if (unusable.Count > 0)
+            if (unusable.Count > 0 || clashing.Count > 0)
             {
-                Finish(pair, state, UnusableNames(unusable), announce: true, synced: true);
+                var left = new List<string>();
+                if (unusable.Count > 0) left.Add(UnusableNames(unusable));
+                if (clashing.Count > 0) left.Add(ClashingNames(clashing));
+                Finish(pair, state, string.Join(". ", left), announce: true, synced: true);
                 return;
             }
 
             Finish(pair, state, null, announce: false);
+        }
+
+        /// <summary>"x in Google Drive was left out, because Windows sees another item in that folder as the same name".</summary>
+        internal static string ClashingNames(IReadOnlyList<string> names)
+        {
+            const int shown = 5;
+            var list = string.Join(", ", names.Take(shown)) + (names.Count > shown ? $" and {names.Count - shown} more" : "");
+            return names.Count == 1
+                ? $"{names[0]} in Google Drive was left out, because Windows sees another item in that folder as the same name"
+                : $"{names.Count} items in Google Drive were left out, because Windows sees other items in their folders " +
+                  $"as the same names: {list}";
         }
 
         /// <summary>"2 files in Google Drive were left out, because Windows cannot use their names: a:b, x\y".</summary>
@@ -982,11 +1038,11 @@ namespace ExplorerNative
         {
             var local = Directory.Exists(pair.LocalFolder)
                 ? ScanLocal(pair.LocalFolder, pair.IncludeSubfolders)
-                : new Dictionary<string, SyncFile>(StringComparer.OrdinalIgnoreCase);
+                : new Dictionary<string, SyncFile>(SyncNameComparer.Instance);
             var (remote, _) = await ScanRemoteAsync(client, pair.DriveFolderId, pair.IncludeSubfolders, token).ConfigureAwait(false);
 
             var plan = SyncPlanner.Plan(SyncRules.For(pair), local, remote,
-                new Dictionary<string, SyncBase>(StringComparer.OrdinalIgnoreCase));
+                new Dictionary<string, SyncBase>(SyncNameComparer.Instance));
             long down = 0, up = 0;
             foreach (var a in plan)
             {
@@ -998,26 +1054,75 @@ namespace ExplorerNative
 
         // ---------------- scanning ----------------
 
-        internal static Dictionary<string, SyncFile> ScanLocal(string root, bool subfolders)
+        /// <summary>
+        /// Every file under the PC folder that takes part, by relative path.
+        ///
+        /// What is there and left out — hidden or system files, everything in
+        /// a hidden, system or unreadable folder, a file whose details
+        /// could not be read — goes in <paramref name="skipped"/>. Simply not
+        /// listed, it looked deleted: with deletes on, marking a file Hidden
+        /// sent its Drive copy to the trash.
+        /// </summary>
+        internal static Dictionary<string, SyncFile> ScanLocal(string root, bool subfolders, SyncSkips? skipped = null)
         {
-            var files = new Dictionary<string, SyncFile>(StringComparer.OrdinalIgnoreCase);
-            var options = new EnumerationOptions
-            {
-                RecurseSubdirectories = subfolders,
-                IgnoreInaccessible = true,
-                AttributesToSkip = FileAttributes.Hidden | FileAttributes.System,
-            };
+            var files = new Dictionary<string, SyncFile>(SyncNameComparer.Instance);
+            var options = new EnumerationOptions { IgnoreInaccessible = false, AttributesToSkip = 0 };
+            const FileAttributes leftOut = FileAttributes.Hidden | FileAttributes.System;
 
-            foreach (var path in Directory.EnumerateFiles(root, "*", options))
+            var pending = new Stack<(DirectoryInfo Folder, string Relative)>();
+            pending.Push((new DirectoryInfo(root), ""));
+
+            while (pending.Count > 0)
             {
-                var relative = Path.GetRelativePath(root, path).Replace(Path.DirectorySeparatorChar, '/');
-                if (SyncPlanner.IsSkippedPath(relative)) continue;
-                try
+                var (folder, under) = pending.Pop();
+
+                // The pair's own folder unreadable is a failed pass, never an
+                // empty one; a subfolder is left out as a whole.
+                List<FileSystemInfo> entries;
+                try { entries = folder.EnumerateFileSystemInfos("*", options).ToList(); }
+                catch (Exception) when (under.Length > 0)
                 {
-                    var info = new FileInfo(path);
-                    files[relative] = new SyncFile(info.Length, Truncate(info.LastWriteTimeUtc));
+                    skipped?.Folder(under);
+                    continue;
                 }
-                catch { }
+
+                foreach (var entry in entries)
+                {
+                    var relative = under.Length == 0 ? entry.Name : under + "/" + entry.Name;
+                    FileAttributes attributes;
+                    try { attributes = entry.Attributes; }
+                    catch { skipped?.File(relative); skipped?.Folder(relative); continue; }
+
+                    if ((attributes & FileAttributes.Directory) != 0)
+                    {
+                        if (!subfolders) continue;
+
+                        // Not walked, as before — and now known to be there.
+                        if ((attributes & leftOut) != 0)
+                        {
+                            skipped?.Folder(relative);
+                            continue;
+                        }
+                        pending.Push(((DirectoryInfo)entry, relative));
+                        continue;
+                    }
+
+                    if ((attributes & leftOut) != 0)
+                    {
+                        skipped?.File(relative);
+                        continue;
+                    }
+
+                    // The planner leaves these out on both sides by name.
+                    if (SyncPlanner.IsSkippedPath(relative)) continue;
+
+                    try
+                    {
+                        var info = (FileInfo)entry;
+                        files[relative] = new SyncFile(info.Length, Truncate(info.LastWriteTimeUtc));
+                    }
+                    catch { skipped?.File(relative); }
+                }
             }
 
             return files;
@@ -1035,12 +1140,21 @@ namespace ExplorerNative
         /// trashed. So such a name is left out, with its whole folder when it is
         /// a folder, and listed in <paramref name="unusable"/> to be said.
         /// </summary>
+        /// <summary>
+        /// A name Windows cannot hold beside another in one folder — a file and
+        /// a folder called "x" and "X", or two names that differ only in
+        /// capitals or in how an accent is written — is left out with all its
+        /// spellings, listed in <paramref name="clashing"/> and added to
+        /// <paramref name="skipped"/>. The file beside a folder of its name
+        /// failed on every pass and left its ".partial" behind; the second
+        /// folder was dropped without a word.
+        /// </summary>
         internal static async Task<(Dictionary<string, SyncFile> Files, Dictionary<string, string> Folders)> ScanRemoteAsync(
             DriveClient client, string rootId, bool subfolders, CancellationToken token, List<string>? unusable = null,
-            Dictionary<string, List<string>>? shadowed = null)
+            Dictionary<string, List<SyncFile>>? shadowed = null, List<string>? clashing = null, SyncSkips? skipped = null)
         {
-            var files = new Dictionary<string, SyncFile>(StringComparer.OrdinalIgnoreCase);
-            var folders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase) { [""] = rootId };
+            var files = new Dictionary<string, SyncFile>(SyncNameComparer.Instance);
+            var folders = new Dictionary<string, string>(SyncNameComparer.Instance) { [""] = rootId };
             var queue = new Queue<(string Id, string Relative)>();
             queue.Enqueue((rootId, ""));
 
@@ -1048,7 +1162,27 @@ namespace ExplorerNative
             {
                 token.ThrowIfCancellationRequested();
                 var (id, relative) = queue.Dequeue();
-                foreach (var entry in await client.ListChildren(id, token).ConfigureAwait(false))
+                var children = await client.ListChildren(id, token).ConfigureAwait(false);
+
+                // Every spelling of each name here that would take part, to
+                // find the ones Windows would make into one. The very same
+                // name twice is not a clash: Drive allows it, and the newer
+                // file counts (see below).
+                var fileSpellings = new Dictionary<string, HashSet<string>>(SyncNameComparer.Instance);
+                var folderSpellings = new Dictionary<string, HashSet<string>>(SyncNameComparer.Instance);
+                foreach (var entry in children)
+                {
+                    if (entry.IsGoogleDocument && !entry.IsFolder) continue;
+                    if (!NameRules.IsUsableName(entry.Name) || entry.Name.Length > 255) continue;
+                    if (entry.IsFolder && !subfolders) continue;
+                    var spellings = entry.IsFolder ? folderSpellings : fileSpellings;
+                    if (!spellings.TryGetValue(entry.Name, out var set))
+                        spellings[entry.Name] = set = new HashSet<string>(StringComparer.Ordinal);
+                    set.Add(entry.Name);
+                }
+
+                var said = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var entry in children)
                 {
                     var path = relative.Length == 0 ? entry.Name : relative + "/" + entry.Name;
 
@@ -1060,10 +1194,25 @@ namespace ExplorerNative
                         unusable?.Add(path + (entry.IsFolder ? "/" : ""));
                         continue;
                     }
+                    if (entry.IsFolder && !subfolders) continue;
+
+                    // A folder keeps its name against a file; two spellings of
+                    // one name, or a file against a folder, are all left out.
+                    bool twoSpellings = (entry.IsFolder ? folderSpellings : fileSpellings)
+                        .TryGetValue(entry.Name, out var all) && all.Count > 1;
+                    bool fileBesideFolder = !entry.IsFolder && folderSpellings.ContainsKey(entry.Name);
+                    if (twoSpellings || fileBesideFolder)
+                    {
+                        var shown = path + (entry.IsFolder ? "/" : "");
+                        if (said.Add(shown)) clashing?.Add(shown);
+                        if (entry.IsFolder) skipped?.Folder(path);
+                        else skipped?.File(path);
+                        continue;
+                    }
 
                     if (entry.IsFolder)
                     {
-                        if (subfolders && folders.TryAdd(path, entry.Id)) queue.Enqueue((entry.Id, path));
+                        if (folders.TryAdd(path, entry.Id)) queue.Enqueue((entry.Id, path));
                         continue;
                     }
 
@@ -1080,8 +1229,8 @@ namespace ExplorerNative
                         if (file.ModifiedUtc > seen.ModifiedUtc) files[path] = file;
                         if (shadowed != null && older.Id != null)
                         {
-                            if (!shadowed.TryGetValue(path, out var ids)) shadowed[path] = ids = new List<string>();
-                            ids.Add(older.Id);
+                            if (!shadowed.TryGetValue(path, out var hidden)) shadowed[path] = hidden = new List<SyncFile>();
+                            hidden.Add(older);
                         }
                     }
                 }
@@ -1189,6 +1338,16 @@ namespace ExplorerNative
         /// Whether a partial download is still part of this Drive file: same id
         /// and size, and the same checksum (or, without one, the same time).
         /// </summary>
+        /// <summary>
+        /// Whether a Drive file still holds what the last sync saw in it: the
+        /// same size, and the same MD5 (or, with none to compare, the same time).
+        /// </summary>
+        internal static bool StillAsSynced(SyncFile now, SyncBase was) =>
+            now.Size == was.RemoteSize &&
+            (now.Md5 != null && was.RemoteMd5 != null
+                ? string.Equals(now.Md5, was.RemoteMd5, StringComparison.OrdinalIgnoreCase)
+                : Math.Abs((now.ModifiedUtc - was.RemoteModifiedUtc).TotalSeconds) <= 2);
+
         internal static bool SameDriveFile(PartialDownload partial, SyncFile remote) =>
             partial.RemoteId == remote.Id && partial.Size == remote.Size &&
             (partial.Md5 != null && remote.Md5 != null
@@ -1262,16 +1421,30 @@ namespace ExplorerNative
                 var path = StatePath(pairId);
                 if (!File.Exists(path)) return new PairState();
                 var state = JsonSerializer.Deserialize<PairState>(ProtectedFile.ReadAllText(path)) ?? new PairState();
-                state.Files = new Dictionary<string, SyncBase>(state.Files ?? new(), StringComparer.OrdinalIgnoreCase);
-                state.Partials = new Dictionary<string, PartialDownload>(state.Partials ?? new(), StringComparer.OrdinalIgnoreCase);
-                state.Uploads = new Dictionary<string, UploadSession>(state.Uploads ?? new(), StringComparer.OrdinalIgnoreCase);
-                state.Hashes = new Dictionary<string, SyncHashEntry>(state.Hashes ?? new(), StringComparer.OrdinalIgnoreCase);
+                state.Files = Rekeyed(state.Files);
+                state.Partials = Rekeyed(state.Partials);
+                state.Uploads = Rekeyed(state.Uploads);
+                state.Hashes = Rekeyed(state.Hashes);
                 return state;
             }
             catch
             {
                 return new PairState();
             }
+        }
+
+        /// <summary>
+        /// A saved table under the names comparer. One written before accents
+        /// were compared that way can hold a name twice, once in each spelling;
+        /// the first is kept, where copying the whole table at once threw and
+        /// lost every record with it.
+        /// </summary>
+        private static Dictionary<string, T> Rekeyed<T>(Dictionary<string, T>? saved)
+        {
+            var result = new Dictionary<string, T>(SyncNameComparer.Instance);
+            if (saved != null)
+                foreach (var (key, value) in saved) result.TryAdd(key, value);
+            return result;
         }
 
         /// <summary>The pair's state, started again where its folders changed (see <see cref="StateFits"/>).</summary>

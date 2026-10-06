@@ -487,6 +487,11 @@ namespace ExplorerNative
                 if (total > 0) done = Math.Min(done, total);
                 if (itemsTotal > 0) items = Math.Min(items, itemsTotal);
 
+                // And at the end when it got to the end. A skipped entry, a
+                // sparse file's holes, a file that failed: none of them moves
+                // the byte count, and a finished extract sat at 0 of 5.9MB.
+                if (_over && total > 0) done = total;
+
                 double speed = elapsed.TotalSeconds > 0.001 ? done / elapsed.TotalSeconds : 0;
 
                 _sink.Report(new TransferProgress(
@@ -594,6 +599,22 @@ namespace ExplorerNative
                     ArchiveEngineKind.Tar => TarEngine.Create(plan, working, format, level, threads, reporter, errors, token),
                     _ => BsdTar.Create(plan, working, format, level, threads, reporter, errors, token),
                 };
+
+                // Files were chosen and not one of them went in — every one was
+                // locked by another program. That is a failure, like the empty
+                // plan above, and not an archive: re-making a backup over the
+                // old one replaced a good archive with an empty one (a .tar of
+                // 0 bytes, which then would not even open). Thrown before the
+                // move, so the finally below removes what was written and the
+                // old archive stays as it was.
+                int folders = plan.Count(p => p.IsDirectory);
+                int chosenFiles = plan.Count - folders;
+                if (chosenFiles > 0 && result <= folders)
+                    throw new IOException(errors.Count == 1
+                        ? errors[0]
+                        : chosenFiles == 1
+                            ? "the chosen file could not be read"
+                            : $"none of the {chosenFiles} chosen files could be read");
 
                 // Only now does the old one go. A move onto it is the last step
                 // rather than the first.

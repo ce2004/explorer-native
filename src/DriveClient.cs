@@ -799,8 +799,15 @@ namespace ExplorerNative
                 $"{Files}/{Uri.EscapeDataString(folderId)}?fields=driveId", token);
             using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token, _slowMetadata);
             if (!response.IsSuccessStatusCode)
-                throw new HttpRequestException($"Google Drive answered {(int)response.StatusCode} when asked",
-                    null, response.StatusCode);
+            {
+                // With its status and Google's reason, like every other refusal:
+                // as a bare HttpRequestException a 403 rate limit read as the
+                // network being down, and the folder monitor stopped its pass as
+                // "offline" instead of waiting the limit out.
+                var refused = await response.Content.ReadAsStringAsync(token);
+                throw new DriveStatusException((int)response.StatusCode, refused,
+                    $"{(int)response.StatusCode}: " + Explain((int)response.StatusCode, refused));
+            }
 
             using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(token));
             return doc.RootElement.TryGetProperty("driveId", out var id) ? id.GetString() : null;
@@ -900,8 +907,12 @@ namespace ExplorerNative
             using var request = await Request(HttpMethod.Get, url, token);
             using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token, _slowMetadata);
             if (!response.IsSuccessStatusCode)
-                throw new HttpRequestException($"Google Drive answered {(int)response.StatusCode} when asked",
-                    null, response.StatusCode);
+            {
+                // A refusal, not the network: see DriveOf.
+                var refused = await response.Content.ReadAsStringAsync(token);
+                throw new DriveStatusException((int)response.StatusCode, refused,
+                    $"{(int)response.StatusCode}: " + Explain((int)response.StatusCode, refused));
+            }
 
             using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(token));
             foreach (var file in doc.RootElement.GetProperty("files").EnumerateArray())

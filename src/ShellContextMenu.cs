@@ -181,6 +181,38 @@ namespace ExplorerNative
             /// act on. See <see cref="Show"/>.
             /// </summary>
             MixedFolders,
+
+            /// <summary>
+            /// A selected name, or a folder it is in, ends in a dot or a space.
+            /// See <see cref="MisreadNames"/>.
+            /// </summary>
+            AwkwardName,
+        }
+
+        /// <summary>
+        /// Whether any of these paths has a name ending in a dot or a space,
+        /// itself or in a folder above it.
+        ///
+        /// The shell parses names the ordinary way, which strips a trailing dot
+        /// or space: "report." comes back as its sibling "report", by the full
+        /// path and by the parent's own parse alike. A Windows Delete chosen on
+        /// "report." would then act on "report" — a file nobody selected. So
+        /// the menu is refused for these, and the application's own commands,
+        /// which use the literal form, are the way to act on them.
+        /// </summary>
+        internal static bool MisreadNames(IEnumerable<string> paths)
+        {
+            foreach (var path in paths)
+            {
+                if (string.IsNullOrEmpty(path)) continue;
+                var plain = NameRules.PlainPath(path);
+                foreach (var part in plain.Split('\\', '/'))
+                {
+                    if (part.Length == 0 || part == "." || part == "..") continue;
+                    if (part[^1] == '.' || part[^1] == ' ') return true;
+                }
+            }
+            return false;
         }
 
         /// <summary>
@@ -224,6 +256,9 @@ namespace ExplorerNative
             int budgetMilliseconds = BuildBudgetMilliseconds)
         {
             if (paths == null || paths.Count == 0) return MenuOutcome.Unavailable;
+
+            // Before anything is parsed: the shell would act on a sibling.
+            if (MisreadNames(paths)) return MenuOutcome.AwkwardName;
 
             // One menu is bound to one folder: every item is looked up as a child
             // of the first one's parent. Search results span folders, and a

@@ -107,14 +107,44 @@ namespace ExplorerNative
                 await file.FlushAsync(token);
                 return file.Position;
             }
-            finally { gate.Release(); }
+            finally
+            {
+                gate.Release();
+                // Cancelled while this chunk was arriving: the folder could not go then, with the file open, and
+                // would have waited for the start-up sweep. It goes now that the chunk has let go of it.
+                if (_cancelled.TryRemove(id, out _)) Delete(id);
+            }
         }
 
+        /// <summary>Uploads cancelled while a chunk of theirs was still arriving.</summary>
+        private readonly ConcurrentDictionary<string, byte> _cancelled = new(StringComparer.Ordinal);
+
+        /// <summary>
+        /// Takes the upload away. Done under the upload's own gate; with a chunk still arriving it is marked, and
+        /// the chunk removes the folder when it lets go, so nothing is left for the sweep a day later.
+        /// </summary>
         public void Delete(string id)
         {
             if (!Wellformed(id)) return;
-            _writing.TryRemove(id, out _);
-            try { Directory.Delete(Dir(id), recursive: true); } catch { }
+            var gate = _writing.GetOrAdd(id, _ => new SemaphoreSlim(1, 1));
+            if (!gate.Wait(0))
+            {
+                _cancelled[id] = 1;
+                // What can go now goes now, so the upload is gone to every question asked of it.
+                try { File.Delete(Path.Combine(Dir(id), MetaName)); } catch { }
+                // The chunk may have let go between the two looks.
+                if (!gate.Wait(0)) return;
+                _cancelled.TryRemove(id, out _);
+            }
+            try
+            {
+                try { Directory.Delete(Dir(id), recursive: true); } catch { }
+            }
+            finally
+            {
+                _writing.TryRemove(id, out _);
+                gate.Release();
+            }
         }
 
         /// <summary>

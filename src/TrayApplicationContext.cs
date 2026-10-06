@@ -431,6 +431,7 @@ namespace ExplorerNative
             // the one listening, and OK on any page tried it, failed, and saved
             // the fallback over it.
             bool portSettingChanged = settings.WebAppPort != _settings.WebAppPort;
+            int savedPortWas = _settings.WebAppPort;
             _settings = settings;
             bool portMoved = false;
             if (_connect != null && portSettingChanged && settings.WebAppPort != portWas)
@@ -438,11 +439,25 @@ namespace ExplorerNative
                 // Preferences checked the port before OK; it can still have been
                 // taken since, in which case the old one is kept and said.
                 if (_connect.Rebind(settings.WebAppPort)) portMoved = true;
+                else if (reload)
+                {
+                    // The file's port arriving late (settings.json was locked at
+                    // startup, or a command-line reload). Busy now, so the port in
+                    // use carries on for this session only, exactly as at startup.
+                    // Never written back: that wrote the defaults' 47810 over the
+                    // port the person chose.
+                    Notify("webapp.port.fallback",
+                        $"Port {settings.WebAppPort} is in use by another program, so the web app is using port " +
+                        $"{portWas} until Explorer Native next starts. Port {settings.WebAppPort} is still your setting");
+                }
                 else
                 {
                     Notify("webapp.port.failed", (_connect.ListenProblem ?? "That port could not be used.") +
                                                  $" The web app stays on port {portWas}.");
-                    settings.WebAppPort = portWas;
+                    // What was saved before OK, not the port listening: on this
+                    // session's fallback port the two differ, and saving the
+                    // fallback lost the person's own port for good.
+                    settings.WebAppPort = savedPortWas;
                     settings.Save();
                 }
             }
@@ -1868,6 +1883,11 @@ namespace ExplorerNative
                 remote: path => _drive.Owns(path) ? streams.Lease(path) : null,
                 clipboard: _connectClipboard,
                 port: _settings.WebAppPort);
+
+            // Said out loud on the PC, once per guesser: somebody on the tailnet
+            // keeps entering a wrong pairing code, and each try now waits.
+            _connect.CodeGuessing += who => PostUi(() => Notify("webapp.guessing",
+                $"Someone ({who}) keeps entering a wrong web app pairing code. They are being slowed down."));
             _connect.Start();
 
             // A saved port another program has taken since: the default for this

@@ -180,7 +180,15 @@ namespace ExplorerNative
                     }
 
                     if (!TrailerAgrees(archivePath, output, crc, length, token))
-                        throw new InvalidDataException("the archive ends before the file does");
+                    {
+                        // Something after the end — padding a transfer added, a
+                        // signature tacked on — which gzip warns about and
+                        // ignores. The file is whole when its checksum and
+                        // length sit just before the extra bytes.
+                        long extra = TrailingJunk(archivePath, output, crc, length, token);
+                        if (extra <= 0) throw new InvalidDataException("the archive ends before the file does");
+                        RoboCopyEngine.Trace($"gz: {name} extracted; {extra} bytes after the end were ignored");
+                    }
                 });
             }
             catch (OperationCanceledException) { throw; }
@@ -258,6 +266,67 @@ namespace ExplorerNative
             return left == 0 && last == storedCrc;
         }
 
+        /// <summary>
+        /// How many bytes follow the real end of a .gz, or -1 when no complete
+        /// member's trailer is found in front of them.
+        ///
+        /// GZipStream cannot tell "something after the end" from "cut short":
+        /// it returns what it decoded either way. A truncated file's last bytes
+        /// are compressed data, and a file with extra bytes after it has, just
+        /// before them, the CRC-32 and length of what came out — eight bytes no
+        /// truncation produces except by a one-in-2^64 accident. Only the last
+        /// 64KB are searched, and only four candidates are checked against a
+        /// last member shorter than the whole, because that check rereads it.
+        /// </summary>
+        internal static long TrailingJunk(string archivePath, Stream output, uint crc, long length,
+            CancellationToken token)
+        {
+            byte[] tail;
+            using (var file = new FileStream(archivePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                if (file.Length < 21) return -1;
+                int span = (int)Math.Min(64 * 1024, file.Length - 10);
+                tail = new byte[span];
+                file.Position = file.Length - span;
+                file.ReadExactly(tail);
+            }
+
+            int slow = 0;
+            for (int i = tail.Length - 9; i >= 0; i--)
+            {
+                uint storedCrc = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(tail.AsSpan(i));
+                uint storedSize = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(tail.AsSpan(i + 4));
+                long extra = tail.Length - (i + 8);
+
+                if (storedCrc == crc && storedSize == (uint)length) return extra;
+
+                // One of several members: its checksum covers only the end of
+                // what came out.
+                if (storedSize > 0 && storedSize < length && slow < 4 && output.CanRead && output.CanSeek)
+                {
+                    slow++;
+                    output.Flush();
+                    long end = output.Position;
+                    output.Position = length - storedSize;
+                    var buffer = new byte[1 << 20];
+                    uint last = Crc32.Seed;
+                    long left = storedSize;
+                    while (left > 0)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        int got = output.Read(buffer, 0, (int)Math.Min(buffer.Length, left));
+                        if (got <= 0) break;
+                        last = Crc32.Append(last, buffer.AsSpan(0, got));
+                        left -= got;
+                    }
+                    output.Position = end;
+                    if (left == 0 && last == storedCrc) return extra;
+                }
+            }
+
+            return -1;
+        }
+
         // ---------- The tar layer, over any stream ----------
 
         /// <summary>
@@ -271,6 +340,7 @@ namespace ExplorerNative
         {
             using var writer = new TarWriter(sink, TarEntryFormat.Pax, leaveOpen: true);
             int written = 0;
+            bool anyEntry = false;
 
             foreach (var item in plan)
             {
@@ -286,6 +356,7 @@ namespace ExplorerNative
                             ModificationTime = TarTime(item.Modified),
                         });
 
+                        anyEntry = true;
                         written++;
                         reporter.Finished(0);
                         continue;
@@ -305,6 +376,7 @@ namespace ExplorerNative
                         DataStream = counted,
                     });
 
+                    anyEntry = true;
                     reporter.Finished(0);
 
                     // The entry is exactly as long as its header says whatever the
@@ -324,6 +396,16 @@ namespace ExplorerNative
                     errors.Add($"{item.Name}: {ex.Message}");
                     reporter.Finished(0);
                 }
+            }
+
+            // TarWriter ends the archive with its two zero blocks only if it
+            // wrote an entry, so a tar with nothing in it was 0 bytes (20 as a
+            // .tar.gz) and every reader, ours included, called it damaged. An
+            // empty tar is those two blocks and nothing else.
+            if (!anyEntry)
+            {
+                writer.Dispose();
+                sink.Write(new byte[1024]);
             }
 
             return written;
@@ -481,6 +563,7 @@ namespace ExplorerNative
             catch { }
 
             var buffer = new byte[1 << 20];
+            long stored = 0;
             foreach (var (offset, length) in map)
             {
                 output.Position = offset;
@@ -492,11 +575,15 @@ namespace ExplorerNative
                     if (got <= 0) throw new InvalidDataException("the archive ends part way through it");
                     output.Write(buffer, 0, got);
                     left -= got;
+                    stored += got;
                     reporter.Advance(got);
                 }
             }
 
             output.SetLength(sparse.RealSize);
+
+            // The listing counts a sparse file at its full size, holes and all.
+            reporter.Advance(Math.Max(0, sparse.RealSize - stored));
         }
 
         [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
@@ -591,7 +678,9 @@ namespace ExplorerNative
                     if (target == null)
                     {
                         if (problem != null) lock (errors) errors.Add(problem);
-                        reporter.Finished(0);
+                        // Skipped is dealt with: charged its size, which the
+                        // listing counted, or the bar stops short of it.
+                        reporter.Finished(isDirectory ? 0 : Math.Max(0, sparse?.RealSize ?? entry.Length));
                         continue;
                     }
 
@@ -611,6 +700,7 @@ namespace ExplorerNative
                         {
                             lock (errors) errors.Add($"{name}: {sparse.Refusal}, so it was not extracted");
                             rules.Withdraw(target);
+                            reporter.Advance(Math.Max(0, sparse.RealSize));
                         }
                         else
                         {

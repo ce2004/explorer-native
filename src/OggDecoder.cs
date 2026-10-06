@@ -360,12 +360,13 @@ namespace ExplorerNative
                 // One seek a sample in and back, so the packet provider learns
                 // where the stream starts before the length is read — see
                 // OggVorbisPackets.EnsureBase. Cheap: the first page, twice.
-                try
-                {
-                    reader.SeekTo(1);
-                    reader.SeekTo(0);
-                }
-                catch { }
+                //
+                // Two tries, not one. A stream that starts a little way in —
+                // too little to count as a late start — refuses the first seek,
+                // and the way back to the beginning sat in the same try and was
+                // skipped: the file opened and played nothing at all.
+                try { reader.SeekTo(1); } catch { }
+                try { reader.SeekTo(0); } catch { }
 
                 _vorbis = reader;
                 _vorbisEnd = packets.GetGranuleCount();
