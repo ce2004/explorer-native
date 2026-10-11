@@ -964,7 +964,13 @@ namespace ExplorerNative
                         var attributes = File.GetAttributes(to);
                         if ((attributes & FileAttributes.ReadOnly) == 0) throw;
                         File.SetAttributes(to, attributes & ~FileAttributes.ReadOnly);
-                        File.Move(written, to, overwrite: true);
+                        try { File.Move(written, to, overwrite: true); }
+                        catch
+                        {
+                            // Still the original: it keeps the read-only it had.
+                            try { File.SetAttributes(to, attributes); } catch { }
+                            throw;
+                        }
                     }
                 }
                 complete = true;

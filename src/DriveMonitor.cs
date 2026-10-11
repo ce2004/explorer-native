@@ -965,7 +965,12 @@ namespace ExplorerNative
                     if (action.Kind is SyncActionKind.Upload or SyncActionKind.KeepBothLocalWins &&
                         StillBeingWritten(localPath, scannedLocal, DateTime.UtcNow, SettleTime))
                     {
-                        deferred++;
+                        // Only a file that was just modified brings the pair back
+                        // within a minute. One that is simply held open (a mail
+                        // store, a database) waits for the pair's own interval:
+                        // otherwise it re-ran the whole pass every minute for ever.
+                        var age = DateTime.UtcNow - scannedLocal.ModifiedUtc;
+                        if (age >= TimeSpan.Zero && age < SettleTime) deferred++;
                         continue;
                     }
 
