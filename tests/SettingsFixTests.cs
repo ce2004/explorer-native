@@ -42,6 +42,7 @@ namespace ExplorerNative
                 BusyPortIsNotReplacedTests();
                 GoogleCheckWaitsForOkTests();
                 GeneratedReaderTests();
+                DurableWriteTests();
             }
             finally
             {
@@ -49,6 +50,24 @@ namespace ExplorerNative
             }
 
             Console.WriteLine();
+        }
+
+        /// <summary>
+        /// settings.json goes to the disk itself before it is renamed over the old one, or a power
+        /// cut can keep the rename and lose the bytes. The flushing write has to read back the same,
+        /// and a shorter file has to replace a longer one whole.
+        /// </summary>
+        private static void DurableWriteTests()
+        {
+            var file = Path.Combine(Path.GetTempPath(), "en-durable-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                ProtectedFile.WriteAllText(file, new string('x', 5000), durable: true);
+                ProtectedFile.WriteAllText(file, "short", durable: true);
+                Equal("a flushed write reads back, a shorter one replacing a longer", "short", ProtectedFile.ReadAllText(file));
+                Check("and it is encrypted like any other", ProtectedFile.IsProtected(File.ReadAllBytes(file)));
+            }
+            finally { try { File.Delete(file); } catch { } }
         }
 
         /// <summary>

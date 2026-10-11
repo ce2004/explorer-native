@@ -1258,15 +1258,29 @@ namespace ExplorerNative
                 try { BeginInvoke(action); } catch (InvalidOperationException) { }
             }
 
+            // One Tailscale change at a time, the closing Cancel's included, so they land in the order made.
+            var applyGate = new object();
+            bool? started = null; // what the last change asked Tailscale for
+
             void Apply(bool on)
             {
+                // A change asked for while another is under way is not lost: the box is looked at
+                // again when that one finishes, below.
                 if (WebAppApply == null || applying) return;
                 applying = true;
+                started = on;
                 lastTry = DateTime.UtcNow;
                 status.Text = on ? "Turning the web app on…" : "Turning the web app off…";
-                System.Threading.Tasks.Task.Run(() => WebAppApply(on)).ContinueWith(t => OnUi(() =>
+                var apply = WebAppApply;
+                System.Threading.Tasks.Task.Run(() => { lock (applyGate) return apply(on); }).ContinueWith(t => OnUi(() =>
                 {
                     applying = false;
+                    // Ticked and unticked again while Tailscale was busy: what the box says now wins.
+                    if (enable.Checked != on)
+                    {
+                        Apply(enable.Checked);
+                        return;
+                    }
                     var r = t.IsCompletedSuccessfully
                         ? t.Result
                         : new TailscaleWeb.EnableResult(false,
@@ -1395,11 +1409,15 @@ namespace ExplorerNative
             FormClosed += (_, _) =>
             {
                 timer.Dispose();
-                // Cancel puts back what was there before the box was touched.
-                if (DialogResult != DialogResult.OK && enable.Checked != original && WebAppApply != null)
+                // Cancel puts back what was there before the box was touched. OK keeps the box, but a change
+                // still under way when the window closed may be for the opposite of it, and the window that
+                // would have corrected it is gone (an unchanged setting is not reconciled by the tray either).
+                bool cancelled = DialogResult != DialogResult.OK;
+                bool want = cancelled ? original : enable.Checked;
+                if (WebAppApply != null && ((cancelled && enable.Checked != original) || (started != null && started != want)))
                 {
                     var apply = WebAppApply;
-                    System.Threading.Tasks.Task.Run(() => { try { apply(original); } catch { } });
+                    System.Threading.Tasks.Task.Run(() => { try { lock (applyGate) apply(want); } catch { } });
                 }
             };
 

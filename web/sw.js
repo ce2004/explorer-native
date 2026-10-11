@@ -21,11 +21,14 @@ self.addEventListener('fetch', (event) => {
   const path = url.pathname === '/index.html' ? '/' : url.pathname;
   if (!FILES.includes(path)) return;
   // Network first, so an updated Explorer Native updates the app; the cache when the PC is away.
+  // A 5xx is Tailscale Serve answering for a closed Explorer Native: the cached
+  // shell then, so the app itself starts and says so, not a bare error page.
   event.respondWith(fetch(event.request).then((res) => {
     if (res.ok) {
       const copy = res.clone();
       caches.open(SHELL).then((c) => c.put(path, copy));
     }
+    if (res.status >= 500) return caches.match(path).then((cached) => cached || res);
     return res;
   }).catch(() => caches.match(path)));
 });

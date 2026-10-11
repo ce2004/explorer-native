@@ -51,7 +51,16 @@ namespace ExplorerNative
 
         public static string ReadAllText(string path) => Decode(File.ReadAllBytes(path));
 
-        public static void WriteAllText(string path, string text) => File.WriteAllBytes(path, Encode(text));
+        /// <param name="durable">Flush to the disk itself before returning, for a file about to be renamed over
+        /// the real one: otherwise a power cut can leave the rename on disk and the bytes not, an empty file.</param>
+        public static void WriteAllText(string path, string text, bool durable = false)
+        {
+            var bytes = Encode(text);
+            if (!durable) { File.WriteAllBytes(path, bytes); return; }
+            using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
+            file.Write(bytes, 0, bytes.Length);
+            file.Flush(flushToDisk: true);
+        }
 
         /// <summary>
         /// Appends one encrypted line. Newlines inside it are kept, since the line is opaque.

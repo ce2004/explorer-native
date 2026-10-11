@@ -25,7 +25,11 @@ namespace ExplorerNative
     public sealed class ConnectFiles : IConnectFiles
     {
         private readonly GoogleDrive? _drive;
-        private readonly Settings _settings;
+        private readonly Func<Settings> _currentSettings;
+
+        // Asked each time: Preferences OK replaces the app's Settings object, and a copy
+        // held from startup would go on using the old audio list and Drive letter.
+        private Settings _settings => _currentSettings();
 
         /// <summary>The local walk's budget for a folder size.</summary>
         public const int SizeBudgetSeconds = 20;
@@ -33,10 +37,12 @@ namespace ExplorerNative
         /// <summary>How long a Drive folder may take to be counted from Drive's listings.</summary>
         public static readonly TimeSpan DriveSizeBudget = TimeSpan.FromSeconds(60);
 
-        public ConnectFiles(GoogleDrive? drive, Settings settings)
+        public ConnectFiles(GoogleDrive? drive, Settings settings) : this(drive, () => settings) { }
+
+        public ConnectFiles(GoogleDrive? drive, Func<Settings> settings)
         {
             _drive = drive;
-            _settings = settings;
+            _currentSettings = settings;
         }
 
         public bool OnDrive(string path) => _drive != null && _drive.Owns(path);

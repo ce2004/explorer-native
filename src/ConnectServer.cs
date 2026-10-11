@@ -28,6 +28,57 @@ namespace ExplorerNative
 
     public sealed record ConnectFailure(string Path, string Error);
 
+    /// <summary>Which process holds the other end of a TCP connection on this machine.</summary>
+    internal static class TcpOwner
+    {
+        private const int AfInet = 2, TcpTableOwnerPidConnections = 4, ErrorInsufficientBuffer = 122;
+        private const int RowSize = 24; // MIB_TCPROW_OWNER_PID: six DWORDs
+
+        [System.Runtime.InteropServices.DllImport("iphlpapi.dll")]
+        private static extern uint GetExtendedTcpTable(IntPtr table, ref int size, bool order, int af, int tableClass, uint reserved);
+
+        /// <summary>
+        /// The process id owning the client end of the connection from <paramref name="client"/> to
+        /// <paramref name="server"/>, or null when Windows does not say. IPv4 only: the server listens on 127.0.0.1.
+        /// </summary>
+        public static int? PidOf(IPEndPoint client, IPEndPoint server)
+        {
+            var ca = client.Address.IsIPv4MappedToIPv6 ? client.Address.MapToIPv4() : client.Address;
+            var sa = server.Address.IsIPv4MappedToIPv6 ? server.Address.MapToIPv4() : server.Address;
+            if (ca.AddressFamily != AddressFamily.InterNetwork || sa.AddressFamily != AddressFamily.InterNetwork) return null;
+            // The table holds addresses as their bytes in network order, which is how GetAddressBytes gives them.
+            int cAddr = BitConverter.ToInt32(ca.GetAddressBytes()), sAddr = BitConverter.ToInt32(sa.GetAddressBytes());
+            int size = 0;
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                if (size == 0 && GetExtendedTcpTable(IntPtr.Zero, ref size, false, AfInet, TcpTableOwnerPidConnections, 0) != ErrorInsufficientBuffer)
+                    return null;
+                size += 16 * RowSize; // room for connections opened between the two calls
+                var buffer = System.Runtime.InteropServices.Marshal.AllocHGlobal(size);
+                try
+                {
+                    uint result = GetExtendedTcpTable(buffer, ref size, false, AfInet, TcpTableOwnerPidConnections, 0);
+                    if (result == ErrorInsufficientBuffer) continue;
+                    if (result != 0) return null;
+                    int count = System.Runtime.InteropServices.Marshal.ReadInt32(buffer);
+                    for (int i = 0; i < count; i++)
+                    {
+                        var row = buffer + 4 + i * RowSize;
+                        int Read(int offset) => System.Runtime.InteropServices.Marshal.ReadInt32(row, offset);
+                        if (Read(4) == cAddr && Port(Read(8)) == client.Port && Read(12) == sAddr && Port(Read(16)) == server.Port)
+                            return Read(20);
+                    }
+                    return null;
+                }
+                finally { System.Runtime.InteropServices.Marshal.FreeHGlobal(buffer); }
+            }
+            return null;
+        }
+
+        /// <summary>Ports sit in the low two bytes, in network order.</summary>
+        private static int Port(int raw) => ((raw & 0xFF) << 8) | ((raw >> 8) & 0xFF);
+    }
+
     public sealed record ConnectDeleted(int Deleted, IReadOnlyList<ConnectFailure> Failed);
 
     /// <summary>
@@ -446,7 +497,7 @@ namespace ExplorerNative
         /// stays usable and the web app hears the answer instead of a reset.</summary>
         private const long MaxDrain = 256L << 20;
 
-        private readonly ConcurrentDictionary<string, (Task<ConnectSize> Task, DateTime At)> _sizes =
+        private readonly ConcurrentDictionary<string, (Lazy<Task<ConnectSize>> Walk, DateTime At)> _sizes =
             new(StringComparer.OrdinalIgnoreCase);
         private readonly ConcurrentDictionary<string, ConnectJob> _jobs = new(StringComparer.Ordinal);
 
@@ -582,15 +633,35 @@ namespace ExplorerNative
             {
                 TcpClient client;
                 try { client = await listener.AcceptTcpClientAsync(_stop.Token); }
-                catch { return; }
-                // Listening on loopback means only this machine connects; checked anyway.
-                if (client.Client.RemoteEndPoint is not IPEndPoint peer || !IPAddress.IsLoopback(peer.Address.IsIPv4MappedToIPv6 ? peer.Address.MapToIPv4() : peer.Address))
+                catch (Exception e)
                 {
-                    _log?.Invoke($"Connect: refused {client.Client.RemoteEndPoint}");
+                    // Stopped, or replaced by Rebind (which stops the old listener): this loop is over.
+                    if (_stop.IsCancellationRequested || e is ObjectDisposedException || !ReferenceEquals(Volatile.Read(ref _listener), listener))
+                        return;
+                    // Anything else (a connection reset before it was accepted, no buffers for a moment) is one
+                    // client's bad luck, not a reason to stop answering everyone.
+                    _log?.Invoke("Connect: accept failed, still listening: " + e.Message);
+                    try { await Task.Delay(100, _stop.Token); } catch { return; }
+                    continue;
+                }
+                try
+                {
+                    // Listening on loopback means only this machine connects; checked anyway.
+                    if (client.Client.RemoteEndPoint is not IPEndPoint peer || !IPAddress.IsLoopback(peer.Address.IsIPv4MappedToIPv6 ? peer.Address.MapToIPv4() : peer.Address))
+                    {
+                        _log?.Invoke($"Connect: refused {client.Client.RemoteEndPoint}");
+                        client.Dispose();
+                        continue;
+                    }
+                    client.NoDelay = true;
+                }
+                catch (Exception e)
+                {
+                    // The client went away between accept and here.
+                    _log?.Invoke("Connect: dropped a connection before serving it: " + e.Message);
                     client.Dispose();
                     continue;
                 }
-                client.NoDelay = true;
                 _ = Serve(client);
             }
         }
@@ -605,6 +676,9 @@ namespace ExplorerNative
 
             /// <summary>The connection's socket, to notice the client hanging up mid-response.</summary>
             public Socket? Socket { get; set; }
+
+            /// <summary>Whether the connection's other end is the Tailscale service, asked once per connection.</summary>
+            public Func<bool>? FromServe { get; set; }
         }
 
         private async Task Serve(TcpClient client)
@@ -613,6 +687,8 @@ namespace ExplorerNative
             using var connection = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
             var stream = client.GetStream();
             var reader = new HeaderReader(stream);
+            // Windows is asked who owns the other end only when a request needs to know, and once per connection.
+            var fromServe = new Lazy<bool>(() => IsServePeer(client.Client));
             try
             {
                 while (!connection.IsCancellationRequested)
@@ -629,6 +705,7 @@ namespace ExplorerNative
                     bool keepAlive = !(request.Headers.TryGetValue("connection", out var c) && c.Equals("close", StringComparison.OrdinalIgnoreCase));
                     request.Body = RequestBody.For(request.Headers, reader, stream);
                     request.Socket = client.Client;
+                    request.FromServe = () => fromServe.Value;
                     if (request.Body.Invalid)
                     {
                         await Error(stream, 400, "The request's length could not be understood.", false, connection.Token);
@@ -962,15 +1039,18 @@ namespace ExplorerNative
             // One walk per folder however many ask at once: the entry is the task, stored before it finishes.
             var key = Path.TrimEndingDirectorySeparator(path);
             if (IsRoot(path)) key = path;
-            var entry = _sizes.GetOrAdd(key, _ => (Files.SizeAsync(path, _stop.Token), now));
+            // A Lazy, because GetOrAdd may run a factory twice when two arrive together and keep only one result;
+            // the walk starts only from the entry that was kept.
+            var files = Files;
+            var entry = _sizes.GetOrAdd(key, (new Lazy<Task<ConnectSize>>(() => files.SizeAsync(path, _stop.Token)), now));
             try
             {
-                return await entry.Task.WaitAsync(token);
+                return await entry.Walk.Value.WaitAsync(token);
             }
             catch
             {
                 // A failure is not an answer worth keeping for a minute.
-                _sizes.TryRemove(new KeyValuePair<string, (Task<ConnectSize>, DateTime)>(key, entry));
+                _sizes.TryRemove(new KeyValuePair<string, (Lazy<Task<ConnectSize>>, DateTime)>(key, entry));
                 throw;
             }
         }
@@ -987,7 +1067,13 @@ namespace ExplorerNative
             CheckPath(path);
             using var budget = CancellationTokenSource.CreateLinkedTokenSource(token);
             budget.CancelAfter(StatBudget);
-            var stat = await Files.StatAsync(path, budget.Token);
+            ConnectStat stat;
+            try { stat = await Files.StatAsync(path, budget.Token); }
+            catch (OperationCanceledException) when (!token.IsCancellationRequested)
+            {
+                // The budget ran out before even the basics came back: a slow disk or share, not a fault.
+                throw new ConnectException(504, "That took too long to answer. Try again in a moment.");
+            }
             var result = new Dictionary<string, object?>
             {
                 ["path"] = stat.Path, ["name"] = stat.Name, ["folder"] = stat.Folder, ["size"] = stat.Size,
@@ -1040,21 +1126,20 @@ namespace ExplorerNative
             {
                 try
                 {
+                    // No answer (slow, missing, or not JSON) says nothing about who is signed in, so the last
+                    // login read stays: forgetting it would turn the owner away with 401s for 30 seconds.
+                    // Only Tailscale itself saying it is stopped, logged out or someone else changes it.
                     var json = _tailscaleStatus();
-                    string? login = null, dns = null;
                     if (json != null)
                     {
                         var status = TailscaleWeb.ParseStatus(json);
-                        if (status.State == TailscaleWeb.State.Running) login = status.Login;
-                        dns = status.DnsName;
+                        Volatile.Write(ref _ownLogin, status.State == TailscaleWeb.State.Running ? status.Login : null);
+                        // Kept once known: Tailscale stopping for a moment does not change this PC's name.
+                        if (!string.IsNullOrEmpty(status.DnsName)) Volatile.Write(ref _ownDnsName, status.DnsName.TrimEnd('.'));
                     }
-                    Volatile.Write(ref _ownLogin, login);
-                    // Kept once known: Tailscale stopping for a moment does not change this PC's name.
-                    if (!string.IsNullOrEmpty(dns)) Volatile.Write(ref _ownDnsName, dns.TrimEnd('.'));
                 }
                 catch (Exception e)
                 {
-                    Volatile.Write(ref _ownLogin, null);
                     _log?.Invoke("Connect: tailscale status: " + e.Message);
                 }
                 finally
@@ -1068,8 +1153,10 @@ namespace ExplorerNative
         /// <summary><c>tailscale status --json</c>, or null. Five seconds at most; nothing inherited, no window.</summary>
         public static string? RunTailscaleStatus()
         {
-            var exe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Tailscale", "tailscale.exe");
-            if (!System.IO.File.Exists(exe)) exe = "tailscale.exe";
+            // Never a bare "tailscale.exe": that is looked for in the current folder first, which is whatever
+            // folder Explorer Native was started in.
+            var exe = TailscaleWeb.FindExe();
+            if (exe == null) return null;
             var start = new System.Diagnostics.ProcessStartInfo(exe, "status --json")
             {
                 UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
@@ -1689,8 +1776,39 @@ namespace ExplorerNative
             if (DateTime.UtcNow - _loginAt > LoginFor) RefreshOwnLogin();
             var peer = (r.Socket?.RemoteEndPoint as IPEndPoint)?.Address;
             string? login = r.Headers.TryGetValue("tailscale-user-login", out var l) ? l : null;
-            return TrustsServeUser(peer, login, Volatile.Read(ref _ownLogin));
+            if (!TrustsServeUser(peer, login, Volatile.Read(ref _ownLogin))) return false;
+            // Any program on this PC can connect from loopback and write that header, so it is believed
+            // only from the Tailscale service itself. Not knowing who it is means the pairing code.
+            return r.FromServe?.Invoke() == true;
         }
+
+        /// <summary>Tests: whether a connection counts as Tailscale Serve, in place of asking Windows.</summary>
+        internal Func<Socket, bool>? ServePeerOverride { get; set; }
+
+        private bool IsServePeer(Socket socket)
+        {
+            if (ServePeerOverride is { } over) return over(socket);
+            try
+            {
+                if (socket.RemoteEndPoint is not IPEndPoint remote || socket.LocalEndPoint is not IPEndPoint local) return false;
+                var pid = TcpOwner.PidOf(remote, local);
+                if (pid == null) return false;
+                using var process = System.Diagnostics.Process.GetProcessById(pid.Value);
+                // Session 0 too: a program a user starts runs in their own session, whatever it is called.
+                bool ok = IsTailscaleService(process.ProcessName, process.SessionId);
+                if (!ok) _log?.Invoke($"Connect: the owner's login header came from {process.ProcessName} ({pid}), not Tailscale; code needed");
+                return ok;
+            }
+            catch (Exception e)
+            {
+                _log?.Invoke("Connect: could not tell who connected: " + e.Message);
+                return false;
+            }
+        }
+
+        /// <summary>The Tailscale daemon: tailscaled, running as a service.</summary>
+        public static bool IsTailscaleService(string processName, int sessionId) =>
+            sessionId == 0 && string.Equals(processName, "tailscaled", StringComparison.OrdinalIgnoreCase);
 
         /// <summary>
         /// The web app's rule, pure for the tests. Only a loopback connection can be

@@ -42,12 +42,16 @@ const state = {
 
 // ---------- Speaking ----------
 
-let liveTimer = 0;
+// A timer per region: with one, a polite message straight after an urgent one
+// cancelled the urgent one before it was ever put in its region, so a failure
+// went unsaid. Within a region the newer message still replaces the older.
+const liveTimers = { live: 0, alert: 0 };
 function announce(message, urgent = false) {
-  const region = urgent ? $('alert') : $('live');
+  const id = urgent ? 'alert' : 'live';
+  const region = $(id);
   region.textContent = '';
-  clearTimeout(liveTimer);
-  liveTimer = setTimeout(() => { region.textContent = message; }, 60);
+  clearTimeout(liveTimers[id]);
+  liveTimers[id] = setTimeout(() => { region.textContent = message; }, 60);
 }
 
 // ---------- Words ----------
@@ -308,7 +312,11 @@ async function confirmBox(title, text, yes) {
 
 // ready: something to finish before anything is drawn or said (the start, which
 // fetches the first folder while it is still asking what it can play).
+// Each navigation takes a number; an answer that comes back after a newer one
+// started is dropped, or a slow folder would replace the one tapped after it.
+let folderSeq = 0;
 async function openFolder(path, { push = true, focusName = null, quiet = false, ready = null } = {}) {
+  const seq = ++folderSeq;
   try {
     let entries;
     if (path == null) {
@@ -321,6 +329,7 @@ async function openFolder(path, { push = true, focusName = null, quiet = false, 
       entries = await api(mediaUrl('/api/list', path).replace(/&code=[^&]*/, ''));
     }
     if (ready) await ready;
+    if (seq !== folderSeq) return false;
     state.path = path;
     state.entries = entries;
     state.shown = true;
@@ -344,6 +353,7 @@ async function openFolder(path, { push = true, focusName = null, quiet = false, 
     return true;
   } catch (e) {
     if (ready) await ready;
+    if (seq !== folderSeq) return false;
     if (e.status === 401) return false;
     // Nothing on screen yet: the offline screen. A folder already shown,
     // empty or not, stays, and the problem is said over it.
@@ -1162,7 +1172,14 @@ function setupAudio() {
     // Usually the connection dropped: try again from where it was, a few times.
     if (retry++ < 5) {
       const at = a.currentTime;
-      setTimeout(async () => { await waitForNetwork(3000); loadTrack(player.index, true, at); }, 1500);
+      const path = t.path;
+      setTimeout(async () => {
+        await waitForNetwork(3000);
+        // Only if this track is still the one playing: skipped meanwhile, the
+        // new track would be loaded at the old one's position.
+        const now = current();
+        if (now && now.path === path) loadTrack(player.index, true, at);
+      }, 1500);
     } else {
       retry = 0;
       // Picked up again from here as soon as the connection is back.

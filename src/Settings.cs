@@ -865,7 +865,7 @@ namespace ExplorerNative
                     try
                     {
                         var temp = $"{SettingsPath}.{Environment.ProcessId}.enc.tmp";
-                        ProtectedFile.WriteAllText(temp, json);
+                        ProtectedFile.WriteAllText(temp, json, durable: true);
                         File.Move(temp, SettingsPath, overwrite: true);
                     }
                     catch { }
@@ -1229,7 +1229,9 @@ namespace ExplorerNative
                 var temp = $"{SettingsPath}.{Environment.ProcessId}.tmp";
                 try
                 {
-                    ProtectedFile.WriteAllText(temp, json);
+                    // On the disk before the swap: a rename can reach the disk ahead of the
+                    // bytes, and a power cut between them leaves an empty settings file.
+                    ProtectedFile.WriteAllText(temp, json, durable: true);
 
                     // The swap is refused while another process has the file open
                     // without delete sharing — a reader in the moment of reading —

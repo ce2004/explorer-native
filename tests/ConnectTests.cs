@@ -53,6 +53,7 @@ namespace ExplorerNative
             await WebAppTests();
             await Round2Tests();
             await Round3Tests();
+            await ServePeerTests();
         }
 
         /// <summary>
@@ -133,6 +134,7 @@ namespace ExplorerNative
             int port = FreePort();
             var server = new ConnectServer(_ => null, p => new FileRangeSource(p), () => Code, loopbackOnly: true, port: port,
                 files: new FakeFiles(), tailscaleStatus: () => status);
+            server.ServePeerOverride = _ => true; // as if Tailscale Serve made every connection
             try
             {
                 server.Start();
@@ -2310,6 +2312,7 @@ namespace ExplorerNative
             int port = FreePort();
             var server = new ConnectServer(_ => null, p => new FileRangeSource(p), () => Code, loopbackOnly: true, port: port,
                 files: fake, clipboard: clip, clipboardSends: sends, tailscaleStatus: () => status);
+            server.ServePeerOverride = _ => true; // as if Tailscale Serve made every connection
             try
             {
                 server.Start();
@@ -2626,6 +2629,100 @@ namespace ExplorerNative
             public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
             public override void SetLength(long value) => throw new NotSupportedException();
             public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        }
+
+        /// <summary>
+        /// The owner's login header believed only from the Tailscale service, the owner kept signed in
+        /// through a tailscale status that did not answer, and the clipboard read only when asked.
+        /// </summary>
+        private static async Task ServePeerTests()
+        {
+            Console.WriteLine("Serve peer:");
+
+            // Who holds the other end of a loopback connection: this process, here.
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            try
+            {
+                using var client = new TcpClient();
+                await client.ConnectAsync(IPAddress.Loopback, ((IPEndPoint)listener.LocalEndpoint).Port);
+                using var accepted = await listener.AcceptTcpClientAsync();
+                var server = (IPEndPoint)accepted.Client.LocalEndPoint!;
+                var pid = TcpOwner.PidOf((IPEndPoint)accepted.Client.RemoteEndPoint!, server);
+                Equal("Windows names the process at the other end of a loopback connection",
+                    Environment.ProcessId.ToString(), pid?.ToString() ?? "none");
+                Check("and nobody for a connection that is not there", TcpOwner.PidOf(new IPEndPoint(IPAddress.Loopback, 1), server) == null);
+            }
+            finally { listener.Stop(); }
+            Check("tailscaled running as a service is Tailscale", ConnectServer.IsTailscaleService("tailscaled", 0));
+            Check("a program of that name in someone's session is not", !ConnectServer.IsTailscaleService("tailscaled", 1));
+            Check("nor is any other service", !ConnectServer.IsTailscaleService("SelfTest", 0));
+
+            const string running = """
+                { "BackendState": "Running",
+                  "Self": { "DNSName": "laptop.tail3d7403.ts.net.", "HostName": "laptop", "UserID": 1 },
+                  "User": { "1": { "LoginName": "me@example.com" } } }
+                """;
+            // Signed in, then no answer at all (slow or failed), then Tailscale saying it has stopped.
+            var calls = new int[1];
+            string? Status() => Interlocked.Increment(ref calls[0]) switch
+            {
+                1 => running,
+                2 => null,
+                _ => """{ "BackendState": "Stopped" }""",
+            };
+            int port = FreePort();
+            var connect = new ConnectServer(_ => null, p => new FileRangeSource(p), () => Code, loopbackOnly: true, port: port,
+                files: new FakeFiles(), tailscaleStatus: Status);
+            try
+            {
+                connect.Start();
+                if (!await WaitForListener(port)) { Check("the serve-peer server listens", false); return; }
+                await connect.LoginSettled();
+                HttpClient NewClient() => new() { BaseAddress = new Uri($"http://127.0.0.1:{port}"), Timeout = TimeSpan.FromSeconds(10) };
+                async Task<string> Drives(HttpClient http)
+                {
+                    var request = new HttpRequestMessage(HttpMethod.Get, "/api/drives");
+                    request.Headers.Add("Tailscale-User-Login", "me@example.com");
+                    using var response = await http.SendAsync(request);
+                    return ((int)response.StatusCode).ToString();
+                }
+                void DueForRefresh() =>
+                    typeof(ConnectServer).GetField("_loginAt", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                        .SetValue(connect, DateTime.MinValue);
+
+                using (var http = NewClient())
+                    Equal("the owner's header from a program that is not Tailscale needs the code", "401", await Drives(http));
+
+                // A new connection, because the answer is kept for the connection's life.
+                connect.ServePeerOverride = _ => true;
+                using (var http = NewClient())
+                {
+                    Equal("and from Tailscale it does not", "200", await Drives(http));
+                    DueForRefresh();
+                    await Drives(http);
+                    await connect.LoginSettled();
+                    Check("tailscale status was asked again", Volatile.Read(ref calls[0]) >= 2, calls[0].ToString());
+                    Equal("a tailscale status that gave no answer leaves the owner signed in", "200", await Drives(http));
+                    DueForRefresh();
+                    await Drives(http);
+                    await connect.LoginSettled();
+                    Equal("but Tailscale saying it has stopped does not", "401", await Drives(http));
+                }
+            }
+            finally { connect.Dispose(); }
+
+            // The clipboard: a change is counted, and nothing is read until somebody asks.
+            var clip = new ConnectClipboard();
+            clip.Observe((new ClipState(0, "text", Text: "kept"), null));
+            clip.Changed();
+            Check("a clipboard change is counted without reading the clipboard",
+                clip.Current.Seq == 2 && clip.Current.Text == "kept", $"{clip.Current.Seq} {clip.Current.Text}");
+            var write = clip.SetTextAsync("x");
+            var finished = await Task.WhenAny(write, Task.Delay(3000));
+            Check("a clipboard whose listener never started refuses a write at once, with 503",
+                finished == write && write.Exception?.InnerException is ConnectException { Status: 503 },
+                write.IsCompleted ? write.Exception?.InnerException?.Message ?? "no error" : "still waiting");
         }
 
         private static int FreePort()

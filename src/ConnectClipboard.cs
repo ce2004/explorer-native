@@ -41,8 +41,10 @@ namespace ExplorerNative
     /// The PC clipboard, watched and written from one STA thread of its own — never the window's.
     ///
     /// Change comes from <c>AddClipboardFormatListener</c> on a message-only window that thread owns, so
-    /// nothing polls: each <c>WM_CLIPBOARDUPDATE</c> takes a snapshot, bumps <c>seq</c>
-    /// and wakes the long polls. Writes are queued onto the same thread and go through
+    /// nothing polls: each <c>WM_CLIPBOARDUPDATE</c> bumps <c>seq</c> and marks the snapshot stale, and only
+    /// a request that wants the contents reads them. Reading on every change would make other programs render
+    /// their delayed formats (a big image, a spreadsheet range) and hold the clipboard against them, for a web
+    /// app that is usually not even open. Writes are queued onto the same thread and go through
     /// <see cref="ClipboardInterop"/>, whose retries (another application holding the clipboard is normal) and
     /// rewound Preferred DropEffect are the window's own.
     ///
@@ -54,14 +56,19 @@ namespace ExplorerNative
         private readonly Queue<Action> _work = new();
         private ClipState _current = new(0, "empty");
         private byte[]? _png;
+        // The clipboard changed since _current was read; the next request reads it.
+        private bool _stale;
         private TaskCompletionSource<bool> _changed = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private Listener? _window;
         private Thread? _thread;
         private readonly ManualResetEventSlim _ready = new();
 
-        public ClipState Current { get { lock (_gate) return _current; } }
+        public ClipState Current { get { Refresh(); lock (_gate) return _current; } }
 
-        public byte[]? Png() { lock (_gate) return _png; }
+        public byte[]? Png() { Refresh(); lock (_gate) return _png; }
+
+        /// <summary>How long a request waits for the clipboard to be read before it settles for what was known.</summary>
+        private static readonly TimeSpan ReadWait = TimeSpan.FromSeconds(5);
 
         public void Start()
         {
@@ -70,7 +77,7 @@ namespace ExplorerNative
                 try
                 {
                     _window = new Listener(this);
-                    Observe(Read());
+                    Changed();
                 }
                 catch { }
                 finally { _ready.Set(); }
@@ -95,6 +102,14 @@ namespace ExplorerNative
                 var data = Clipboard.GetDataObject();
                 if (data != null)
                 {
+                    // Text first: a browser or a word processor copying text often puts a picture of it
+                    // there too, and the words are what was meant. The image only when there are none.
+                    if (data.GetDataPresent(DataFormats.UnicodeText) || data.GetDataPresent(DataFormats.Text))
+                    {
+                        var text = Clipboard.GetText();
+                        if (!string.IsNullOrEmpty(text)) return (new ClipState(0, "text", Text: text), null);
+                    }
+
                     byte[]? png = null;
                     if (data.GetDataPresent("PNG") && data.GetData("PNG") is MemoryStream ms) png = ms.ToArray();
                     else if (data.GetDataPresent(DataFormats.Dib) || data.GetDataPresent(DataFormats.Bitmap))
@@ -108,12 +123,6 @@ namespace ExplorerNative
                         }
                     }
                     if (png != null) return (new ClipState(0, "image", ImageBytes: png.Length), png);
-
-                    if (data.GetDataPresent(DataFormats.UnicodeText) || data.GetDataPresent(DataFormats.Text))
-                    {
-                        var text = Clipboard.GetText();
-                        if (!string.IsNullOrEmpty(text)) return (new ClipState(0, "text", Text: text), null);
-                    }
                 }
             }
             catch { }
@@ -129,10 +138,58 @@ namespace ExplorerNative
                 var state = read.State with { Seq = _current.Seq + 1 };
                 _current = state;
                 _png = read.Png;
+                _stale = false;
                 wake = _changed;
                 _changed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             }
             wake.TrySetResult(true);
+        }
+
+        /// <summary>A WM_CLIPBOARDUPDATE: a new seq and a stale snapshot, nothing read yet. On the STA thread.</summary>
+        internal void Changed()
+        {
+            TaskCompletionSource<bool> wake;
+            lock (_gate)
+            {
+                _current = _current with { Seq = _current.Seq + 1 };
+                _stale = true;
+                wake = _changed;
+                _changed = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+            wake.TrySetResult(true);
+        }
+
+        /// <summary>Reads the clipboard if it changed since it was last read, on the STA thread, waiting for it.</summary>
+        private void Refresh()
+        {
+            lock (_gate) if (!_stale) return;
+            var window = _window;
+            if (window == null) return;
+            if (Thread.CurrentThread == _thread) { ReadNow(); return; }
+            using var done = new ManualResetEventSlim();
+            lock (_work) _work.Enqueue(() => { try { ReadNow(); } finally { done.Set(); } });
+            window.Wake();
+            // Another program holding the clipboard for longer than this: what was known will have to do.
+            done.Wait(ReadWait);
+        }
+
+        /// <summary>On the STA thread. Keeps the seq: the change was counted when it was announced.</summary>
+        private void ReadNow()
+        {
+            long seq;
+            lock (_gate)
+            {
+                if (!_stale) return;
+                seq = _current.Seq;
+            }
+            var read = Read();
+            lock (_gate)
+            {
+                _current = read.State with { Seq = _current.Seq };
+                _png = read.Png;
+                // Reading can pump messages, so a change may have been announced meanwhile: that one stays stale.
+                if (_current.Seq == seq) _stale = false;
+            }
         }
 
         public async Task<ClipState> WaitAsync(long since, TimeSpan timeout, CancellationToken token)
@@ -157,7 +214,11 @@ namespace ExplorerNative
         /// <summary>Runs on the STA thread, then waits for the change it made to arrive; returns its seq.</summary>
         private async Task<long> Write(Func<bool> set, string refusal)
         {
-            long before = Current.Seq;
+            // Without the thread's window nothing would ever run the work queued below.
+            if (_window == null)
+                throw new ConnectException(503, "The PC's clipboard can't be used right now. Restart Explorer Native and try again.");
+            long before;
+            lock (_gate) before = _current.Seq;
             var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             lock (_work) _work.Enqueue(() =>
             {
@@ -266,7 +327,7 @@ namespace ExplorerNative
 
             protected override void WndProc(ref Message m)
             {
-                if (m.Msg == WM_CLIPBOARDUPDATE) { _owner.Observe(Read()); return; }
+                if (m.Msg == WM_CLIPBOARDUPDATE) { _owner.Changed(); return; }
                 if (m.Msg == WM_WORK) { _owner.Drain(); return; }
                 base.WndProc(ref m);
             }

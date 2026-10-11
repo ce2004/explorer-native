@@ -1902,7 +1902,6 @@ namespace ExplorerNative
             // and opening the listener loads the socket stack: 14 to 25
             // milliseconds measured, all of it in front of the window, for a
             // server nobody can reach until Tailscale is asked about it anyway.
-            var settings = _settings;
             int port = _settings.WebAppPort;
             _ = System.Threading.Tasks.Task.Run(() =>
             {
@@ -1930,7 +1929,7 @@ namespace ExplorerNative
                         path => (_drive.Owns(path) ? leased.Lease(path) : null) ?? new FileRangeSource(path),
                         () => _settings.ConnectCode,
                         isDrive: root => _drive.Owns(root),
-                        files: new ConnectFiles(_drive, settings),
+                        files: new ConnectFiles(_drive, () => _settings), // the live settings, not a snapshot
                         remote: path => _drive.Owns(path) ? leased.Lease(path) : null,
                         clipboard: clipboard,
                         port: port);
