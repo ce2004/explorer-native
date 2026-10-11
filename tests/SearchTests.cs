@@ -138,6 +138,14 @@ namespace ExplorerNative
                 Equal("the cap is obeyed", "2", capped.Hits.Count.ToString());
                 Check("and a capped search says so", capped.Truncated);
 
+                // A folder the window says not to go into (the Drive sync root
+                // under AppData) is not walked, but still found by its own name.
+                var skipped = FileSearch.Local(root, "love", true, true, 1000, CancellationToken.None,
+                    skip: f => f.EndsWith(@"\live", StringComparison.OrdinalIgnoreCase));
+                Check("a skipped folder is not walked",
+                    !skipped.Hits.Exists(h => h.Name == "love demo.wav") &&
+                    skipped.Hits.Exists(h => h.Name == "I Love You.flac"));
+
                 // Hidden files are the pane's setting, and search has to obey the
                 // same one or it shows things the folder will not.
                 var hidden = Path.Combine(root, "love hidden.txt");

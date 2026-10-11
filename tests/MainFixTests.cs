@@ -242,7 +242,7 @@ namespace ExplorerNative
 
             Check("closing the Windows menu without choosing is its own outcome",
                 shell.Contains("if (selected == 0) return MenuOutcome.Dismissed;", StringComparison.Ordinal));
-            int menu = main.IndexOf("private void ShowShellMenuForSelection()", StringComparison.Ordinal);
+            int menu = main.IndexOf("private async void ShowShellMenuForSelection()", StringComparison.Ordinal);
             int menuEnd = menu < 0 ? -1 : main.IndexOf("private async void CalculateFocusedFolderSize()", menu, StringComparison.Ordinal);
             var menuBody = menu >= 0 && menuEnd > menu ? main[menu..menuEnd] : "";
             Check("and neither a dismissal nor a command refreshes or searches again",
@@ -267,6 +267,33 @@ namespace ExplorerNative
             int ctorEnd = ctor < 0 ? -1 : main.IndexOf("private bool _initialising;", ctor, StringComparison.Ordinal);
             Check("and the poll is not started before the window is shown",
                 ctor >= 0 && ctorEnd > ctor && !main[ctor..ctorEnd].Contains("_availabilityTimer.Start()", StringComparison.Ordinal));
+
+            // The watcher is built on a worker (a sleeping share made it seconds
+            // on the UI thread), armed before the listing, and the listing forgets
+            // only what happened before it.
+            int arm = main.IndexOf("private void ArmWatcher(", StringComparison.Ordinal);
+            int armEnd = arm < 0 ? -1 : main.IndexOf("private static void DisarmWatcher(", arm, StringComparison.Ordinal);
+            var armBody = arm >= 0 && armEnd > arm ? main[arm..armEnd] : "";
+            Check("a folder watcher is built off the UI thread and installed only if still wanted",
+                armBody.Contains("await Task.Run(() => BuildWatcher(", StringComparison.Ordinal) &&
+                armBody.Contains("pane.WatchGeneration == generation", StringComparison.Ordinal));
+            int nav = main.IndexOf("private async Task<bool> NavigateAsync(", StringComparison.Ordinal);
+            int load = nav < 0 ? -1 : main.IndexOf("bool arrived = await LoadEntriesAsync(", nav, StringComparison.Ordinal);
+            var beforeListing = nav >= 0 && load > nav ? main[nav..load] : "";
+            Check("a navigation watches its folder before listing it, and forgets only earlier marks",
+                beforeListing.Contains("ArmWatcher(pane, full);", StringComparison.Ordinal) &&
+                beforeListing.Contains("pane.Debounce.Clear();", StringComparison.Ordinal) &&
+                !armBody.Contains("Debounce.Clear()", StringComparison.Ordinal));
+            Check("showing from the tray watches only the tab in front",
+                visibleBody.Contains("if (pane == Active) ArmWatcher(pane, pane.CurrentPath);", StringComparison.Ordinal));
+            Check("folder sizes and the local search never walk into Drive",
+                main.Contains("_folderSizes.Skip = OnDriveFolder;", StringComparison.Ordinal) &&
+                main.Contains("skip: OnDriveFolder", StringComparison.Ordinal));
+            Check("refreshed and changed are said only when the reload landed",
+                main.Contains("if (landed && !ours) AnnounceOperation(\"nav.changed\"", StringComparison.Ordinal) &&
+                main.Contains("if (IsDisposed || !landed) return;", StringComparison.Ordinal));
+            Check("a progressive load holds rows that would move the cursor",
+                main.Contains("fresh = fresh.FindAll(e => _order(e, marked) >= 0);", StringComparison.Ordinal));
 
             Check("a drive being removed lets go of its watcher",
                 main.Contains("WM_DEVICECHANGE", StringComparison.Ordinal) &&

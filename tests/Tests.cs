@@ -3259,7 +3259,7 @@ namespace ExplorerNative
             var main = SourceFile("MainForm.cs");
             if (main == null) { Check("MainForm.cs can be read", false); return; }
 
-            foreach (var counter in new[] { "_suppressWatch", "_suppressStatus" })
+            foreach (var counter in new[] { "_suppressStatus" })
             {
                 int raised = Occurrences(main, counter + "++");
                 int released = Occurrences(main, counter + "--");
@@ -3268,16 +3268,18 @@ namespace ExplorerNative
                 Check($"{counter} is used at all", raised > 0);
             }
 
-            // And the releases are in a finally rather than on the happy path.
-            // Counted loosely — some sit inside a multi-line finally block — so
-            // this asks only that there are as many finallys mentioning the
-            // counter as there are raises of it.
-            int watchRaises = Occurrences(main, "_suppressWatch++");
-            int watchFinallys = Occurrences(main, "finally { _suppressWatch--; }")
-                              + Occurrences(main, "finally { _deleting = false; _suppressWatch--; }")
-                              + Occurrences(main, "// changes, with nothing to connect it back to a failed upload.");
-            Check("every _suppressWatch raise has a finally to release it",
-                watchFinallys >= watchRaises, $"{watchRaises} raises, {watchFinallys} finallys");
+            // The window-wide watcher hold is gone: its last user, Delete, held
+            // every folder off the watcher for the whole of a Drive trash. A
+            // delete now holds only the folders it deletes from.
+            Check("nothing stops the watcher for the whole window",
+                !main.Contains("_suppressWatch", StringComparison.Ordinal));
+            int del = main.IndexOf("private async void DeleteSelected(", StringComparison.Ordinal);
+            int delEnd = del < 0 ? -1 : main.IndexOf("\n        private ", del + 30, StringComparison.Ordinal);
+            var deleteBody = del >= 0 && delEnd > del ? main[del..delEnd] : "";
+            Check("a delete holds only the folders it deletes from, released in a finally",
+                deleteBody.Contains("BeginTransferTo(folder)", StringComparison.Ordinal) &&
+                deleteBody.Contains("EndTransferTo(folder)", StringComparison.Ordinal) &&
+                deleteBody.IndexOf("finally", StringComparison.Ordinal) < deleteBody.IndexOf("EndTransferTo(folder)", StringComparison.Ordinal));
 
             // ---- and the same for the per-folder version of it ----
             //

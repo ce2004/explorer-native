@@ -104,8 +104,11 @@ namespace ExplorerNative
         /// </summary>
         public static SearchResult Local(
             string root, string term, bool showHidden, bool showSystem,
-            int most, CancellationToken token)
+            int most, CancellationToken token, Func<string, bool>? skip = null)
         {
+            // skip: folders not to go into (still listed as hits if they match).
+            // The window passes the Drive sync root, which sits under AppData and
+            // costs a Drive listing per folder.
             var hits = new List<SearchHit>();
 
             // An explicit stack rather than recursion. A deep tree is a stack
@@ -164,7 +167,7 @@ namespace ExplorerNative
                             if (hits.Count >= most) return new SearchResult(hits, true);
                         }
 
-                        if (found.Folder != null) pending.Push(found.Folder);
+                        if (found.Folder != null && (skip == null || !skip(found.Folder))) pending.Push(found.Folder);
                     }
                 }
             }

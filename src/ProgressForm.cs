@@ -153,7 +153,27 @@ namespace ExplorerNative
                 area.Left + Math.Max(0, (area.Width - Width) / 2) + step,
                 area.Top + Math.Max(0, (area.Height - Height) / 3) + step);
 
-            FormClosed += (_, _) => { if (_open > 0) _open--; };
+            FormClosed += (_, _) => Uncount();
+        }
+
+        private bool _counted = true;
+
+        /// <summary>
+        /// Once per window, on close or on dispose, whichever comes first: a
+        /// window disposed without being closed (a transfer that threw before
+        /// Finish) left the cascade one step further out for good.
+        /// </summary>
+        private void Uncount()
+        {
+            if (!_counted) return;
+            _counted = false;
+            if (_open > 0) _open--;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            Uncount();
+            base.Dispose(disposing);
         }
 
         /// <summary>

@@ -199,6 +199,20 @@ namespace ExplorerNative
             /// <summary>Tells us when this folder changes underneath us.</summary>
             public FileSystemWatcher? Watcher;
 
+            /// <summary>
+            /// The folder a watcher is being built for on a worker, or null.
+            /// Building one opens the folder, which on a sleeping share is
+            /// seconds, so it is never done on the UI thread.
+            /// </summary>
+            public string? ArmingPath;
+
+            /// <summary>
+            /// Bumped whenever the pane's watcher is let go, so a watcher still
+            /// being built for the folder before is thrown away when it arrives,
+            /// and its early events are not counted against this one.
+            /// </summary>
+            public int WatchGeneration;
+
             /// <summary>When the watcher's changes are to be acted on, and which.</summary>
             public readonly WatchDebounce Debounce = new();
 
@@ -288,6 +302,13 @@ namespace ExplorerNative
         /// </summary>
         public GoogleDrive? Drive { get; set; }
 
+        /// <summary>
+        /// For walks (sizes, search) on a worker: a folder belonging to the Drive
+        /// mount, by the letter or by the sync root it sits on. Walks hand over
+        /// the \\?\ form, so it is made plain first.
+        /// </summary>
+        private bool OnDriveFolder(string path) => Drive?.Owns(NameRules.PlainPath(path)) == true;
+
         // TrayNotification was here — the hook that let this window ask the tray
         // to put up a balloon. There are no balloons any more: a Windows
         // notification is something you have to be looking at a screen to know
@@ -324,6 +345,11 @@ namespace ExplorerNative
         public MainForm(Settings settings)
         {
             _settings = settings;
+
+            // A walk of C:\Users reaches the Drive sync root under AppData, where
+            // every folder is a Drive listing. Not walked, as the web app's
+            // sizes are not (ConnectFiles).
+            _folderSizes.Skip = OnDriveFolder;
 
             StartPosition = FormStartPosition.CenterScreen;
 
@@ -735,10 +761,12 @@ namespace ExplorerNative
 
             // The file is the row to land on, in the one move: selecting it after
             // the folder had already landed and been read out read two rows.
-            await NavigateAsync(target, preferPath: select);
+            // On the pane the probe was for: a tab switch during the probe would
+            // otherwise land the folder in the other tab.
+            await NavigateAsync(target, preferPath: select, onPane: pane);
             if (IsDisposed) return;
 
-            if (Visible) Active.List.Focus();
+            if (Visible && pane == Active) pane.List.Focus();
         }
 
         // ---------- UI ----------
@@ -1559,6 +1587,10 @@ namespace ExplorerNative
             ScheduleStatusUpdate();
             ScheduleTabAnnouncement();
 
+            // A tab that was not watched while it was behind (the window coming
+            // back from the tray watches only the front one) is watched now.
+            if (Visible && NeedsWatcher(Active)) ArmWatcher(Active, Active.CurrentPath);
+
             // A tab that changed while it was hidden is re-read now that it is
             // being looked at.
             ApplyPendingRefresh();
@@ -1660,7 +1692,11 @@ namespace ExplorerNative
         private static string? PreferredRowFor(Pane pane, string destination, string? cameFrom) =>
             NavigationHistory.ChildOnPathTo(destination, cameFrom) ?? pane.Positions.Recall(destination);
 
-        private async Task NavigateAsync(string path, string? preferPath = null,
+        /// <returns>
+        /// True when this navigation landed on <paramref name="path"/> and is still
+        /// the pane's latest; false when it fell back, failed or gave way.
+        /// </returns>
+        private async Task<bool> NavigateAsync(string path, string? preferPath = null,
             Pane? onPane = null, bool quiet = false, bool keepFocus = false)
         {
             // The pane is fixed at the start. "Whichever tab is in front" was
@@ -1716,7 +1752,7 @@ namespace ExplorerNative
                 LoadDrivesInto(pane, driveToken,
                     preferPath ?? (cameFrom == DrivesPath ? FocusedPathOf(pane) : SafePathRoot(cameFrom)));
 
-                return;
+                return pane.NavigationId == mine;
             }
 
             try
@@ -1727,7 +1763,7 @@ namespace ExplorerNative
 
                 pane.Probing = mine;
                 var reachable = await ProbeDirectoryAsync(full, NavigationProbeMs);
-                if (IsDisposed || pane.NavigationId != mine) return;
+                if (IsDisposed || pane.NavigationId != mine) return false;
 
                 if (reachable != FolderProbe.Present)
                 {
@@ -1735,7 +1771,7 @@ namespace ExplorerNative
                     // dropped share. Fall back to the nearest level that is
                     // still there rather than leaving a dead view on screen.
                     var fallback = await NearestExistingAncestorAsync(full);
-                    if (IsDisposed || pane.NavigationId != mine) return;
+                    if (IsDisposed || pane.NavigationId != mine) return false;
 
                     // Which of the two it was is the useful half of the sentence.
                     // A share that timed out is still there and will answer again
@@ -1751,7 +1787,7 @@ namespace ExplorerNative
                     if (fallback != full)
                         await NavigateAsync(fallback,
                             preferPath: fallback == DrivesPath ? Path.GetPathRoot(full) : null, onPane: pane);
-                    return;
+                    return false;
                 }
 
                 var token = BeginPaneWork(pane);
@@ -1763,9 +1799,33 @@ namespace ExplorerNative
                 pane.CurrentPath = full;
                 if (pane == Active) _pathLabel.Text = full;
 
+                // Watched from before the listing starts, so a file that arrives
+                // while a big folder is still being read is not missed; armed
+                // after the listing, the changes made during it were simply
+                // lost. A folder that turns out unreadable is let go below.
+                ArmWatcher(pane, full);
+
+                // The listing about to start sees everything that happened
+                // before it, so only those marks are forgotten. Whatever the
+                // watcher collects from here on stays, and is acted on once the
+                // listing is in. (Forgetting them after the listing, as this
+                // did, threw away exactly the changes it could have missed.)
+                pane.NeedsRefresh = false;
+                pane.ReloadQuietly = false;
+                pane.Debounce.Clear();
+
                 bool arrived = await LoadEntriesAsync(
                     pane, full, token, preferPath ?? PreferredRowFor(pane, full, cameFrom), quiet, keepFocus);
-                if (token.IsCancellationRequested || IsDisposed) return;
+                if (token.IsCancellationRequested || IsDisposed) return false;
+
+                // On the Drive letter the listing writes the placeholders itself,
+                // so what the watcher saw during it was our own doing.
+                if (arrived && pane.CurrentPath == full && Drive?.Owns(full) == true)
+                {
+                    pane.NeedsRefresh = false;
+                    pane.ReloadQuietly = false;
+                    pane.Debounce.Clear();
+                }
 
                 // A folder we could not read leaves the previous one on screen, so
                 // that is where we still are. Without putting the path back, the
@@ -1773,11 +1833,6 @@ namespace ExplorerNative
                 // the list showed the old folder, but Backspace went up from the
                 // new one and F5 tried to reload the folder that had just been
                 // refused.
-                // Watch what we actually landed on, and only once we know we
-                // landed on it — arming before the load would leave a watcher on
-                // a folder that turned out to be unreadable.
-                if (arrived && pane.CurrentPath == full) ArmWatcher(pane, full);
-
                 if (!arrived)
                 {
                     // On the very first navigation there is nowhere to go back to,
@@ -1796,13 +1851,20 @@ namespace ExplorerNative
                     }
 
                     if (pane == Active) _pathLabel.Text = PathLabelFor(pane);
-                    return;
+
+                    // The watcher went over to the folder that would not open;
+                    // it goes back to the one still on screen.
+                    ArmWatcher(pane, restore);
+                    return false;
                 }
 
+                return pane.NavigationId == mine &&
+                       string.Equals(pane.CurrentPath, full, StringComparison.OrdinalIgnoreCase);
             }
             catch (Exception ex)
             {
                 Announce($"Could not open folder: {ex.Message}", isError: true);
+                return false;
             }
             finally
             {
@@ -1873,27 +1935,19 @@ namespace ExplorerNative
         // ---------- Watching the folder ----------
 
         /// <summary>
-        /// Non-zero while this application is itself changing the folder.
+        /// Folders a transfer (or a delete) is changing right now, and how many
+        /// are changing each.
         ///
         /// Our own commands refresh when they finish, and they know better than
         /// the watcher when that is: a paste of ten thousand files would
         /// otherwise fire events all the way through and have us rebuilding the
         /// list on top of the copy that is still running.
-        /// </summary>
-        private int _suppressWatch;
-
-        /// <summary>
-        /// Folders a transfer is writing into right now, and how many transfers
-        /// are writing into each.
         ///
-        /// This is <see cref="_suppressWatch"/> narrowed to the one folder it
-        /// was ever about, and narrowing it is what makes a background copy
-        /// bearable. The counter above stops the watcher for the whole window,
-        /// which was harmless while a transfer held the window modal and nobody
-        /// could be looking at anything anyway. Now that a copy runs for an hour
-        /// while you carry on working, that same counter would mean an hour of
-        /// no folder anywhere noticing that anything had changed — a file
-        /// arriving from another program, a download finishing, a rename done in
+        /// Per folder, never the whole window. A window-wide counter was
+        /// harmless while a transfer held the window modal; now that a copy runs
+        /// for an hour while you carry on working, it would mean an hour of no
+        /// folder anywhere noticing that anything had changed — a file arriving
+        /// from another program, a download finishing, a rename done in
         /// Explorer, none of it appearing until something forced a reload.
         ///
         /// Keyed by folder because that is the folder the ten thousand events
@@ -1901,8 +1955,8 @@ namespace ExplorerNative
         /// perfectly well be filling the same folder and the first one finishing
         /// is not the end of the noise.
         ///
-        /// Raised and released around a try, always, for the same reason the
-        /// counter is: a raise left standing is a folder that never refreshes
+        /// Raised and released around a try, always: a raise left standing is a
+        /// folder that never refreshes
         /// again, with nothing on screen to connect it back to the copy that
         /// went wrong.
         /// </summary>
@@ -1971,15 +2025,12 @@ namespace ExplorerNative
             // the list is rebuilt. Tearing the watcher down and building another
             // one for the same path would mean a new directory handle on every
             // refresh, and a window between them where changes are missed.
-            if (pane.Watcher != null &&
-                string.Equals(pane.Watcher.Path, path, StringComparison.OrdinalIgnoreCase))
-            {
-                // The rebuild just took account of whatever was pending.
-                pane.NeedsRefresh = false;
-                pane.ReloadQuietly = false;
-                pane.Debounce.Clear();
+            // What is pending is the navigation's business: it forgets only what
+            // its listing will have seen.
+            if ((pane.Watcher != null &&
+                 string.Equals(pane.Watcher.Path, path, StringComparison.OrdinalIgnoreCase)) ||
+                string.Equals(pane.ArmingPath, path, StringComparison.OrdinalIgnoreCase))
                 return;
-            }
 
             DisarmWatcher(pane);
 
@@ -1997,9 +2048,51 @@ namespace ExplorerNative
                 _releasedRoots.Remove(root);
             }
 
+            // Built on a worker: the constructor checks the folder exists, turning
+            // it on opens a handle to it, and the removal registration opens
+            // another — each a wait of seconds on a sleeping share, and showing
+            // the window from the tray did all of it for both tabs on the UI
+            // thread. Installed only if the pane is still on that folder.
+            int generation = pane.WatchGeneration;
+            bool removable = Drive?.Owns(path) != true;
+            var window = Handle;
+            pane.ArmingPath = path;
+            _ = InstallWatcherAsync(pane, path, generation, removable, window);
+        }
+
+        private async Task InstallWatcherAsync(Pane pane, string path, int generation, bool removable, IntPtr window)
+        {
+            (FileSystemWatcher? Watcher, RemovalWatch? Removal) made = (null, null);
             try
             {
-                var watcher = new FileSystemWatcher(path)
+                made = await Task.Run(() => BuildWatcher(pane, path, generation, removable, window));
+            }
+            catch { }
+
+            // Back on the UI thread. Anything that let the pane's watcher go
+            // meanwhile — another folder, the window hidden, a drive being
+            // removed — bumped the generation, and this one is no longer wanted.
+            bool wanted = !IsDisposed && Visible && pane.WatchGeneration == generation &&
+                          string.Equals(pane.CurrentPath, path, StringComparison.OrdinalIgnoreCase);
+            if (pane.WatchGeneration == generation) pane.ArmingPath = null;
+            if (!wanted || made.Watcher == null)
+            {
+                DisposeWatch(made.Watcher, made.Removal);
+                return;
+            }
+
+            pane.Watcher = made.Watcher;
+            pane.Removal = made.Removal;
+        }
+
+        /// <summary>On a worker: the watcher and the removal registration for one folder, or nulls.</summary>
+        private (FileSystemWatcher?, RemovalWatch?) BuildWatcher(
+            Pane pane, string path, int generation, bool removable, IntPtr window)
+        {
+            FileSystemWatcher? watcher = null;
+            try
+            {
+                watcher = new FileSystemWatcher(path)
                 {
                     NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName |
                                    NotifyFilters.Size | NotifyFilters.LastWrite | NotifyFilters.Attributes,
@@ -2009,12 +2102,16 @@ namespace ExplorerNative
                     InternalBufferSize = 64 * 1024,
                 };
 
+                // A watcher that was let go before it was installed says nothing:
+                // its events would land on whatever the pane shows now.
+                bool Current() => Volatile.Read(ref pane.WatchGeneration) == generation;
+
                 // A file the list already shows, written to: its row is updated
                 // in place. Everything else re-reads the folder once the burst
                 // is over. Only the first event of a burst wakes the window.
                 void Reload(object? _, EventArgs __)
                 {
-                    if (pane.Debounce.Reload(Environment.TickCount64)) WakeWatch();
+                    if (Current() && pane.Debounce.Reload(Environment.TickCount64)) WakeWatch();
                 }
 
                 watcher.Created += Reload;
@@ -2022,7 +2119,7 @@ namespace ExplorerNative
                 watcher.Renamed += Reload;
                 watcher.Changed += (_, e) =>
                 {
-                    if (pane.Debounce.Changed(e.FullPath, Environment.TickCount64)) WakeWatch();
+                    if (Current() && pane.Debounce.Changed(e.FullPath, Environment.TickCount64)) WakeWatch();
                 };
 
                 // An error is usually a lost burst or a share that went away.
@@ -2030,18 +2127,31 @@ namespace ExplorerNative
                 watcher.Error += Reload;
 
                 watcher.EnableRaisingEvents = true;
-                pane.Watcher = watcher;
-                if (Drive?.Owns(path) != true) pane.Removal = RemovalWatch.TryRegister(Handle, path);
+                return (watcher, removable ? RemovalWatch.TryRegister(window, path) : null);
             }
             catch
             {
                 // Some filesystems will not support watching. That is a reason to
                 // do without live updates, not a reason to fail to show a folder.
+                DisposeWatch(watcher, null);
+                return (null, null);
             }
+        }
+
+        private static void DisposeWatch(FileSystemWatcher? watcher, RemovalWatch? removal)
+        {
+            removal?.Dispose();
+            if (watcher == null) return;
+            try { watcher.EnableRaisingEvents = false; } catch { }
+            try { watcher.Dispose(); } catch { }
         }
 
         private static void DisarmWatcher(Pane pane)
         {
+            // A watcher still being built for this pane is not wanted any more.
+            pane.WatchGeneration++;
+            pane.ArmingPath = null;
+
             var watcher = pane.Watcher;
             pane.Watcher = null;
             pane.NeedsRefresh = false;
@@ -2172,7 +2282,9 @@ namespace ExplorerNative
 
                     pane.Entries[i] = now;
                     EvictItem(pane, i);
-                    if (pane.List.IsHandleCreated) pane.List.RedrawItems(i, i, true);
+                    // Outside the try above, in an async void: a redraw racing a
+                    // list that shrank would otherwise take the window with it.
+                    try { if (pane.List.IsHandleCreated) pane.List.RedrawItems(i, i, true); } catch { }
                 }
                 if (pane == Active) ScheduleStatusUpdate();
             }
@@ -2331,6 +2443,8 @@ namespace ExplorerNative
                             // Yes, it may go: the watcher and our handle close now,
                             // and nothing re-arms on this drive meanwhile.
                             _releasedRoots[removal.Root] = Environment.TickCount64;
+                            pane.WatchGeneration++;
+                            pane.ArmingPath = null;
                             var watcher = pane.Watcher;
                             pane.Watcher = null;
                             if (watcher != null)
@@ -2394,20 +2508,42 @@ namespace ExplorerNative
                 return;
             }
 
+            // Only the tab in front is watched again now; the other is marked,
+            // and watched and read when it is switched to (SetActiveTab). Arming
+            // both here opened two folders at once, on a share each a wait.
             foreach (var pane in _panes)
             {
-                if (string.IsNullOrEmpty(pane.CurrentPath) || pane.CurrentPath == DrivesPath) continue;
-                if (pane.Watcher == null && !string.IsNullOrEmpty(pane.LastLoadedPath))
-                {
-                    ArmWatcher(pane, pane.CurrentPath);
-                    pane.NeedsRefresh = true;
-                    pane.ReloadQuietly = true;
-                }
+                if (!NeedsWatcher(pane)) continue;
+                if (pane == Active) ArmWatcher(pane, pane.CurrentPath);
+                pane.NeedsRefresh = true;
+                pane.ReloadQuietly = true;
             }
 
-            _availabilityTimer?.Start();
+            if (WindowState != FormWindowState.Minimized) _availabilityTimer?.Start();
             CheckCurrentPathStillExists();
             ScheduleWatchCheck();
+        }
+
+        /// <summary>A pane showing a folder it has read, with no watcher on it or on the way.</summary>
+        private static bool NeedsWatcher(Pane pane) =>
+            !string.IsNullOrEmpty(pane.CurrentPath) && pane.CurrentPath != DrivesPath &&
+            pane.Watcher == null && pane.ArmingPath == null && !string.IsNullOrEmpty(pane.LastLoadedPath);
+
+        /// <summary>
+        /// Minimised, the availability poll stops — a probe of a share every four
+        /// seconds for a window nobody is looking at — and starts again on restore.
+        /// </summary>
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            if (_availabilityTimer == null || IsDisposed) return;
+
+            if (WindowState == FormWindowState.Minimized) _availabilityTimer.Stop();
+            else if (Visible && !_availabilityTimer.Enabled)
+            {
+                _availabilityTimer.Start();
+                CheckCurrentPathStillExists();
+            }
         }
 
         protected override void OnActivated(EventArgs e)
@@ -2432,6 +2568,18 @@ namespace ExplorerNative
 
             var pane = Active;
 
+            // While the folder is being read, or a navigation is still finding
+            // out whether it is there, what the watcher collected stays where it
+            // is. Taken now, a file written during the listing was an in-place
+            // update thrown away because the pane was loading; left alone, it is
+            // looked at again once the listing is in (the navigation forgets only
+            // what happened before its listing began).
+            if (pane.Loading || pane.Probing != 0)
+            {
+                if (pane.NeedsRefresh || pane.Debounce.Pending) ScheduleWatchCheck(retry: true);
+                return;
+            }
+
             // What the watcher collected. Rows of files written to are updated
             // where they stand — unless the list is ordered by size or date,
             // where a new size or date can move a row, which is a reload.
@@ -2448,7 +2596,6 @@ namespace ExplorerNative
                 else pane.NeedsRefresh = true;
             }
 
-            if (_suppressWatch > 0) return;
             if (!pane.NeedsRefresh) return;
 
             // A folder being copied into stays marked and is re-read once, by
@@ -2490,13 +2637,16 @@ namespace ExplorerNative
 
             // Keeps the cursor where it is, so a file appearing elsewhere in the
             // folder does not move you.
-            await RefreshAsync(folder: pane.CurrentPath, quiet: true);
+            bool landed = await RefreshAsync(folder: pane.CurrentPath, quiet: true);
             if (IsDisposed) return;
 
             // Said after the reload rather than before it, so the list already
             // agrees with the announcement — and so it is not immediately
             // overwritten in the status bar by the reload's own item count.
-            if (!ours) AnnounceOperation("nav.changed", $"{folder} changed");
+            // Only when the reload landed on the folder: one that fell back, or
+            // gave way to somebody's navigation, has said something truer, and
+            // "changed" spoken over it cut that off.
+            if (landed && !ours) AnnounceOperation("nav.changed", $"{folder} changed");
         }
 
         private static string? SafePathRoot(string? path)
@@ -2540,8 +2690,15 @@ namespace ExplorerNative
         {
             if (IsDisposed || IsDrivesView || _availabilityCheckRunning) return;
 
-            var path = Active.CurrentPath;
+            // The pane and its navigation, fixed now. A navigation somebody
+            // started meanwhile — still checking its own folder, or reading it —
+            // wins: falling back on top of it cancelled where they were going.
+            var pane = Active;
+            var path = pane.CurrentPath;
             if (string.IsNullOrEmpty(path)) return;
+            int navigation = pane.NavigationId;
+            bool Overtaken() => IsDisposed || pane.NavigationId != navigation || pane.CurrentPath != path ||
+                                pane.Probing != 0 || pane.Loading || pane.Searching;
 
             _availabilityCheckRunning = true;
             try
@@ -2551,21 +2708,18 @@ namespace ExplorerNative
                     _consecutiveProbeFailures = 0;
                     return;
                 }
-                if (IsDisposed) return;
-
-                // Confirm the pane is still showing the folder that vanished;
-                // the user may have navigated away while the probe was running.
-                if (Active.CurrentPath != path || IsDrivesView) return;
+                if (Overtaken()) return;
 
                 if (++_consecutiveProbeFailures < FailedProbesBeforeGivingUp) return;
                 _consecutiveProbeFailures = 0;
 
                 var fallback = await NearestExistingAncestorAsync(path);
-                if (IsDisposed || Active.CurrentPath != path) return;
+                if (Overtaken()) return;
 
                 Announce($"{FolderDisplayName(path)} is no longer available, going to {DescribePath(fallback)}", isError: true);
-                await NavigateAsync(fallback);
+                await NavigateAsync(fallback, onPane: pane);
             }
+            catch { }   // async void off a timer: nothing may escape
             finally { _availabilityCheckRunning = false; }
         }
 
@@ -2724,6 +2878,11 @@ namespace ExplorerNative
         {
             List<Entry> entries;
 
+            // A navigation started after this one — even one still checking that
+            // its folder is there, which has cancelled nothing yet — bumps this.
+            int navigation = pane.NavigationId;
+            bool Overtaken() => pane.NavigationId != navigation;
+
             // Captured before anything is shown, for the decisions further down.
             int previousCount = pane.Entries.Count;
             bool sameFolder = string.Equals(pane.LastLoadedPath, path, StringComparison.OrdinalIgnoreCase);
@@ -2792,9 +2951,10 @@ namespace ExplorerNative
             catch (DirectoryNotFoundException)
             {
                 // Checked after the wait, which can be seconds a level on a dead
-                // share: a navigation somebody started meanwhile wins.
+                // share: a navigation somebody started meanwhile wins — including
+                // one still checking its folder, which has cancelled nothing yet.
                 var fallback = await NearestExistingAncestorAsync(path);
-                if (IsDisposed || token.IsCancellationRequested) return false;
+                if (IsDisposed || token.IsCancellationRequested || Overtaken()) return false;
                 AnnounceOperation("nav.gone",
                     $"{FolderDisplayName(path)} disappeared, going to {DescribePath(fallback)}");
                 await NavigateAsync(fallback, onPane: pane);
@@ -2806,7 +2966,7 @@ namespace ExplorerNative
             catch (IOException ex)
             {
                 var fallback = await NearestExistingAncestorAsync(path);
-                if (IsDisposed || token.IsCancellationRequested) return false;
+                if (IsDisposed || token.IsCancellationRequested || Overtaken()) return false;
                 Announce($"{FolderDisplayName(path)} is unreadable ({ex.Message}), going to {DescribePath(fallback)}", isError: true);
                 await NavigateAsync(fallback, onPane: pane);
                 return true;
@@ -3035,23 +3195,47 @@ namespace ExplorerNative
 
             private void ShowArrived()
             {
-                bool any = false;
+                // Everything that arrived since the last tick, merged among
+                // itself first — those are short — so the long list on screen is
+                // merged into once per tick, not once per batch.
+                List<Entry>? fresh = null;
                 while (_arrived.TryDequeue(out var batch))
                 {
-                    var fresh = new List<Entry>(batch.Count);
+                    var unseen = new List<Entry>(batch.Count);
                     foreach (var entry in batch)
-                        if (_seen.Add(entry.Path)) fresh.Add(entry);
-                    if (fresh.Count == 0) continue;
+                        if (_seen.Add(entry.Path)) unseen.Add(entry);
+                    if (unseen.Count == 0) continue;
+                    fresh = fresh == null ? unseen : MergeSorted(fresh, unseen, _order);
+                }
+                if (fresh == null) return;
 
-                    // Each batch is already in order, and so is what is shown:
-                    // one linear merge, and a new list, because the pane holds
-                    // the last one.
-                    _shown = MergeSorted(_shown, fresh, _order);
-                    any = true;
+                // Rows that would land above the cursor, or above any selected
+                // row, wait for the finished listing. Let in, they moved the
+                // cursor's row down, and putting the cursor back on it was a
+                // focus change the screen reader read out again, every tick for
+                // as long as the folder was arriving. Held, nothing marked moves.
+                if (Shown && LastMarkedIndex(_pane) is int pivot && pivot >= 0 && pivot < _shown.Count)
+                {
+                    var marked = _shown[pivot];
+                    fresh = fresh.FindAll(e => _order(e, marked) >= 0);
+                    if (fresh.Count == 0) return;
                 }
 
-                if (!any) return;
-                Put(_shown);
+                // Rows before the first one arriving keep their places, and
+                // their cached items and index entries with them.
+                int lo = 0, hi = _shown.Count;
+                while (lo < hi)
+                {
+                    int mid = (lo + hi) >>> 1;
+                    if (_order(_shown[mid], fresh[0]) <= 0) lo = mid + 1;
+                    else hi = mid;
+                }
+
+                // Each batch is already in order, and so is what is shown:
+                // one linear merge, and a new list, because the pane holds
+                // the last one.
+                _shown = MergeSorted(_shown, fresh, _order);
+                Put(_shown, unchanged: lo);
             }
 
             /// <summary>The whole listing, in place of the partial one.</summary>
@@ -3074,7 +3258,8 @@ namespace ExplorerNative
                 }
             }
 
-            private void Put(List<Entry> entries)
+            /// <param name="unchanged">How many leading rows are the same rows as last time.</param>
+            private void Put(List<Entry> entries, int unchanged = 0)
             {
                 if (!Shown)
                 {
@@ -3103,12 +3288,17 @@ namespace ExplorerNative
                 // Later showings keep the cursor on the item it is on.
                 var focusedPath = FocusedPathOf(_pane);
                 var selected = _form.SelectedPathsOf(_pane);
-                _form.ReplaceEntriesInPlace(_pane, entries);
+
+                // Nothing at or above the last marked row moved: the control's
+                // focus and selection are already right, and setting them again
+                // is read out again.
+                bool marksStay = unchanged > LastMarkedIndex(_pane);
+                _form.ReplaceEntriesInPlace(_pane, entries, unchanged);
 
                 if (focusedPath != null && _pane.IndexByPath.TryGetValue(focusedPath, out var now))
                 {
                     _landed = true;
-                    if (now != CurrentIndex(_pane) || selected.Count > 1)
+                    if (!marksStay && (now != CurrentIndex(_pane) || selected.Count > 1))
                         _form.Reselect(_pane, now, selected);
                 }
                 else if (!_landed && _prefer != null && _pane.IndexByPath.TryGetValue(_prefer, out var wanted))
@@ -3126,15 +3316,49 @@ namespace ExplorerNative
         /// selection states the control holds are not thrown away and nothing is
         /// announced. The caller puts the cursor back where it belongs.
         /// </summary>
-        private void ReplaceEntriesInPlace(Pane pane, List<Entry> entries)
+        /// <param name="unchanged">
+        /// Leading rows that are the very same rows as before, in the same places.
+        /// Their cached items and index entries are kept: rebuilding both for a
+        /// whole 100,000-row folder on every tick of a progressive load was the
+        /// UI thread's time going on rows nobody had moved. Only valid when
+        /// rows are only ever added, which is what a progressive load does.
+        /// </param>
+        private void ReplaceEntriesInPlace(Pane pane, List<Entry> entries, int unchanged = 0)
         {
-            pane.Entries = entries;
-            pane.ItemCache = new ListViewItem?[entries.Count];
-            pane.CachedCount = 0;
+            var old = pane.Entries;
+            int keep = Math.Min(unchanged, Math.Min(old.Count, entries.Count));
+            // Cheap proof the prefix really is the pane's own: same rows at both ends of it.
+            if (keep > 0 && (!ReferenceEquals(old[0], entries[0]) || !ReferenceEquals(old[keep - 1], entries[keep - 1])))
+                keep = 0;
 
-            var index = new Dictionary<string, int>(entries.Count, StringComparer.OrdinalIgnoreCase);
-            for (int i = 0; i < entries.Count; i++) index[entries[i].Path] = i;
-            pane.IndexByPath = index;
+            var oldCache = pane.ItemCache;
+            var cache = new ListViewItem?[entries.Count];
+            int cached = 0;
+            if (keep > 0)
+            {
+                int kept = Math.Min(keep, oldCache.Length);
+                Array.Copy(oldCache, cache, kept);
+                cached = pane.CachedCount;
+                for (int i = kept; i < oldCache.Length; i++)
+                    if (oldCache[i] != null) cached--;
+            }
+            pane.Entries = entries;
+            pane.ItemCache = cache;
+            pane.CachedCount = Math.Max(0, cached);
+
+            if (keep > 0)
+            {
+                // Every row past the prefix is either new or one that moved
+                // down; nothing was removed, so overwriting is the whole update.
+                var index = pane.IndexByPath;
+                for (int i = keep; i < entries.Count; i++) index[entries[i].Path] = i;
+            }
+            else
+            {
+                var index = new Dictionary<string, int>(entries.Count, StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < entries.Count; i++) index[entries[i].Path] = i;
+                pane.IndexByPath = index;
+            }
 
             _suppressStatus++;
             try
@@ -3177,6 +3401,20 @@ namespace ExplorerNative
             finally { _suppressStatus--; }
 
             if (pane == Active) UpdateStatus();
+        }
+
+        /// <summary>The highest row that is focused or selected, or -1.</summary>
+        private static int LastMarkedIndex(Pane pane)
+        {
+            int last = CurrentIndex(pane);
+            if (!pane.List.IsHandleCreated) return last;
+            int i = -1, seen = 0;
+            while ((i = (int)SendMessage(pane.List.Handle, LVM_GETNEXTITEM, new IntPtr(i), new IntPtr(LVNI_SELECTED))) >= 0)
+            {
+                if (i > last && i < pane.Entries.Count) last = i;
+                if (++seen > 100_000) break;
+            }
+            return last;
         }
 
         /// <summary>The paths of the selected rows, in order.</summary>
@@ -3594,10 +3832,14 @@ namespace ExplorerNative
                 return;
             }
 
-            await RefreshAsync();
-            if (IsDisposed) return;
+            var pane = Active;
+            bool landed = await RefreshAsync();
+            if (IsDisposed || !landed) return;
 
-            AnnounceOperation("nav.refreshed", $"Refreshed, {NameRules.Items(Active.Entries.Count)}");
+            // Only for a reload that landed on the folder, counted from the pane
+            // that was reloaded: one that fell back or was overtaken has said
+            // something truer, and this cut it off.
+            AnnounceOperation("nav.refreshed", $"Refreshed, {NameRules.Items(pane.Entries.Count)}");
         }
 
         // ---------- Search ----------
@@ -3715,7 +3957,7 @@ namespace ExplorerNative
                 result = onDrive ?? await Task.Run(
                     () => FileSearch.Local(root, term,
                         _settings.ShowHiddenFiles, _settings.ShowSystemFiles,
-                        FileSearch.MostResults, token),
+                        FileSearch.MostResults, token, skip: OnDriveFolder),
                     token);
             }
             catch (OperationCanceledException)
@@ -3868,7 +4110,12 @@ namespace ExplorerNative
         /// changes, and a screen reader reads both — so a refresh announced a row
         /// nobody asked for before announcing the right one.
         /// </summary>
-        private async Task RefreshAsync(string? selectAfter = null, string? folder = null, bool quiet = false)
+        /// <returns>
+        /// True only when the folder was read again and is what the pane now
+        /// shows; false when nothing was reloaded, the reload fell back somewhere
+        /// else, or a newer navigation took over. Callers announce on true only.
+        /// </returns>
+        private async Task<bool> RefreshAsync(string? selectAfter = null, string? folder = null, bool quiet = false)
         {
             // The folder the operation happened in — given, or the one the item
             // to land on is in, or where the window is — and every pane showing
@@ -3892,17 +4139,17 @@ namespace ExplorerNative
                 // search rather than replacing them with a folder. Only one
                 // that happened under the folder searched — an operation
                 // finishing in the other tab has nothing to do with them.
-                if (pane.SearchTerm == null || !IsUnder(folder, pane.CurrentPath)) return;
+                if (pane.SearchTerm == null || !IsUnder(folder, pane.CurrentPath)) return false;
             }
 
-            if (pane.Searching) { pane.NeedsRefresh = true; return; }
+            if (pane.Searching) { pane.NeedsRefresh = true; return false; }
 
             if (pane.SearchTerm is { } term)
             {
-                if (quiet) { pane.NeedsRefresh = true; return; }
+                if (quiet) { pane.NeedsRefresh = true; return false; }
                 try { await RunSearchAsync(term); }
                 catch (Exception ex) { AnnounceOperation("search.failed", $"Could not search: {ex.Message}"); }
-                return;
+                return false;
             }
 
             // On the Drive, a refresh has to go back to Google. The listing a
@@ -3916,7 +4163,7 @@ namespace ExplorerNative
             // search's folder cache too.
             if (!quiet) Drive?.Forget(pane.CurrentPath);
 
-            await NavigateAsync(pane.CurrentPath, preferPath: selectAfter,
+            return await NavigateAsync(pane.CurrentPath, preferPath: selectAfter,
                 onPane: pane, quiet: quiet, keepFocus: selectAfter == null);
         }
 
@@ -5113,8 +5360,10 @@ namespace ExplorerNative
                     {
                         current = "Counting what to copy";
                         Show();
-                        var (files, bytes) = await counting.MeasureOnDrive(paths,
-                            name => { current = $"Counting: {name}"; Show(); }, cts.Token);
+                        // On a worker: its first pass reads the listings it
+                        // already holds synchronously, before its first await.
+                        var (files, bytes) = await Task.Run(() => counting.MeasureOnDrive(paths,
+                            name => { current = $"Counting: {name}"; Show(); }, cts.Token));
                         filesTotal = Math.Max(files, 1);
                         bytesTotal = bytes;
                         current = "";
@@ -5124,10 +5373,17 @@ namespace ExplorerNative
                         report: report);
                 }
                 catch (OperationCanceledException) when (cts.IsCancellationRequested) { cancelled = true; }
-                window.Finish();
+                catch (Exception ex)
+                {
+                    // Anything else is this transfer failing, said as one. It used
+                    // to escape, skipping the refresh, leaving the window open and
+                    // counted, and the paste saying it could not even start.
+                    errors.Add(ex.Message);
+                }
             }
             finally
             {
+                window.Finish();
                 RunningTransfers--;
                 EndTransferTo(destination);
                 foreach (var origin in origins) EndTransferTo(origin);
@@ -5708,9 +5964,9 @@ namespace ExplorerNative
             // the folder watcher never refreshes anything again for the life of
             // the process. Nothing connects that back to a copy that went wrong.
             //
-            // Refreshing while it is still raised is deliberate and safe:
-            // _suppressWatch is read only by the watcher's own tick, never by an
-            // explicit reload, so the refreshes below all happen normally.
+            // Refreshing while it is still raised is deliberate and safe: the
+            // hold is read only by the watcher's own tick, never by an explicit
+            // reload, so the refreshes below all happen normally.
             //
             // Only the destination is held down, not the whole watcher. See
             // _transferTargets: this transfer may now run for an hour with
@@ -5734,17 +5990,27 @@ namespace ExplorerNative
                 //
                 // And under keep both, what already held a name means the copy
                 // went elsewhere — "X (2)" — so "X" is not where to look for it.
-                var alreadyThere = move && fromDrive
-                    ? await Task.Run(() => paths
-                        .Select(p => Path.GetFileName(p.TrimEnd(Path.DirectorySeparatorChar)))
-                        .Where(n => File.Exists(NameRules.ExactPath(Path.Combine(destination, n))) ||
-                                    Directory.Exists(NameRules.ExactPath(Path.Combine(destination, n))))
-                        .ToHashSet(StringComparer.OrdinalIgnoreCase))
-                    : null;
-                var merged = conflicts == PasteConflictPolicy.FillGaps
-                    ? alreadyThere?.Where(n => Directory.Exists(NameRules.ExactPath(Path.Combine(destination, n))))
-                        .ToHashSet(StringComparer.OrdinalIgnoreCase)
-                    : null;
+                // Both asked on the worker: the destination can be a share, and
+                // the folder check used to run per name on the UI thread.
+                HashSet<string>? alreadyThere = null, merged = null;
+                if (move && fromDrive)
+                {
+                    bool fillGaps = conflicts == PasteConflictPolicy.FillGaps;
+                    (alreadyThere, merged) = await Task.Run(() =>
+                    {
+                        var there = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        var folders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                        foreach (var p in paths)
+                        {
+                            var n = Path.GetFileName(p.TrimEnd(Path.DirectorySeparatorChar));
+                            var at = NameRules.ExactPath(Path.Combine(destination, n));
+                            bool isFolder = Directory.Exists(at);
+                            if (isFolder || File.Exists(at)) there.Add(n);
+                            if (isFolder) folders.Add(n);
+                        }
+                        return (there, fillGaps ? folders : null);
+                    });
+                }
                 var renamedAway = conflicts == PasteConflictPolicy.AutoRename ? alreadyThere : null;
 
                 // Two sources of one name: the second arrives numbered, whatever
@@ -6065,16 +6331,29 @@ namespace ExplorerNative
                 return;
             }
 
-            var remembered = ArchiveFormats.ById(_settings.ArchiveFormatId);
-            var startFormat = remembered is { CanCreate: true } ? remembered : ArchiveFormats.Zip;
+            // The dialog and what it is built from were outside every try, in an
+            // async void: a dialog throwing on its way up took the window with it.
+            ArchiveRequest? request;
+            try
+            {
+                var remembered = ArchiveFormats.ById(_settings.ArchiveFormatId);
+                var startFormat = remembered is { CanCreate: true } ? remembered : ArchiveFormats.Zip;
 
-            // Asked before the dialog is built, on a worker: it decides whether a
-            // bare .gz is offered, and the answer comes from the disk.
-            var single = paths.Length == 1 &&
-                         await Task.Run(() => { try { return File.Exists(paths[0]); } catch { return false; } });
+                // Asked before the dialog is built, on a worker: it decides whether a
+                // bare .gz is offered, and the answer comes from the disk.
+                var single = paths.Length == 1 &&
+                             await Task.Run(() => { try { return File.Exists(paths[0]); } catch { return false; } });
+                if (IsDisposed) return;
 
-            var request = ArchiveForm.Ask(this, destination, paths, startFormat,
-                _settings.ArchiveCompression, single);
+                request = ArchiveForm.Ask(this, destination, paths, startFormat,
+                    _settings.ArchiveCompression, single);
+            }
+            catch (Exception ex)
+            {
+                Announce($"Could not compress: {ex.Message}", isError: true);
+                RestoreListFocus();
+                return;
+            }
             if (request == null) { RestoreListFocus(); return; }
 
             using var cts = new CancellationTokenSource();
@@ -6895,20 +7174,24 @@ namespace ExplorerNative
             // the window solid with no way to tell whether it had crashed.
             (int Done, List<string> Errors) outcome;
 
-            // Both flags raised on the last line before the try, with nothing
-            // between them and it. They used to be raised three statements
-            // earlier, with an announcement in the gap — and an announcement that
-            // throws there leaves `_suppressWatch` raised for the life of the
-            // process, so the folder watcher never refreshes anything again, and
-            // `_deleting` stuck true, so Delete never works again either. Neither
-            // has anything on screen to connect it back to the delete that went
-            // wrong. That is the exact shape of bug this file already has a rule
-            // about, one method along, for the same counter.
+            // The folders being deleted from are held off the watcher, one refresh
+            // at the end rather than one per file removed — those folders only.
+            // It was the whole window, and the Drive trash takes most of a second
+            // an item, so a big delete there froze every other folder's updates.
+            // Counted as a running transfer, so closing asks first.
+            //
+            // Everything raised on the last lines before the try, with nothing
+            // that can throw between them and it: a raise left standing is a
+            // folder that never refreshes again, and `_deleting` stuck true is a
+            // Delete key that never works again.
             var windowHandle = Handle;
+            var fromFolders = paths.Select(SafeParent).Where(f => f != null).Cast<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             AnnounceOperation(paths.Length == 1 ? "Deleting" : $"Deleting {paths.Length} items");
 
             _deleting = true;
-            _suppressWatch++;   // one refresh at the end, not one per file removed
+            RunningTransfers++;
+            foreach (var folder in fromFolders) BeginTransferTo(folder);
             try
             {
                 if (onDrive)
@@ -6965,7 +7248,12 @@ namespace ExplorerNative
                     return (done, errors);
                 });
             }
-            finally { _deleting = false; _suppressWatch--; }
+            finally
+            {
+                _deleting = false;
+                RunningTransfers--;
+                foreach (var folder in fromFolders) EndTransferTo(folder);
+            }
 
             if (IsDisposed) return;
 
@@ -7079,7 +7367,7 @@ namespace ExplorerNative
             RestoreListFocus();
         }
 
-        private void ShowShellMenuForSelection()
+        private async void ShowShellMenuForSelection()
         {
             var paths = SelectedPaths();
             if (paths.Length == 0)
@@ -7088,10 +7376,41 @@ namespace ExplorerNative
                 paths = new[] { Active.CurrentPath };
             }
 
-            var list = Active.List;
-            Point where = MenuAnchor(list);
+            var pane = Active;
+            var list = pane.List;
 
-            switch (ShellContextMenu.Show(this, paths, where.X, where.Y))
+            // Building the menu binds the folder through the shell on this
+            // thread, and on a share that has gone to sleep that is the window
+            // frozen with nothing said. Asked first, off the thread, bounded.
+            ShellContextMenu.MenuOutcome outcome;
+            try
+            {
+                var folder = SafeParent(paths[0]) ?? paths[0];
+                var probe = await ProbeDirectoryAsync(folder);
+                if (IsDisposed) return;
+                if (probe != FolderProbe.Present)
+                {
+                    Announce(probe == FolderProbe.NotResponding
+                        ? $"{FolderDisplayName(folder)} is not responding, so the Windows menu cannot be built"
+                        : $"{FolderDisplayName(folder)} is not available", isError: true);
+                    return;
+                }
+
+                // Somebody moved on while it was asked: the menu would be for
+                // rows that are no longer in front of them.
+                if (pane != Active) return;
+
+                Point where = MenuAnchor(list);
+                outcome = ShellContextMenu.Show(this, paths, where.X, where.Y);
+            }
+            catch (Exception ex)
+            {
+                // async void: an exception here would take the window with it.
+                Announce($"Windows menu unavailable: {ex.Message}", isError: true);
+                return;
+            }
+
+            switch (outcome)
             {
                 // A command was chosen. Whatever it does finishes after the shell
                 // hands back, so a refresh here was always a moment too early —
@@ -7154,28 +7473,46 @@ namespace ExplorerNative
             // the exact freeze DirectoryExistsAsync exists to prevent, reached by
             // calling the synchronous one two lines above where the rule is
             // written down.
-            if (!await DirectoryExistsAsync(path)) { Announce("Select a folder first"); return; }
-
-            AnnounceOperation("size.calculating", $"Measuring {Path.GetFileName(path)}");
-
-            // Drive answers for its own folders, without populating the tree.
-            FolderSizeResult? fromDrive = null;
-            if (Drive is { } drive && drive.Owns(path))
+            // async void from a key: anything escaping takes the window with it.
+            try
             {
-                try { fromDrive = await drive.FolderSizeAsync(path); } catch { }
+                if (!await DirectoryExistsAsync(path)) { Announce("Select a folder first"); return; }
+
+                AnnounceOperation("size.calculating", $"Measuring {Path.GetFileName(path)}");
+
+                // Drive answers for its own folders, without populating the tree.
+                // When it cannot, the letter is not walked instead: the walk
+                // skips Drive folders, so it would be a wrong answer at the cost
+                // of a listing per folder.
+                FolderSizeResult result;
+                if (Drive is { } drive && drive.Owns(path))
+                {
+                    FolderSizeResult? fromDrive = null;
+                    try { fromDrive = await drive.FolderSizeAsync(path); } catch { }
+                    if (IsDisposed) return;
+                    if (fromDrive is not { } known)
+                    {
+                        Announce($"Could not measure {Path.GetFileName(path)}: Google Drive did not answer", isError: true);
+                        return;
+                    }
+                    result = known;
+                }
+                else result = await _folderSizes.CalculateAsync(path);
                 if (IsDisposed) return;
+
+                var size = SizeFormatter.Format(result.Bytes, _settings.SizeUnits);
+                SetSizeOverride(pane, path, size + (result.Complete ? "" : "+"));
+
+                // One id for both endings. A walk that ran out of time still answers
+                // the question that was asked, and the sentence says it is partial.
+                AnnounceOperation("size.done", result.Complete
+                    ? $"{Path.GetFileName(path)}: {size}, {result.Files} files in {result.Folders} folders"
+                    : $"{Path.GetFileName(path)}: {size} so far, incomplete");
             }
-            var result = fromDrive ?? await _folderSizes.CalculateAsync(path);
-            if (IsDisposed) return;
-
-            var size = SizeFormatter.Format(result.Bytes, _settings.SizeUnits);
-            SetSizeOverride(pane, path, size + (result.Complete ? "" : "+"));
-
-            // One id for both endings. A walk that ran out of time still answers
-            // the question that was asked, and the sentence says it is partial.
-            AnnounceOperation("size.done", result.Complete
-                ? $"{Path.GetFileName(path)}: {size}, {result.Files} files in {result.Folders} folders"
-                : $"{Path.GetFileName(path)}: {size} so far, incomplete");
+            catch (Exception ex)
+            {
+                if (!IsDisposed) Announce($"Could not measure {Path.GetFileName(path)}: {ex.Message}", isError: true);
+            }
         }
 
         /// <summary>
