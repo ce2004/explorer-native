@@ -75,6 +75,7 @@ $p.WaitForExit(120000)
 | FileOperations / RoboCopyEngine / ShellDelete / ClipboardInterop | Managed copy (renames) / robocopy path / recycle and delete / clipboard |
 | ConflictForm / ProgressForm / PromptForm | Paste conflict question / modeless transfer window / labelled prompt |
 | ArchiveFormats / ArchiveEngine / ArchiveForm / ExtractionRules | Format table / front door / Compress dialog / safe targets |
+| ArchiveBrowser | Archives opened as folders: listing tree, one-member extraction, %TEMP% cache |
 | ZipEngine / TarEngine / ParallelGZip / Crc32 / BsdTar | Parallel zip / tar / gzip members / ARM CRC / Windows tar.exe |
 | ShellRegistration / ShellContextMenu / ShellLink / FileLauncher | Verbs, default explorer / real context menu / .lnk / fast open |
 | PerfCounters / SizeFormatter / TimeFormatter | Keystroke counters / spoken sizes / spoken times |
@@ -258,6 +259,7 @@ Our own provider over `cldapi.dll`, so the app's ordinary file code works on the
 - Parallel deflate. One worker and sixteen must give byte-identical output. This machine runs ~3.8 cores.
 - `SafeTarget` checks containment (UNC before trimming slashes). Folders are plan entries. Zip64 only when needed. UTF-8 flag on. CRC-32 is the ARM `Crc32` instruction, not `Crc32C`.
 - Progress counts while compressing. Test progress with one file. Unreadable files are skipped, not fatal. Every archive written is round-tripped through bsdtar.
+- Browsing (Enter on an archive): `Pane.Archive` is set and `CurrentPath` is a virtual path through the archive (`C:\x\a.zip\Disc 1`). Never probe, watch or read it as a folder; every command that writes refuses with `RefuseInArchive`, and its menu items are in `_archiveHidden`. Zip and tar are listed from their headers and one member is extracted on its own (`ExtractionRules.Selecting`, so SafeTarget still applies). bsdtar formats are extracted whole into `tree-*` in the cache, because their names are only right on disk. Not on the Drive letter, and not .iso (Windows mounts those).
 
 ## Windows and shell traps
 

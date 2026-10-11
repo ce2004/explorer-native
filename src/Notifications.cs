@@ -325,6 +325,15 @@ namespace ExplorerNative
             Live("extract.failed", "Could not extract", FileOperations, Loud, "Could not extract: {0}", "the archive is damaged"),
             Live("extract.cancelled", "Extracting cancelled", FileOperations, Say, "Extracting cancelled"),
 
+            // Archives opened as folders with Enter. Read-only: anything that
+            // would change one is refused in a sentence, and the menu items that
+            // could only refuse are hidden while you are inside one.
+            Live("archive.open.failed", "Archive would not open", FileOperations, Loud, "Could not open {0}: {1}", "album.zip", "this zip is password-protected"),
+            Live("archive.open.cancelled", "Opening an archive cancelled", FileOperations, Say, "Opening cancelled"),
+            Live("archive.warning", "Archive only partly shown", FileOperations, Say, "{0}", "This archive is damaged, so only part of it is shown."),
+            Live("archive.refused", "Archive cannot be changed", FileOperations, Say, "Archives are read-only here"),
+            Live("archive.member.failed", "Could not take a file out of an archive", FileOperations, Loud, "Could not get {0} out of the archive: {1}", "track 1.flac", "it is damaged in the archive"),
+
             Live("conflict.overwrite", "Overwriting", FileOperations, Bar, "Replacing {0}", "song.flac"),
             Live("conflict.rename", "Renamed to avoid a clash", FileOperations, Bar, "Saved as {0}", "song (2).flac"),
             Live("conflict.skip", "Skipped an existing file", FileOperations, Bar, "Skipped {0}", "song.flac"),

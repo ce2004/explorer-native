@@ -228,6 +228,16 @@ namespace ExplorerNative
             /// them; a missed flag is a list that stays wrong.
             /// </summary>
             public volatile bool NeedsRefresh;
+
+            /// <summary>
+            /// The archive this pane is inside, opened with Enter, or null.
+            /// <see cref="CurrentPath"/> is then a path through it —
+            /// "C:\Music\album.zip\Disc 1" — that exists nowhere on disk, so
+            /// nothing that reads or writes the folder may be pointed at it:
+            /// there is no watcher, and every command that would change the
+            /// archive refuses (<see cref="RefuseInArchive"/>).
+            /// </summary>
+            public ArchiveListing? Archive;
         }
 
         private const string DrivesPath = "::drives";
@@ -471,15 +481,25 @@ namespace ExplorerNative
             // Reads each pane directly. Temporarily reassigning _activeIndex to
             // reuse FocusedPath() would make every selection handler briefly
             // believe the wrong pane was active.
-            _settings.FocusedPathTab1 = FocusedPathOf(_panes[0]) ?? "";
-            _settings.FocusedPathTab2 = FocusedPathOf(_panes[1]) ?? "";
+            _settings.FocusedPathTab1 = RealFocusOf(_panes[0]) ?? "";
+            _settings.FocusedPathTab2 = RealFocusOf(_panes[1]) ?? "";
 
             if (_settings.RememberLastFolder)
             {
-                _settings.LastFolder = _panes[0].CurrentPath;
-                _settings.LastFolderTab2 = _panes[1].CurrentPath;
+                _settings.LastFolder = RealFolderOf(_panes[0]);
+                _settings.LastFolderTab2 = RealFolderOf(_panes[1]);
             }
         }
+
+        /// <summary>
+        /// The folder to come back to: inside an archive, the folder the archive
+        /// is in, because the path through it is not a folder anything can open.
+        /// </summary>
+        private static string RealFolderOf(Pane pane) =>
+            pane.Archive is { } archive ? SafeParent(archive.ArchivePath) ?? pane.CurrentPath : pane.CurrentPath;
+
+        private static string? RealFocusOf(Pane pane) =>
+            pane.Archive is { } archive ? archive.ArchivePath : FocusedPathOf(pane);
 
         private static string? NullIfBlank(string? value) =>
             string.IsNullOrWhiteSpace(value) ? null : value;
@@ -847,11 +867,19 @@ namespace ExplorerNative
             file.DropDownItems.Add(Item("&Open", Keys.None, ActivateFocused));
             var playCd = Item("Play &CD", Keys.None, PlayCd);
             file.DropDownItems.Add(playCd);
-            file.DropDownItems.Add(Item("New f&ile", Keys.F7, CreateNewFile));
-            file.DropDownItems.Add(Item("New &folder", Keys.F8, CreateNewFolder));
-            file.DropDownItems.Add(Item("&Rename", Keys.F2, RenameSelected));
-            file.DropDownItems.Add(Item("&Delete", Keys.Delete, () => DeleteSelected(false)));
-            file.DropDownItems.Add(Item("Delete &permanently", Keys.Shift | Keys.Delete, () => DeleteSelected(true)));
+            // Each of these changes the folder on screen, so inside an archive,
+            // which is read-only, they are hidden as the menu opens. Their keys
+            // still answer, with "Archives are read-only here".
+            var changesFolder = new[]
+            {
+                Item("New f&ile", Keys.F7, CreateNewFile),
+                Item("New &folder", Keys.F8, CreateNewFolder),
+                Item("&Rename", Keys.F2, RenameSelected),
+                Item("&Delete", Keys.Delete, () => DeleteSelected(false)),
+                Item("Delete &permanently", Keys.Shift | Keys.Delete, () => DeleteSelected(true)),
+            };
+            foreach (var item in changesFolder) file.DropDownItems.Add(item);
+            _archiveHidden.AddRange(changesFolder);
 
             // Only while Google Drive is switched on (Connect and Disconnect
             // switch it), decided as the menu opens and after Preferences.
@@ -859,10 +887,13 @@ namespace ExplorerNative
             _syncConfiguratorItem.Visible = DriveMonitorForm.OnFileMenu(_settings);
             file.DropDownItems.Add(_syncConfiguratorItem);
             file.DropDownOpening += (_, _) => _syncConfiguratorItem.Visible = DriveMonitorForm.OnFileMenu(_settings);
+            file.DropDownOpening += (_, _) => ShowArchiveHidden();
 
             file.DropDownItems.Add(new ToolStripSeparator());
             file.DropDownItems.Add(BuildSortMenu());
-            file.DropDownItems.Add(Item("P&roperties (Alt+Enter)", Keys.None, ShowProperties));
+            var properties = Item("P&roperties (Alt+Enter)", Keys.None, ShowProperties);
+            file.DropDownItems.Add(properties);
+            _archiveHidden.Add(properties);
             file.DropDownItems.Add(new ToolStripSeparator());
             file.DropDownItems.Add(Item("E&xit", Keys.None, Close));
 
@@ -874,8 +905,12 @@ namespace ExplorerNative
 
             var edit = new ToolStripMenuItem("&Edit");
             edit.DropDownItems.Add(Item("&Copy", Keys.Control | Keys.C, () => CopyToClipboard(false)));
-            edit.DropDownItems.Add(Item("Cu&t", Keys.Control | Keys.X, () => CopyToClipboard(true)));
-            edit.DropDownItems.Add(Item("&Paste", Keys.Control | Keys.V, PasteClipboard));
+            var cut = Item("Cu&t", Keys.Control | Keys.X, () => CopyToClipboard(true));
+            var paste = Item("&Paste", Keys.Control | Keys.V, PasteClipboard);
+            edit.DropDownItems.Add(cut);
+            edit.DropDownItems.Add(paste);
+            _archiveHidden.Add(cut);
+            _archiveHidden.Add(paste);
             edit.DropDownItems.Add(new ToolStripSeparator());
             edit.DropDownItems.Add(Item("Copy &path", Keys.Alt | Keys.C, CopyPath));
             edit.DropDownItems.Add(DriveLinkItem("Copy Drive &link", Keys.Alt | Keys.L, makePublic: false));
@@ -888,7 +923,11 @@ namespace ExplorerNative
             // A menu is read out one item at a time, and two entries about
             // Google Drive are two entries heard on the way past every other one
             // — on a machine with no Drive mounted at all, twice for nothing.
-            edit.DropDownOpening += (_, _) => ShowDriveLinkItems();
+            edit.DropDownOpening += (_, _) =>
+            {
+                ShowDriveLinkItems();
+                ShowArchiveHidden();
+            };
             menu.Items.Add(edit);
 
             var go = new ToolStripMenuItem("&Go");
@@ -897,7 +936,10 @@ namespace ExplorerNative
             go.DropDownItems.Add(Item("Go to &path…", Keys.Control | Keys.L, GoToPath));
             go.DropDownItems.Add(Item("&Home", Keys.Alt | Keys.Home,
                 () => Navigate(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile))));
-            go.DropDownItems.Add(Item("&Search here…", Keys.F1, SearchHere));
+            var search = Item("&Search here…", Keys.F1, SearchHere);
+            go.DropDownItems.Add(search);
+            _archiveHidden.Add(search);
+            go.DropDownOpening += (_, _) => ShowArchiveHidden();
             go.DropDownItems.Add(Item("&Refresh", Keys.F5, Refresh_));
             go.DropDownItems.Add(Item("Res&tart application", Keys.Control | Keys.R, RestartApp));
             menu.Items.Add(go);
@@ -906,7 +948,10 @@ namespace ExplorerNative
 
             var tools = new ToolStripMenuItem("T&ools");
             tools.DropDownItems.Add(Item("Calculate folder &size", Keys.Control | Keys.Shift | Keys.S, CalculateFocusedFolderSize));
-            tools.DropDownItems.Add(Item("&Windows context menu", Keys.None, ShowShellMenuForSelection));
+            var windowsMenu = Item("&Windows context menu", Keys.None, ShowShellMenuForSelection);
+            tools.DropDownItems.Add(windowsMenu);
+            _archiveHidden.Add(windowsMenu);
+            tools.DropDownOpening += (_, _) => ShowArchiveHidden();
             tools.DropDownItems.Add(new ToolStripSeparator());
 
             // Compressing and extracting are not here. They live on the context
@@ -1112,8 +1157,11 @@ namespace ExplorerNative
         /// </summary>
         private void ShowSongProperties()
         {
-            var path = FocusedPath();
             var state = Program.AudioState;
+
+            // A row inside an archive is not a file to read tags from; what is
+            // playing still is, and may well be the track taken out of it.
+            var path = Active.Archive == null ? FocusedPath() : null;
 
             if (path == null || !AudioFiles.IsAudio(path, _settings.AudioExtensions))
                 path = state is { HasTrack: true } ? state.Path : path;
@@ -1122,9 +1170,13 @@ namespace ExplorerNative
 
             // The Edit tags button only where it could do something: not on
             // the Drive letter and not on an Ogg file, decided from the path.
+            // Nor on a track taken out of an archive: that is a temporary copy,
+            // and its tags would vanish with it.
             var song = path;
+            bool fromArchive = song.StartsWith(ArchiveBrowser.CacheRoot + Path.DirectorySeparatorChar,
+                StringComparison.OrdinalIgnoreCase);
             Func<IWin32Window, Task<bool>>? editTags =
-                TagEditing.RefusalFor(song, IsOnDrive, null) == null
+                !fromArchive && TagEditing.RefusalFor(song, IsOnDrive, null) == null
                     ? owner => EditTagsAsync(new[] { song }, owner)
                     : null;
 
@@ -1145,6 +1197,7 @@ namespace ExplorerNative
         /// </summary>
         private async void EditTagsForSelection()
         {
+            if (RefuseInArchive()) return;
             try
             {
                 var paths = SelectedPaths();
@@ -1254,6 +1307,21 @@ namespace ExplorerNative
         /// </summary>
         private readonly List<ToolStripMenuItem> _driveLinkItems = new();
 
+        /// <summary>
+        /// Every menu entry that can only refuse while the pane is inside an
+        /// archive — the ones that would change it, and the ones that need the
+        /// item to be a real file on disk — on whichever menu it sits. Hidden as
+        /// a menu opens over an archive and shown again everywhere else; a hidden
+        /// entry keeps its shortcut, which answers for itself.
+        /// </summary>
+        private readonly List<ToolStripMenuItem> _archiveHidden = new();
+
+        private void ShowArchiveHidden()
+        {
+            bool outside = Active.Archive == null;
+            foreach (var item in _archiveHidden) item.Visible = outside;
+        }
+
         private ToolStripMenuItem DriveLinkItem(string text, Keys shortcut, bool makePublic)
         {
             var item = Item(text, shortcut, () => CopyDriveLink(makePublic));
@@ -1297,8 +1365,8 @@ namespace ExplorerNative
             _contextMenu.Items.Add(Item("&Open", Keys.None, ActivateFocused));
             _contextMenu.Items.Add(new ToolStripSeparator());
             _contextMenu.Items.Add(Item("&Copy", Keys.None, () => CopyToClipboard(false)));
-            _contextMenu.Items.Add(Item("Cu&t", Keys.None, () => CopyToClipboard(true)));
-            _contextMenu.Items.Add(Item("&Paste", Keys.None, PasteClipboard));
+            _contextMenu.Items.Add(ArchiveHidden(Item("Cu&t", Keys.None, () => CopyToClipboard(true))));
+            _contextMenu.Items.Add(ArchiveHidden(Item("&Paste", Keys.None, PasteClipboard)));
             _contextMenu.Items.Add(Item("Copy &path", Keys.None, CopyPath));
             _contextMenu.Items.Add(DriveLinkItem("Copy Drive &link", Keys.None, makePublic: false));
             _contextMenu.Items.Add(DriveLinkItem("Copy p&ublic Drive link", Keys.None, makePublic: true));
@@ -1310,8 +1378,8 @@ namespace ExplorerNative
             _shortcutItem = Item("Create &shortcut", Keys.None, CreateShortcut);
             _contextMenu.Items.Add(_shortcutItem);
 
-            _contextMenu.Items.Add(Item("&Rename", Keys.None, RenameSelected));
-            _contextMenu.Items.Add(Item("&Delete", Keys.None, () => DeleteSelected(false)));
+            _contextMenu.Items.Add(ArchiveHidden(Item("&Rename", Keys.None, RenameSelected)));
+            _contextMenu.Items.Add(ArchiveHidden(Item("&Delete", Keys.None, () => DeleteSelected(false))));
             _contextMenu.Items.Add(new ToolStripSeparator());
 
             // Compress asks a question and Extract does not, which is why only
@@ -1328,7 +1396,7 @@ namespace ExplorerNative
             // answer "that is not an archive" is a word heard on every single
             // opening of the menu to be useful on almost none of them. Compress
             // stays, because anything selected can be compressed.
-            _contextMenu.Items.Add(Item("&Compress…", Keys.None, CompressSelection));
+            _contextMenu.Items.Add(ArchiveHidden(Item("&Compress…", Keys.None, CompressSelection)));
 
             _extractItem = Item("&Extract", Keys.None, () => ExtractFocused(intoNewFolder: true));
             _extractHereItem = Item("Extract h&ere", Keys.None, () => ExtractFocused(intoNewFolder: false));
@@ -1342,9 +1410,15 @@ namespace ExplorerNative
             // the Drive letter or over an Ogg file it could only refuse.
             _editTagsItem = Item("Edit ta&gs…", Keys.None, EditTagsForSelection);
             _contextMenu.Items.Add(_editTagsItem);
-            _contextMenu.Items.Add(Item("P&roperties", Keys.None, ShowProperties));
+            _contextMenu.Items.Add(ArchiveHidden(Item("P&roperties", Keys.None, ShowProperties)));
             _contextMenu.Items.Add(new ToolStripSeparator());
-            _contextMenu.Items.Add(Item("&More Windows options…", Keys.None, ShowShellMenuForSelection));
+            _contextMenu.Items.Add(ArchiveHidden(Item("&More Windows options…", Keys.None, ShowShellMenuForSelection)));
+        }
+
+        private ToolStripMenuItem ArchiveHidden(ToolStripMenuItem item)
+        {
+            _archiveHidden.Add(item);
+            return item;
         }
 
         /// <summary>
@@ -1863,10 +1937,27 @@ namespace ExplorerNative
             // the last one say nothing about this one.
             _consecutiveProbeFailures = 0;
 
+            // Inside the archive the pane is already in: a folder of a listing
+            // held in memory, so nothing is probed, watched or read.
+            if (path != DrivesPath && pane.Archive is { } archive &&
+                ArchiveBrowser.InnerPathOf(archive.ArchivePath, path) is { } inner)
+            {
+                try
+                {
+                    return await ShowArchiveFolderAsync(pane, archive, inner, preferPath, cameFrom, mine, quiet, keepFocus);
+                }
+                catch (Exception ex)
+                {
+                    Announce($"Could not open folder: {ex.Message}", isError: true);
+                    return false;
+                }
+            }
+
             if (path == DrivesPath)
             {
                 var driveToken = BeginPaneWork(pane);
                 pane.Searching = false;
+                pane.Archive = null;
 
                 pane.CurrentPath = DrivesPath;
                 if (pane == Active) _pathLabel.Text = "Drives";
@@ -1923,6 +2014,11 @@ namespace ExplorerNative
                 // it, and that search's own clean-up no longer owns the flag.
                 pane.Searching = false;
 
+                // Out of any archive: this is a real folder. Kept to put back if
+                // the folder will not open and the archive stays on screen.
+                var leftArchive = pane.Archive;
+                pane.Archive = null;
+
                 pane.CurrentPath = full;
                 if (pane == Active) _pathLabel.Text = full;
 
@@ -1968,6 +2064,10 @@ namespace ExplorerNative
                     // always somewhere valid to be.
                     var restore = string.IsNullOrEmpty(cameFrom) ? DrivesPath : cameFrom;
                     pane.CurrentPath = restore;
+
+                    // Still inside the archive that is still on screen.
+                    if (leftArchive != null && ArchiveBrowser.InnerPathOf(leftArchive.ArchivePath, restore) != null)
+                        pane.Archive = leftArchive;
 
                     // Still showing the results, so still in them: Escape, Enter
                     // and the watcher all go by the term.
@@ -2154,7 +2254,8 @@ namespace ExplorerNative
         /// </summary>
         private void ArmWatcher(Pane pane, string path)
         {
-            if (string.IsNullOrEmpty(path) || path == DrivesPath) { DisarmWatcher(pane); return; }
+            // Nor inside an archive, whose folders are not on disk to watch.
+            if (string.IsNullOrEmpty(path) || path == DrivesPath || pane.Archive != null) { DisarmWatcher(pane); return; }
 
             // A refresh re-navigates to the same folder, so this runs every time
             // the list is rebuilt. Tearing the watcher down and building another
@@ -2665,7 +2766,7 @@ namespace ExplorerNative
         /// it would drop the removal notification that puts it back.
         /// </summary>
         private static bool NeedsWatcher(Pane pane) =>
-            pane.Removal == null &&
+            pane.Removal == null && pane.Archive == null &&
             !string.IsNullOrEmpty(pane.CurrentPath) && pane.CurrentPath != DrivesPath &&
             pane.Watcher == null && pane.ArmingPath == null && !string.IsNullOrEmpty(pane.LastLoadedPath);
 
@@ -2836,6 +2937,10 @@ namespace ExplorerNative
             var pane = Active;
             var path = pane.CurrentPath;
             if (string.IsNullOrEmpty(path)) return;
+
+            // A path through an archive is not a folder on disk, and asked about
+            // as one it would answer "gone" and take the pane out of it.
+            if (pane.Archive != null) return;
             int navigation = pane.NavigationId;
             bool Overtaken() => IsDisposed || pane.NavigationId != navigation || pane.CurrentPath != path ||
                                 pane.Probing != 0 || pane.Loading || pane.Searching;
@@ -3972,6 +4077,283 @@ namespace ExplorerNative
         private static int CompareNames(Entry a, Entry b) =>
             NameRules.CompareNames(a.Name, a.NameKey, a.Path, b.Name, b.NameKey, b.Path);
 
+        // ---------- Archives as folders ----------
+
+        /// <summary>
+        /// How long opening or taking something out of an archive runs before
+        /// its progress window appears. A zip opens in a few milliseconds and a
+        /// window flashing up and away for it would be two announcements of
+        /// nothing; a big .tar.gz or a 7z takes seconds and needs a Cancel.
+        /// </summary>
+        private const int ArchiveWindowDelayMs = 1000;
+
+        /// <summary>
+        /// Says that the pane is inside an archive and the command would change
+        /// it, and returns true; returns false anywhere else. Every command that
+        /// writes to the folder on screen or to the selection asks this first.
+        /// </summary>
+        private bool RefuseInArchive()
+        {
+            if (Active.Archive == null) return false;
+            AnnounceOperation("archive.refused", ArchiveBrowser.ReadOnlyMessage);
+            RestoreListFocus();
+            return true;
+        }
+
+        /// <summary>
+        /// Runs archive work on a worker with a progress window that appears only
+        /// if it takes a while, and says how it ended when it did not finish.
+        /// Returns whether it finished, and what it produced.
+        /// </summary>
+        private async Task<(bool Done, T? Value)> RunArchiveWork<T>(
+            string title,
+            Func<IProgress<TransferProgress>, CancellationToken, T> work,
+            string cancelledId, string cancelledText,
+            string failedId, string failedText)
+        {
+            // Cancelled, never disposed: the worker still holds its token.
+            var cts = new CancellationTokenSource();
+            using var window = new ProgressForm(title, _settings, cts);
+            var progress = new Progress<TransferProgress>(p => window.Update(p));
+
+            bool shown = false;
+            RunningTransfers++;
+            try
+            {
+                var task = Task.Run(() => work(progress, cts.Token));
+                if (await Task.WhenAny(task, Task.Delay(ArchiveWindowDelayMs)) != task && !IsDisposed)
+                {
+                    window.Show();
+                    shown = true;
+                }
+
+                try
+                {
+                    var value = await task;
+                    return (true, value);
+                }
+                catch (OperationCanceledException)
+                {
+                    if (!IsDisposed) AnnounceOperation(cancelledId, cancelledText);
+                    return (false, default);
+                }
+                catch (Exception ex)
+                {
+                    if (!IsDisposed) AnnounceOperation(failedId, $"{failedText}: {ex.Message.TrimEnd('.')}");
+                    return (false, default);
+                }
+            }
+            finally
+            {
+                RunningTransfers--;
+                window.Finish();
+                if (shown) RestoreListFocus();
+            }
+        }
+
+        /// <summary>
+        /// Enter on an archive: reads what is in it on a worker and shows its top
+        /// level in the pane, as though it were a folder. Anything that goes
+        /// wrong is said and leaves the pane where it was.
+        /// </summary>
+        private async Task OpenArchiveAsync(Pane pane, string archivePath, string inner, string? preferPath,
+            bool keepFocus = false)
+        {
+            // Navigating anywhere meanwhile wins: the archive is then not shown.
+            int navigation = ++pane.NavigationId;
+            var name = Path.GetFileName(archivePath);
+
+            var (done, listing) = await RunArchiveWork($"Opening {name}",
+                (progress, token) => ArchiveBrowser.Open(archivePath, progress, token),
+                "archive.open.cancelled", "Opening cancelled",
+                "archive.open.failed", $"Could not open {name}");
+
+            if (IsDisposed) return;
+            if (!done || listing == null) { RestoreListFocus(); return; }
+            if (pane.NavigationId != navigation) return;
+
+            pane.Archive = listing;
+            bool landed = await NavigateAsync(ArchiveBrowser.VirtualPath(archivePath, inner),
+                preferPath, onPane: pane, keepFocus: keepFocus);
+
+            // After the first row, never instead of it: queued behind it.
+            if (landed && listing.Warning is { } warning) AnnounceOperation("archive.warning", warning);
+        }
+
+        private async void OpenArchive(string archivePath)
+        {
+            try { await OpenArchiveAsync(Active, archivePath, "", null); }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) AnnounceOperation("archive.open.failed",
+                    $"Could not open {Path.GetFileName(archivePath)}: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// F5 inside an archive: reads the archive again, in case it changed on
+        /// disk, and comes back to the same folder and row.
+        /// </summary>
+        private async Task RefreshArchiveAsync(Pane pane)
+        {
+            var archive = pane.Archive;
+            if (archive == null) return;
+            var inner = ArchiveBrowser.InnerPathOf(archive.ArchivePath, pane.CurrentPath) ?? "";
+            await OpenArchiveAsync(pane, archive.ArchivePath, inner, FocusedPathOf(pane), keepFocus: true);
+        }
+
+        /// <summary>
+        /// One folder of the archive the pane is in, from the listing in memory.
+        /// The same landing rules as a real folder: up lands on the folder you
+        /// came out of, a folder visited before reopens on its row, and the row
+        /// is read aloud on arriving.
+        /// </summary>
+        private async Task<bool> ShowArchiveFolderAsync(Pane pane, ArchiveListing archive, string inner,
+            string? preferPath, string cameFrom, int mine, bool quiet, bool keepFocus)
+        {
+            // A folder that is not in the archive (any more): the nearest one that is.
+            while (inner.Length > 0 && !archive.IsFolder(inner)) inner = ArchiveBrowser.ParentOf(inner);
+            var full = ArchiveBrowser.VirtualPath(archive.ArchivePath, inner);
+
+            var token = BeginPaneWork(pane);
+            pane.Searching = false;
+            DisarmWatcher(pane);
+            pane.NeedsRefresh = false;
+            pane.ReloadQuietly = false;
+            pane.Debounce.Clear();
+
+            bool sameFolder = string.Equals(pane.LastLoadedPath, full, StringComparison.OrdinalIgnoreCase);
+            var previousRow = sameFolder ? FocusedPathOf(pane) : null;
+            if (keepFocus && sameFolder) preferPath = previousRow ?? preferPath;
+            preferPath ??= PreferredRowFor(pane, full, cameFrom);
+
+            pane.CurrentPath = full;
+            if (pane == Active) _pathLabel.Text = full;
+
+            bool sizes = _settings.FolderSizes == FolderSizeMode.Automatic;
+            var units = _settings.SizeUnits;
+            var nodes = archive.Children(inner);
+
+            List<Entry> entries;
+            try
+            {
+                // On a worker like any listing: a zip can hold fifty thousand
+                // files in one folder, and sorting them is not free.
+                entries = await Task.Run(() =>
+                {
+                    var rows = new List<Entry>(nodes.Count);
+                    foreach (var node in nodes)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        var row = new Entry(ArchiveBrowser.VirtualPath(archive.ArchivePath, node.InnerPath),
+                            node.Name, node.IsDirectory, node.IsDirectory ? -1 : node.Size, node.Modified);
+
+                        // The listing already knows what each folder holds, so
+                        // automatic folder sizes cost nothing here.
+                        if (node.IsDirectory && sizes) row.SizeOverride = SizeFormatter.Format(node.Size, units);
+                        row.PrepareTypeAhead();
+                        rows.Add(row);
+                    }
+                    return SortLikeAFolder(rows, full);
+                }, token);
+            }
+            catch (OperationCanceledException) { return false; }
+
+            if (token.IsCancellationRequested || IsDisposed || pane.NavigationId != mine) return false;
+
+            SetEntries(pane, entries, preferPath);
+            pane.LastLoadedPath = full;
+
+            bool sameRow = sameFolder && previousRow != null &&
+                           string.Equals(previousRow, FocusedPathOf(pane), StringComparison.OrdinalIgnoreCase);
+            FocusListAndRow(pane, readRowAloud: !(quiet && sameRow));
+
+            if (entries.Count == 0 && pane == Active) AnnounceOperation("nav.empty", "No items");
+            return true;
+        }
+
+        /// <summary>
+        /// Enter on a file inside an archive: just that file is taken out, into
+        /// the cache, and then played by the built-in player or opened in its own
+        /// app exactly as a file on disk would be.
+        /// </summary>
+        private async void OpenArchiveMember(ArchiveListing archive, string path, string name, bool openExternally)
+        {
+            try
+            {
+                var inner = ArchiveBrowser.InnerPathOf(archive.ArchivePath, path);
+                if (inner == null) return;
+
+                var (done, onDisk) = await RunArchiveWork($"Getting {name} out of {Path.GetFileName(archive.ArchivePath)}",
+                    (progress, token) => ArchiveBrowser.ExtractOne(archive, inner, progress, token),
+                    "extract.cancelled", "Extracting cancelled",
+                    "archive.member.failed", $"Could not get {name} out of the archive");
+                if (!done || onDisk == null || IsDisposed) return;
+
+                if (!openExternally && _settings.PlayAudioInApp &&
+                    AudioFiles.IsAudio(onDisk, _settings.AudioExtensions) &&
+                    Program.PlayAudioFile(onDisk))
+                    return;
+
+                if (_settings.SpeakOnOpen) AnnounceOperation($"Opening {name}");
+
+                await Task.Run(() => FileLauncher.Open(onDisk));
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) Announce($"Could not open {name}: {ex.Message}", isError: true);
+            }
+        }
+
+        /// <summary>
+        /// Ctrl+C inside an archive: the selected members, folders with all they
+        /// hold, are taken out into a folder of their own and those files go on
+        /// the clipboard, so Ctrl+V anywhere pastes them like any other copy.
+        /// </summary>
+        private async void CopyOutOfArchive(ArchiveListing archive, string[] paths)
+        {
+            try
+            {
+                var inners = paths.Select(p => ArchiveBrowser.InnerPathOf(archive.ArchivePath, p))
+                    .Where(i => !string.IsNullOrEmpty(i)).Select(i => i!).ToList();
+                if (inners.Count == 0) { AnnounceOperation("clip.nothing", "Nothing selected"); return; }
+
+                var errors = new List<string>();
+                var what = inners.Count == 1 ? Path.GetFileName(paths[0]) : NameRules.Items(inners.Count);
+
+                var (done, arrived) = await RunArchiveWork(
+                    $"Copying {what} out of {Path.GetFileName(archive.ArchivePath)}",
+                    (progress, token) =>
+                    {
+                        var staging = ArchiveBrowser.NewCacheFolder("copy");
+                        return ArchiveBrowser.ExtractSelection(archive, inners, staging, progress, errors, token);
+                    },
+                    "extract.cancelled", "Extracting cancelled",
+                    "archive.member.failed", $"Could not get {what} out of the archive");
+                if (!done || arrived == null || IsDisposed) return;
+
+                if (arrived.Count == 0)
+                {
+                    AnnounceOperation("archive.member.failed",
+                        $"Could not get {what} out of the archive: {(errors.Count > 0 ? errors[0] : "nothing came out")}");
+                    return;
+                }
+
+                if (!ClipboardInterop.SetFiles(arrived.ToArray(), cut: false))
+                {
+                    Announce("Could not take the clipboard, another application is holding it", isError: true);
+                    return;
+                }
+
+                AnnounceOperation("clip.copied", NameRules.SayCount("Copied", arrived.Count));
+                if (errors.Count > 0) ShowErrors(errors);
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) AnnounceOperation("archive.member.failed", $"Could not copy out of the archive: {ex.Message}");
+            }
+        }
+
         private void GoUp()
         {
             if (IsDrivesView) { Announce("Already at the top"); return; }
@@ -4042,6 +4424,19 @@ namespace ExplorerNative
                 // moves and a screen reader has nothing to read. Every other exit from
                 // this method already puts it back.
                 if (typed.Length == 0) { RestoreListFocus(); return; }
+
+                // A folder of the archive this tab is inside: no disk to ask.
+                if (goingFrom.Archive is { } archive &&
+                    ArchiveBrowser.InnerPathOf(archive.ArchivePath, typed) is { } inner)
+                {
+                    if (archive.IsFolder(inner)) await NavigateAsync(typed);
+                    else if (archive.Find(inner) != null)
+                        await NavigateAsync(ArchiveBrowser.VirtualPath(archive.ArchivePath, ArchiveBrowser.ParentOf(inner)),
+                            preferPath: ArchiveBrowser.VirtualPath(archive.ArchivePath, inner));
+                    else Announce("That path is not in this archive", isError: true);
+                    RestoreListFocus();
+                    return;
+                }
 
                 // Typed paths are the likeliest way to reach a dead server, so this
                 // check is bounded too rather than freezing on a bad UNC name.
@@ -4128,6 +4523,18 @@ namespace ExplorerNative
             }
 
             var pane = Active;
+
+            // Inside an archive, F5 reads the archive again.
+            if (pane.Archive != null)
+            {
+                try { await RefreshArchiveAsync(pane); }
+                catch (Exception ex)
+                {
+                    if (!IsDisposed) AnnounceOperation("archive.open.failed", $"Could not read the archive again: {ex.Message}");
+                }
+                return;
+            }
+
             bool landed = await RefreshAsync();
             if (IsDisposed || !landed) return;
 
@@ -4160,6 +4567,13 @@ namespace ExplorerNative
 
             var where = Active.CurrentPath;
             if (string.IsNullOrEmpty(where)) return;
+
+            // A search walks the disk, and an archive's folders are not on it.
+            if (Active.Archive != null)
+            {
+                AnnounceOperation("search.nowhere", "Searching inside an archive is not available yet");
+                return;
+            }
 
             var term = PromptForm.Ask(this, "Search",
                 $"Search in {FolderDisplayName(where)} and below:", _lastSearch);
@@ -4705,14 +5119,19 @@ namespace ExplorerNative
             // the moment there is somebody waiting for an answer rather than a
             // menu waiting to be drawn.
             var focused = FocusedPath();
-            bool looksLikeArchive = focused != null &&
+            bool inArchive = Active.Archive != null;
+            bool looksLikeArchive = focused != null && !inArchive &&
                                     !IsDirectoryInView(focused) &&
                                     ArchiveFormats.FromName(focused) is { CanExtract: true };
+
+            // Inside an archive, which is read-only: what would change it, and
+            // what needs a real file on disk, can only refuse there.
+            ShowArchiveHidden();
 
             _extractItem.Visible = looksLikeArchive;
             _extractHereItem.Visible = looksLikeArchive;
 
-            _editTagsItem.Visible = focused != null &&
+            _editTagsItem.Visible = focused != null && Active.Archive == null &&
                                     !IsDirectoryInView(focused) &&
                                     AudioFiles.IsAudio(focused, _settings.AudioExtensions) &&
                                     TagEditing.RefusalFor(focused, IsOnDrive, null) == null;
@@ -4727,7 +5146,7 @@ namespace ExplorerNative
             // Drive folder this command is one that could only ever refuse, and
             // it is left off rather than read out.
             _shortcutItem.Visible =
-                focused != null && !IsDrivesView &&
+                focused != null && !IsDrivesView && !inArchive &&
                 !(Drive != null && Drive.Owns(Active.CurrentPath));
 
             _contextMenu.Show(where);
@@ -4775,8 +5194,9 @@ namespace ExplorerNative
                     // Asked for here and read on a worker: the path comes from the
                     // list we already have, and nothing about deciding to warm a
                     // file touches the disk on this thread.
+                    // Not inside an archive, where the path is not a file yet.
                     var path = FocusedPath();
-                    if (path != null) Program.PrefetchAudioFile(path);
+                    if (path != null && Active.Archive == null) Program.PrefetchAudioFile(path);
                 };
             }
 
@@ -4840,6 +5260,9 @@ namespace ExplorerNative
             var path = entry.Path;
             // Reading a placeholder downloads it.
             if (Drive is { } drive && drive.Owns(path)) return;
+
+            // A member of an archive is not on disk to describe.
+            if (pane.Archive != null) return;
 
             int generation = _detailsGeneration;
             var audio = _settings.AudioExtensions;
@@ -4927,6 +5350,7 @@ namespace ExplorerNative
             AnnounceOperation("nav.sorted",
                 $"Sorted by {header}, {(_settings.SortAscending ? "ascending" : "descending")}");
         }
+
 
         private const int LVM_FIRST = 0x1000;
         private const int LVM_SETITEMSTATE = LVM_FIRST + 43;
@@ -5268,6 +5692,25 @@ namespace ExplorerNative
             var path = entry.Path;
             var name = entry.Name;
 
+            // Inside an archive the file is not on disk yet: it is taken out
+            // first, then played or opened as any other file would be.
+            if (Active.Archive is { } archive)
+            {
+                OpenArchiveMember(archive, path, name, openExternally);
+                return;
+            }
+
+            // An archive opens as a folder. Shift+Enter is still the way to its
+            // own app, as for any file. Not on the Google Drive letter, which
+            // this process must never read from (see CLAUDE.md); there Enter
+            // opens it in its own app as before.
+            if (!openExternally && ArchiveBrowser.CanBrowse(path) &&
+                !(Drive != null && Drive.Owns(path)))
+            {
+                OpenArchive(path);
+                return;
+            }
+
             // The built-in player, if this is something it takes. It says nothing
             // unless the preferences ask it to: the row was read out a moment ago
             // and the music starting says the rest.
@@ -5365,8 +5808,19 @@ namespace ExplorerNative
 
         private void CopyToClipboard(bool cut)
         {
+            // Cutting out of an archive would delete from it on the paste.
+            if (cut && RefuseInArchive()) return;
+
             var paths = SelectedPaths();
             if (paths.Length == 0) { AnnounceOperation("clip.nothing", "Nothing selected"); return; }
+
+            // Members of an archive are not files yet: they are taken out first,
+            // and what came out goes on the clipboard.
+            if (Active.Archive is { } archive)
+            {
+                CopyOutOfArchive(archive, paths);
+                return;
+            }
 
             if (!ClipboardInterop.SetFiles(paths, cut))
             {
@@ -5409,6 +5863,7 @@ namespace ExplorerNative
         private async void PasteClipboard()
         {
             if (IsDrivesView) { Announce("Cannot paste into the drive list", isError: true); return; }
+            if (RefuseInArchive()) return;
 
             if (!ClipboardInterop.TryGetFiles(out var paths, out bool isCut))
             {
@@ -6675,6 +7130,7 @@ namespace ExplorerNative
         private async void CompressSelection()
         {
             if (IsDrivesView) { Announce("Cannot compress the drive list", isError: true); return; }
+            if (RefuseInArchive()) return;
 
             var paths = SelectedPaths();
             if (paths.Length == 0) { AnnounceOperation("clip.nothing", "Nothing selected"); return; }
@@ -6818,6 +7274,7 @@ namespace ExplorerNative
         private async void ExtractFocused(bool intoNewFolder)
         {
             if (IsDrivesView) { Announce("Cannot extract from the drive list", isError: true); return; }
+            if (RefuseInArchive()) return;
 
             var archive = FocusedPath();
             if (archive == null) { AnnounceOperation("clip.nothing", "Nothing selected"); return; }
@@ -6977,6 +7434,7 @@ namespace ExplorerNative
         private async void CreateNewFolder()
         {
             if (IsDrivesView) { Announce("Cannot create a folder in the drive list", isError: true); return; }
+            if (RefuseInArchive()) return;
 
             var name = PromptForm.Ask(this, "New folder", "Folder name:", "New folder");
             if (name == null) { RestoreListFocus(); return; }
@@ -7067,6 +7525,7 @@ namespace ExplorerNative
         private async void CreateNewFile()
         {
             if (IsDrivesView) { Announce("Cannot create a file in the drive list", isError: true); return; }
+            if (RefuseInArchive()) return;
 
             var name = PromptForm.Ask(this, "New file", "File name:", "New file.txt", selectStem: true);
             if (name == null) { RestoreListFocus(); return; }
@@ -7155,6 +7614,7 @@ namespace ExplorerNative
         private async void CreateShortcut()
         {
             if (IsDrivesView) { Announce("Cannot create a shortcut in the drive list", isError: true); return; }
+            if (RefuseInArchive()) return;
 
             var target = FocusedPath();
             if (target == null) { AnnounceOperation("clip.nothing", "Nothing selected"); return; }
@@ -7193,6 +7653,7 @@ namespace ExplorerNative
         private async void RenameSelected()
         {
             if (IsDrivesView) { Announce("Cannot rename a drive here", isError: true); return; }
+            if (RefuseInArchive()) return;
 
             var path = FocusedPath();
             if (path == null) { Announce("Nothing selected"); return; }
@@ -7455,6 +7916,7 @@ namespace ExplorerNative
         private async void DeleteSelected(bool permanentOverride)
         {
             if (IsDrivesView) { Announce("Cannot delete a drive", isError: true); return; }
+            if (RefuseInArchive()) return;
             if (_deleting) { Announce("A delete is already running"); return; }
 
             var paths = SelectedPaths();
@@ -7710,6 +8172,13 @@ namespace ExplorerNative
             var path = FocusedPath();
             if (path == null) { Announce("Nothing selected"); return; }
 
+            // The shell has nothing to show for a path through an archive.
+            if (Active.Archive != null)
+            {
+                AnnounceOperation("archive.refused", "Properties are not available inside an archive");
+                return;
+            }
+
             try
             {
                 // On a worker. ShowProperties is ShellExecuteEx with
@@ -7738,6 +8207,12 @@ namespace ExplorerNative
 
         private async void ShowShellMenuForSelection()
         {
+            if (Active.Archive != null)
+            {
+                AnnounceOperation("archive.refused", "The Windows menu is not available inside an archive");
+                return;
+            }
+
             var paths = SelectedPaths();
             if (paths.Length == 0)
             {
@@ -7835,6 +8310,18 @@ namespace ExplorerNative
             // Taken now: the answer belongs to this tab even if another is in
             // front by the time it arrives.
             var pane = Active;
+
+            // Inside an archive the listing already knows, without a walk.
+            if (pane.Archive is { } archive)
+            {
+                var inner = ArchiveBrowser.InnerPathOf(archive.ArchivePath, path);
+                if (inner == null || !archive.IsFolder(inner)) { Announce("Select a folder first"); return; }
+                var (bytes, files, folders) = archive.Measure(inner);
+                var measured = SizeFormatter.Format(bytes, _settings.SizeUnits);
+                SetSizeOverride(pane, path, measured);
+                AnnounceOperation("size.done", $"{Path.GetFileName(path)}: {measured}, {files} files in {folders} folders");
+                return;
+            }
 
             // Off the UI thread, because the path came from the list and the list
             // can be showing a share whose server has gone away. Directory.Exists
