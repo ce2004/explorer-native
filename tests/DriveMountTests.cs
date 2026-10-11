@@ -165,6 +165,15 @@ namespace ExplorerNative
             var slow = drive.AddFolder("Slow");
             drive.AddFile("s1.txt", new byte[] { 1 }, When, slow);
 
+            var blip = drive.AddFolder("Blip");
+            drive.AddFile("b1.txt", new byte[] { 1 }, When, blip);
+            var fresh = drive.AddFolder("Fresh");
+            drive.AddFile("f1.txt", new byte[] { 1 }, When, fresh);
+            var stale = drive.AddFolder("Stale");
+            drive.AddFile("t1.txt", new byte[] { 1 }, When, stale);
+            var busy = drive.AddFolder("Busy");
+            drive.AddFile("u1.txt", new byte[] { 1 }, When, busy);
+
             try { rig.Start(); }
             catch (Exception ex)
             {
@@ -244,6 +253,22 @@ namespace ExplorerNative
             Check("and shows what it held", rig.Mount.TryListing(musicPath, out var offline) && offline.Count == 3 && shown.Count == 3,
                 Names(offline) + " / " + shown.Count);
             rig.Client.Health.Succeeded();
+            Check("back online, a folder answered offline is listed again rather than trusted",
+                !rig.Mount.TryListing(musicPath, out _));
+            rig.Mount.Populate(musicPath);
+            Check("and the next visit asks Drive", rig.ListsOf(music) == before + 1, $"{rig.ListsOf(music) - before} listings");
+
+            // ---- 10: a patient listing waits out a blip; an interactive one does not ----
+            var blipPath = rig.Path("Blip");
+            drive.AddFault(new FakeDrive.Fault { Kind = "list", Times = 2, Status = 503, Subject = s => s == blip });
+            try { rig.Mount.Populate(blipPath); } catch { }
+            Check("an interactive listing gives up on a blip", !rig.Mount.TryListing(blipPath, out _));
+            drive.AddFault(new FakeDrive.Fault { Kind = "list", Times = 2, Status = 503, Subject = s => s == blip });
+            try { rig.Mount.Populate(blipPath, interactive: false); }
+            catch (Exception ex) { Check("a patient listing does not throw on a blip", false, ex.Message); }
+            Check("a patient listing waits it out and lists the folder",
+                rig.Mount.TryListing(blipPath, out var blipListed) && blipListed.Any(p => p.Name == "b1.txt"),
+                rig.LogText());
 
             // ---- 9: a row added while a listing runs survives it ----
             var slowPath = rig.Path("Slow");
@@ -324,6 +349,54 @@ namespace ExplorerNative
             Equal("a rename that only changes case is not numbered against itself", "Renamed.FLAC", fileMoved ?? "(null)");
             Equal("and the id follows it", a, rig.Mount.IdFor(rig.Path("Music", "Renamed.FLAC")) ?? "(null)");
             Check("nothing is moved into itself", rig.Mount.MoveLocal(movedPath, movedPath, "x") == null);
+
+            // ---- 11: File Explorer sees web changes once a listing is old or forgotten ----
+            var freshPath = rig.Path("Fresh");
+            rig.Mount.Populate(freshPath);
+            drive.AddFile("f2.txt", new byte[] { 2 }, When, fresh);
+            int freshLists = rig.ListsOf(fresh);
+            var freshSeen = EnumerateElsewhere(freshPath);
+            Check("a folder just listed is answered from disk", freshSeen != null && rig.ListsOf(fresh) == freshLists,
+                $"{rig.ListsOf(fresh) - freshLists} listings");
+            rig.Mount.Forget(freshPath);
+            string[]? afterForget = null;
+            Check("after a refresh, Explorer opening it asks Drive and sees what was added on the web",
+                Eventually(() => (afterForget = EnumerateElsewhere(freshPath)) is { } s && s.Contains("f2.txt"), 10000),
+                (afterForget == null ? "timed out" : string.Join(",", afterForget)) + "; " + rig.LogText());
+
+            var stalePath = rig.Path("Stale");
+            var keepFresh = DriveMount.FreshFor;
+            try
+            {
+                DriveMount.FreshFor = TimeSpan.FromMilliseconds(200);
+                rig.Mount.Populate(stalePath);
+                drive.AddFile("t2.txt", new byte[] { 2 }, When, stale);
+                Thread.Sleep(400);
+                Check("an old fully-populated mark is handed back to Windows", rig.Mount.ReopenStale() >= 1, rig.LogText());
+                var staleSeen = EnumerateElsewhere(stalePath);
+                Check("so Explorer opening it later lists it again and sees web changes",
+                    staleSeen != null && staleSeen.Contains("t2.txt"),
+                    (staleSeen == null ? "timed out" : string.Join(",", staleSeen)) + "; " + rig.LogText());
+            }
+            finally { DriveMount.FreshFor = keepFresh; }
+
+            // ---- 12: a callback listing holds off a move in place ----
+            var busyPath = rig.Path("Busy");
+            var busyGate = new ManualResetEventSlim(false);
+            var busyEntered = new ManualResetEventSlim(false);
+            drive.OnList = async (folder, ct) =>
+            {
+                rig.Lists.AddOrUpdate(folder, 1, (_, n) => n + 1);
+                if (folder == busy) { busyEntered.Set(); await Task.Run(() => busyGate.Wait(10000)); }
+            };
+            var busyOutside = Task.Run(() => EnumerateElsewhere(busyPath));
+            Check("Explorer's listing of a folder starts", busyEntered.Wait(15000), rig.LogText());
+            Check("a move in place is refused while that listing runs",
+                rig.Mount.MoveLocal(busyPath, docsPath, "Busy Moved") == null);
+            busyGate.Set();
+            busyOutside.Wait(30000);
+            drive.OnList = (folder, _) => { rig.Lists.AddOrUpdate(folder, 1, (_, n) => n + 1); return Task.CompletedTask; };
+            Check("and the folder is still where it was", Directory.Exists(busyPath));
 
             // ---- 1 (shape): a refused transfer still completes the request ----
             var source = Source("DriveMount.cs") ?? "";

@@ -465,6 +465,7 @@ namespace ExplorerNative
                 string fromLeaf = Path.GetFileName(fromFullPath.TrimEnd(Path.DirectorySeparatorChar));
 
                 if (toParent == fromKey || toParent.StartsWith(fromKey + "\\", StringComparison.Ordinal)) return null;
+                // Callback listings register here too, not only Populate's.
                 foreach (var busy in _populating.Keys)
                     if (busy == fromKey || busy.StartsWith(fromKey + "\\", StringComparison.Ordinal) ||
                         busy == fromParent || busy == toParent)
@@ -553,6 +554,8 @@ namespace ExplorerNative
             Move(_listings, from, to);
             Move(_listedAt, from, to);
             Move(_populated, from, to);
+            Move(_answeredOffline, from, to);
+            Move(_markedFull, from, to);
 
             var under = from + "\\";
             foreach (var (id, where) in _whereIs.ToArray())
@@ -606,7 +609,12 @@ namespace ExplorerNative
             _pool = new DriveCachePool(budgetBytes);
             _log = log;
             _sweep = new Timer(_ => SweepIdle(), null, SweepInterval, SweepInterval);
+            _reopen = new Timer(_ => { try { ReopenStale(); } catch { } }, null, SweepInterval, SweepInterval);
+            _drive.Health.Changed += OnHealthChanged;
         }
+
+        /// <summary>Hands old fully-populated marks back to Windows; see ReopenStale.</summary>
+        private readonly Timer _reopen;
 
         // ---- warming, and letting go again ----------------------------------
 
@@ -1083,7 +1091,7 @@ namespace ExplorerNative
         private static readonly TimeSpan DataDeadline = TimeSpan.FromSeconds(90);
 
         private List<DriveEntry> ListFolder(string relative, string folderId, CancellationToken token,
-            Action<List<DriveEntry>>? onPage = null)
+            Action<List<DriveEntry>>? onPage = null, bool interactive = true)
         {
             string? name = Notify == null
                 ? null
@@ -1099,8 +1107,11 @@ namespace ExplorerNative
             if (accountRoot) onPage?.Invoke(new List<DriveEntry> { sharedDrives });
 
             _driveIds.TryGetValue(relative, out var driveId);
+            // Said explicitly, never left to ListChildren's guess from the label:
+            // a caller deciding whether to create something (an upload's parent,
+            // a conflict check) has to wait out a blip, not fail fast and carry on.
             var entries = _drive.ListChildren(folderId, token, label: name, driveId: driveId, onPage: onPage,
-                    interactive: true)
+                    interactive: interactive)
                                 .GetAwaiter().GetResult();
             Interlocked.Increment(ref Listings);
 
@@ -1145,10 +1156,20 @@ namespace ExplorerNative
         /// this sees a populated tree. Our own file manager does, because it owns
         /// its navigation. Explorer does not.
         /// </summary>
-        public bool Populate(string directory, Action<IReadOnlyList<DrivePlaced>>? onPlaced = null)
+        public bool Populate(string directory, Action<IReadOnlyList<DrivePlaced>>? onPlaced = null,
+            bool interactive = true)
         {
             string? relative = KeyFor(directory);
             if (relative == null) return false;
+
+            // Back online since something was answered from an old listing: those
+            // folders are listed again rather than trusted for the session.
+            if (!_answeredOffline.IsEmpty && !_drive.Health.IsOffline) DropOfflineAnswers();
+
+            // Somebody waiting on the screen gets the callback's deadline; a
+            // caller about to create or merge on the strength of the answer gets
+            // long enough for the patient client to wait out a blip.
+            var allowed = interactive ? PlaceholderDeadline : PatientDeadline;
             // Claimed first, so two navigations into one folder do not both pay
             // for the listing — and **given back on every way out that did not
             // actually populate it**, which it was not. A folder whose listing
@@ -1167,7 +1188,7 @@ namespace ExplorerNative
             var running = _populating.GetOrAdd(relative, mine);
             if (!ReferenceEquals(running, mine))
             {
-                try { running.Wait(PlaceholderDeadline); } catch { }
+                try { running.Wait(allowed); } catch { }
                 return false;
             }
 
@@ -1192,7 +1213,9 @@ namespace ExplorerNative
             // minute on every folder opened — to fail and show nothing, when
             // the placeholders from the last listing are still on disk. Not
             // stamped as listed, so anything wanting a fresh listing still asks
-            // once Drive is back.
+            // once Drive is back — and remembered, so that coming back online
+            // drops it (DropOfflineAnswers). Not marked fully populated either:
+            // that kept a folder opened during a blip stale for the session.
             if (_drive.Health.IsOffline && _listings.TryGetValue(relative, out var held))
             {
                 _log($"  populate '{relative}': offline, {held.Length} entries from the last listing");
@@ -1200,7 +1223,7 @@ namespace ExplorerNative
                 {
                     try { onPlaced(held); } catch { }
                 }
-                MarkFullyPopulated(relative);
+                _answeredOffline[relative] = true;
                 populated = true;
                 return false;
             }
@@ -1217,7 +1240,7 @@ namespace ExplorerNative
             // The same deadline the callback has. Without one this waited out an
             // offline spell for as long as it lasted — holding a navigation, a
             // paste's conflict check or a search, with nothing able to call it off.
-            using var deadline = new CancellationTokenSource(PlaceholderDeadline);
+            using var deadline = new CancellationTokenSource(allowed);
 
             // Written into the real path, not the drive letter: the letter is
             // an alias this process made, and the API wants the directory the
@@ -1273,7 +1296,7 @@ namespace ExplorerNative
                 }
             }
 
-            ListFolder(relative, folderId, deadline.Token, Place);
+            ListFolder(relative, folderId, deadline.Token, Place, interactive);
             long listMs = clock.ElapsedMilliseconds - placeMs;
 
             _log($"  populate '{relative}': {placedCount} entries, " +
@@ -1301,8 +1324,106 @@ namespace ExplorerNative
             }
         }
 
-        /// <summary>Populations in progress, for anyone who arrives while one is running.</summary>
+        /// <summary>
+        /// Listings in progress — Populate's and the filter callback's alike —
+        /// for anyone who arrives while one is running, and for MoveLocal, which
+        /// must not re-key a folder a listing is still writing under.
+        /// </summary>
         private readonly ConcurrentDictionary<string, ManualResetEventSlim> _populating = new();
+
+        /// <summary>
+        /// How long a patient Populate (an upload's parent, a conflict check) may
+        /// take: the patient client's two minutes, so its outage wait is not cut
+        /// off by the interactive deadline.
+        /// </summary>
+        private static readonly TimeSpan PatientDeadline = TimeSpan.FromMinutes(2);
+
+        /// <summary>
+        /// Folders answered from an old listing while Drive was offline. Dropped
+        /// from <see cref="_populated"/> once Drive answers again, so a folder
+        /// opened during a blip is listed afresh rather than stale all session.
+        /// </summary>
+        private readonly ConcurrentDictionary<string, bool> _answeredOffline = new();
+
+        /// <summary>
+        /// Directories this mount told Windows are fully populated, and when.
+        /// Handed back to on-demand population after <see cref="FreshFor"/>, so
+        /// File Explorer opening one later asks again and sees web changes;
+        /// marked for ever, only an in-app refresh ever did.
+        /// </summary>
+        private readonly ConcurrentDictionary<string, long> _markedFull = new();
+
+        /// <summary>How long a listing is trusted for an outside program's enumeration.</summary>
+        internal static TimeSpan FreshFor = TimeSpan.FromSeconds(30);
+
+        private void DropOfflineAnswers()
+        {
+            foreach (var key in _answeredOffline.Keys)
+                if (_answeredOffline.TryRemove(key, out _))
+                    _populated.TryRemove(key, out _);
+        }
+
+        private void OnHealthChanged(DriveState state)
+        {
+            if (state == DriveState.Online && !_answeredOffline.IsEmpty) DropOfflineAnswers();
+        }
+
+        /// <summary>Whether a folder's listing is recent enough to answer an enumeration from disk.</summary>
+        private bool ListedRecently(string relative) =>
+            _listedAt.TryGetValue(relative, out var at) &&
+            Environment.TickCount64 - at <= FreshFor.TotalMilliseconds;
+
+        /// <summary>
+        /// Lets Windows ask for a directory again: the next enumeration raises
+        /// FETCH_PLACEHOLDERS, which lists it when the listing held is old.
+        /// Best effort, like the mark it undoes.
+        /// </summary>
+        private bool EnableOnDemandAt(string directory)
+        {
+            try
+            {
+                using var handle = CreateFileW(directory, FileReadAttributes,
+                    FileShare.ReadWrite | FileShare.Delete, IntPtr.Zero, FileMode.Open,
+                    FileFlagBackupSemantics | FileFlagOpenReparsePoint, IntPtr.Zero);
+                if (handle.IsInvalid) return false;
+
+                int hr = CfUpdatePlaceholderFlags(handle, IntPtr.Zero, IntPtr.Zero, 0, IntPtr.Zero, 0,
+                    CF_UPDATE_FLAGS.ENABLE_ON_DEMAND_POPULATION, IntPtr.Zero, IntPtr.Zero);
+                if (hr != 0) _log($"  could not hand {Path.GetFileName(directory)} back to Windows: 0x{hr:X8}");
+                return hr == 0;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>Un-marks one directory now, off the caller's thread.</summary>
+        private void ReopenLater(string relative)
+        {
+            if (relative.Length == 0) return;   // the root is never marked; see Register
+            if (!_markedFull.TryRemove(relative, out _)) return;
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                if (!_disposed) EnableOnDemandAt(Path.Combine(Root, relative));
+            });
+        }
+
+        /// <summary>
+        /// Hands back to on-demand population every directory marked longer ago
+        /// than <see cref="FreshFor"/>. Skips anything being listed, so it never
+        /// races the mark a listing is about to make.
+        /// </summary>
+        internal int ReopenStale()
+        {
+            int reopened = 0;
+            long now = Environment.TickCount64;
+            foreach (var (key, at) in _markedFull.ToArray())
+            {
+                if (_disposed) break;
+                if (now - at <= FreshFor.TotalMilliseconds || _populating.ContainsKey(key)) continue;
+                if (!_markedFull.TryRemove(new KeyValuePair<string, long>(key, at))) continue;
+                if (EnableOnDemandAt(Path.Combine(Root, key))) reopened++;
+            }
+            return reopened;
+        }
 
         public void Start(string rootFolderId = "root", bool assignLetter = true, char preferred = 'G',
             CancellationToken token = default)
@@ -1523,7 +1644,7 @@ namespace ExplorerNative
             // already made — for as long as the outage lasted.
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
             deadline.CancelAfter(TimeSpan.FromMinutes(2));
-            var entries = ListFolder("", folderId, deadline.Token);
+            var entries = ListFolder("", folderId, deadline.Token, interactive: false);
             long listMs = clock.ElapsedMilliseconds;
 
             var pins = new List<IntPtr>();
@@ -1559,6 +1680,8 @@ namespace ExplorerNative
         {
             var opInfo = Operation(ref info, CF_OPERATION_TYPE.TRANSFER_PLACEHOLDERS);
             string relative = "";
+            var mine = new ManualResetEventSlim(false);
+            bool claimed = false;
 
             Interlocked.Increment(ref _callbacksInFlight);
             try
@@ -1582,23 +1705,38 @@ namespace ExplorerNative
                 // and rather than raced: both made the same placeholders, and
                 // each one's listing overwrote the other's map.
                 var waited = System.Diagnostics.Stopwatch.StartNew();
-                if (_populating.TryGetValue(relative, out var running))
+                // And claimed while this one lists, in the same map Populate
+                // uses, so Populate waits for it and MoveLocal will not re-key
+                // the folder under it.
+                var running = _populating.GetOrAdd(relative, mine);
+                if (!ReferenceEquals(running, mine))
                 {
                     try { running.Wait(PlaceholderDeadline, _closing.Token); } catch { }
+                    claimed = ReferenceEquals(_populating.GetOrAdd(relative, mine), mine);
                 }
+                else claimed = true;
 
-                // Placed already, by Populate or by an earlier listing: what is on
-                // disk is the answer, with no network at all. Populated means
-                // listed this session and not refreshed since, which is what the
-                // window's own panes trust too. And when Drive is offline, any
-                // listing held is better than three quarters of a minute of
-                // Explorer waiting to be told nothing.
+                // Placed already, by Populate or by an earlier listing, and
+                // recently: what is on disk is the answer, with no network at
+                // all. An older listing is asked for again — this is how File
+                // Explorer sees changes made on the web, once ReopenStale or
+                // Forget has handed the folder back. And when Drive is offline,
+                // any listing held is better than three quarters of a minute of
+                // Explorer waiting to be told nothing — answered without marking
+                // the folder populated, so Windows asks again once it is back.
                 bool held = _listings.ContainsKey(relative);
-                if (held && (_populated.ContainsKey(relative) || _drive.Health.IsOffline))
+                bool recent = _populated.ContainsKey(relative) && ListedRecently(relative);
+                bool offline = !recent && _drive.Health.IsOffline;
+                if (held && (recent || offline))
                 {
-                    int done = CompleteFromDisk(ref opInfo);
-                    _log($"  '{relative}' answered from what is placed" +
+                    int done = CompleteFromDisk(ref opInfo, markPopulated: recent);
+                    _log($"  '{relative}' answered from what is placed" + (offline ? " (offline)" : "") +
                          (done == 0 ? "" : $", refused 0x{done:X8}"));
+                    if (done == 0)
+                    {
+                        if (recent) { if (relative.Length > 0) _markedFull[relative] = Environment.TickCount64; }
+                        else _answeredOffline[relative] = true;
+                    }
                     if (done != 0 && done != ErrorCloudFileCancelled) FailPlaceholders(ref opInfo);
                     return;
                 }
@@ -1641,6 +1779,8 @@ namespace ExplorerNative
                 // matters: it can no longer tell a real read in flight from a
                 // number left behind, so it waits out its five seconds and
                 // disconnects anyway.
+                if (claimed) _populating.TryRemove(new KeyValuePair<string, ManualResetEventSlim>(relative, mine));
+                mine.Set();
                 Interlocked.Decrement(ref _callbacksInFlight);
             }
         }
@@ -1708,6 +1848,7 @@ namespace ExplorerNative
                     // the listing rather than asking Drive a second time.
                     CommitListing(relative, session);
                     _populated[relative] = true;
+                    if (relative.Length > 0) _markedFull[relative] = Environment.TickCount64;
 
                     // Anything that was already there may describe other
                     // contents. Checked off this thread: the callback is holding
@@ -1964,6 +2105,11 @@ namespace ExplorerNative
             // answers for populated folders alone — because the next listing
             // needs it to keep each name bound to the file it named.
             _populated.TryRemove(key, out _);
+            _answeredOffline.TryRemove(key, out _);
+
+            // And Windows told the same, so File Explorer opening it asks again
+            // instead of showing what the last listing placed.
+            ReopenLater(key);
         }
 
         /// <summary>
@@ -2082,7 +2228,8 @@ namespace ExplorerNative
         private void MarkFullyPopulated(string relative)
         {
             if (relative.Length == 0) return;   // the root is marked at registration
-            MarkFullyPopulatedAt(Path.Combine(Root, relative));
+            if (MarkFullyPopulatedAt(Path.Combine(Root, relative)))
+                _markedFull[relative] = Environment.TickCount64;
         }
 
         private bool MarkFullyPopulatedAt(string directory)
@@ -2135,6 +2282,7 @@ namespace ExplorerNative
                 return merged?.ToArray() ?? placed;
             });
             _listedAt[relative] = Environment.TickCount64;
+            _answeredOffline.TryRemove(relative, out _);
             ForgetGone(relative, session);
         }
 
@@ -2522,12 +2670,14 @@ namespace ExplorerNative
         /// does not come back to ask. For a folder whose placeholders this mount
         /// has already made — by Populate, or by an earlier listing.
         /// </summary>
-        private int CompleteFromDisk(ref CF_OPERATION_INFO opInfo)
+        private int CompleteFromDisk(ref CF_OPERATION_INFO opInfo, bool markPopulated = true)
         {
+            // Unmarked for an offline answer: Windows then asks again next time,
+            // when Drive may be back.
             var opParams = new CF_OPERATION_PARAMETERS_TRANSFER_PLACEHOLDERS
             {
                 ParamSize = (uint)Marshal.SizeOf<CF_OPERATION_PARAMETERS_TRANSFER_PLACEHOLDERS>(),
-                Flags = (uint)CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS.DISABLE_ON_DEMAND_POPULATION,
+                Flags = markPopulated ? (uint)CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS.DISABLE_ON_DEMAND_POPULATION : 0,
                 CompletionStatus = 0,
                 PlaceholderTotalCount = 0,
                 PlaceholderArray = IntPtr.Zero,
@@ -2851,7 +3001,7 @@ namespace ExplorerNative
         /// thread piled up behind each one, and any process ended while so
         /// parked could never finish exiting until Windows was restarted.
         /// </summary>
-        private void Fail(ref CF_CALLBACK_INFO info, long offset, long length)
+        private bool Fail(ref CF_CALLBACK_INFO info, long offset, long length)
         {
             var opInfo = Operation(ref info, CF_OPERATION_TYPE.TRANSFER_DATA);
             var opParams = new CF_OPERATION_PARAMETERS_TRANSFER_DATA
@@ -2864,9 +3014,12 @@ namespace ExplorerNative
             };
             int hr = CfExecute(ref opInfo, ref opParams);
             if (hr != 0 && hr != ErrorCloudFileCancelled)
+            {
                 _log($"  failing a read at [{offset:N0} +{length:N0}] was refused: 0x{hr:X8}");
-            else
-                Interlocked.Increment(ref FailedReads);
+                return false;
+            }
+            Interlocked.Increment(ref FailedReads);
+            return true;
         }
 
         /// <summary>
@@ -2879,9 +3032,9 @@ namespace ExplorerNative
         {
             if (at <= offset || end <= at) { Fail(ref info, offset, length); return; }
 
-            long failedBefore = Interlocked.Read(ref FailedReads);
-            Fail(ref info, at, end - at);
-            if (Interlocked.Read(ref FailedReads) == failedBefore) Fail(ref info, offset, length);
+            // Its own answer, not the shared counter: another callback failing a
+            // read in between moved the counter and hid a refusal here.
+            if (!Fail(ref info, at, end - at)) Fail(ref info, offset, length);
         }
 
         /// <summary>One piece of a read handed to Windows. The CfExecute result.</summary>
@@ -3276,6 +3429,8 @@ namespace ExplorerNative
             // Before the callback wait, so a sweep cannot start one more teardown
             // while that wait is counting.
             try { _sweep.Dispose(); } catch { }
+            try { _reopen.Dispose(); } catch { }
+            try { _drive.Health.Changed -= OnHealthChanged; } catch { }
 
             _letter?.Dispose();
             _letter = null;

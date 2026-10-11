@@ -1010,7 +1010,8 @@ namespace ExplorerNative
         private static string[]? ChildrenOnDrive(GoogleDrive drive, string folder)
         {
             drive.Forget(folder);
-            drive.Populate(folder);
+            // Patient: what it says decides what is replaced or merged.
+            drive.Populate(folder, interactive: false);
             if (!drive.TryListing(folder, out var entries)) return null;
             return entries.Select(e => Path.Combine(folder, e.Name)).ToArray();
         }

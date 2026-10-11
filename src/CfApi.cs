@@ -67,6 +67,9 @@ namespace ExplorerNative
         {
             MARK_IN_SYNC = 2,
             DEHYDRATE = 4,
+            // 0x08 in cfapi.h. Undoes the mark below, so the next enumeration
+            // raises FETCH_PLACEHOLDERS again.
+            ENABLE_ON_DEMAND_POPULATION = 0x08,
             // 0x10 in cfapi.h (0x08 is ENABLE_ON_DEMAND_POPULATION). Marks a
             // directory fully populated, the same thing a TRANSFER_PLACEHOLDERS
             // with its DISABLE flag records.

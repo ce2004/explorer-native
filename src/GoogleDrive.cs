@@ -746,7 +746,8 @@ namespace ExplorerNative
         /// Safe to call for any path. Anything that is not on the mounted letter
         /// returns false without touching the network.
         /// </summary>
-        public bool Populate(string path, Action<IReadOnlyList<DrivePlaced>>? onPlaced = null)
+        public bool Populate(string path, Action<IReadOnlyList<DrivePlaced>>? onPlaced = null,
+            bool interactive = true)
         {
             DriveMount? mount;
             lock (_gate) mount = _mount;
@@ -755,7 +756,7 @@ namespace ExplorerNative
             try
             {
                 if (!Owns(mount, path)) return false;
-                return mount.Populate(path, onPlaced);
+                return mount.Populate(path, onPlaced, interactive);
             }
             catch (GoogleSignInRequiredException)
             {
@@ -1245,7 +1246,8 @@ namespace ExplorerNative
         {
             if (string.IsNullOrEmpty(folderPath) || !Owns(folderPath)) return null;
 
-            Populate(folderPath);
+            // Patient: the answer decides what gets replaced or renamed.
+            Populate(folderPath, interactive: false);
             if (!TryListing(folderPath, out var entries)) return null;
 
             var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1406,7 +1408,7 @@ namespace ExplorerNative
             await Task.Run(() =>
             {
                 mount.Forget(parent);
-                try { mount.Populate(parent); }
+                try { mount.Populate(parent, interactive: false); }
                 catch (Exception ex) { Note($"re-listing {parent} failed: {ex.Message}"); }
             }).WaitAsync(token).ConfigureAwait(false);
 
@@ -1693,10 +1695,18 @@ namespace ExplorerNative
             // no and uploading into it made a second folder beside the first.
             // Nothing when it is already populated, which the folders this upload
             // made itself are.
+            // Patient, and checked: a fast-fail listing during a blip left the
+            // parent unknown, ChildFolderId said no, and a duplicate was made.
             await Task.Run(() =>
             {
-                try { mount.Populate(parentFullPath); } catch { }
+                try { mount.Populate(parentFullPath, interactive: false); } catch { }
             }, token).ConfigureAwait(false);
+            if (!mount.TryListing(parentFullPath, out _))
+            {
+                Say("drive.upload.failed",
+                    $"Could not create {name}: Google Drive would not say what is already in {Path.GetFileName(Path.TrimEndingDirectorySeparator(parentFullPath))}");
+                return null;
+            }
 
             // Already there. The placeholder is on disk and the id is in the map,
             // so there is nothing to create and nothing to place — only a path to

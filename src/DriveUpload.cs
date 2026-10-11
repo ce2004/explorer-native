@@ -378,7 +378,8 @@ namespace ExplorerNative
             IReadOnlyList<DrivePlaced>? there = null;
             await Task.Run(() =>
             {
-                _drive.Populate(_destination);
+                // Patient: a blip here used to fail every top folder.
+                _drive.Populate(_destination, interactive: false);
                 if (_drive.TryListing(_destination, out var listed)) there = listed;
             }, token);
 
