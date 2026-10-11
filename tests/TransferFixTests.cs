@@ -46,6 +46,9 @@ namespace ExplorerNative
             Guarded("volumes and retries", VolumeAndRetryTests);
             Guarded("reading robocopy's log", LogParsingTests);
             await Guarded("a locked file", LockedFileTests);
+            await Guarded("a cancelled overwrite", OverwriteKeepsOriginalTests);
+            await Guarded("fill gaps in the managed engine", ManagedFillGapsTests);
+            await Guarded("a link inside a folder being moved", NestedLinkMoveTests);
 
             Console.WriteLine();
         }
@@ -813,6 +816,169 @@ namespace ExplorerNative
                 log.Counts == null ? "none" : $"{log.Counts.Copied} {log.Counts.Skipped} {log.Counts.Mismatch} " +
                                               $"{log.Counts.Failed} {log.Counts.DirMismatch} {log.Counts.DirFailed}");
             Check("log: no summary is no counts, not zeros", RoboCopyEngine.ParseLog(lines.Take(5)).Counts == null);
+
+            // A failure cleared by the same name copying again, in another folder
+            // by bare name and in this one by full path, through the index.
+            var again = RoboCopyEngine.ParseLog(new[]
+            {
+                "2026/10/11 10:00:00 ERROR 32 (0x00000020) Copying File C:\\s\\one\\cover.jpg",
+                "The process cannot access the file because it is being used by another process.",
+                "2026/10/11 10:00:00 ERROR 32 (0x00000020) Copying File C:\\s\\two\\cover.jpg",
+                "The process cannot access the file because it is being used by another process.",
+                "\t    New File  \t\t     100\tC:\\s\\one\\cover.jpg",
+            });
+            Equal("log: a full path clears only that file", "C:\\s\\two\\cover.jpg",
+                string.Join(" | ", again.FileErrors.Keys));
+        }
+
+        /// <summary>
+        /// Overwrite, stopped part way. The managed engine opened the file it was
+        /// replacing FileMode.Create, so the original was emptied before the first
+        /// byte, and the cleanup then deleted what was left: a cancelled overwrite
+        /// cost the file it was meant to replace.
+        /// </summary>
+        private static async Task OverwriteKeepsOriginalTests()
+        {
+            var root = NewDir("overwrite");
+            try
+            {
+                var src = Path.Combine(root, "src");
+                var dst = Path.Combine(root, "dst");
+                Directory.CreateDirectory(src);
+                Directory.CreateDirectory(dst);
+                var source = Path.Combine(src, "big.bin");
+                var target = Path.Combine(dst, "big.bin");
+                MakeFile(source, 64, 7);
+                File.WriteAllText(target, "THE ORIGINAL");
+
+                using var cts = new CancellationTokenSource();
+                var stopAtFirst = new CancelOnReport<FileOpProgress>(cts);
+                var stopped = await FileOperations.RunAsync(new[] { source }, dst, false, PasteConflictPolicy.Overwrite,
+                    1, 64, stopAtFirst, null, cts.Token);
+
+                Check("overwrite: the cancel was a cancel", stopped.Cancelled,
+                    $"succeeded={stopped.Succeeded} failed={stopped.Failed}");
+                Check("overwrite: a cancelled replace leaves the original exactly as it was",
+                    FileThere(target) && Text(target) == "THE ORIGINAL",
+                    FileThere(target) ? $"{new FileInfo(target).Length} bytes" : "the file is gone");
+                Check("overwrite: and nothing temporary is left beside it",
+                    Directory.GetFiles(dst).Length == 1, string.Join(", ", Directory.GetFiles(dst).Select(Path.GetFileName)));
+
+                // A read-only original is replaced too, once the copy is whole.
+                File.SetAttributes(target, FileAttributes.ReadOnly);
+                var done = await FileOperations.RunAsync(new[] { source }, dst, false, PasteConflictPolicy.Overwrite,
+                    1, 1024, null, null, CancellationToken.None);
+                Check("overwrite: run to the end, the file is replaced", SameBytes(source, target),
+                    string.Join(" | ", done.Errors));
+                Check("overwrite: still with nothing temporary beside it", Directory.GetFiles(dst).Length == 1);
+            }
+            finally { Remove(root); }
+        }
+
+        /// <summary>Cancels on the first report, on the thread that makes it.</summary>
+        private sealed class CancelOnReport<T> : IProgress<T>
+        {
+            private readonly CancellationTokenSource _cts;
+            public CancelOnReport(CancellationTokenSource cts) => _cts = cts;
+            public void Report(T value) => _cts.Cancel();
+        }
+
+        /// <summary>
+        /// Fill gaps through the managed engine — the one the Ask dialog's "Fill
+        /// gaps" answer reaches, and any paste the window hands it. It fell into
+        /// keep both and made "F (2)" with everything copied a second time.
+        /// </summary>
+        private static async Task ManagedFillGapsTests()
+        {
+            var root = NewDir("mgaps");
+            try
+            {
+                var src = Path.Combine(root, "src");
+                var dst = Path.Combine(root, "dst");
+                Directory.CreateDirectory(Path.Combine(src, "F", "deep"));
+                Directory.CreateDirectory(Path.Combine(dst, "F", "deep"));
+                File.WriteAllText(Path.Combine(src, "F", "a.txt"), "new a");
+                File.WriteAllText(Path.Combine(src, "F", "b.txt"), "new b");
+                File.WriteAllText(Path.Combine(src, "F", "deep", "c.txt"), "new c");
+                File.WriteAllText(Path.Combine(src, "loose.txt"), "new loose");
+                File.WriteAllText(Path.Combine(dst, "F", "a.txt"), "OLD A");
+                File.WriteAllText(Path.Combine(dst, "F", "deep", "c.txt"), "OLD C");
+                File.WriteAllText(Path.Combine(dst, "loose.txt"), "OLD LOOSE");
+
+                var result = await FileOperations.RunAsync(
+                    new[] { Path.Combine(src, "F"), Path.Combine(src, "loose.txt") }, dst, false,
+                    PasteConflictPolicy.FillGaps, 4, 64, null, null, CancellationToken.None);
+
+                Check("managed fill gaps: no failures", result.Failed == 0, string.Join(" | ", result.Errors));
+                Check("managed fill gaps: the folder is merged into, not copied beside",
+                    !FolderThere(Path.Combine(dst, "F (2)")) && !FileThere(Path.Combine(dst, "loose (2).txt")),
+                    string.Join(", ", Directory.GetFileSystemEntries(dst).Select(Path.GetFileName)));
+                Check("managed fill gaps: what was missing arrives",
+                    FileThere(Path.Combine(dst, "F", "b.txt")) && Text(Path.Combine(dst, "F", "b.txt")) == "new b");
+                Check("managed fill gaps: what was there is left alone, at any depth",
+                    Text(Path.Combine(dst, "F", "a.txt")) == "OLD A" &&
+                    Text(Path.Combine(dst, "F", "deep", "c.txt")) == "OLD C" &&
+                    Text(Path.Combine(dst, "loose.txt")) == "OLD LOOSE");
+                Equal("managed fill gaps: one copied", "1", result.Succeeded.ToString());
+
+                // The Ask dialog's answer goes the same way.
+                File.Delete(Path.Combine(dst, "F", "b.txt"));
+                var asked = await FileOperations.RunAsync(new[] { Path.Combine(src, "F") }, dst, false,
+                    PasteConflictPolicy.Ask, 4, 64, null, _ => FileOperations.ConflictChoice.FillGaps,
+                    CancellationToken.None);
+                Check("managed fill gaps: answered from Ask, it merges too",
+                    !FolderThere(Path.Combine(dst, "F (2)")) && FileThere(Path.Combine(dst, "F", "b.txt")) &&
+                    Text(Path.Combine(dst, "F", "a.txt")) == "OLD A",
+                    string.Join(" | ", asked.Errors));
+            }
+            finally { Remove(root); }
+        }
+
+        /// <summary>
+        /// A folder moved file by file — here because the destination already
+        /// has one of its name — with a junction inside. The walk skipped the
+        /// junction and nothing after it looked, so the move left it in the
+        /// source and said "Move complete".
+        /// </summary>
+        private static async Task NestedLinkMoveTests()
+        {
+            var root = NewDir("nested");
+            try
+            {
+                var src = Path.Combine(root, "src");
+                var dst = Path.Combine(root, "dst");
+                var elsewhere = Path.Combine(root, "elsewhere");
+                Directory.CreateDirectory(Path.Combine(src, "F"));
+                Directory.CreateDirectory(Path.Combine(dst, "F"));
+                Directory.CreateDirectory(elsewhere);
+                File.WriteAllText(Path.Combine(elsewhere, "kept.txt"), "KEPT");
+                File.WriteAllText(Path.Combine(src, "F", "a.txt"), "a");
+                Junction(Path.Combine(src, "F", "J"), elsewhere);
+                if (!Directory.Exists(Path.Combine(src, "F", "J")))
+                {
+                    Console.WriteLine("        (no junction could be made here; skipped)");
+                    return;
+                }
+
+                var result = await FileOperations.RunAsync(new[] { Path.Combine(src, "F") }, dst, true,
+                    PasteConflictPolicy.Overwrite, 4, 64, null, null, CancellationToken.None);
+
+                var moved = new DirectoryInfo(Path.Combine(dst, "F", "J"));
+                Check("nested link: it arrives as a link", moved.Exists && moved.LinkTarget != null,
+                    string.Join(" | ", result.Errors));
+                Check("nested link: the source folder is gone", !Directory.Exists(Path.Combine(src, "F")),
+                    string.Join(" | ", result.Errors));
+                Check("nested link: and what it pointed at is untouched",
+                    File.Exists(Path.Combine(elsewhere, "kept.txt")));
+                Check("nested link: no failures", result.Failed == 0, string.Join(" | ", result.Errors));
+            }
+            finally
+            {
+                // The junctions first, so nothing is deleted through them.
+                foreach (var j in new[] { Path.Combine(root, "src", "F", "J"), Path.Combine(root, "dst", "F", "J") })
+                    try { if (Directory.Exists(j)) Directory.Delete(j, false); } catch { }
+                Remove(root);
+            }
         }
     }
 }

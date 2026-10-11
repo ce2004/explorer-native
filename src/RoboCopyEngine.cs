@@ -182,7 +182,18 @@ namespace ExplorerNative
         public static Action<int>? BeforeKill;
         public static Action<int>? AfterKill;
 
-        public static async Task<TransferResult> RunAsync(
+        /// <summary>
+        /// The whole transfer, on a worker.
+        ///
+        /// Everything in it is filesystem work — an existence check per source
+        /// before the first await, then the watcher, the waits for robocopy, its
+        /// log read back and parsed — and called from the window, the part before
+        /// the first await and every continuation after it ran on the UI thread.
+        /// A source on a share that had gone to sleep froze the window before the
+        /// progress window was even up. Progress marshals itself: the caller's
+        /// Progress&lt;T&gt; posts to the thread that made it.
+        /// </summary>
+        public static Task<TransferResult> RunAsync(
             IReadOnlyList<string> sources,
             string destinationDir,
             bool move,
@@ -192,7 +203,21 @@ namespace ExplorerNative
             CancellationToken token,
             int bufferKilobytes = 1024,
             bool cloudSource = false,
-            Func<string, bool>? onCloudLetter = null)
+            Func<string, bool>? onCloudLetter = null) =>
+            Task.Run(() => RunCoreAsync(sources, destinationDir, move, threads, conflictPolicy, progress, token,
+                bufferKilobytes, cloudSource, onCloudLetter));
+
+        private static async Task<TransferResult> RunCoreAsync(
+            IReadOnlyList<string> sources,
+            string destinationDir,
+            bool move,
+            int threads,
+            PasteConflictPolicy conflictPolicy,
+            IProgress<TransferProgress>? progress,
+            CancellationToken token,
+            int bufferKilobytes,
+            bool cloudSource,
+            Func<string, bool>? onCloudLetter)
         {
             // cloudSource: copying *out of* the Google Drive letter, where every
             // source file is a placeholder this same process downloads while
@@ -806,6 +831,57 @@ namespace ExplorerNative
 
             static string Prefix(string folder) => folder.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
 
+            // Every file already in the destinations before robocopy starts, with
+            // its size and date. The cleanup after a cancel has to guess at what
+            // this transfer wrote when the watcher lost events, or on Overwrite
+            // where writing over a file raises none — and its guess was "anything
+            // dated in the last few seconds", which took in a file somebody had
+            // just saved there, that robocopy never reached. A file still exactly
+            // as it was here was not written by this transfer, and is never
+            // deleted. Taken before the first job, on this worker.
+            var before = new Dictionary<string, (long Length, DateTime Written)>(StringComparer.OrdinalIgnoreCase);
+            var snapshot = Task.Run(() =>
+            {
+                foreach (var landing in looseLandings.Keys)
+                {
+                    try
+                    {
+                        var info = new FileInfo(NameRules.ExactPath(landing));
+                        if (info.Exists) before[landing] = (info.Length, info.LastWriteTimeUtc);
+                    }
+                    catch { }
+                }
+
+                foreach (var (dest, _) in treeJobs)
+                {
+                    try
+                    {
+                        var tree = new DirectoryInfo(dest);
+                        if (!tree.Exists) continue;
+                        foreach (var file in tree.EnumerateFiles("*", new EnumerationOptions
+                                 {
+                                     RecurseSubdirectories = true,
+                                     IgnoreInaccessible = true,
+                                     AttributesToSkip = FileAttributes.ReparsePoint,
+                                 }))
+                            before[file.FullName] = (file.Length, file.LastWriteTimeUtc);
+                    }
+                    catch { }
+                }
+            });
+
+            // Whether a file is one that was there before and is exactly as it was.
+            bool Untouched(string landing)
+            {
+                if (!before.TryGetValue(landing, out var was)) return false;
+                try
+                {
+                    var now = new FileInfo(NameRules.ExactPath(landing));
+                    return now.Exists && now.Length == was.Length && now.LastWriteTimeUtc == was.Written;
+                }
+                catch { return true; }
+            }
+
             string? SourceFor(string landing)
             {
                 if (looseLandings.TryGetValue(landing, out var source)) return source;
@@ -1078,6 +1154,10 @@ namespace ExplorerNative
                     // one outcome worse than leaving a half-written file.
                     if (!File.Exists(NameRules.ExactPath(source))) { kept++; continue; }
 
+                    // There before this transfer and not touched since: somebody
+                    // else's file, whatever it looks like.
+                    if (Untouched(landing)) { kept++; continue; }
+
                     if (LooksComplete(source, landing, transferStartedUtc)) { kept++; continue; }
 
                     // Retried, because the loser of the race is the file that
@@ -1129,6 +1209,7 @@ namespace ExplorerNative
             // On a worker: it asks Windows about volumes, which on a mapped
             // drive whose server is asleep is not instant.
             var (retries, retryWait) = await Task.Run(() => RetriesFor(clean, destinationDir, cloudSource));
+            try { await snapshot; } catch { }
             bool fillGaps = conflictPolicy == PasteConflictPolicy.FillGaps;
 
             // Copied counts FILES, not robocopy invocations, and now from what
@@ -1145,7 +1226,12 @@ namespace ExplorerNative
                 {
                     try { await planning; } catch { }
                     await Task.Run(() => RemoveHalfWritten());
-                    return new TransferResult(managedFiles + jobCopied + Volatile.Read(ref itemsDone), failed, true,
+
+                    // One count or the other, as at the end below: the per-line
+                    // count and robocopy's own summary are two counts of the same
+                    // files, and adding them said twice as many had been copied.
+                    return new TransferResult(
+                        managedFiles + (allCounted ? jobCopied : Volatile.Read(ref itemsDone)), failed, true,
                         errors, Collisions(), alreadyThere);
                 }
 
@@ -1593,6 +1679,9 @@ namespace ExplorerNative
             bool inSummary = false;
             var rows = new List<long[]>();
 
+            // The failures so far by file name, each to the keys that name ends.
+            var byName = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
+
             foreach (var raw in lines)
             {
                 var line = raw.TrimEnd('\r', '\n');
@@ -1603,6 +1692,10 @@ namespace ExplorerNative
                     var message = line[error.Groups[1].Index..].Trim();
                     var file = FailedFile(message);
                     log.FileErrors[file] = message;
+                    var leaf = Path.GetFileName(file);
+                    if (!byName.TryGetValue(leaf, out var named))
+                        byName[leaf] = named = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    named.Add(file);
                     reasonFor = file;
                     continue;
                 }
@@ -1644,14 +1737,25 @@ namespace ExplorerNative
                     continue;
                 }
 
+                if (log.FileErrors.Count == 0) continue;
+
+                // Looked up, not searched. Every copied line used to walk every
+                // failure so far, and a job with thousands of each read its log
+                // for longer than it took to copy.
                 bool fullPath = Path.IsPathFullyQualified(tail);
                 var name = Path.GetFileName(tail);
-                if (log.FileErrors.Count > 0)
-                    foreach (var key in log.FileErrors.Keys.ToList())
-                        if (fullPath
-                                ? string.Equals(key, tail, StringComparison.OrdinalIgnoreCase)
-                                : string.Equals(Path.GetFileName(key), name, StringComparison.OrdinalIgnoreCase))
-                            log.FileErrors.Remove(key);
+                if (!byName.TryGetValue(name, out var keys)) continue;
+
+                if (fullPath)
+                {
+                    if (keys.Remove(tail)) log.FileErrors.Remove(tail);
+                    if (keys.Count == 0) byName.Remove(name);
+                }
+                else
+                {
+                    foreach (var key in keys) log.FileErrors.Remove(key);
+                    byName.Remove(name);
+                }
             }
 
             // Dirs, Files, Bytes, in that order, whatever the labels are called
@@ -1783,6 +1887,11 @@ namespace ExplorerNative
 
             using var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
 
+            // Its own writes, taken off what the kernel says it has written.
+            var overhead = new Overhead { LogPath = logPath };
+            OwnWrites.AddOrUpdate(process, overhead);
+            var printedIn = psi.StandardOutputEncoding ?? System.Text.Encoding.Default;
+
             // The live view of the output: progress, and the retries. Failures
             // are read afterwards from the log, which has the names right; what
             // is collected here is only for when the log cannot be read.
@@ -1793,6 +1902,7 @@ namespace ExplorerNative
             {
                 if (e.Data == null) return;
                 var line = e.Data;
+                Interlocked.Add(ref overhead.Printed, printedIn.GetByteCount(line) + 2);
                 lock (liveLines) liveLines.Add(line);
 
                 // "Log File : …", which /TEE prints first.
@@ -1822,6 +1932,8 @@ namespace ExplorerNative
             // List<T> — a lost message at best, an IndexOutOfRange at worst.
             process.ErrorDataReceived += (_, e) =>
             {
+                if (e.Data == null) return;
+                Interlocked.Add(ref overhead.Printed, printedIn.GetByteCount(e.Data) + 2);
                 if (string.IsNullOrWhiteSpace(e.Data)) return;
                 lock (errors) errors.Add(e.Data.Trim());
             };
@@ -2178,10 +2290,42 @@ namespace ExplorerNative
             {
                 if (!GetProcessIoCounters(process.Handle, out var counters)) return 0;
                 long written = (long)counters.WriteTransferCount;
+
+                // Less what robocopy wrote that is not anybody's file: its log
+                // and the lines it printed to us. The counter counts every write
+                // the process makes, and for small files those are most of them
+                // — a line and a log line per file, both longer than a short
+                // text file — so the bar ran ahead of the copy.
+                if (OwnWrites.TryGetValue(process, out var own)) written -= own.Bytes();
+
                 return written < 0 ? 0 : written;
             }
             catch { return 0; }
         }
+
+        /// <summary>What a robocopy process writes besides the files it copies.</summary>
+        private sealed class Overhead
+        {
+            public string LogPath = "";
+            public long Printed;
+
+            public long Bytes()
+            {
+                long log = 0;
+                try
+                {
+                    // Through a handle: the size in the folder listing lags for
+                    // a file another process has open and is still writing.
+                    using var handle = File.OpenHandle(LogPath, FileMode.Open, FileAccess.Read,
+                        FileShare.ReadWrite | FileShare.Delete);
+                    log = RandomAccess.GetLength(handle);
+                }
+                catch { }
+                return log + Interlocked.Read(ref Printed);
+            }
+        }
+
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Process, Overhead> OwnWrites = new();
 
         /// <summary>
         /// Robocopy prints one line per file. Rather than depend on its exact

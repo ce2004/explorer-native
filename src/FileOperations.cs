@@ -174,7 +174,7 @@ namespace ExplorerNative
                 }, token).ConfigureAwait(false);
                 plan = outcome.Files;
                 plannedDirectories = outcome.Directories;
-                skipped += conflicts.SkippedCount;
+                skipped += conflicts.SkippedCount + extras.AlreadyThere;
 
                 // A folder inside the tree that could not be listed. It was
                 // created empty at the destination and the copy reported
@@ -267,6 +267,7 @@ namespace ExplorerNative
                     }
                     plan = rest;
                     plannedDirectories = plannedDirectories.FindAll(d => !Under(d.Destination));
+                    extras.NestedLinks.RemoveAll(l => Under(l.Destination));
                     Report(renamedRoots[^1]);
                 }
             }
@@ -407,6 +408,25 @@ namespace ExplorerNative
                 }
             }
 
+            // Links inside the folders moved, once the folders they go into exist.
+            // Each one that cannot be moved is said and counted.
+            if (move && extras.NestedLinks.Count > 0)
+            {
+                await Task.Run(() =>
+                {
+                    foreach (var (link, to) in extras.NestedLinks)
+                    {
+                        if (token.IsCancellationRequested) break;
+                        try { MoveLink(link, to); succeeded++; }
+                        catch (Exception ex)
+                        {
+                            failed++;
+                            errors.Add($"{link}: the link could not be moved ({ex.Message})");
+                        }
+                    }
+                }).ConfigureAwait(false);
+            }
+
             // A move leaves the source directory skeletons behind; clear the empties.
             //
             // Only folders whose tree this move planned. Every source used to be
@@ -492,6 +512,12 @@ namespace ExplorerNative
             /// can be renamed whole rather than file by file.
             /// </summary>
             public readonly List<(string Source, string Destination)> FolderRenames = new();
+
+            /// <summary>Links found inside folders being moved, and where each goes.</summary>
+            public readonly List<(string Source, string Destination)> NestedLinks = new();
+
+            /// <summary>Files Fill gaps left alone because a merged folder already had them.</summary>
+            public int AlreadyThere;
         }
 
         private static List<PlannedCopy> BuildPlan(
@@ -558,7 +584,8 @@ namespace ExplorerNative
                     // refused — the paste reported a failure and produced nothing.
                     // Auto-rename turns the destination into "name (2)" first, which
                     // is not inside the source at all, and the copy is fine.
-                    destRoot = ResolveConflict(destRoot, policy, askConflict, conflicts, claimed, true, out bool skip);
+                    destRoot = ResolveConflict(destRoot, policy, askConflict, conflicts, claimed, true,
+                        out bool skip, out bool merge);
                     if (skip) continue;
                     claimed.Add(destRoot);
 
@@ -579,8 +606,17 @@ namespace ExplorerNative
                     // a share is three round trips.
                     var foundDirectories = new List<string>();
                     var foundFiles = new List<(string Path, long Length)>();
+                    var foundLinks = new List<string>();
                     int unreadableBefore = unreadable?.Count ?? 0;
-                    Walk(source, foundDirectories, foundFiles, unreadable, token);
+                    Walk(source, foundDirectories, foundFiles, unreadable, token, foundLinks);
+
+                    // Links inside a folder being moved go with it, as links.
+                    // Skipped by the walk and by nothing after it, a move to
+                    // another disk left them in the source folder — which then
+                    // was not empty, so stayed — and said "Move complete".
+                    if (move && extras != null)
+                        foreach (var link in foundLinks)
+                            extras.NestedLinks.Add((link, Path.Combine(destRoot, Path.GetRelativePath(source, link))));
 
                     foreach (var directory in foundDirectories)
                     {
@@ -610,7 +646,24 @@ namespace ExplorerNative
                     foreach (var (file, size) in foundFiles)
                     {
                         var relative = Path.GetRelativePath(source, file);
-                        plan.Add(new PlannedCopy(file, Path.Combine(destRoot, relative), size, rename));
+                        var target = Path.Combine(destRoot, relative);
+
+                        // Merging under Fill gaps: what the destination already
+                        // has stays as it is, and so does the original of a move.
+                        if (merge)
+                        {
+                            var exactTarget = NameRules.ExactPath(target);
+                            bool there;
+                            try { there = File.Exists(exactTarget) || Directory.Exists(exactTarget); }
+                            catch { there = true; }
+                            if (there)
+                            {
+                                if (extras != null) extras.AlreadyThere++;
+                                continue;
+                            }
+                        }
+
+                        plan.Add(new PlannedCopy(file, target, size, rename));
                     }
                 }
                 else if (File.Exists(exact))
@@ -708,8 +761,24 @@ namespace ExplorerNative
             HashSet<string> claimed,
             bool folder,
             out bool skip)
+            => ResolveConflict(desired, policy, askConflict, conflicts, claimed, folder, out skip, out _);
+
+        /// <param name="merge">
+        /// A folder arriving on a folder under Fill gaps: the two are merged, and
+        /// every file the destination already has is left alone.
+        /// </param>
+        private static string ResolveConflict(
+            string desired,
+            PasteConflictPolicy policy,
+            Func<string, ConflictChoice>? askConflict,
+            ConflictLog conflicts,
+            HashSet<string> claimed,
+            bool folder,
+            out bool skip,
+            out bool merge)
         {
             skip = false;
+            merge = false;
 
             // Another item of this same paste is going there. Whatever the policy
             // says about what was already on disk, the answer for two things
@@ -732,6 +801,7 @@ namespace ExplorerNative
                 {
                     ConflictChoice.Overwrite => PasteConflictPolicy.Overwrite,
                     ConflictChoice.Skip => PasteConflictPolicy.Skip,
+                    ConflictChoice.FillGaps => PasteConflictPolicy.FillGaps,
                     ConflictChoice.Cancel => throw new OperationCanceledException(),
                     _ => PasteConflictPolicy.AutoRename,
                 };
@@ -739,6 +809,18 @@ namespace ExplorerNative
 
             switch (effective)
             {
+                // Fill gaps fills in what is missing and touches nothing that is
+                // there. It fell into the rename below, so resuming a copy made
+                // "Photos (2)" with everything in it a second time.
+                case PasteConflictPolicy.FillGaps:
+                    if (folder && Directory.Exists(exactDesired))
+                    {
+                        merge = true;
+                        return desired;
+                    }
+                    skip = true;
+                    conflicts.Skipped(desired);
+                    return desired;
                 case PasteConflictPolicy.Overwrite:
                     conflicts.Overwritten(desired);
                     return desired;
@@ -800,8 +882,31 @@ namespace ExplorerNative
             // on each end of every file, a megabyte at the default setting, however small the file.
             await using var src = new FileStream(from, FileMode.Open, FileAccess.Read, FileShare.Read,
                 0, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            await using var dst = new FileStream(to, FileMode.Create, FileAccess.Write, FileShare.None,
-                0, FileOptions.Asynchronous | FileOptions.SequentialScan);
+
+            // A file being replaced is never written over in place. Opened
+            // FileMode.Create, the original was emptied before the first byte
+            // arrived, so a cancel, a full disk or a source that failed half way
+            // destroyed the very file the overwrite was meant to replace, and the
+            // cleanup below then deleted what was left of it. The new copy is
+            // written beside it under a temporary name and moved over it only
+            // once it is whole. A new name — nearly every file — costs nothing:
+            // CreateNew answers whether something is there in the same request.
+            string written = to;
+            FileStream dst;
+            try
+            {
+                dst = new FileStream(to, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                    0, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            }
+            catch (IOException ex) when ((ex.HResult & 0xFFFF) is 80 or 183)
+            {
+                written = NameRules.ExactPath(Path.Combine(
+                    Path.GetDirectoryName(NameRules.PlainPath(to))!,
+                    ".copying-" + Guid.NewGuid().ToString("N")[..12] + ".tmp"));
+                dst = new FileStream(written, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                    0, FileOptions.Asynchronous | FileOptions.SequentialScan);
+            }
+            await using var _ = dst;
 
             // No bigger than the file, which the plan already knows: the size
             // is only the chunk, so a file that grew since is still copied whole.
@@ -847,7 +952,21 @@ namespace ExplorerNative
                 // streams, both dates and the attributes. The streams are part of
                 // the file, so a copy without them is incomplete and goes the way
                 // of any other incomplete copy.
-                CopyStreams(from, to);
+                CopyStreams(from, written);
+
+                // Only now does the original go, in one step. Replace means
+                // replace, a read-only file included.
+                if (written != to)
+                {
+                    try { File.Move(written, to, overwrite: true); }
+                    catch (UnauthorizedAccessException)
+                    {
+                        var attributes = File.GetAttributes(to);
+                        if ((attributes & FileAttributes.ReadOnly) == 0) throw;
+                        File.SetAttributes(to, attributes & ~FileAttributes.ReadOnly);
+                        File.Move(written, to, overwrite: true);
+                    }
+                }
                 complete = true;
             }
             finally
@@ -861,10 +980,12 @@ namespace ExplorerNative
                 // the copy reported as cancelled and no cleanup anywhere. The
                 // robocopy path has removed its half-written files since the
                 // 20GB incident; this one never did.
+                // Only what this copy wrote: under a temporary name when it was
+                // replacing something, and the original is still there untouched.
                 if (!complete)
                 {
                     try { await dst.DisposeAsync(); } catch { }
-                    try { File.Delete(to); } catch { }
+                    try { File.Delete(written); } catch { }
                 }
 
                 // Nothing is reading into either by now: every read started
@@ -980,8 +1101,9 @@ namespace ExplorerNative
         /// Paths are listed through the exact form and handed back in the
         /// ordinary one.
         /// </summary>
+        /// <param name="links">Where to list the folder links found and not followed, if anywhere.</param>
         private static void Walk(string root, List<string> directories, List<(string Path, long Length)> files,
-            List<string>? unreadable, CancellationToken token)
+            List<string>? unreadable, CancellationToken token, List<string>? links = null)
         {
             var options = new EnumerationOptions
             {
@@ -1017,8 +1139,14 @@ namespace ExplorerNative
                     // into it, and a junction's destination is not created either.
                     if (reparse)
                     {
-                        try { if (NameRules.IsLink(new DirectoryInfo(sub))) continue; }
-                        catch { continue; }
+                        bool link;
+                        try { link = NameRules.IsLink(new DirectoryInfo(sub)); }
+                        catch { link = true; }
+                        if (link)
+                        {
+                            links?.Add(NameRules.PlainPath(sub));
+                            continue;
+                        }
                     }
 
                     var plain = NameRules.PlainPath(sub);

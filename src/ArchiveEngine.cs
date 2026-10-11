@@ -161,17 +161,22 @@ namespace ExplorerNative
                 for (int n = 2; !seen.Add(unique); n++)
                     unique = $"{Path.GetFileNameWithoutExtension(name)} ({n}){Path.GetExtension(name)}";
 
+                // Exactly this entry. "report." beside "report" is two files, and
+                // through a plain path every call means the one without the dot:
+                // the archive held the sibling's content under this one's name.
+                var exact = NameRules.ExactPath(trimmed);
+
                 try
                 {
-                    if (Directory.Exists(trimmed))
+                    if (Directory.Exists(exact))
                     {
-                        var info = new DirectoryInfo(trimmed);
+                        var info = new DirectoryInfo(exact);
                         plan.Add(new ArchiveItem(trimmed, unique, 0, true, info.LastWriteTime, info.Attributes));
                         AddTree(plan, info, unique, token, left, unreadable);
                     }
-                    else if (File.Exists(trimmed))
+                    else if (File.Exists(exact))
                     {
-                        var info = new FileInfo(trimmed);
+                        var info = new FileInfo(exact);
                         plan.Add(new ArchiveItem(trimmed, unique, info.Length, false, info.LastWriteTime, info.Attributes));
                     }
                     else
@@ -241,14 +246,16 @@ namespace ExplorerNative
                     }
                 }
 
+                // Kept in the ordinary form, which the system tar is given as an
+                // argument; the engines that open it go through ExactPath.
                 if (child is DirectoryInfo sub)
                 {
-                    plan.Add(new ArchiveItem(sub.FullName, name, 0, true, sub.LastWriteTime, sub.Attributes));
+                    plan.Add(new ArchiveItem(NameRules.PlainPath(sub.FullName), name, 0, true, sub.LastWriteTime, sub.Attributes));
                     AddTree(plan, sub, name, token, left, unreadable);
                 }
                 else if (child is FileInfo file)
                 {
-                    plan.Add(new ArchiveItem(file.FullName, name, file.Length, false,
+                    plan.Add(new ArchiveItem(NameRules.PlainPath(file.FullName), name, file.Length, false,
                         file.LastWriteTime, file.Attributes));
                 }
             }
@@ -618,7 +625,18 @@ namespace ExplorerNative
 
                 // Only now does the old one go. A move onto it is the last step
                 // rather than the first.
-                if (working != archivePath) File.Move(working, archivePath, overwrite: true);
+                // A read-only archive is replaced like any other once "Replace"
+                // has been answered; the move is refused for one, and that used
+                // to be found out only after all the work.
+                if (working != archivePath)
+                {
+                    try { File.Move(working, archivePath, overwrite: true); }
+                    catch (UnauthorizedAccessException)
+                    {
+                        ClearReadOnly(archivePath);
+                        File.Move(working, archivePath, overwrite: true);
+                    }
+                }
 
                 finished = true;
                 reporter.Done();

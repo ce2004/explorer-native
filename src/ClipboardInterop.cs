@@ -38,30 +38,28 @@ namespace ExplorerNative
 
             // Retry: the clipboard is a shared, lockable resource and another
             // app holding it briefly is normal, not exceptional.
-            for (int attempt = 0; attempt < 5; attempt++)
+            //
+            // One call, retrying inside itself five times 60ms apart. The plain
+            // overload already retries ten times 100ms apart, and it used to sit
+            // inside a loop of five of its own: a clipboard held by another
+            // program froze the window for five seconds on the UI thread.
+            try
             {
-                try
-                {
-                    // Rewound every time, because a failed attempt may already
-                    // have read it. Setting the clipboard reads this stream from
-                    // wherever the position happens to be, so a second attempt
-                    // handed over four bytes the first time and *nothing* the
-                    // second — and an empty Preferred DropEffect is not "no
-                    // opinion", it is the absence of the flag that makes this a
-                    // cut. The retry that rescued the copy turned it into one:
-                    // Ctrl+X, Ctrl+V, and the file is still where it was, with
-                    // "Cut 3 items" having been announced.
-                    stream.Position = 0;
+                // Rewound first, in case anything has read it. Setting the
+                // clipboard reads this stream from wherever the position happens
+                // to be, and an empty Preferred DropEffect is not "no opinion",
+                // it is the absence of the flag that makes this a cut: a retry
+                // once turned Ctrl+X, Ctrl+V into a copy, with "Cut 3 items"
+                // having been announced.
+                stream.Position = 0;
 
-                    Clipboard.SetDataObject(data, copy: true);
-                    return true;
-                }
-                catch (System.Runtime.InteropServices.ExternalException)
-                {
-                    System.Threading.Thread.Sleep(60);
-                }
+                Clipboard.SetDataObject(data, copy: true, retryTimes: 5, retryDelay: 60);
+                return true;
             }
-            return false;
+            catch (System.Runtime.InteropServices.ExternalException)
+            {
+                return false;
+            }
         }
 
         public static bool TryGetFiles(out string[] paths, out bool isCut)

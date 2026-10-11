@@ -683,7 +683,7 @@ namespace ExplorerNative
         {
             try
             {
-                using var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read,
+                using var handle = File.OpenHandle(NameRules.ExactPath(path), FileMode.Open, FileAccess.Read,
                     FileShare.ReadWrite | FileShare.Delete);
                 return null;
             }

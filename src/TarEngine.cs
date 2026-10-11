@@ -139,7 +139,7 @@ namespace ExplorerNative
             var only = plan.First(p => !p.IsDirectory);
             reporter.Starting(only.Name);
 
-            ParallelGZip.CompressFile(only.Source, archivePath, threads,
+            ParallelGZip.CompressFile(NameRules.ExactPath(only.Source), archivePath, threads,
                 ArchiveEngine.ToCompressionLevel(level), reporter.Advance, token);
 
             reporter.Finished(0);
@@ -347,54 +347,83 @@ namespace ExplorerNative
                 token.ThrowIfCancellationRequested();
                 reporter.Starting(item.Name);
 
-                try
+                if (item.IsDirectory)
                 {
-                    if (item.IsDirectory)
-                    {
-                        writer.WriteEntry(new PaxTarEntry(TarEntryType.Directory, item.Name + "/")
-                        {
-                            ModificationTime = TarTime(item.Modified),
-                        });
-
-                        anyEntry = true;
-                        written++;
-                        reporter.Finished(0);
-                        continue;
-                    }
-
-                    using var source = new FileStream(item.Source, FileMode.Open, FileAccess.Read,
-                        FileShare.ReadWrite, 1 << 20, FileOptions.SequentialScan);
-
-                    // Counted on the way past rather than added on at the end, so
-                    // a single very large file moves the progress figures while it
-                    // is being written instead of jumping when it finishes.
-                    using var counted = new CountingStream(source, reporter);
-
-                    writer.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, item.Name)
+                    // A failure here is the archive's, not the folder's, and it
+                    // goes out and ends the archive.
+                    writer.WriteEntry(new PaxTarEntry(TarEntryType.Directory, item.Name + "/")
                     {
                         ModificationTime = TarTime(item.Modified),
-                        DataStream = counted,
                     });
 
                     anyEntry = true;
                     written++;
                     reporter.Finished(0);
-
-                    // The entry is exactly as long as its header says whatever the
-                    // file did meanwhile — see CountingStream — so the archive
-                    // stays readable. What it holds is still not the file, and
-                    // that is said. It is still an entry written: left out of the
-                    // count, a .tar of one file that grew while it was read was
-                    // taken for "nothing could be read" and deleted.
-                    if (counted.Changed != null)
-                        errors.Add($"{item.Name}: {counted.Changed}");
+                    continue;
                 }
-                catch (OperationCanceledException) { throw; }
-                catch (Exception ex)
+
+                // Opening the file is the only part that can fail for the file's
+                // own sake and still leave a whole archive: nothing has been
+                // written for it yet. A read that fails half way is absorbed by
+                // CountingStream, which pads the entry to the length its header
+                // promised.
+                FileStream source;
+                CountingStream counted;
+                PaxTarEntry entry;
+                try
+                {
+                    source = new FileStream(NameRules.ExactPath(item.Source), FileMode.Open, FileAccess.Read,
+                        FileShare.ReadWrite, 1 << 20, FileOptions.SequentialScan);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
                 {
                     errors.Add($"{item.Name}: {ex.Message}");
                     reporter.Finished(0);
+                    continue;
                 }
+
+                using (source)
+                {
+                    try
+                    {
+                        // Counted on the way past rather than added on at the end, so
+                        // a single very large file moves the progress figures while it
+                        // is being written instead of jumping when it finishes.
+                        counted = new CountingStream(source, reporter);
+                        entry = new PaxTarEntry(TarEntryType.RegularFile, item.Name)
+                        {
+                            ModificationTime = TarTime(item.Modified),
+                            DataStream = counted,
+                        };
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException)
+                    {
+                        errors.Add($"{item.Name}: {ex.Message}");
+                        reporter.Finished(0);
+                        continue;
+                    }
+
+                    // Not caught. Anything thrown from here on is a write into the
+                    // archive that failed — a full disk, a pipe that closed —
+                    // and the header may already be down. Counted as one file
+                    // that could not be read, the job went on writing after half
+                    // an entry and the result replaced the archive it was meant
+                    // to be replacing. Out of here, the old one stays.
+                    writer.WriteEntry(entry);
+                }
+
+                anyEntry = true;
+                written++;
+                reporter.Finished(0);
+
+                // The entry is exactly as long as its header says whatever the
+                // file did meanwhile — see CountingStream — so the archive
+                // stays readable. What it holds is still not the file, and
+                // that is said. It is still an entry written: left out of the
+                // count, a .tar of one file that grew while it was read was
+                // taken for "nothing could be read" and deleted.
+                if (counted.Changed != null)
+                    errors.Add($"{item.Name}: {counted.Changed}");
             }
 
             // TarWriter ends the archive with its two zero blocks only if it

@@ -44,6 +44,11 @@ namespace ExplorerNative
             await ProgressEndsAtTheEndTests();
             await GzWithExtraBytesTests();
             await GrowingFileKeepsTarTests();
+            await DiskFullKeepsOldArchiveTests();
+            TarStopsOnAFailedWriteTests();
+            await TrailingDotSourceTests();
+            await ReadOnlyArchiveReplacedTests();
+            ExtractionLaneCapTests();
 
             if (!BsdTar.Available) return;
 
@@ -1291,6 +1296,262 @@ namespace ExplorerNative
             var source = dir == null ? "" : File.ReadAllText(Path.Combine(dir.FullName, "src", "BsdTar.cs"));
             Check("the remembered tar choice is keyed on the DLL's size and date as well as its version",
                 source.Contains("dllInfo.LastWriteTimeUtc.Ticks") && source.Contains("dllInfo.Length"));
+        }
+
+        // ---------- Review of 2026-10-11 ----------
+
+        /// <summary>A stream that takes so many bytes and then says the disk is full.</summary>
+        private sealed class FullDisk : Stream
+        {
+            private readonly Stream _inner;
+            private readonly long _room;
+            public bool Filled;
+
+            public FullDisk(Stream inner, long room) { _inner = inner; _room = room; }
+
+            public override bool CanRead => _inner.CanRead;
+            public override bool CanSeek => _inner.CanSeek;
+            public override bool CanWrite => true;
+            public override long Length => _inner.Length;
+            public override long Position { get => _inner.Position; set => _inner.Position = value; }
+            public override void Flush() => _inner.Flush();
+            public override int Read(byte[] buffer, int offset, int count) => _inner.Read(buffer, offset, count);
+            public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
+            public override void SetLength(long value) => _inner.SetLength(value);
+
+            public override void Write(byte[] buffer, int offset, int count) =>
+                Write(new ReadOnlySpan<byte>(buffer, offset, count));
+
+            public override void Write(ReadOnlySpan<byte> buffer)
+            {
+                if (_inner.Position + buffer.Length > _room)
+                {
+                    Filled = true;
+                    throw new IOException("There is not enough space on the disk.");
+                }
+                _inner.Write(buffer);
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing) _inner.Dispose();
+                base.Dispose(disposing);
+            }
+        }
+
+        /// <summary>
+        /// The disk fills while an archive is being re-made over an older one.
+        /// The failed write was counted as one unreadable file, the archive went
+        /// on without it, and the short result was moved over the good one.
+        /// </summary>
+        private static async Task DiskFullKeepsOldArchiveTests()
+        {
+            var dir = NewDir("full");
+            try
+            {
+                var folder = Path.Combine(dir, "photos");
+                Directory.CreateDirectory(folder);
+                var random = new Random(11);
+                for (int i = 0; i < 6; i++)
+                {
+                    var bytes = new byte[1 << 20];
+                    random.NextBytes(bytes);
+                    File.WriteAllBytes(Path.Combine(folder, $"p{i}.jpg"), bytes);
+                }
+
+                var archive = Path.Combine(dir, "backup.zip");
+                var small = Path.Combine(dir, "small.txt");
+                File.WriteAllText(small, "the good archive");
+                await ArchiveEngine.CompressAsync(new[] { small }, archive, ArchiveFormats.Zip,
+                    ArchiveLevel.Balanced, 2, null, CancellationToken.None);
+                var good = File.ReadAllBytes(archive);
+
+                FullDisk? disk = null;
+                ZipEngine.OutputForTests = s => disk = new FullDisk(s, 5L << 19);
+                Exception? thrown = null;
+                ArchiveResult? result = null;
+                try
+                {
+                    result = await ArchiveEngine.CompressAsync(new[] { folder }, archive, ArchiveFormats.Zip,
+                        ArchiveLevel.Balanced, 2, null, CancellationToken.None);
+                }
+                catch (Exception ex) { thrown = ex; }
+                finally { ZipEngine.OutputForTests = null; }
+
+                Check("disk full: the full disk was reached", disk?.Filled == true);
+                Check("disk full: it is a failure, not an archive with a file missing", thrown != null,
+                    result == null ? "" : $"made {result.Items} items, {result.Failed} failed: {Said(result)}");
+                Check("disk full: the archive it was replacing is exactly as it was",
+                    File.ReadAllBytes(archive).AsSpan().SequenceEqual(good));
+                Check("disk full: and nothing half-made is left beside it",
+                    Directory.GetFiles(dir, "*.creating-*").Length == 0,
+                    string.Join(", ", Directory.GetFiles(dir).Select(Path.GetFileName)));
+
+                // A file that cannot be read is still only that file.
+                var locked = Path.Combine(folder, "p0.jpg");
+                using (new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None))
+                {
+                    var skipped = await ArchiveEngine.CompressAsync(new[] { folder }, archive, ArchiveFormats.Zip,
+                        ArchiveLevel.Balanced, 2, null, CancellationToken.None);
+                    Check("disk full: a file that cannot be read still only costs that file",
+                        skipped.Failed == 1 && skipped.Items == 6, $"items={skipped.Items} failed={skipped.Failed}");
+                }
+                using (var zip = ZipFile.OpenRead(archive))
+                    Check("disk full: and the archive holds the rest",
+                        zip.Entries.Count(e => e.Name.Length > 0) == 5, zip.Entries.Count.ToString());
+            }
+            finally { ZipEngine.OutputForTests = null; Cleanup(dir); }
+        }
+
+        /// <summary>
+        /// A tar whose sink fails part way through an entry. Its header was down,
+        /// the failure was counted against the file, and the next entry was
+        /// written straight after half of one.
+        /// </summary>
+        private static void TarStopsOnAFailedWriteTests()
+        {
+            var dir = NewDir("tarfull");
+            try
+            {
+                var plan = new List<ArchiveItem>();
+                var random = new Random(12);
+                for (int i = 0; i < 4; i++)
+                {
+                    var path = Path.Combine(dir, $"f{i}.bin");
+                    var bytes = new byte[256 * 1024];
+                    random.NextBytes(bytes);
+                    File.WriteAllBytes(path, bytes);
+                    plan.Add(new ArchiveItem(path, $"f{i}.bin", bytes.Length, false, DateTime.Now, FileAttributes.Normal));
+                }
+
+                var errors = new List<string>();
+                using var sink = new FullDisk(new MemoryStream(), 600 * 1024);
+                Exception? thrown = null;
+                try
+                {
+                    TarEngine.WriteTar(sink, plan, new ArchiveEngine.Reporter(null), errors, CancellationToken.None);
+                }
+                catch (Exception ex) { thrown = ex; }
+
+                Check("tar: a write that fails ends the archive rather than skipping the file",
+                    thrown is IOException, thrown?.GetType().Name ?? $"carried on; errors: {string.Join(" | ", errors)}");
+
+                // And a file that cannot be opened is still only that file.
+                var gone = plan.Append(new ArchiveItem(Path.Combine(dir, "missing.bin"), "missing.bin", 5, false,
+                    DateTime.Now, FileAttributes.Normal)).ToList();
+                var fine = new List<string>();
+                using var roomy = new MemoryStream();
+                int written = TarEngine.WriteTar(roomy, gone, new ArchiveEngine.Reporter(null), fine, CancellationToken.None);
+                Check("tar: a file that cannot be opened is skipped and the rest written",
+                    written == 4 && fine.Count == 1, $"written={written} errors={string.Join(" | ", fine)}");
+            }
+            finally { Cleanup(dir); }
+        }
+
+        /// <summary>
+        /// "report." beside "report". Through a plain path every call reached the
+        /// one without the dot, so the archive held the sibling's content under
+        /// this one's name.
+        /// </summary>
+        private static async Task TrailingDotSourceTests()
+        {
+            var dir = NewDir("dot");
+            try
+            {
+                File.WriteAllText(Path.Combine(dir, "report"), "PLAIN");
+                File.WriteAllText(NameRules.LiteralPath(Path.Combine(dir, "report.")), "WITH THE DOT");
+                var folder = Path.Combine(dir, "fold.");
+                Directory.CreateDirectory(NameRules.LiteralPath(folder));
+                Directory.CreateDirectory(Path.Combine(dir, "fold"));
+                File.WriteAllText(NameRules.LiteralPath(Path.Combine(folder, "inside.txt")), "IN THE DOTTED ONE");
+                File.WriteAllText(Path.Combine(dir, "fold", "inside.txt"), "IN THE SIBLING");
+
+                foreach (var format in new[] { ArchiveFormats.Zip, ArchiveFormats.Tar })
+                {
+                    var archive = Path.Combine(dir, "out" + format.Extension);
+                    var made = await ArchiveEngine.CompressAsync(
+                        new[] { Path.Combine(dir, "report."), folder }, archive, format,
+                        ArchiveLevel.Balanced, 2, null, CancellationToken.None);
+
+                    var contents = new Dictionary<string, string>();
+                    if (format == ArchiveFormats.Zip)
+                    {
+                        using var zip = ZipFile.OpenRead(archive);
+                        foreach (var e in zip.Entries.Where(e => e.Name.Length > 0))
+                            using (var r = new StreamReader(e.Open())) contents[e.FullName] = r.ReadToEnd();
+                    }
+                    else
+                    {
+                        using var file = File.OpenRead(archive);
+                        using var reader = new TarReader(file);
+                        while (reader.GetNextEntry() is { } e)
+                            if (e.DataStream != null)
+                                using (var r = new StreamReader(e.DataStream)) contents[e.Name] = r.ReadToEnd();
+                    }
+
+                    Check($"{format.Id}: a name ending in a dot holds its own content",
+                        contents.GetValueOrDefault("report.") == "WITH THE DOT",
+                        string.Join(" | ", contents.Select(kv => $"{kv.Key}={kv.Value}")) + " " + Said(made));
+                    Check($"{format.Id}: and so does a file in a folder ending in a dot",
+                        contents.GetValueOrDefault("fold./inside.txt") == "IN THE DOTTED ONE",
+                        string.Join(" | ", contents.Select(kv => $"{kv.Key}={kv.Value}")));
+                }
+            }
+            finally
+            {
+                try { Directory.Delete(NameRules.LiteralPath(dir), recursive: true); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// Re-making an archive that is read-only. The move over it was refused
+        /// after the whole archive had been built.
+        /// </summary>
+        private static async Task ReadOnlyArchiveReplacedTests()
+        {
+            var dir = NewDir("ro");
+            try
+            {
+                var source = Path.Combine(dir, "a.txt");
+                File.WriteAllText(source, "first");
+                var archive = Path.Combine(dir, "a.zip");
+                await ArchiveEngine.CompressAsync(new[] { source }, archive, ArchiveFormats.Zip,
+                    ArchiveLevel.Balanced, 2, null, CancellationToken.None);
+                File.SetAttributes(archive, FileAttributes.ReadOnly);
+
+                File.WriteAllText(source, "second, and longer");
+                Exception? thrown = null;
+                try
+                {
+                    await ArchiveEngine.CompressAsync(new[] { source }, archive, ArchiveFormats.Zip,
+                        ArchiveLevel.Balanced, 2, null, CancellationToken.None);
+                }
+                catch (Exception ex) { thrown = ex; }
+
+                string inside = "";
+                try
+                {
+                    using var zip = ZipFile.OpenRead(archive);
+                    using var r = new StreamReader(zip.Entries.Single().Open());
+                    inside = r.ReadToEnd();
+                }
+                catch { }
+                Check("a read-only archive is replaced", thrown == null && inside == "second, and longer",
+                    thrown?.Message ?? inside);
+            }
+            finally
+            {
+                foreach (var f in Directory.GetFiles(dir)) try { File.SetAttributes(f, FileAttributes.Normal); } catch { }
+                Cleanup(dir);
+            }
+        }
+
+        /// <summary>Each extraction lane holds the whole central directory, so a huge zip gets fewer.</summary>
+        private static void ExtractionLaneCapTests()
+        {
+            Check("lanes: a small zip may have as many as asked for", ZipEngine.LanesFor(1000) >= 64);
+            Check("lanes: a million entries get one", ZipEngine.LanesFor(1_000_000) == 1);
+            Check("lanes: and never none", ZipEngine.LanesFor(5_000_000) == 1 && ZipEngine.LanesFor(0) >= 1);
         }
     }
 }

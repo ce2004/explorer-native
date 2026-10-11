@@ -202,6 +202,12 @@ namespace ExplorerNative
             }
         }
 
+        /// <summary>
+        /// Test-only: wraps the archive's output stream, so a test can make the
+        /// disk fill part way through. Null in the app.
+        /// </summary>
+        internal static Func<Stream, Stream>? OutputForTests { get; set; }
+
         public static int Create(
             IReadOnlyList<ArchiveItem> plan,
             string archivePath,
@@ -238,6 +244,21 @@ namespace ExplorerNative
 
             Exception? producerFailure = null;
 
+            // Opened before the producer starts. Opened after, a destination that
+            // could not be created — a full disk, a folder gone, no permission —
+            // threw out of here while the producer was still running, the queue
+            // and the lane were disposed underneath it, and its finally threw
+            // ObjectDisposedException on a raw thread: the whole process went.
+            Stream output = new FileStream(archivePath, FileMode.Create, FileAccess.Write,
+                FileShare.None, 1 << 20);
+            if (OutputForTests is { } wrap) output = wrap(output);
+
+            // The producer's own token. Cancelled on the way out whatever the
+            // reason, so an archive abandoned because the disk filled does not
+            // leave the producer waiting on a budget nobody will give back.
+            var stop = CancellationTokenSource.CreateLinkedTokenSource(token);
+            var halt = stop.Token;
+
             // A thread of its own rather than a pool thread: this one blocks, on
             // the budget and on the queue, and a blocked pool thread is one that
             // is not compressing anything.
@@ -247,7 +268,7 @@ namespace ExplorerNative
                 {
                     foreach (var item in plan)
                     {
-                        token.ThrowIfCancellationRequested();
+                        halt.ThrowIfCancellationRequested();
 
                         if (item.IsDirectory)
                         {
@@ -260,7 +281,7 @@ namespace ExplorerNative
                                 Data = null,
                                 Length = 0,
                                 Reserved = 0,
-                            }), token);
+                            }), halt);
                             continue;
                         }
 
@@ -276,7 +297,7 @@ namespace ExplorerNative
                                 Data = null,
                                 Length = -1,
                                 Reserved = 0,
-                            }), token);
+                            }), halt);
                             continue;
                         }
 
@@ -284,26 +305,44 @@ namespace ExplorerNative
                         // will not compress, which is what the buffer below is sized
                         // for; reserved the same.
                         long reserved = item.Size + (item.Size >> 12) + 64 * 1024;
-                        budget.Take(reserved, token);
-                        lane.Wait(token);
+                        budget.Take(reserved, halt);
+                        try { lane.Wait(halt); }
+                        catch { budget.Give(reserved); throw; }
 
-                        var work = Task.Run(() => CompressToMemory(item, compression, reserved, reporter, token), token);
-                        try { queue.Add(work, token); }
-                        catch { budget.Give(reserved); Release(lane, lanes); throw; }
+                        var work = Task.Run(() => CompressToMemory(item, compression, reserved, reporter, halt), halt);
+                        try { queue.Add(work, halt); }
+                        catch
+                        {
+                            // A task that never reaches the queue is never drained,
+                            // so it gives back what it holds itself, once it ends.
+                            work.ContinueWith(t =>
+                            {
+                                budget.Give(reserved);
+                                Release(lane, lanes);
+                            }, TaskScheduler.Default);
+                            throw;
+                        }
                     }
                 }
                 catch (Exception ex) { producerFailure = ex; }
-                finally { queue.CompleteAdding(); }
+                finally
+                {
+                    // Never throws on this thread: an exception here is an
+                    // unhandled one on a raw thread, which ends the process.
+                    try { queue.CompleteAdding(); }
+                    catch (ObjectDisposedException) { }
+                    catch (InvalidOperationException) { }
+                }
             })
             { IsBackground = true, Name = "zip-plan" };
 
-            producer.Start();
-
             int written = 0;
 
-            using (var output = new FileStream(archivePath, FileMode.Create, FileAccess.Write,
-                       FileShare.None, 1 << 20))
+            using (output)
             {
+                try { producer.Start(); }
+                catch { stop.Cancel(); throw; }
+
                 var central = new List<byte[]>(plan.Count);
                 long entryCount = 0;
 
@@ -356,18 +395,16 @@ namespace ExplorerNative
                                 record = WriteEntry(output, prepared, compression, lanes, reporter, token);
                             }
                             catch (OperationCanceledException) { throw; }
-                            catch (IOException ex)
+                            catch (SkippedEntry ex)
                             {
-                                // Rewound over whatever the entry wrote — a local
-                                // header and part of its data on a write that
-                                // failed, which readers that walk the local
-                                // headers in order then stumbled into.
-                                try
-                                {
-                                    output.SetLength(before);
-                                    output.Position = before;
-                                }
-                                catch { }
+                                // Only a file that could not be *read*. WriteEntry
+                                // has already rewound over what the entry wrote.
+                                // A write to the archive that failed — the disk
+                                // filled — is not this: it used to be counted as
+                                // one unreadable file, the job went on, and the
+                                // short archive was then moved over the good one
+                                // it was replacing. That now ends the archive,
+                                // and the old one stays.
                                 errors.Add(ex.Message);
                                 reporter.Finished(0);
                                 continue;
@@ -392,6 +429,7 @@ namespace ExplorerNative
                     // Whatever happens, stop the producer and let go of anything
                     // it is holding, or a cancelled archive leaves a thread
                     // sitting on a budget nobody will ever give back.
+                    stop.Cancel();
                     if (!queue.IsAddingCompleted)
                     {
                         try { queue.CompleteAdding(); } catch { }
@@ -449,7 +487,7 @@ namespace ExplorerNative
             try
             {
                 // Unbuffered: it is read 64KB at a time into a buffer of its own.
-                using var source = new FileStream(item.Source, FileMode.Open, FileAccess.Read,
+                using var source = new FileStream(NameRules.ExactPath(item.Source), FileMode.Open, FileAccess.Read,
                     FileShare.ReadWrite, 0, FileOptions.SequentialScan);
 
                 // Named as the work on it begins, not when the writer gets to it.
@@ -528,7 +566,7 @@ namespace ExplorerNative
         /// afterwards by adding up sizes is an offset that is wrong the first
         /// time anything is skipped.
         /// </summary>
-        private static byte[] WriteEntry(FileStream output, Prepared prepared, CompressionLevel level, int lanes,
+        private static byte[] WriteEntry(Stream output, Prepared prepared, CompressionLevel level, int lanes,
             ArchiveEngine.Reporter reporter, CancellationToken token)
         {
             var item = prepared.Item;
@@ -584,21 +622,15 @@ namespace ExplorerNative
                     ? CopyStored(item, output, reporter, token)
                     : CopyDeflated(item, output, level, lanes, reporter, token);
             }
-            catch (OperationCanceledException) { throw; }
-            catch (Exception ex)
+            catch (SkippedEntry ex)
             {
-                // Rewind over the header and the part-written data. The entry
-                // never existed as far as the directory is concerned, which is the
-                // only outcome that leaves a readable archive. The flush may fail
-                // for the same reason the write did; the rewind still happens.
-                try { output.Flush(); } catch { }
-                try
-                {
-                    output.SetLength(offset);
-                    output.Position = offset;
-                }
-                catch { }
-                throw new IOException($"{item.Name}: {ex.Message}", ex);
+                // The file could not be read. Rewind over the header and the
+                // part-written data: the entry never existed as far as the
+                // directory is concerned, which is the only outcome that leaves a
+                // readable archive. Anything else that went wrong here was a write
+                // to the archive, and it goes straight out and ends the archive.
+                Rewind(output, offset);
+                throw new SkippedEntry($"{item.Name}: {ex.Message}", ex.InnerException);
             }
 
             long compressedSize = output.Position - dataStart;
@@ -609,13 +641,8 @@ namespace ExplorerNative
             // for the sizes, and a cut-down one disagrees with the directory.
             if (!wideNeeded && (read >= uint.MaxValue || compressedSize >= uint.MaxValue))
             {
-                try
-                {
-                    output.SetLength(offset);
-                    output.Position = offset;
-                }
-                catch { }
-                throw new IOException($"{item.Name}: it grew past 4GB while it was being added");
+                Rewind(output, offset);
+                throw new SkippedEntry($"{item.Name}: it grew past 4GB while it was being added");
             }
 
             PatchLocalHeader(output, offset, nameBytes.Length, crc, compressedSize, read, wideNeeded);
@@ -623,6 +650,58 @@ namespace ExplorerNative
 
             return CentralRecord(nameBytes, prepared.Method, dosTime, dosDate, crc,
                 compressedSize, read, offset, attributes);
+        }
+
+        /// <summary>
+        /// One file left out of the archive because it could not be read, and
+        /// nothing worse. Every other exception out of writing an entry is the
+        /// archive itself failing, and ends it.
+        /// </summary>
+        internal sealed class SkippedEntry : IOException
+        {
+            public SkippedEntry(string message, Exception? inner = null) : base(message, inner) { }
+        }
+
+        /// <summary>
+        /// Cuts the archive back to where an entry began. If even that fails the
+        /// archive cannot be trusted, and it is not a skipped file any more.
+        /// </summary>
+        private static void Rewind(Stream output, long offset)
+        {
+            try { output.Flush(); } catch { }
+            try
+            {
+                output.SetLength(offset);
+                output.Position = offset;
+            }
+            catch (Exception ex)
+            {
+                throw new IOException($"The archive could not be written: {ex.Message}", ex);
+            }
+        }
+
+        /// <summary>Opens a file to add, reached exactly even with a trailing dot or space.</summary>
+        private static FileStream OpenSource(ArchiveItem item)
+        {
+            try
+            {
+                return new FileStream(NameRules.ExactPath(item.Source), FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite, 0, FileOptions.SequentialScan);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException)
+            {
+                throw new SkippedEntry(ex.Message, ex);
+            }
+        }
+
+        /// <summary>A read of the file being added; a failure is that file's, not the archive's.</summary>
+        private static int ReadSource(FileStream source, byte[] buffer)
+        {
+            try { return source.Read(buffer, 0, buffer.Length); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                throw new SkippedEntry(ex.Message, ex);
+            }
         }
 
         [ThreadStatic] private static byte[]? _scratchSmall;
@@ -641,8 +720,7 @@ namespace ExplorerNative
         private static (uint crc, long read) CopyStored(ArchiveItem item, Stream output,
             ArchiveEngine.Reporter reporter, CancellationToken token)
         {
-            using var source = new FileStream(item.Source, FileMode.Open, FileAccess.Read,
-                FileShare.ReadWrite, 0, FileOptions.SequentialScan);
+            using var source = OpenSource(item);
 
             var buffer = Scratch(1 << 20);
             uint crc = Crc32.Seed;
@@ -651,7 +729,7 @@ namespace ExplorerNative
             while (true)
             {
                 token.ThrowIfCancellationRequested();
-                int got = source.Read(buffer, 0, buffer.Length);
+                int got = ReadSource(source, buffer);
                 if (got <= 0) break;
 
                 crc = Crc32.Append(crc, buffer.AsSpan(0, got));
@@ -667,8 +745,7 @@ namespace ExplorerNative
         private static (uint crc, long read) CopyDeflated(ArchiveItem item, Stream output,
             CompressionLevel level, int lanes, ArchiveEngine.Reporter reporter, CancellationToken token)
         {
-            using var source = new FileStream(item.Source, FileMode.Open, FileAccess.Read,
-                FileShare.ReadWrite, 0, FileOptions.SequentialScan);
+            using var source = OpenSource(item);
 
             var buffer = Scratch(1 << 20);
             uint crc = Crc32.Seed;
@@ -683,7 +760,7 @@ namespace ExplorerNative
                 while (true)
                 {
                     token.ThrowIfCancellationRequested();
-                    int got = source.Read(buffer, 0, buffer.Length);
+                    int got = ReadSource(source, buffer);
                     if (got <= 0) break;
 
                     crc = Crc32.Append(crc, buffer.AsSpan(0, got));
@@ -734,7 +811,7 @@ namespace ExplorerNative
         /// Puts the real checksum and sizes into a header that was written before
         /// they were known.
         /// </summary>
-        private static void PatchLocalHeader(FileStream output, long headerOffset, int nameLength,
+        private static void PatchLocalHeader(Stream output, long headerOffset, int nameLength,
             uint crc, long compressed, long uncompressed, bool zip64)
         {
             output.Flush();
@@ -820,7 +897,7 @@ namespace ExplorerNative
         /// eleven-file archive ends up rejected by whatever the recipient happens
         /// to unpack it with.
         /// </summary>
-        private static void WriteDirectory(FileStream output, List<byte[]> central, long entryCount)
+        private static void WriteDirectory(Stream output, List<byte[]> central, long entryCount)
         {
             long start = output.Position;
             foreach (var record in central) output.Write(record, 0, record.Length);
@@ -1028,6 +1105,9 @@ namespace ExplorerNative
             catch { return null; }
         }
 
+        /// <summary>The most extraction lanes worth opening for an archive of this many entries.</summary>
+        internal static int LanesFor(int entries) => Math.Max(1, 1_000_000 / Math.Max(1, entries));
+
         public static int Extract(string archivePath, ExtractionRules rules,
             int threads, ArchiveEngine.Reporter reporter, List<string> errors, CancellationToken token)
         {
@@ -1098,6 +1178,14 @@ namespace ExplorerNative
             int nextRun = -1;
             int done = 0;
             int lanes = Math.Clamp(threads, 1, Math.Max(1, runs.Count));
+
+            // Each lane opens the archive for itself, and opening one reads its
+            // whole central directory into memory — a few hundred bytes an entry.
+            // For a zip of a million entries, sixty-four lanes was sixty-four
+            // copies of that, gigabytes, for an extraction that is bound by the
+            // disk long before the sixty-fourth lane. Capped so all the lanes
+            // together hold about a million entries.
+            lanes = Math.Min(lanes, LanesFor(count));
 
             // Which entries got as far as being written or refused. Every
             // replacement is recorded when its destination is settled above, so a
