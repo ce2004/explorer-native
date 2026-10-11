@@ -133,6 +133,27 @@ namespace ExplorerNative
             return rules;
         }
 
+        /// <summary>
+        /// Rules for taking a few members out of an archive rather than all of
+        /// it: <paramref name="select"/> is given each entry's cleaned name and
+        /// answers where under <paramref name="destination"/> it goes, relative,
+        /// or null for an entry nobody asked for. Those are passed over without
+        /// a word. What it answers still goes through <see cref="ArchiveEngine.SafeTarget"/>,
+        /// so a member called "Disc 1/../../evil" is refused like any other
+        /// name that points outside the folder.
+        ///
+        /// Used by archive browsing, where the destination is a folder of its
+        /// own that nothing else is in, so there is nothing to ask about.
+        /// </summary>
+        public static ExtractionRules Selecting(string destination, Func<string, string?> select) =>
+            new(destination, new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase), fillGaps: false, overwrite: false)
+            {
+                _select = select,
+            };
+
+        private Func<string, string?>? _select;
+
         private static ExtractionRules Skipping(string destination, List<string> clashing)
         {
             var skipped = new HashSet<string>(clashing, StringComparer.OrdinalIgnoreCase);
@@ -244,6 +265,15 @@ namespace ExplorerNative
         {
             problem = null;
 
+            // Only what was asked for, when only some was. Decided first, so an
+            // entry nobody chose is not reported as a problem either.
+            string? selected = null;
+            if (_select != null)
+            {
+                selected = _select(Normalise(entryName));
+                if (selected == null) return null;
+            }
+
             // Before the name is cleaned up, which drops empty segments and so
             // turns a network path — two slashes, a server, a share — into an
             // ordinary relative one that extracted quietly into a folder named
@@ -255,7 +285,7 @@ namespace ExplorerNative
                 return null;
             }
 
-            var cleaned = Normalise(entryName);
+            var cleaned = selected ?? Normalise(entryName);
             if (cleaned.Length == 0) return null;
 
             var top = TopSegment(cleaned);

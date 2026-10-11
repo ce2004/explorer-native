@@ -440,8 +440,17 @@ namespace ExplorerNative
         }
 
         /// <summary>Every entry's name, size and date, without extracting anything.</summary>
-        internal static IReadOnlyList<ArchiveEntryInfo> ReadIndex(Stream tar, CancellationToken token)
+        internal static IReadOnlyList<ArchiveEntryInfo> ReadIndex(Stream tar, CancellationToken token) =>
+            ReadIndex(tar, token, out _);
+
+        /// <param name="damaged">
+        /// Whether the listing stopped because the archive stopped making sense,
+        /// rather than because it ended. Browsing an archive says so; the
+        /// extraction this listing is usually for finds out for itself.
+        /// </param>
+        internal static IReadOnlyList<ArchiveEntryInfo> ReadIndex(Stream tar, CancellationToken token, out bool damaged)
         {
+            damaged = false;
             using var reader = new TarReader(tar, leaveOpen: true);
             var entries = new List<ArchiveEntryInfo>();
 
@@ -456,7 +465,7 @@ namespace ExplorerNative
                 // that follows saves what it can and says where it stopped.
                 TarEntry? entry;
                 try { entry = reader.GetNextEntry(copyData: false); }
-                catch (Exception ex) when (ex is not OperationCanceledException) { break; }
+                catch (Exception ex) when (ex is not OperationCanceledException) { damaged = true; break; }
                 if (entry == null) break;
 
                 // Not files, as ReadInto already knows: counted here, git

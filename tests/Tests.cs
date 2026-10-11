@@ -274,6 +274,7 @@ namespace ExplorerNative
             await Guard("DeleteTests", () => { DeleteTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("Round2FixTests", () => Round2FixTests.RunAll(Check, Equal));
             await Guard("ShortcutSortDetailsTests", () => ShortcutSortDetailsTests.RunAll(Check, Equal));
+            await Guard("ArchiveBrowserTests", () => ArchiveBrowserTests.RunAll(Check, Equal));
             await Guard("DriveSizeTests", () => DriveSizeTests.RunAll(Check, Equal));
             await Guard("DriveClientCacheTests", () => DriveClientCacheTests.RunAll(Check, Equal));
 

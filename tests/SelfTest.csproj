@@ -55,6 +55,7 @@
     <Compile Include="..\src\ZipEngine.cs" />
     <Compile Include="..\src\TarEngine.cs" />
     <Compile Include="..\src\BsdTar.cs" />
+    <Compile Include="..\src\ArchiveBrowser.cs" />
     <Compile Include="..\src\ArchiveForm.cs" />
     <Compile Include="..\src\ProgressForm.cs" />
     <Compile Include="..\src\ConflictForm.cs" />
@@ -103,6 +104,7 @@
     <Compile Include="DeleteTests.cs" />
     <Compile Include="Round2FixTests.cs" />
     <Compile Include="ShortcutSortDetailsTests.cs" />
+    <Compile Include="ArchiveBrowserTests.cs" />
   </ItemGroup>
 
   <!-- The managed Ogg Vorbis and Opus decoders, which the suite exercises the

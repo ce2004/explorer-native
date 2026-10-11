@@ -192,6 +192,10 @@ namespace ExplorerNative
                 // Anything left by a run that was killed before it could tidy up.
                 try { StreamingSource.SweepOldCopies(); } catch { }
 
+                // Files taken out of archives by a run before this one, and
+                // copies from them older than a day.
+                try { ArchiveBrowser.SweepCache(System.Diagnostics.Process.GetCurrentProcess().StartTime); } catch { }
+
                 // Same idea, one layer down: a sync root registration and a drive
                 // letter both outlive the process that made them, so a run that was
                 // killed rather than closed leaves a letter pointing at a folder full
@@ -2170,6 +2174,11 @@ namespace ExplorerNative
                 // player does not wait for its own download at any other moment,
                 // deliberately; here the alternative is worse than a pause.
                 StreamingSource.WaitForReads(TimeSpan.FromSeconds(5));
+
+                // The tracks and files taken out of archives this session, now
+                // that the player has let go of them. Bounded like everything
+                // else here; what is left is swept on the next launch.
+                try { System.Threading.Tasks.Task.Run(ArchiveBrowser.ClearOpened).Wait(TimeSpan.FromSeconds(5)); } catch { }
 
                 // The letter and the sync root both outlive this process, so they
                 // are taken down deliberately rather than left for the next launch
