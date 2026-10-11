@@ -441,9 +441,12 @@ namespace ExplorerNative
 
             // There is no Type column, so Type is not offered. A file that still
             // says Type shows as Name and keeps saying Type until somebody picks.
+            // Picking a column sets the direction it starts in: newest first for dates.
+            CheckBox? ascending = null;
             AddEnum<SortColumn>(panel, "Sort by", _working.SortBy, v => _working.SortBy = v,
-                hidden: new[] { SortColumn.Type }, shownAs: v => v == SortColumn.Type ? SortColumn.Name : v);
-            AddCheck(panel, "Sort ascending", _working.SortAscending, v => _working.SortAscending = v);
+                hidden: new[] { SortColumn.Type }, shownAs: v => v == SortColumn.Type ? SortColumn.Name : v,
+                picked: v => { if (ascending != null) ascending.Checked = NameRules.StartsAscending(v); });
+            ascending = AddCheck(panel, "Sort ascending", _working.SortAscending, v => _working.SortAscending = v);
 
             AddText(panel, "Window title", _working.WindowTitle, v => _working.WindowTitle = v);
             AddInfo(panel, "What the window is called in its title bar, the taskbar and the tray. " +
@@ -1625,7 +1628,7 @@ namespace ExplorerNative
         /// a saved value is shown on.
         /// </summary>
         private void AddEnum<T>(Control parent, string label, T value, Action<T> apply,
-            T[]? hidden = null, Func<T, T>? shownAs = null) where T : struct, Enum
+            T[]? hidden = null, Func<T, T>? shownAs = null, Action<T>? picked = null) where T : struct, Enum
         {
             var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 220 };
             combo.AccessibleName = label;
@@ -1649,6 +1652,11 @@ namespace ExplorerNative
             int opened = at;
 
             AddLabelled(parent, label, combo);
+            if (picked != null)
+                combo.SelectedIndexChanged += (_, _) =>
+                {
+                    if (combo.SelectedIndex >= 0) picked(values[combo.SelectedIndex]);
+                };
             _applies.Add(() =>
             {
                 if (combo.SelectedIndex >= 0 && combo.SelectedIndex != opened) apply(values[combo.SelectedIndex]);

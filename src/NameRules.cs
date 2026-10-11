@@ -427,6 +427,14 @@ namespace ExplorerNative
             column == SortColumn.Type ? SortColumn.Name : column;
 
         /// <summary>
+        /// Which way a column starts when it is first chosen. Dates start
+        /// newest first, because the file you are after is nearly always the
+        /// latest one; everything else starts from the top of the alphabet or
+        /// the smallest.
+        /// </summary>
+        public static bool StartsAscending(SortColumn column) => SortsAs(column) != SortColumn.Modified;
+
+        /// <summary>
         /// The sentence for an update that could not be checked for, downloaded
         /// or started.
         ///

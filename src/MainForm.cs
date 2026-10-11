@@ -3680,12 +3680,45 @@ namespace ExplorerNative
 
             _settings.FolderSorts = sorts;
             _settings.Save();
-            Refresh_();
+            ResortActive();
 
             var (by, ascending) = SortFor(folder);
             AnnounceOperation("nav.sorted",
                 (sort == null ? "Default order, " : "") +
                 $"sorted by {SortName(by)}, {(ascending ? "ascending" : "descending")}");
+        }
+
+        private static bool StartsAscending(SortColumn column) => NameRules.StartsAscending(column);
+
+        /// <summary>
+        /// A new order for the rows already on screen, without reading the
+        /// folder again. Reloading to re-sort cost a whole listing — on the
+        /// Drive letter a round trip to Google — for rows already in hand.
+        /// Sorted on a worker, and the cursor stays on the same item. A folder
+        /// still loading is reloaded instead, since half its rows are not here.
+        /// </summary>
+        private async void ResortActive()
+        {
+            var pane = Active;
+            if (pane.Loading) { Refresh_(); return; }
+
+            try
+            {
+                var shown = pane.Entries;
+                var focused = FocusedPathOf(pane);
+                var folder = pane.CurrentPath;
+                var rows = new List<Entry>(shown);
+                var sorted = await Task.Run(() => SortLikeAFolder(rows, folder));
+
+                // Moved on, reloaded or changed while sorting: that listing is
+                // already in whatever order is current.
+                if (IsDisposed || pane.Entries != shown || pane.CurrentPath != folder) return;
+                SetEntries(pane, sorted, focused);
+            }
+            catch (Exception ex)
+            {
+                ShowStatus("Could not sort: " + ex.Message);
+            }
         }
 
         private static string SortName(SortColumn column) => NameRules.SortsAs(column) switch
@@ -3711,7 +3744,10 @@ namespace ExplorerNative
             void Column(SortColumn column)
             {
                 if (!HasFolder()) return;
-                SetFolderSort(Active.CurrentPath, (column, SortFor(Active.CurrentPath).Ascending));
+                var (by, ascending) = SortFor(Active.CurrentPath);
+                // A new column starts its own way round: newest first for dates.
+                bool keep = NameRules.SortsAs(by) == NameRules.SortsAs(column);
+                SetFolderSort(Active.CurrentPath, (column, keep ? ascending : StartsAscending(column)));
             }
 
             void Direction(bool ascending)
@@ -4755,15 +4791,15 @@ namespace ExplorerNative
             // A folder with its own order keeps it, changed by the click.
             if (FolderSortOf(Active.CurrentPath) is { } own)
             {
-                SetFolderSort(Active.CurrentPath, own.By == col ? (col, !own.Ascending) : (col, true));
+                SetFolderSort(Active.CurrentPath, own.By == col ? (col, !own.Ascending) : (col, StartsAscending(col)));
                 return;
             }
 
             if (_settings.SortBy == col) _settings.SortAscending = !_settings.SortAscending;
-            else { _settings.SortBy = col; _settings.SortAscending = true; }
+            else { _settings.SortBy = col; _settings.SortAscending = StartsAscending(col); }
 
             _settings.Save();
-            Refresh_();
+            ResortActive();
             AnnounceOperation("nav.sorted",
                 $"Sorted by {header}, {(_settings.SortAscending ? "ascending" : "descending")}");
         }
