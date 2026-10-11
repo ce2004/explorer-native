@@ -1,3 +1,6 @@
+2.3.1
+Bug fixed: the audio editor always played at full volume. It now plays at the same volume as the player, and the volume keys change it while you edit.
+
 2.3.0
 New feature: press Enter on a zip, 7z or tar file to open it like a folder. Arrow through it, press Enter on a song to play it, press Ctrl+C to copy files out, and press Backspace to leave. Shift+Enter still opens the archive in its own app. Zip and tar files open without unpacking the whole thing; 7z and some other kinds are unpacked once in the background the first time.
 New feature: edit the tags of your music. Select one or more MP3, M4A or FLAC files, press the Applications key and choose Edit tags, or use the new Edit tags button in Song properties. With several files, only the boxes you change are written, and Number them in list order sets the track numbers for you.
