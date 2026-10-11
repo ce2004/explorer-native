@@ -318,6 +318,30 @@ namespace ExplorerNative
 
         private volatile bool _starving;
 
+        /// <summary>Short buffers in a row, on the render thread only.</summary>
+        private int _shortBuffers;
+
+        /// <summary>How many short buffers in a row are a real shortage rather than a blip.</summary>
+        private const int ShortBuffersBeforeStarving = 3;
+
+        /// <summary>
+        /// When the pump last emptied the ring for a skip. A skip empties it on
+        /// purpose, so coming up short just after one is the skip, not a decode
+        /// falling behind.
+        /// </summary>
+        private long _seekedAt = long.MinValue / 2;
+
+        private const int SeekGraceMilliseconds = 500;
+
+        private readonly WaitCallback _reportStarving;
+        private readonly WaitCallback _reportFed;
+
+        public WasapiPlayback()
+        {
+            _reportStarving = _ => { try { Starved?.Invoke(true); } catch { } };
+            _reportFed = _ => { try { Starved?.Invoke(false); } catch { } };
+        }
+
         public double Duration => _decoder?.Duration ?? 0;
 
         /// <summary>
@@ -634,6 +658,7 @@ namespace ExplorerNative
             _paused = false;
             _emptyReads = 0;
             _loopAttempts = 0;
+            _shortBuffers = 0;
 
             // Held until the pump has decoded enough to feed the device without
             // running dry. Released in ReleaseWhenBuffered.
@@ -689,6 +714,7 @@ namespace ExplorerNative
                 _silence = new SilenceReduction(_sourceChannels, _sourceRate)
                 {
                     Source = decoder.Read,
+                    ShouldYield = PumpShouldYield,
                 };
                 ApplySilence();
 
@@ -813,10 +839,54 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// Runs <see cref="PumpCore"/>, and survives it throwing.
+        ///
+        /// This is a background thread, and an exception left to escape one
+        /// takes the whole process with it — a decoder that throws on a damaged
+        /// frame closed the file manager, not just the track. Caught, the reason
+        /// is kept for the audio page and the track ends the ordinary way: what
+        /// is in the ring plays out and Finished is raised. A skip asks the
+        /// decoder again.
+        /// </summary>
+        private void PumpLoop()
+        {
+            while (_pumping)
+            {
+                try
+                {
+                    PumpCore();
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    Diagnostic = "decoding stopped: " + ex.GetType().Name + ": " + ex.Message;
+
+                    // A switch caught half way leaves Fill answering silence.
+                    _switching = false;
+
+                    // Ended, and not looped: the loop point would only ask the
+                    // same decoder to fail again, for ever.
+                    _emptyReads = 0;
+                    _loopAttempts = LoopAttemptsBeforeEnd;
+                    lock (_ringGate) _sourceDone = true;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Called each time round the pump, while a gap is being read through,
+        /// to ask whether something is waiting that a long read would hold up.
+        /// </summary>
+        private bool PumpShouldYield() =>
+            !_pumping ||
+            !double.IsNaN(Volatile.Read(ref _seekTo)) ||
+            Volatile.Read(ref _switchTo) != null;
+
+        /// <summary>
         /// Reads ahead into the ring, and does the waiting so the renderer does
         /// not have to.
         /// </summary>
-        private void PumpLoop()
+        private void PumpCore()
         {
             // Sized for the decoder's channel count, which is what the chain
             // above produces, and separately for the device's, which is what the
@@ -915,6 +985,7 @@ namespace ExplorerNative
                     _pitch?.Reset();
 
                     lock (_ringGate) { _writeAt = _readAt = _stored = _lastPassFrames = 0; }
+                    Volatile.Write(ref _seekedAt, Environment.TickCount64);
                 }
 
                 // Every time round, not only after a read that produced
@@ -966,6 +1037,19 @@ namespace ExplorerNative
                 int got = _pitch?.Read(block, want)
                           ?? _stretch?.Read(block, want)
                           ?? _silence?.Read(block, want) ?? 0;
+
+                // Silence reduction handed back early because a skip, a stop or
+                // a device change is waiting — not because the track ran out.
+                // Not an empty read, so it does not count towards the end; the
+                // stages behind it latched "finished" on the short read and are
+                // told otherwise; and the loop goes round to deal with whatever
+                // was waiting.
+                if (_silence?.TakeYielded() == true)
+                {
+                    _stretch?.SourceResumed();
+                    _pitch?.SourceRestarted();
+                    if (got <= 0) continue;
+                }
 
                 if (got <= 0)
                 {
@@ -1294,14 +1378,29 @@ namespace ExplorerNative
             // Short of what the device asked for, with the source still going:
             // the decode is not keeping up and there is about to be a gap. Not
             // raised at the end of a track, where coming up short is the point.
-            bool starving = taken < values && !_sourceDone;
-            if (starving != _starving)
+            //
+            // Only after several short buffers in a row, and not while a skip is
+            // still refilling the ring it emptied. One short buffer is a blip
+            // nobody heard; reported, every skip said "Buffering" and then
+            // "Playing" a moment later.
+            bool cameUpShort = taken < values && !_sourceDone;
+            if (!cameUpShort) _shortBuffers = 0;
+            else if (_shortBuffers < ShortBuffersBeforeStarving) _shortBuffers++;
+
+            bool starving = cameUpShort &&
+                            _shortBuffers >= ShortBuffersBeforeStarving &&
+                            Environment.TickCount64 - Volatile.Read(ref _seekedAt) >= SeekGraceMilliseconds;
+
+            // Recovery is reported the moment a full buffer arrives; only the
+            // warning waits.
+            if (starving != _starving && (starving || !cameUpShort))
             {
                 _starving = starving;
 
                 // Never inline. This is the render callback and it has a
                 // deadline; a listener that speaks would miss the next buffer.
-                ThreadPool.QueueUserWorkItem(_ => { try { Starved?.Invoke(starving); } catch { } });
+                // The two callbacks are made once, so this allocates nothing.
+                ThreadPool.QueueUserWorkItem(starving ? _reportStarving : _reportFed);
             }
 
             return _channels > 0 ? taken / _channels : 0;
@@ -1401,12 +1500,6 @@ namespace ExplorerNative
 
             var old = _renderer;
 
-            // Raised for the whole of the handover. Fill answers silence while
-            // it is up, because between starting the new renderer and stopping
-            // the old one there are two render threads and only one of them
-            // matches the ring.
-            _switching = true;
-
             var fresh = new WasapiRenderer
             {
                 Gain = old.Gain,
@@ -1425,6 +1518,13 @@ namespace ExplorerNative
             fresh.Equaliser.Enabled = old.Equaliser.Enabled;
             fresh.Equaliser.SetGains(old.Equaliser.Gains());
 
+            // Opened suspended, so its render thread never calls Fill while the
+            // old device is still the one playing. The open can take ten seconds
+            // for some Bluetooth endpoints, and the old device used to be
+            // silenced for all of it: the music stopped on the device that
+            // worked to wait for one that might not.
+            fresh.SetSuspended(true);
+
             Watch(fresh);
             if (!fresh.Start(Fill, _preferRaw, string.IsNullOrEmpty(deviceId) ? null : deviceId))
             {
@@ -1436,7 +1536,6 @@ namespace ExplorerNative
 
                 var refused = NameFor(deviceId);
                 fresh.Dispose();
-                _switching = false;
 
                 // Staying put means staying on the default the old renderer
                 // followed, which may have moved while the other device was
@@ -1474,7 +1573,6 @@ namespace ExplorerNative
                 {
                     fresh.Stop();
                     fresh.Dispose();
-                    _switching = false;
                     return;
                 }
 
@@ -1491,6 +1589,11 @@ namespace ExplorerNative
                 fresh.Equaliser.Enabled = old.Equaliser.Enabled;
                 fresh.Equaliser.SetGains(old.Equaliser.Gains());
 
+                // Raised for the handover only, now that the new device is open.
+                // Fill answers silence while it is up, because between here and
+                // the old renderer stopping there are two render threads and only
+                // one of them matches the ring.
+                _switching = true;
                 _renderer = fresh;
             }
 
@@ -1507,6 +1610,11 @@ namespace ExplorerNative
                 _ring = new float[AtDeviceRate(RingFrames) * _channels];
 
                 lock (_ringGate) { _writeAt = _readAt = _stored = _lastPassFrames = 0; }
+
+                // The ring is empty again, so the new device is held as a new
+                // track's is until there is enough to keep it fed. Fed straight
+                // away it played a few milliseconds, ran dry and clicked.
+                _waitingForBuffer = true;
 
                 decoder.Reopen(fresh.SampleRate, fresh.Channels);
                 decoder.SeekTo(at);
@@ -1525,6 +1633,7 @@ namespace ExplorerNative
                 _silence = new SilenceReduction(_sourceChannels, _sourceRate)
                 {
                     Source = decoder.Read,
+                    ShouldYield = PumpShouldYield,
                 };
                 ApplySilence();
 
@@ -1580,7 +1689,15 @@ namespace ExplorerNative
         public string SwitchProblem => _lastSwitchProblem;
 
         /// <summary>Moves to a position in seconds; the pump picks it up.</summary>
-        public void SeekTo(double seconds) => Volatile.Write(ref _seekTo, Math.Max(0, seconds));
+        public void SeekTo(double seconds)
+        {
+            Volatile.Write(ref _seekTo, Math.Max(0, seconds));
+
+            // Woken, as Stop and a device switch wake it. A pump sitting on a
+            // full ring waits up to a quarter of a second, and every skip paid
+            // that before it was even looked at.
+            try { _drained.Set(); } catch { }
+        }
 
         /// <summary>
         /// The track has played to its end and said so. Asked rather than

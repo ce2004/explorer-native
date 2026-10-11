@@ -41,6 +41,8 @@ namespace ExplorerNative
             Directory.CreateDirectory(dir);
             try
             {
+                SilenceYieldsTests();
+
                 var fixtures = MakeFixtures(dir);
 
                 OggWithTheWrongNameTests(dir);
@@ -113,6 +115,81 @@ namespace ExplorerNative
             }
 
             return files;
+        }
+
+        // ---------- A long silence does not hold the pump ----------
+
+        /// <summary>
+        /// Silence reduction reading through a long gap hands back nothing until
+        /// the gap ends, and the pump could not see a skip, a stop or a device
+        /// change until it did. Asked to yield, it stops early, says so, and
+        /// carries on from where it was.
+        /// </summary>
+        private static void SilenceYieldsTests()
+        {
+            const int channels = 2, rate = 48000;
+            const long silentFrames = rate * 120L;   // two minutes of nothing
+            const long toneFrames = rate;
+
+            long read = 0;
+            int Source(float[] buffer, int frames)
+            {
+                long left = silentFrames + toneFrames - read;
+                int n = (int)Math.Min(frames, Math.Max(0, left));
+                for (int f = 0; f < n; f++)
+                {
+                    long at = read + f;
+                    float v = at < silentFrames ? 0f : (float)(0.5 * Math.Sin(2 * Math.PI * 440 * at / rate));
+                    for (int c = 0; c < channels; c++) buffer[f * channels + c] = v;
+                }
+                read += n;
+                return n;
+            }
+
+            bool yieldNow = true;
+            var stage = new SilenceReduction(channels, rate)
+            {
+                Source = Source,
+                Enabled = true,
+                ShouldYield = () => yieldNow,
+            };
+
+            var buffer = new float[1024 * channels];
+            int got = stage.Read(buffer, 1024);
+            bool yielded = stage.TakeYielded();
+
+            Check("a read in a long gap stops when asked to yield", got == 0 && yielded,
+                $"{got} frames, yielded {yielded}");
+            Check("having read only a little of the gap",
+                read <= SilenceReduction.YieldEveryBlocks * SilenceReduction.Detect * 2L,
+                $"{read} of {silentFrames} silent frames read");
+            Check("and the yield is reported once", !stage.TakeYielded(), null);
+
+            // Left to carry on: the front of the gap it keeps, then the music.
+            yieldNow = false;
+            bool heard = false, yieldedSince = false;
+            for (int reads = 0; reads < 100 && !heard; reads++)
+            {
+                got = stage.Read(buffer, 1024);
+                yieldedSince |= stage.TakeYielded();
+                if (got <= 0) break;
+                heard = buffer.Take(got * channels).Any(v => v != 0);
+            }
+            Check("left to carry on, it reads through the rest of the gap to the music",
+                heard && read > silentFrames, $"{read} read, heard {heard}");
+            Check("and those reads did not yield", !yieldedSince, null);
+
+            // Off, it is a bypass and never asks.
+            bool asked = false;
+            read = 0;
+            var off = new SilenceReduction(channels, rate)
+            {
+                Source = Source,
+                ShouldYield = () => asked = true,
+            };
+            got = off.Read(buffer, 1024);
+            Check("switched off it never asks to yield", got == 1024 && !asked && !off.TakeYielded(),
+                $"{got} frames, asked {asked}");
         }
 
         // ---------- An Ogg file named .mp3 ----------

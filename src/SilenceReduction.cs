@@ -141,6 +141,36 @@ namespace ExplorerNative
         /// <summary>Where the frames come from: fills a buffer, returns frames.</summary>
         public Func<float[], int, int>? Source { get; set; }
 
+        /// <summary>
+        /// Asked every <see cref="YieldEveryBlocks"/> blocks while a gap is being
+        /// read through without anything to hand back. True means stop and
+        /// return what there is — possibly nothing — so the caller can deal with
+        /// a skip, a stop or a device change. Nothing is lost: the stage carries
+        /// on from where it was on the next read.
+        ///
+        /// Without it one read went on until the gap ended, and a recording with
+        /// an hour of silence in it ignored every key for as long as the decoder
+        /// took to read through that hour.
+        /// </summary>
+        public Func<bool>? ShouldYield { get; set; }
+
+        /// <summary>How many blocks go by between asking <see cref="ShouldYield"/>.</summary>
+        public const int YieldEveryBlocks = 64;
+
+        private bool _yielded;
+
+        /// <summary>
+        /// Whether a read came back short because <see cref="ShouldYield"/> said
+        /// so rather than because the source ran out, and clears it. A short read
+        /// that yielded is not the end of the track.
+        /// </summary>
+        public bool TakeYielded()
+        {
+            bool yielded = _yielded;
+            _yielded = false;
+            return yielded;
+        }
+
         // Written by the UI thread while the pump thread is reading them, so each
         // is its own volatile int. The same arrangement Equaliser uses, for the
         // same reason: these are meant to be moved while the music is playing,
@@ -282,6 +312,7 @@ namespace ExplorerNative
             _phase = Phase.Passing;
             _fadeInLeft = _fadeInTotal = 0;
             _sourceDone = false;
+            _yielded = false;
         }
 
         /// <summary>
@@ -296,7 +327,9 @@ namespace ExplorerNative
         /// frames. Fewer means the source has run out — never "a gap is being
         /// removed", because an empty read is how the pump decides a track has
         /// ended. Dropping goes on inside this call until there is something to
-        /// hand back or there is nothing left to read.
+        /// hand back or there is nothing left to read — or until
+        /// <see cref="ShouldYield"/> asks for a turn, which
+        /// <see cref="TakeYielded"/> then reports.
         /// </summary>
         public int Read(float[] destination, int frames)
         {
@@ -355,14 +388,24 @@ namespace ExplorerNative
 
         /// <summary>
         /// Reads and decides until there is something to hand over, or says the
-        /// source is finished.
+        /// source is finished — or that the caller asked for a turn, see
+        /// <see cref="ShouldYield"/>.
         /// </summary>
         private bool Produce(Func<float[], int, int> source)
         {
             _outFrames = _outTaken = 0;
+            int blocks = 0;
 
             while (_outFrames == 0)
             {
+                // Everything is kept where it is — the part-block, the gap being
+                // held, the phase — so the next read picks up exactly here.
+                if (++blocks % YieldEveryBlocks == 0 && ShouldYield is { } yield && yield())
+                {
+                    _yielded = true;
+                    return false;
+                }
+
                 if (_sourceDone)
                 {
                     // The last part-block, then whatever is still held. A track

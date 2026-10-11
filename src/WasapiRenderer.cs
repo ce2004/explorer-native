@@ -900,8 +900,16 @@ namespace ExplorerNative
                 // something to play while the first real fill is being made.
                 PrimeSilence();
 
-                hr = client.Start();
-                if (hr != 0) { Diagnostic = $"start failed (0x{hr:X8})"; return false; }
+                // Not started at all when asked to open suspended — a device
+                // being switched to waits for the swap, and a Start here would
+                // only be followed by the render loop's Stop. The loop starts it
+                // when the suspension is lifted.
+                if (!_suspended)
+                {
+                    hr = client.Start();
+                    if (hr != 0) { Diagnostic = $"start failed (0x{hr:X8})"; return false; }
+                    _startedOnOpen = true;
+                }
 
                 // Phrased to be read after "Playing through:" on the audio
                 // preferences page, which is the only place it is shown.
@@ -947,10 +955,13 @@ namespace ExplorerNative
         private volatile bool _suspended;
         private IntPtr _wake;
 
+        /// <summary>Whether Open started the client, or left that to the render loop.</summary>
+        private bool _startedOnOpen;
+
         private void RenderLoop()
         {
             var scratch = new float[_bufferFrames * Channels];
-            bool started = true;
+            bool started = _startedOnOpen;
 
             while (_running)
             {
@@ -970,8 +981,14 @@ namespace ExplorerNative
 
                 if (!started)
                 {
-                    try { _client?.Start(); } catch { }
+                    int hr = 0;
+                    try { hr = _client?.Start() ?? 0; } catch { }
                     started = true;
+
+                    // A device unplugged while paused says so here, on resume.
+                    // Ignored, the loop waited out two two-second timeouts before
+                    // calling it lost — four seconds of silence after play.
+                    if (hr == DeviceInvalidated) RaiseLost();
                 }
 
                 // Two seconds is far longer than any device period; reaching it

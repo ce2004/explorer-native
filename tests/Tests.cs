@@ -6581,7 +6581,7 @@ namespace ExplorerNative
                 "clearing it at the loop point throws away the audio that makes it seamless");
 
             Check("repeat is pushed to the pump rather than answered by an event",
-                player.Contains("_direct.Loop = value", StringComparison.Ordinal),
+                player.Contains("direct.Loop = value", StringComparison.Ordinal),
                 "answering Finished with a seek is the slow path that was replaced");
 
             Check("and the end-of-track handler no longer seeks for a repeat",

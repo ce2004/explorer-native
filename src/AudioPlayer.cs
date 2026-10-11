@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace ExplorerNative
 {
@@ -273,7 +274,7 @@ namespace ExplorerNative
             // the start of the track into the same ring in the same pass, so
             // nothing ever empties. OnDirectFinished is now only the *end* of a
             // track that is not repeating.
-            set { _repeat = value; if (_direct != null) _direct.Loop = value; }
+            set { _repeat = value; if (_direct is { } direct) direct.Loop = value; }
         }
 
         /// <summary>Why the player could not start, for the Preferences page.</summary>
@@ -434,7 +435,7 @@ namespace ExplorerNative
         public bool Limiter
         {
             get => _limiter;
-            set { _limiter = value; if (_direct != null) _direct.Limiter = value; }
+            set { _limiter = value; if (_direct is { } direct) direct.Limiter = value; }
         }
 
         private bool _limiter;
@@ -447,7 +448,7 @@ namespace ExplorerNative
         public bool LimiterWholeRange
         {
             get => _limiterWholeRange;
-            set { _limiterWholeRange = value; if (_direct != null) _direct.LimiterWholeRange = value; }
+            set { _limiterWholeRange = value; if (_direct is { } direct) direct.LimiterWholeRange = value; }
         }
 
         private bool _limiterWholeRange;
@@ -471,7 +472,7 @@ namespace ExplorerNative
             set
             {
                 _ceilingPercent = Math.Clamp(value, 10, 100);
-                if (_direct != null) _direct.LimitCeiling = _ceilingPercent / 100f;
+                if (_direct is { } direct) direct.LimitCeiling = _ceilingPercent / 100f;
             }
         }
 
@@ -481,7 +482,7 @@ namespace ExplorerNative
             set
             {
                 _attackMicroseconds = Math.Clamp(value, 50, 100_000);
-                if (_direct != null) _direct.LimitAttackSeconds = _attackMicroseconds / 1_000_000f;
+                if (_direct is { } direct) direct.LimitAttackSeconds = _attackMicroseconds / 1_000_000f;
             }
         }
 
@@ -491,7 +492,7 @@ namespace ExplorerNative
             set
             {
                 _releaseMilliseconds = Math.Clamp(value, 5, 5000);
-                if (_direct != null) _direct.LimitReleaseSeconds = _releaseMilliseconds / 1000f;
+                if (_direct is { } direct) direct.LimitReleaseSeconds = _releaseMilliseconds / 1000f;
             }
         }
 
@@ -511,7 +512,7 @@ namespace ExplorerNative
         public bool Equaliser
         {
             get => _equaliser;
-            set { _equaliser = value; if (_direct != null) _direct.EqualiserOn = value; }
+            set { _equaliser = value; if (_direct is { } direct) direct.EqualiserOn = value; }
         }
 
         private bool _equaliser;
@@ -534,7 +535,7 @@ namespace ExplorerNative
                             ExplorerNative.Equaliser.MaximumDecibels)
                         : 0;
 
-                if (_direct != null) _direct.EqualiserGains = _bandGains;
+                if (_direct is { } direct) direct.EqualiserGains = _bandGains;
             }
         }
 
@@ -569,7 +570,7 @@ namespace ExplorerNative
         public bool SilenceReduction
         {
             get => _silenceOn;
-            set { _silenceOn = value; if (_direct != null) _direct.SilenceOn = value; }
+            set { _silenceOn = value; if (_direct is { } direct) direct.SilenceOn = value; }
         }
 
         public int SilenceThresholdDecibels
@@ -580,7 +581,7 @@ namespace ExplorerNative
                 _silenceThresholdDecibels = Math.Clamp(value,
                     ExplorerNative.SilenceReduction.LowestThresholdDecibels,
                     ExplorerNative.SilenceReduction.HighestThresholdDecibels);
-                if (_direct != null) _direct.SilenceThresholdDecibels = _silenceThresholdDecibels;
+                if (_direct is { } direct) direct.SilenceThresholdDecibels = _silenceThresholdDecibels;
             }
         }
 
@@ -592,7 +593,7 @@ namespace ExplorerNative
                 _silenceMinimumMilliseconds = Math.Clamp(value,
                     ExplorerNative.SilenceReduction.ShortestMinimumMilliseconds,
                     ExplorerNative.SilenceReduction.LongestMinimumMilliseconds);
-                if (_direct != null) _direct.SilenceMinimumMilliseconds = _silenceMinimumMilliseconds;
+                if (_direct is { } direct) direct.SilenceMinimumMilliseconds = _silenceMinimumMilliseconds;
             }
         }
 
@@ -603,7 +604,7 @@ namespace ExplorerNative
             {
                 _silenceLeaveMilliseconds = Math.Clamp(value, 0,
                     ExplorerNative.SilenceReduction.LongestLeaveMilliseconds);
-                if (_direct != null) _direct.SilenceLeaveMilliseconds = _silenceLeaveMilliseconds;
+                if (_direct is { } direct) direct.SilenceLeaveMilliseconds = _silenceLeaveMilliseconds;
             }
         }
 
@@ -614,7 +615,7 @@ namespace ExplorerNative
             {
                 _silenceFadeOutMilliseconds = Math.Clamp(value, 0,
                     ExplorerNative.SilenceReduction.LongestFadeMilliseconds);
-                if (_direct != null) _direct.SilenceFadeOutMilliseconds = _silenceFadeOutMilliseconds;
+                if (_direct is { } direct) direct.SilenceFadeOutMilliseconds = _silenceFadeOutMilliseconds;
             }
         }
 
@@ -625,7 +626,7 @@ namespace ExplorerNative
             {
                 _silenceFadeInMilliseconds = Math.Clamp(value, 0,
                     ExplorerNative.SilenceReduction.LongestFadeMilliseconds);
-                if (_direct != null) _direct.SilenceFadeInMilliseconds = _silenceFadeInMilliseconds;
+                if (_direct is { } direct) direct.SilenceFadeInMilliseconds = _silenceFadeInMilliseconds;
             }
         }
 
@@ -768,8 +769,8 @@ namespace ExplorerNative
             set
             {
                 _pitchSemitones = Math.Clamp(value, LowestSemitones, HighestSemitones);
-                if (_direct != null)
-                    _direct.PitchRatio = Resampler.RatioForSemitones(_pitchSemitones);
+                if (_direct is { } direct)
+                    direct.PitchRatio = Resampler.RatioForSemitones(_pitchSemitones);
             }
         }
 
@@ -777,7 +778,7 @@ namespace ExplorerNative
         public bool PitchMovesTempo
         {
             get => _pitchMovesTempo;
-            set { _pitchMovesTempo = value; if (_direct != null) _direct.PitchMovesTempo = value; }
+            set { _pitchMovesTempo = value; if (_direct is { } direct) direct.PitchMovesTempo = value; }
         }
 
         private int _pitchSemitones;
@@ -840,8 +841,9 @@ namespace ExplorerNative
         {
             get
             {
+                var direct = _direct;
                 string now =
-                    _direct != null ? _direct.Diagnostic
+                    direct != null ? direct.Diagnostic
                     : _lastDirectDiagnostic.Length > 0 ? _lastDirectDiagnostic + " (last track)"
                     : "nothing has played yet";
 
@@ -1268,9 +1270,21 @@ namespace ExplorerNative
 
         private void StopDirect()
         {
+            var direct = DetachDirect();
+            try { direct?.Dispose(); } catch { }
+        }
+
+        /// <summary>
+        /// Takes the player out and unhooks it, leaving the disposing to the
+        /// caller. Disposing joins the decode thread and the render thread, two
+        /// seconds each at worst, which is a frozen window when it happens on
+        /// the window's thread.
+        /// </summary>
+        private WasapiPlayback? DetachDirect()
+        {
             var direct = _direct;
             _direct = null;
-            if (direct == null) return;
+            if (direct == null) return null;
 
             direct.Finished -= OnDirectFinished;
             direct.Starved -= OnUnderrun;
@@ -1279,9 +1293,44 @@ namespace ExplorerNative
             // Any "Buffering" this track put on screen is withdrawn with it,
             // or the next track starts under a warning about the last one.
             _saidBuffering = false;
-
-            try { direct.Dispose(); } catch { }
+            return direct;
         }
+
+        /// <summary>
+        /// Stops the player and lets its download go on the thread pool, in that
+        /// order — the decoder reads through the download until it has stopped.
+        /// Quit waits for it in <see cref="Dispose"/>.
+        /// </summary>
+        private void StopDirectInBackground()
+        {
+            var direct = DetachDirect();
+
+            StreamingSource? going;
+            lock (_gate)
+            {
+                going = _streaming;
+                _streaming = null;
+            }
+
+            if (direct == null && going == null) return;
+
+            var stopping = Task.Run(() =>
+            {
+                try { direct?.Dispose(); } catch { }
+                try { going?.Dispose(); } catch { }
+            });
+
+            lock (_gate)
+            {
+                var before = _stopping;
+                _stopping = before == null || before.IsCompleted
+                    ? stopping
+                    : Task.WhenAll(before, stopping);
+            }
+        }
+
+        /// <summary>Players being stopped off the window's thread, for Quit to wait on.</summary>
+        private Task? _stopping;
 
         // ---------- Commands ----------
 
@@ -1521,8 +1570,12 @@ namespace ExplorerNative
 
                 CancelFade();
                 ForgetSeekTarget();
-                StopDirect();
-                StopStreaming();
+
+                // Off the window's thread: Stop runs from a key, and the two
+                // thread joins inside the player's Dispose froze the window for
+                // up to four seconds. The player is unhooked first, so nothing it
+                // says on the way out reaches anyone.
+                StopDirectInBackground();
                 lock (_gate) { _path = ""; _displayName = null; }
                 return "Stopped";
             }
@@ -2625,6 +2678,14 @@ namespace ExplorerNative
             StopDirect();
 
             StopStreaming();
+
+            // A Stop made just before Quit is still letting go of its device and
+            // its download on the thread pool. Waited for, bounded like the rest
+            // of the quit order, so nothing it reads outlives what it reads from.
+            Task? stopping;
+            lock (_gate) stopping = _stopping;
+            try { stopping?.Wait(TimeSpan.FromSeconds(5)); } catch { }
+
             DropPending();
 
             lock (_gate)
