@@ -484,7 +484,10 @@ namespace ExplorerNative
         {
             finished = false;
             int from = Math.Max(0, Volatile.Read(ref _lastReadChunk));
-            int highest = Volatile.Read(ref _highestRead);
+            // The end of the current straight run, not the furthest byte ever read:
+            // one tag read at the end of a big file used to lift the bound for good.
+            long runEnd = Interlocked.Read(ref _runEnd);
+            int highest = runEnd < 0 ? -1 : (int)Math.Min(int.MaxValue, runEnd / DriveCachePool.ChunkBytes);
             long limit = Math.Min(chunks, (long)Math.Max(from - 1, highest) + 1 + _ahead);
             long now = Environment.TickCount64;
             bool resting = false;

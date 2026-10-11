@@ -240,7 +240,22 @@ namespace ExplorerNative
         public bool Built { get { lock (_gate) return _built; } }
 
         /// <summary>The next question asks the changes feed first, whatever the clock says.</summary>
-        public void Expire() { lock (_gate) { _checkedAt = long.MinValue / 2; _failedAt = long.MinValue / 2; } }
+        public void Expire()
+        {
+            lock (_gate)
+            {
+                _checkedAt = long.MinValue / 2;
+                _failedAt = long.MinValue / 2;
+                // A refresh already on its way asked Drive before this, so it must
+                // not stamp the index fresh, and the next question starts another.
+                _generation++;
+                // A changes check is cheap and idempotent, so one may overlap; a
+                // first build of the whole account is never started twice.
+                if (_built) _refreshing = null;
+            }
+        }
+
+        private int _generation;
 
         /// <summary>
         /// Brings the index up to date if it is due, sharing one refresh among
@@ -269,13 +284,16 @@ namespace ExplorerNative
             try
             {
                 string? from;
-                lock (_gate) from = _built ? _changes : null;
+                int generation;
+                lock (_gate) { from = _built ? _changes : null; generation = _generation; }
 
                 if (from != null)
                 {
                     var (changes, next) = await client.ChangesSince(from, _driveId, token).ConfigureAwait(false);
                     lock (_gate)
                     {
+                        // Another refresh got further first: its token is newer.
+                        if (_changes != from) return;
                         foreach (var change in changes)
                         {
                             if (change.Item is { } item) _items[change.Id] = item;
@@ -283,7 +301,7 @@ namespace ExplorerNative
                         }
                         if (changes.Count > 0) _totals = null;
                         _changes = next;
-                        _checkedAt = Environment.TickCount64;
+                        if (generation == _generation) _checkedAt = Environment.TickCount64;
                     }
                     return;
                 }
