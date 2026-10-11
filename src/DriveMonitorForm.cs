@@ -100,7 +100,7 @@ namespace ExplorerNative
         {
             var rows = _pairs.Count == 0
                 ? new List<string> { "No folders are monitored yet. Press Add to choose one." }
-                : _pairs.Select(p => Describe(p, _monitor?.StatusOf(p.Id), DateTime.UtcNow)).ToList();
+                : _pairs.Select(p => Describe(p, _monitor?.StatusIfLoaded(p.Id), DateTime.UtcNow)).ToList();
 
             // In place when only the words changed (live progress), so the list
             // is not rebuilt under the screen reader twice a second.
@@ -203,14 +203,24 @@ namespace ExplorerNative
             _list.SelectedIndex = at;
         }
 
-        private void RemovePair()
+        private async void RemovePair()
         {
+          // An async void handler: nothing may escape it, or the application ends.
+          try
+          {
             int at = _list.SelectedIndex;
             if (at < 0 || at >= _pairs.Count) return;
+            var id = _pairs[at].Id;
             var name = DriveMonitor.DisplayName(_pairs[at]);
             _pairs.RemoveAt(at);
             Commit();
+
+            // Its pass, if one is running, stops at its next file; "removed" is
+            // said once it has, or after ten seconds at most.
+            if (_monitor != null) await _monitor.WaitForPassAsync(id, TimeSpan.FromSeconds(10));
             Say($"Removed {name}. No files were deleted.");
+          }
+          catch { }
         }
 
         /// <summary>Saves straight away, and keeps Preferences' copy in step so its OK does not undo it.</summary>
@@ -241,6 +251,9 @@ namespace ExplorerNative
         private readonly Label _status;
         private readonly Button _ok;
         private bool _checking;
+
+        /// <summary>Ends the space check: Cancel, Escape and closing the window all do.</summary>
+        private readonly CancellationTokenSource _closing = new();
 
         public DriveSyncPair Pair { get; }
 
@@ -383,10 +396,13 @@ namespace ExplorerNative
             AcceptButton = _ok;
             CancelButton = cancel;
 
-            // Closing while Drive is being totalled up would save half an answer.
-            FormClosing += (_, e) =>
+            // Closing while Drive is being totalled up ends the check, and
+            // nothing is saved: OK's handler sees the window closing and stops.
+            // It used to refuse to close until a listing of a big Drive folder
+            // finished, which could be minutes.
+            FormClosing += (_, _) =>
             {
-                if (_checking && DialogResult != DialogResult.OK) e.Cancel = true;
+                if (DialogResult != DialogResult.OK) _closing.Cancel();
             };
 
             browseLocal.Click += (_, _) =>
@@ -464,7 +480,7 @@ namespace ExplorerNative
                 if (!edited.Paused)
                 {
                     var shortage = await RoomProblemAsync(edited);
-                    if (IsDisposed) return;
+                    if (IsDisposed || _closing.IsCancellationRequested) return;
                     if (shortage != null)
                     {
                         var answer = MessageBox.Show(this,
@@ -518,11 +534,20 @@ namespace ExplorerNative
             Say(_status.Text);
             try
             {
-                var (down, up) = await DriveMonitor.NeedsAsync(client, pair, CancellationToken.None);
+                // On a worker: the PC folder walk and the free-space question
+                // are file system calls, and the PC folder can be a big library
+                // or a share that has gone away.
+                var token = _closing.Token;
+                var (down, up, free, total, letter) = await Task.Run(async () =>
+                {
+                    var (d, u) = await DriveMonitor.NeedsAsync(client, pair, token).ConfigureAwait(false);
+                    var (f, t, l) = d > 0 ? DriveMonitor.DiskOf(pair.LocalFolder) : (0L, 0L, "");
+                    return (d, u, f, t, l);
+                }, token);
+                if (IsDisposed || token.IsCancellationRequested) return null;
 
                 if (down > 0)
                 {
-                    var (free, total, letter) = DriveMonitor.DiskOf(pair.LocalFolder);
                     if (total > 0 && !SyncSpace.Fits(down, free, total))
                         return $"This needs {DriveMonitor.Words(down)} and {letter} has " +
                                $"{DriveMonitor.Words(free)} free, keeping {DriveMonitor.Words(SyncSpace.Margin(total))} spare.";
@@ -540,11 +565,15 @@ namespace ExplorerNative
                 _status.Text = "";
                 return null;
             }
+            catch (OperationCanceledException) when (_closing.IsCancellationRequested)
+            {
+                return null;
+            }
             catch (Exception ex)
             {
                 // Not knowing is not a reason to refuse: every pass checks again
                 // before each file and pauses itself if it runs out of room.
-                _status.Text = "Could not check the space needed: " + ex.Message;
+                if (!IsDisposed) _status.Text = "Could not check the space needed: " + ex.Message;
                 return null;
             }
             finally

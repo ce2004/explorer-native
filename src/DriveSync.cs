@@ -268,6 +268,9 @@ namespace ExplorerNative
         private static bool Changed(SyncFile now, long size, DateTime modified) =>
             now.Size != size || Math.Abs((now.ModifiedUtc - modified).TotalSeconds) > SlackSeconds;
 
+        /// <summary>Whether the PC's file is no longer what the last sync left there.</summary>
+        public static bool LocalChanged(SyncFile now, SyncBase was) => Changed(now, was.LocalSize, was.LocalModifiedUtc);
+
         /// <summary>
         /// Files never synced: Windows' own folder files, Office lock files, and
         /// half-written downloads, including this monitor's own.
@@ -592,7 +595,8 @@ namespace ExplorerNative
                     }
 
                     if (!onDrive) continue;
-                    if (idOf(raw) is string id && id == pair.DriveFolderId)
+                    var id = idOf(raw);
+                    if (id != null && id == pair.DriveFolderId)
                     {
                         result.Add((pair, true));
                         continue;
@@ -604,6 +608,13 @@ namespace ExplorerNative
                         ? drivePath["My Drive".Length..].TrimStart('/')
                         : drivePath;
                     var mapped = rest.Length == 0 ? letter! : letter + "\\" + Norm(rest);
+
+                    // The saved path is only a reading aid and goes stale when the
+                    // folder is renamed or moved. A folder now at that very path
+                    // whose id is known and is another one is not the pair's;
+                    // a folder above it still holds it, whatever its id.
+                    bool exactly = mapped.Equals(path, StringComparison.OrdinalIgnoreCase);
+                    if (exactly && id != null) continue;
                     if (drivePath.Length > 0 && AtOrUnder(mapped, path)) result.Add((pair, true));
                 }
             }

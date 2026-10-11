@@ -164,6 +164,14 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            // Just the Drive folder monitor against the fake Drive.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "monitor")
+            {
+                await FakeDriveMonitorTests.RunAll(Check, Equal);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "delete")
             {
                 DeleteTests.RunAll(Check, Equal);
@@ -781,6 +789,12 @@ namespace ExplorerNative
             Equal("the whole letter holds every Drive folder", "Music:drive,Docs:drive", Touched(@"G:\"));
             Equal("one selection touching two pairs lists both", "Music:pc,Docs:pc", Touched(@"C:\Music", @"D:\Docs"));
             Equal("an unrelated folder touches nothing", "", Touched(@"E:\Other"));
+            string TouchedKnown(string path, string id) => string.Join(",",
+                SyncSafety.PairsTouchedBy(new[] { path }, pairs, "G:", _ => id)
+                    .Select(t => t.Pair.Name + (t.DriveSide ? ":drive" : ":pc")));
+            Equal("another folder now at a pair's saved Drive path, known by its id, is not the pair's",
+                "", TouchedKnown(@"G:\Docs", "some-other-id"));
+            Equal("a folder above it still holds it, whatever its id", "Music:drive,Docs:drive", TouchedKnown(@"G:\", "root-id"));
 
             // The dialog: Cancel is the default and Escape, and the buttons are in order.
             string error = "";

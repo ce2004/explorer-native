@@ -57,7 +57,23 @@ namespace ExplorerNative
             public long Total;
             public MemoryStream Got = new();
             public Item? Done;
+
+            /// <summary>The file this session updates in place, or null for a new file.</summary>
+            public string? Target;
         }
+
+        /// <summary>The file an upload request updates in place (PATCH /upload/drive/v3/files/{id}), or null.</summary>
+        private static string? TargetOf(HttpRequestMessage request)
+        {
+            const string prefix = "/upload/drive/v3/files/";
+            var path = request.RequestUri!.AbsolutePath;
+            return request.Method == HttpMethod.Patch && path.StartsWith(prefix, StringComparison.Ordinal)
+                ? Uri.UnescapeDataString(path[prefix.Length..])
+                : null;
+        }
+
+        /// <summary>Uploads that replaced an existing file's contents in place.</summary>
+        public int Updates;
 
         /// <summary>One queued misbehaviour. Status 0 is a dropped connection: no answer at all.</summary>
         public sealed class Fault
@@ -88,6 +104,9 @@ namespace ExplorerNative
         public Action<string>? AfterMultipartBody;
         /// <summary>Awaited before a folder listing is answered, with the folder's id.</summary>
         public Func<string, CancellationToken, Task>? OnList;
+
+        /// <summary>Called with each request's kind and subject before it is answered: a change "while" Drive is asked.</summary>
+        public Action<string, string>? BeforeAnswer;
         public int CutPutsAfterBytes = -1;
         public int DropMediaMidBody;
         public int DropMultipartMidBody;
@@ -236,6 +255,7 @@ namespace ExplorerNative
 
             var (kind, subject, body) = await Classify(request, ct);
             lock (_gate) Kinds.Add(kind);
+            BeforeAnswer?.Invoke(kind, subject);
 
             Fault? fault = null;
             lock (_gate)
@@ -349,16 +369,20 @@ namespace ExplorerNative
                     var meta = JsonDocument.Parse(body).RootElement;
                     long total = request.Headers.TryGetValues("X-Upload-Content-Length", out var lengths)
                         ? long.Parse(lengths.First()) : 0;
+                    var target = TargetOf(request);
+                    var updating = target == null ? null : Get(target);
+                    if (target != null && updating == null) return Error(404, "notFound", "File not found: " + target);
                     string id;
                     lock (_gate)
                     {
                         id = "S" + (++_next);
                         _sessions[id] = new Session
                         {
-                            Name = meta.GetProperty("name").GetString() ?? "",
-                            Parent = meta.GetProperty("parents")[0].GetString() ?? "",
+                            Name = meta.TryGetProperty("name", out var n) ? n.GetString() ?? "" : updating?.Name ?? "",
+                            Parent = meta.TryGetProperty("parents", out var p) ? p[0].GetString() ?? "" : updating?.Parent ?? "",
                             Modified = meta.TryGetProperty("modifiedTime", out var m) ? ParseTime(m.GetString()) : null,
                             Total = total,
+                            Target = target,
                         };
                     }
                     Interlocked.Increment(ref SessionsBegun);
@@ -408,6 +432,13 @@ namespace ExplorerNative
                 if (query["alt"] == "media") return ("media", rest, body);
                 if ((query["fields"] ?? "").Contains("trashed", StringComparison.Ordinal)) return ("alive", rest, body);
                 return ("get", rest, body);
+            }
+
+            if (TargetOf(request) is { } target)
+            {
+                // Named after the file it updates, so faults aimed at a name hit it.
+                var named = Get(target)?.Name ?? "";
+                return (query["uploadType"] == "multipart" ? "multipart" : "begin", named, body);
             }
 
             if (path == "/upload/drive/v3/files")
@@ -556,6 +587,26 @@ namespace ExplorerNative
                 }
             }
 
+            if (TargetOf(request) is { } target)
+            {
+                // An update: the same file, new contents.
+                Item? existing;
+                lock (_gate) _items.TryGetValue(target, out existing);
+                if (existing == null) return Error(404, "notFound", "File not found: " + target);
+                AfterMultipartBody?.Invoke(existing.Name);
+                lock (_gate)
+                {
+                    existing.Data = got.ToArray();
+                    existing.Modified = meta.TryGetProperty("modifiedTime", out var when)
+                        ? ParseTime(when.GetString()) ?? Ms(DateTime.UtcNow)
+                        : Ms(DateTime.UtcNow);
+                    _changed.Add(existing.Id);
+                }
+                Interlocked.Increment(ref Uploads);
+                Interlocked.Increment(ref Updates);
+                return Json(200, Describe(existing));
+            }
+
             var name = meta.GetProperty("name").GetString() ?? "";
             AfterMultipartBody?.Invoke(name);
 
@@ -601,6 +652,23 @@ namespace ExplorerNative
             }
 
             if (session.Got.Length < session.Total) return Incomplete(session);
+
+            if (session.Target != null)
+            {
+                Item? existing;
+                lock (_gate) _items.TryGetValue(session.Target, out existing);
+                if (existing == null) return Error(404, "notFound", "File not found: " + session.Target);
+                lock (_gate)
+                {
+                    existing.Data = session.Got.ToArray();
+                    existing.Modified = Ms(session.Modified ?? DateTime.UtcNow);
+                    session.Done = existing;
+                    _changed.Add(existing.Id);
+                }
+                Interlocked.Increment(ref Uploads);
+                Interlocked.Increment(ref Updates);
+                return Json(200, Describe(existing));
+            }
 
             var item = new Item
             {

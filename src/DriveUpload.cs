@@ -471,7 +471,22 @@ namespace ExplorerNative
             // Only the top of a tree is worth a sentence. Below that, "Created
             // disc 2 in Google Drive" said forty times is the upload narrating its
             // own directory listing.
-            var placed = await _drive.CreateFolderIn(parent, name, announce: cut < 0, token);
+            //
+            // A folder that throws is a failed folder, said once here, not an
+            // exception: thrown, it escaped UploadOne (which awaits this outside
+            // its try), and Parallel.ForEachAsync then abandoned every other file.
+            string? placed;
+            try
+            {
+                placed = await _drive.CreateFolderIn(parent, name, announce: cut < 0, token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (DriveQuotaException) { throw; }
+            catch (Exception ex)
+            {
+                Fail(relative, "the folder could not be created in Google Drive: " + ex.Message);
+                return null;
+            }
 
             if (placed == null) Fail(relative, "the folder could not be created in Google Drive");
             return placed;
@@ -479,8 +494,24 @@ namespace ExplorerNative
 
         private async ValueTask UploadOne(UploadFile file, CancellationToken token)
         {
-            var folder = await EnsureFolder(file.RelativeFolder, token);
             var name = Path.GetFileName(file.LocalPath);
+            string? folder;
+            try
+            {
+                folder = await EnsureFolder(file.RelativeFolder, token);
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (DriveQuotaException) { throw; }
+            catch (Exception ex)
+            {
+                // Its folder failed in a way CreateChain did not catch; this
+                // file is not sent, the others carry on.
+                Interlocked.Add(ref _totalBytes, -file.Size);
+                Interlocked.Decrement(ref _totalFiles);
+                Fail(name, "its folder could not be made in Google Drive: " + ex.Message);
+                Report(name);
+                return;
+            }
 
             // The folder failed, and CreateChain has already said so — once, for
             // the folder. Recording it again per file would bury the one line that
@@ -551,6 +582,10 @@ namespace ExplorerNative
                 Report(name);
             }
 
+            // For a move: the source as it was when it started up, so it is only
+            // deleted if what went up is what is still here.
+            var startedAs = _move ? SourceStamp(file.LocalPath) : default;
+
             try
             {
                 var landed = await _drive.UploadInto(
@@ -596,7 +631,20 @@ namespace ExplorerNative
 
                 // A move only removes the original once Google has the copy. The
                 // other order loses the file if the upload failed at the end.
-                if (_move) { try { File.Delete(file.LocalPath); } catch { } }
+                //
+                // And only if nobody wrote to it meanwhile: the same size and
+                // time as when it started up, and as the survey measured. A save
+                // made while it was going up was deleted with it, and Drive held
+                // the older bytes.
+                if (_move)
+                {
+                    var now = SourceStamp(file.LocalPath);
+                    if (startedAs.Exists && now == startedAs && now.Length == file.Size)
+                    {
+                        try { File.Delete(file.LocalPath); } catch { }
+                    }
+                    else Fail(name, "it changed while it was being sent, so it was copied and the original was kept on this PC");
+                }
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
@@ -630,6 +678,20 @@ namespace ExplorerNative
                 if (reserved) Release(folder, name);
                 Unsend(counted);
                 Fail(name, ex.Message);
+            }
+        }
+
+        /// <summary>A source file's size and modified time, or Exists false when it cannot be read.</summary>
+        internal static (bool Exists, long Length, DateTime ModifiedUtc) SourceStamp(string path)
+        {
+            try
+            {
+                var info = new FileInfo(path);
+                return info.Exists ? (true, info.Length, info.LastWriteTimeUtc) : default;
+            }
+            catch
+            {
+                return default;
             }
         }
 

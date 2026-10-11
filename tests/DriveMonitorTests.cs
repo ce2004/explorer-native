@@ -57,6 +57,7 @@ namespace ExplorerNative
                 await CrashTests(sandbox);
                 await SecondReviewTests(sandbox);
                 await ThirdRoundTests(sandbox);
+                await FourthRoundTests(sandbox);
                 NoDialogTests();
                 await CheckClientCancelTests();
             }
@@ -821,6 +822,275 @@ namespace ExplorerNative
             }
         }
 
+        // ---------------- round 4: data safety under a big library ----------------
+
+        private static async Task FourthRoundTests(string sandbox)
+        {
+            // An edit on the PC replaces Drive's copy in place: same id, no
+            // trash, no moment with two copies. Small and resumable alike.
+            using (var rig = new Rig(sandbox, SyncMode.TwoWay))
+            {
+                var big = Noise(7 * 1024 * 1024, 41);
+                rig.Write("a.txt", "first", T0);
+                rig.Write("big.bin", big, T0);
+                await rig.Pass();
+                var a = rig.Drive.Find(rig.FolderId, "a.txt");
+                var b = rig.Drive.Find(rig.FolderId, "big.bin");
+                var bigger = Noise(8 * 1024 * 1024, 42);
+                rig.Write("a.txt", "second, longer", T0.AddHours(1));
+                rig.Write("big.bin", bigger, T0.AddHours(1));
+                var problem = await rig.Pass();
+                Check("an edit on the PC updates Drive's file in place: the same files, nothing trashed, no second copy",
+                    problem == null && rig.Drive.Find(rig.FolderId, "a.txt") == a && rig.Drive.Find(rig.FolderId, "big.bin") == b &&
+                    rig.Drive.Updates == 2 && rig.Drive.Trashes == 0 && rig.Drive.Duplicates(rig.FolderId).Count == 0 &&
+                    Text(rig.DriveTree(), "a.txt") == "second, longer" && rig.DriveTree()["big.bin"].AsSpan().SequenceEqual(bigger),
+                    $"{problem}; {rig.Drive.Updates} updates, {rig.Drive.Trashes} trashed");
+                var before = rig.Counters();
+                await rig.Pass();
+                Check("and the pair is in step afterwards", rig.Counters() == before);
+            }
+
+            // The old way's leftover: a new copy went up beside the old one and
+            // Drive would not trash the old one. It is tried again next pass.
+            using (var rig = new Rig(sandbox, SyncMode.TwoWay))
+            {
+                rig.Write("a.txt", "first", T0);
+                await rig.Pass();
+                var old = rig.Drive.Find(rig.FolderId, "a.txt")!;
+                rig.Write("a.txt", "second", T0.AddHours(1));
+                rig.Drive.AddFault(new FakeDrive.Fault
+                {
+                    Kind = "multipart", Times = 1, Status = 404, Body = FakeDrive.ErrorBody(404, "notFound", "File not found"),
+                    Subject = n => n == "a.txt",
+                });
+                rig.Drive.AddFault(new FakeDrive.Fault
+                {
+                    Kind = "trash", Times = 1, Status = 403,
+                    Body = FakeDrive.ErrorBody(403, "insufficientFilePermissions", "The user does not have permission"),
+                });
+                await rig.Pass();
+                int twice = rig.Drive.Duplicates(rig.FolderId).Count;
+                var problem = await rig.Pass();
+                Check("an old copy Drive would not trash is remembered and trashed on the next pass",
+                    twice == 1 && rig.Drive.Get(old) is { Trashed: true } && rig.Drive.Duplicates(rig.FolderId).Count == 0 &&
+                    Text(rig.DriveTree(), "a.txt") == "second" && Text(rig.LocalTree(), "a.txt") == "second" && problem == null,
+                    $"{twice} doubled after the first pass; old trashed {rig.Drive.Get(old)?.Trashed}; " +
+                    $"{rig.Drive.Duplicates(rig.FolderId).Count} doubled now; Drive {Text(rig.DriveTree(), "a.txt")}; " +
+                    $"PC {Text(rig.LocalTree(), "a.txt")}; {problem}");
+            }
+
+            // A PC edit made after the scan, while Drive's copy was coming down.
+            using (var rig = new Rig(sandbox, SyncMode.TwoWay))
+            {
+                rig.Write("a.txt", "first", T0);
+                await rig.Pass();
+                rig.Drive.Edit(rig.Drive.Find(rig.FolderId, "a.txt")!, Encoding.UTF8.GetBytes("drive's edit"), T0.AddHours(1));
+                bool edited = false;
+                rig.Drive.OnMedia = (_, _) =>
+                {
+                    if (!edited) { edited = true; rig.Write("a.txt", "the pc's edit, made during the download", T0.AddHours(2)); }
+                    return Task.CompletedTask;
+                };
+                await rig.Pass();
+                rig.Drive.OnMedia = null;
+                Check("a PC edit made while Drive's copy was coming down is not overwritten",
+                    Text(rig.LocalTree(), "a.txt") == "the pc's edit, made during the download", Names(rig.LocalTree()));
+                await rig.Pass();
+                await rig.Pass();
+                var local = rig.LocalTree();
+                Check("and the next passes keep both, on both sides, with no part left behind",
+                    local.Values.Any(v => Encoding.UTF8.GetString(v) == "drive's edit") &&
+                    Text(local, "a.txt") == "the pc's edit, made during the download" && SameTrees(local, rig.DriveTree()) &&
+                    !Directory.EnumerateFiles(rig.Local, "*.partial", SearchOption.AllDirectories).Any(),
+                    Names(local) + " | " + Names(rig.DriveTree()));
+            }
+
+            // Download only, and Drive wins: the PC's own copy is not lost.
+            using (var rig = new Rig(sandbox, SyncMode.DownloadOnly))
+            {
+                rig.Write("a.txt", "the pc's own", T0);
+                rig.Put("a.txt", "drive's, which is different", T0.AddHours(1));
+                var problem = await rig.Pass();
+                Check("download only over a different PC file: the PC's goes to the Recycle Bin first",
+                    problem == null && rig.Recycled.SequenceEqual(new[] { "a.txt" }) &&
+                    Text(rig.LocalTree(), "a.txt") == "drive's, which is different", problem);
+            }
+            using (var rig = new Rig(sandbox, SyncMode.TwoWay))
+            {
+                rig.Pair.WhenBothChanged = ConflictChoice.DriveWins;
+                rig.Write("a.txt", "first", T0);
+                await rig.Pass();
+                rig.Write("a.txt", "the pc's edit", T0.AddHours(1));
+                rig.Drive.Edit(rig.Drive.Find(rig.FolderId, "a.txt")!, Encoding.UTF8.GetBytes("drive's edit"), T0.AddHours(2));
+                rig.Monitor.RecycleLocal = _ => "that drive has no Recycle Bin, so it would have been deleted for good";
+                var problem = await rig.Pass();
+                Check("Drive wins with no Recycle Bin: the PC's edit is kept, and the pair says so",
+                    Text(rig.LocalTree(), "a.txt") == "the pc's edit" && problem != null && problem.Contains("kept"), problem);
+            }
+
+            // Deletes act on what is there now, not on the scan.
+            using (var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true))
+            {
+                rig.Write("x.txt", "x", T0);
+                await rig.Pass();
+                var x = rig.Drive.Find(rig.FolderId, "x.txt")!;
+                File.Delete(Path.Combine(rig.Local, "x.txt"));
+                bool edited = false;
+                rig.Drive.BeforeAnswer = (kind, subject) =>
+                {
+                    if (kind != "alive" || subject != x || edited) return;
+                    edited = true;
+                    rig.Drive.Edit(x, Encoding.UTF8.GetBytes("edited in drive meanwhile"), T0.AddHours(1));
+                };
+                await rig.Pass();
+                rig.Drive.BeforeAnswer = null;
+                Check("a Drive file edited after the scan is not trashed for a delete made on the PC",
+                    edited && rig.Drive.Get(x) is { Trashed: false } && rig.Drive.Trashes == 0);
+                await rig.Pass();
+                Equal("and the edit comes down", "edited in drive meanwhile", Text(rig.LocalTree(), "x.txt"));
+            }
+            using (var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true))
+            {
+                rig.Write("y.txt", "y", T0);
+                await rig.Pass();
+                rig.Drive.Trash(rig.Drive.Find(rig.FolderId, "y.txt")!);
+                bool edited = false;
+                rig.Drive.BeforeAnswer = (kind, _) =>
+                {
+                    if (kind != "list" || edited) return;
+                    edited = true;
+                    rig.Write("y.txt", "edited on the pc meanwhile", T0.AddHours(1));
+                };
+                await rig.Pass();
+                rig.Drive.BeforeAnswer = null;
+                Check("a PC file edited after the scan is not recycled for a delete made in Drive",
+                    edited && rig.Recycled.Count == 0 && Text(rig.LocalTree(), "y.txt") == "edited on the pc meanwhile");
+                await rig.Pass();
+                Equal("and the edit goes up", "edited on the pc meanwhile", Text(rig.DriveTree(), "y.txt"));
+            }
+
+            // Two Drive folders of exactly one name.
+            using (var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true))
+            {
+                rig.Write("Docs/one.txt", "1", T0);
+                rig.Write("fine.txt", "f", T0);
+                await rig.Pass();
+                var second = rig.Drive.AddFolder("Docs", rig.FolderId);
+                rig.Drive.AddFile("two.txt", Encoding.UTF8.GetBytes("2"), T0, second);
+                var problem = await rig.Pass();
+                Check("a second Drive folder of the same name is said, and nothing in either is taken for deleted",
+                    problem != null && problem.Contains("Docs/", StringComparison.Ordinal) && rig.Recycled.Count == 0 &&
+                    rig.Drive.Trashes == 0 && Names(rig.LocalTree()) == "Docs/one.txt,fine.txt", $"{problem}; PC {Names(rig.LocalTree())}");
+            }
+
+            // One file Google keeps refusing does not hold up the rest for ever.
+            using (var rig = new Rig(sandbox, SyncMode.UploadOnly))
+            {
+                rig.Monitor.PatienceLimit = TimeSpan.FromMinutes(5);
+                rig.Write("fine.txt", "f", T0);
+                rig.Write("stuck.txt", "s", T0);
+                rig.Drive.AddFault(new FakeDrive.Fault
+                {
+                    Kind = "multipart", Times = 100_000, Status = 503, Body = "{}", Subject = n => n == "stuck.txt",
+                });
+                var problem = await rig.Pass();
+                Check("a file Google keeps refusing is given up on after the limit, and counted as failed",
+                    Names(rig.DriveTree()) == "fine.txt" && problem != null && problem.Contains("stuck.txt") &&
+                    problem.Contains("given up"), problem);
+            }
+
+            // Pause, Edit and Remove stop a running pass at its next file.
+            foreach (var how in new[] { "paused", "edited", "removed" })
+            {
+                using var rig = new Rig(sandbox, SyncMode.UploadOnly);
+                rig.Monitor.Reload(new[] { rig.Pair });
+                for (int i = 0; i < 5; i++) rig.Write($"f{i}.txt", "x", T0);
+                rig.Monitor.KillPoint = what =>
+                {
+                    if (what != "uploaded f0.txt") return;
+                    var changed = rig.Pair.Copy();
+                    if (how == "paused") changed.Paused = true;
+                    if (how == "edited") changed.Mode = SyncMode.TwoWay;
+                    if (how == "removed")
+                    {
+                        rig.Monitor.SetPairs(new List<DriveSyncPair>());
+                        DriveMonitor.ForgetRemovedPairs(Array.Empty<DriveSyncPair>());
+                    }
+                    else rig.Monitor.Reload(new[] { changed });
+                };
+                await rig.Pass();
+                rig.Monitor.KillPoint = null;
+                Check($"a pair {how} during a pass stops at its next file", rig.DriveTree().Count == 1, Names(rig.DriveTree()));
+                if (how == "removed")
+                    Check("and a removed pair's state file is not written back", !File.Exists(rig.StatePath));
+            }
+
+            // A state file that will not read is not a first sync.
+            using (var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true))
+            {
+                rig.Monitor.Reload(new[] { rig.Pair });
+                rig.Write("a.txt", "a", T0);
+                rig.Write("b.txt", "b", T0);
+                await rig.Pass();
+                File.Delete(Path.Combine(rig.Local, "b.txt"));
+                File.WriteAllBytes(rig.StatePath, new byte[] { 1, 2, 3, 4, 5 });
+                var problem = await rig.Pass();
+                Check("unreadable sync records pause the pair and say so",
+                    problem != null && problem.Contains("could not be read") && rig.Monitor.Pairs.Single().Paused &&
+                    Directory.GetFiles(DriveMonitor.StateDirectory, rig.Pair.Id + ".json.damaged-*").Length == 1, problem);
+                Check("and nothing was done meanwhile", rig.Drive.Trashes == 0 && Names(rig.DriveTree()) == "a.txt,b.txt");
+                rig.Monitor.Reload(new[] { rig.Pair });
+                problem = await rig.Pass();
+                Check("unpaused, it compares afresh: nothing deleted, what is missing comes back",
+                    problem == null && rig.Drive.Trashes == 0 && Names(rig.LocalTree()) == "a.txt,b.txt", problem);
+            }
+
+            // A file still being written waits.
+            using (var rig = new Rig(sandbox, SyncMode.UploadOnly))
+            {
+                rig.Write("new.txt", "being written", DateTime.UtcNow);
+                var problem = await rig.Pass();
+                Check("a file modified a moment ago waits for a later pass", problem == null && rig.DriveTree().Count == 0, problem);
+                File.SetLastWriteTimeUtc(Path.Combine(rig.Local, "new.txt"), T0);
+                await rig.Pass();
+                Equal("and goes up once it has settled", "new.txt", Names(rig.DriveTree()));
+
+                rig.Write("open.txt", "open", T0);
+                using (new FileStream(Path.Combine(rig.Local, "open.txt"), FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite))
+                {
+                    problem = await rig.Pass();
+                    Check("a file open for writing in another program waits too",
+                        problem == null && !rig.DriveTree().ContainsKey("open.txt"), problem);
+                }
+                await rig.Pass();
+                Check("and goes up once it is closed", rig.DriveTree().ContainsKey("open.txt"));
+            }
+
+            // The monitor's own writes, and a folder that will not list for a moment.
+            using (var rig = new Rig(sandbox, SyncMode.DownloadOnly))
+            {
+                for (int i = 0; i < 6; i++) rig.Put($"dir{i}/f.txt", "f" + i, T0);
+                var dir3 = rig.Drive.Find(rig.FolderId, "dir3")!;
+                rig.Drive.AddFault(new FakeDrive.Fault { Kind = "list", Times = 2, Status = 503, Body = "{}", Subject = s => s == dir3 });
+                var problem = await rig.Pass();
+                Check("one Drive folder that will not list for a moment is asked again by itself",
+                    problem == null && rig.LocalTree().Count == 6 && rig.Drive.FaultsLeft == 0, problem);
+                Check("and a file the monitor has just brought down is its own doing, so its watcher event starts no pass",
+                    rig.Monitor.IsMine(Path.Combine(rig.Local, "dir0", "f.txt")));
+            }
+
+            var engine = Tests_Source("DriveMonitor.cs") ?? "";
+            Check("hashing sets no thread priority (it stayed with the pool thread after the await)",
+                engine.Length > 0 && !engine.Contains("ThreadPriority", StringComparison.Ordinal));
+            Check("closing the monitor lets go of the drive's connection event",
+                engine.Contains("ConnectionChanged -= _onConnection", StringComparison.Ordinal));
+            var form = Tests_Source("DriveMonitorForm.cs") ?? "";
+            Check("the configurator never reads a pair's state file on the UI thread",
+                form.Contains("StatusIfLoaded(", StringComparison.Ordinal) && !form.Contains(".StatusOf(", StringComparison.Ordinal));
+            Check("the space check walks the PC folder on a worker, and closing the window ends it",
+                form.Contains("await Task.Run(", StringComparison.Ordinal) && form.Contains("_closing.Cancel()", StringComparison.Ordinal));
+        }
+
         // ---------------- fix 5: a file changed while it went up ----------------
 
         private static async Task ChangedDuringUploadTests(string sandbox)
@@ -979,7 +1249,9 @@ namespace ExplorerNative
         {
             var points = new[]
             {
-                "uploaded new.txt", "uploaded edited.txt", "replacement up, old copy not yet trashed edited.txt",
+                // An edit now replaces Drive's copy in place, so there is no
+                // moment with the new copy up and the old one not yet trashed.
+                "uploaded new.txt", "uploaded edited.txt",
                 "downloaded fromdrive.txt", "trashed gone on pc.txt", "recycled gone in drive.txt",
                 "set aside in Drive both.txt", "uploaded both.txt",
             };

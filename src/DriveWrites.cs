@@ -434,6 +434,33 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// One file as Drive holds it right now, or null when it is gone or in
+        /// the trash. The folder monitor asks this just before it trashes or
+        /// replaces anything, because its plan is a snapshot taken minutes (or,
+        /// on a big pass, hours) earlier. Throws when Drive cannot be asked.
+        /// </summary>
+        internal async Task<DriveEntry?> FileNow(string fileId, CancellationToken token)
+        {
+            using var request = await Request(HttpMethod.Get,
+                $"{Files}/{Uri.EscapeDataString(fileId)}?fields=id,name,mimeType,size,md5Checksum,modifiedTime,trashed", token);
+            using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token, _slowMetadata);
+            var body = await response.Content.ReadAsStringAsync(token);
+            if ((int)response.StatusCode == 404) return null;
+            if (!response.IsSuccessStatusCode)
+                throw new DriveStatusException((int)response.StatusCode, body,
+                    $"{(int)response.StatusCode}: " + Explain((int)response.StatusCode, body));
+
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("trashed", out var t) && t.ValueKind == JsonValueKind.True) return null;
+            var file = Uploaded(root);
+            return new DriveEntry(file.Id,
+                root.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
+                root.TryGetProperty("mimeType", out var m) ? m.GetString() ?? "" : "",
+                file.Size ?? 0, file.ModifiedUtc ?? DateTime.MinValue, null, file.Md5);
+        }
+
+        /// <summary>
         /// The link to a file or folder, and — when asked — the sharing that
         /// makes the link work for somebody who is not signed in as us.
         ///
@@ -749,10 +776,16 @@ namespace ExplorerNative
         /// changes while it is being sent is otherwise remembered as something
         /// neither side has, and the next pass calls it changed on both.
         /// </summary>
+        /// <param name="replaceId">
+        /// A Drive file whose contents this upload becomes, in place: the same
+        /// id, its earlier contents kept as a revision. Null makes a new file.
+        /// Replacing by "upload a new one, then trash the old" left two files
+        /// of one name whenever the trash failed.
+        /// </param>
         internal async Task<DriveUploaded> UploadDetailed(
             string localPath, string name, string parentId,
             Action<UploadProgress>? progress, CancellationToken token,
-            string? resumeSession = null, Action<string>? sessionStarted = null)
+            string? resumeSession = null, Action<string>? sessionStarted = null, string? replaceId = null)
         {
             long total;
             try { total = new FileInfo(localPath).Length; }
@@ -762,11 +795,15 @@ namespace ExplorerNative
             // for one than sending the file. A zero-length file lands here too,
             // and goes up as one request with an empty body.
             if (total <= SmallUploadBytes)
-                return await UploadWhole(localPath, name, parentId, total, progress, token);
+                return await UploadWhole(localPath, name, parentId, total, progress, token, replaceId);
 
             return await UploadResumable(localPath, name, parentId, total, progress, token,
-                resumeSession, sessionStarted);
+                resumeSession, sessionStarted, replaceId);
         }
+
+        /// <summary>The metadata half of an in-place update: only the time. Name and folder stay Drive's.</summary>
+        private static string UpdateMetadataJson(DateTime modified) =>
+            JsonSerializer.Serialize(new Dictionary<string, object> { ["modifiedTime"] = RfcTime(modified) });
 
         /// <summary>What an upload left in Drive. Size, time and checksum are null when Drive did not say.</summary>
         internal sealed record DriveUploaded(string Id, long? Size, DateTime? ModifiedUtc, string? Md5);
@@ -833,7 +870,7 @@ namespace ExplorerNative
         /// </summary>
         private async Task<DriveUploaded> UploadWhole(
             string localPath, string name, string parentId, long total,
-            Action<UploadProgress>? progress, CancellationToken token)
+            Action<UploadProgress>? progress, CancellationToken token, string? replaceId = null)
         {
             // Sent again when Google says "not now", which it does — this is one
             // request per file and a folder of small files is a great many of
@@ -863,7 +900,9 @@ namespace ExplorerNative
 
             async Task<DriveUploaded?> AlreadyUploaded()
             {
-                if (!maybeDone) return null;
+                // An update cannot make a second file, so sending it again is
+                // safe and there is nothing to look for.
+                if (!maybeDone || replaceId != null) return null;
 
                 var found = await AskWhetherLanded(t => MadeWithTag(tag, parentId, UploadedFields, t), random, token);
                 if (found == null) return null;
@@ -894,11 +933,17 @@ namespace ExplorerNative
                 // the failure it is retrying.
                 using var source = OpenRead(localPath);
 
-                using var request = await Request(HttpMethod.Post,
-                    $"{UploadEndpoint}?uploadType=multipart&fields={UploadedFields}", token);
+                using var request = replaceId == null
+                    ? await Request(HttpMethod.Post,
+                        $"{UploadEndpoint}?uploadType=multipart&fields={UploadedFields}", token)
+                    : await Request(HttpMethod.Patch,
+                        $"{UploadEndpoint}/{Uri.EscapeDataString(replaceId)}?uploadType=multipart&fields={UploadedFields}", token);
 
                 var metadata = new StringContent(
-                    MetadataJson(name, parentId, tag, UploadStamp(localPath)), Encoding.UTF8, "application/json");
+                    replaceId == null
+                        ? MetadataJson(name, parentId, tag, UploadStamp(localPath))
+                        : UpdateMetadataJson(UploadStamp(localPath)),
+                    Encoding.UTF8, "application/json");
 
                 var counter = new ProgressStream(source, 0, total, progress);
                 var body = new StreamContent(counter, UploadBufferBytes);
@@ -1013,12 +1058,12 @@ namespace ExplorerNative
         private async Task<DriveUploaded> UploadResumable(
             string localPath, string name, string parentId, long total,
             Action<UploadProgress>? progress, CancellationToken token,
-            string? resumeSession = null, Action<string>? sessionStarted = null)
+            string? resumeSession = null, Action<string>? sessionStarted = null, string? replaceId = null)
         {
             // A session saved by the folder monitor before the connection went
             // (or the app closed) is picked up where Google says it stopped;
             // every new session is handed back so it can be saved the same way.
-            var session = resumeSession ?? await BeginUpload(name, parentId, total, UploadStamp(localPath), token);
+            var session = resumeSession ?? await BeginUpload(name, parentId, total, UploadStamp(localPath), token, replaceId);
             if (resumeSession == null) sessionStarted?.Invoke(session);
 
             using var source = OpenRead(localPath);
@@ -1062,7 +1107,7 @@ namespace ExplorerNative
                     catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
                     catch (UploadRefusedException refused) when (refused.SessionGone)
                     {
-                        session = await BeginUpload(name, parentId, total, UploadStamp(localPath), token); sessionStarted?.Invoke(session);
+                        session = await BeginUpload(name, parentId, total, UploadStamp(localPath), token, replaceId); sessionStarted?.Invoke(session);
                         sent = 0;
                         askFirst = false;
                         lastProblem = "the upload session expired and was started again";
@@ -1102,7 +1147,7 @@ namespace ExplorerNative
                     catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
                     catch (UploadRefusedException refused) when (refused.SessionGone)
                     {
-                        session = await BeginUpload(name, parentId, total, UploadStamp(localPath), token); sessionStarted?.Invoke(session);
+                        session = await BeginUpload(name, parentId, total, UploadStamp(localPath), token, replaceId); sessionStarted?.Invoke(session);
                         sent = 0;
                         lastProblem = "the upload session expired and was started again";
                     }
@@ -1156,7 +1201,7 @@ namespace ExplorerNative
                     // bytes Google had are gone with it; a new session starts from
                     // nothing, which is the only offset it can agree to.
                     lastProblem = refused.Message;
-                    session = await BeginUpload(name, parentId, total, UploadStamp(localPath), token); sessionStarted?.Invoke(session);
+                    session = await BeginUpload(name, parentId, total, UploadStamp(localPath), token, replaceId); sessionStarted?.Invoke(session);
                     sent = 0;
                     continue;
                 }
@@ -1222,18 +1267,23 @@ namespace ExplorerNative
         /// Starts a resumable session and returns the URI to send bytes to.
         /// </summary>
         private async Task<string> BeginUpload(string name, string parentId, long size, DateTime modified,
-            CancellationToken token)
+            CancellationToken token, string? replaceId = null)
         {
             // Through the retrying sender. Opening a session makes nothing, so a
             // resend is safe; without it one 429 or dropped connection failed
             // every file over five megabytes, which the small-file path had
             // stopped doing long ago.
-            var metadata = MetadataJson(name, parentId, modified: modified);
+            var metadata = replaceId == null
+                ? MetadataJson(name, parentId, modified: modified)
+                : UpdateMetadataJson(modified);
             using var response = await SendWithRetry(
                 async () =>
                 {
-                    var request = await Request(HttpMethod.Post,
-                        $"{UploadEndpoint}?uploadType=resumable&fields={UploadedFields}", token);
+                    var request = replaceId == null
+                        ? await Request(HttpMethod.Post,
+                            $"{UploadEndpoint}?uploadType=resumable&fields={UploadedFields}", token)
+                        : await Request(HttpMethod.Patch,
+                            $"{UploadEndpoint}/{Uri.EscapeDataString(replaceId)}?uploadType=resumable&fields={UploadedFields}", token);
                     request.Content = new StringContent(metadata, Encoding.UTF8, "application/json");
                     request.Headers.Add("X-Upload-Content-Length",
                         size.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -1244,7 +1294,10 @@ namespace ExplorerNative
             {
                 var body = await response.Content.ReadAsStringAsync(token);
                 if (DriveQuotaException.From((int)response.StatusCode, body) is { } stop) throw stop;
-                throw new InvalidOperationException(
+
+                // With its status, so the monitor can tell "the file to update
+                // is gone" (404) from a refusal.
+                throw new DriveStatusException((int)response.StatusCode, body,
                     $"upload session failed {(int)response.StatusCode}: " +
                     Explain((int)response.StatusCode, body));
             }
