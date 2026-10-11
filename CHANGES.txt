@@ -1,3 +1,8 @@
+2.2.0
+New feature: each audio shortcut now has a Global checkbox. Untick it and the shortcut only works while Explorer Native is in front, so the keys keep doing their normal job in every other program.
+New feature: File, Sort this folder by, lets you sort one folder by name, size or date modified, ascending or descending, without changing any other folder. The list re-sorts straight away, and Use the default order puts the folder back.
+New feature: stay on a file for a second and Explorer Native tells you more about it after its name. Text files say how many words and characters they have. Audio files say the bitrate, sample rate, length, bit depth and channels. You can turn this off in What is spoken.
+
 2.1.0
 New feature: Google Drive folders now show their size in the Size column when folder sizes are set to automatic. The first Drive folder you open takes a few seconds while Explorer Native asks Google about your whole Drive, then every Drive folder's size appears at once and stays up to date.
 Measuring a Google Drive folder with the folder size shortcut is now almost instant, and the web app shows Drive folder sizes the same quick way.

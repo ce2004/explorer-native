@@ -273,6 +273,7 @@ namespace ExplorerNative
             await Guard("MainFixTests", () => { MainFixTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("DeleteTests", () => { DeleteTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("Round2FixTests", () => Round2FixTests.RunAll(Check, Equal));
+            await Guard("ShortcutSortDetailsTests", () => ShortcutSortDetailsTests.RunAll(Check, Equal));
             await Guard("DriveSizeTests", () => DriveSizeTests.RunAll(Check, Equal));
             await Guard("DriveClientCacheTests", () => DriveClientCacheTests.RunAll(Check, Equal));
 
@@ -5210,6 +5211,14 @@ namespace ExplorerNative
 
             if (wanted is List<DriveSyncPair> || got is List<DriveSyncPair>)
                 return System.Text.Json.JsonSerializer.Serialize(wanted) == System.Text.Json.JsonSerializer.Serialize(got);
+
+            if (wanted is Dictionary<string, string> da && got is Dictionary<string, string> db)
+            {
+                if (da.Count != db.Count) return false;
+                foreach (var pair in da)
+                    if (!db.TryGetValue(pair.Key, out var other) || other != pair.Value) return false;
+                return true;
+            }
 
             return Equals(wanted, got);
         }

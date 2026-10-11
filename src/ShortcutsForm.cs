@@ -17,6 +17,7 @@ namespace ExplorerNative
     {
         private readonly Settings _working;
         private readonly Dictionary<AudioAction, ShortcutBox> _boxes = new();
+        private readonly Dictionary<AudioAction, CheckBox> _global = new();
         private readonly Label _message;
 
         public ShortcutsForm(Settings working)
@@ -41,9 +42,10 @@ namespace ExplorerNative
             };
 
             Info(page,
-                "These work everywhere in Windows, not only in this application — that is what makes " +
-                "a player with no window usable. Move to a box and press the keys you want. Delete " +
-                "clears one, and a cleared shortcut is simply not registered.");
+                "Move to a box and press the keys you want. Delete clears one, and a cleared shortcut " +
+                "is simply not registered. With Global ticked, the shortcut works everywhere in Windows. " +
+                "Untick it and the shortcut works only while this application is in front, and the keys " +
+                "do their usual job everywhere else.");
 
             foreach (var action in AudioActions.All)
             {
@@ -51,7 +53,17 @@ namespace ExplorerNative
                 box.Captured += Say;
                 box.InUse = candidate => WhoUses(candidate, action.Action);
                 _boxes[action.Action] = box;
-                Labelled(page, action.Label, box);
+
+                var global = new CheckBox
+                {
+                    Text = "Global",
+                    AutoSize = true,
+                    Checked = AudioActions.IsGlobal(_working, action.Action),
+                    Margin = new Padding(8, 4, 0, 0),
+                    AccessibleName = action.Label + " global",
+                };
+                _global[action.Action] = global;
+                Labelled(page, action.Label, box, global);
             }
 
             // Last, and not grey: a refusal has to be visible as well as spoken,
@@ -139,8 +151,13 @@ namespace ExplorerNative
         internal void Apply()
         {
             foreach (var action in AudioActions.All)
+            {
                 if (_boxes.TryGetValue(action.Action, out var box) && box.Changed)
                     action.Set(_working, box.Value.ToString());
+                if (_global.TryGetValue(action.Action, out var global) &&
+                    global.Checked != AudioActions.IsGlobal(_working, action.Action))
+                    AudioActions.SetGlobal(_working, action.Action, global.Checked);
+            }
         }
 
         private void Say(string message)
@@ -149,7 +166,7 @@ namespace ExplorerNative
             if (_working.SpeakEnabled) Speech.Speak(message, interrupt: true);
         }
 
-        private static void Labelled(Control parent, string label, Control control)
+        private static void Labelled(Control parent, string label, Control control, Control? after = null)
         {
             var row = new FlowLayoutPanel
             {
@@ -166,6 +183,7 @@ namespace ExplorerNative
                 Width = 210,
             });
             row.Controls.Add(control);
+            if (after != null) row.Controls.Add(after);
             parent.Controls.Add(row);
         }
 

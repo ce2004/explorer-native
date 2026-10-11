@@ -861,6 +861,7 @@ namespace ExplorerNative
             file.DropDownOpening += (_, _) => _syncConfiguratorItem.Visible = DriveMonitorForm.OnFileMenu(_settings);
 
             file.DropDownItems.Add(new ToolStripSeparator());
+            file.DropDownItems.Add(BuildSortMenu());
             file.DropDownItems.Add(Item("P&roperties (Alt+Enter)", Keys.None, ShowProperties));
             file.DropDownItems.Add(new ToolStripSeparator());
             file.DropDownItems.Add(Item("E&xit", Keys.None, Close));
@@ -2607,7 +2608,7 @@ namespace ExplorerNative
             if (reload) pane.NeedsRefresh = true;
             if (changed.Count > 0)
             {
-                bool byName = NameRules.SortsAs(_settings.SortBy) == SortColumn.Name;
+                bool byName = NameRules.SortsAs(SortFor(pane.CurrentPath).By) == SortColumn.Name;
                 // Not on the Drive letter, where the rows come from Google's
                 // listing and reading a placeholder's attributes is the
                 // provider's business.
@@ -3174,7 +3175,7 @@ namespace ExplorerNative
                 _path = path;
                 _prefer = prefer;
                 _token = token;
-                _order = form.ListOrder();
+                _order = form.ListOrder(path);
             }
 
             /// <summary>
@@ -3552,7 +3553,7 @@ namespace ExplorerNative
                 if (batch is { Count: > 0 }) offer!(batch);
             }
 
-            return SortLikeAFolder(result);
+            return SortLikeAFolder(result, path);
         }
 
         /// <summary>
@@ -3594,10 +3595,10 @@ namespace ExplorerNative
         /// first" set got it everywhere except the one list where a folder and a
         /// file are most easily confused for each other.
         /// </summary>
-        private List<Entry> SortLikeAFolder(List<Entry> result)
+        private List<Entry> SortLikeAFolder(List<Entry> result, string? folder)
         {
             PrepareSortKeys(result);
-            result.Sort(ListOrder());
+            result.Sort(ListOrder(folder));
 
             // In order now, and nothing sorts this list again: a new order is a
             // new listing. The keys would only be memory.
@@ -3627,11 +3628,130 @@ namespace ExplorerNative
         /// load sort each batch on the worker and merge it into what is already
         /// shown, instead of re-sorting everything on the UI thread every tick.
         /// </summary>
-        private Comparison<Entry> ListOrder()
+        /// <summary>
+        /// The order a folder is listed in: its own, chosen from File, Sort this
+        /// folder by, or the one in Preferences. Safe on a worker, because
+        /// FolderSorts is replaced whole and never edited in place.
+        /// </summary>
+        private (SortColumn By, bool Ascending) SortFor(string? folder)
         {
-            var cmp = ComparerFor(_settings.SortBy);
+            if (FolderSortOf(folder) is { } own) return own;
+            return (_settings.SortBy, _settings.SortAscending);
+        }
+
+        private (SortColumn By, bool Ascending)? FolderSortOf(string? folder)
+        {
+            if (string.IsNullOrEmpty(folder)) return null;
+            var sorts = _settings.FolderSorts;
+            if (sorts == null || sorts.Count == 0) return null;
+
+            var key = FolderSortKey(folder);
+            string? value = null;
+            foreach (var pair in sorts)
+                if (string.Equals(FolderSortKey(pair.Key), key, StringComparison.OrdinalIgnoreCase)) { value = pair.Value; break; }
+            if (value == null) return null;
+
+            var words = value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            if (words.Length == 0 || !Enum.TryParse<SortColumn>(words[0], ignoreCase: true, out var by)) return null;
+            bool ascending = words.Length < 2 || !words[1].Equals("descending", StringComparison.OrdinalIgnoreCase);
+            return (by, ascending);
+        }
+
+        private static string FolderSortKey(string folder)
+        {
+            var trimmed = Path.TrimEndingDirectorySeparator(folder);
+            // "C:" alone means the current directory on C:, so a root keeps its slash.
+            return trimmed.EndsWith(':') ? trimmed + "\\" : trimmed;
+        }
+
+        /// <summary>
+        /// Gives the folder its own order, or with null hands it back to the
+        /// Preferences order, then re-sorts it on the spot.
+        /// </summary>
+        private void SetFolderSort(string folder, (SortColumn By, bool Ascending)? sort)
+        {
+            var key = FolderSortKey(folder);
+            var sorts = new Dictionary<string, string>();
+            foreach (var pair in _settings.FolderSorts ?? new())
+                if (!string.Equals(FolderSortKey(pair.Key), key, StringComparison.OrdinalIgnoreCase))
+                    sorts[pair.Key] = pair.Value;
+            if (sort is { } s)
+                sorts[key] = s.By + (s.Ascending ? " ascending" : " descending");
+
+            _settings.FolderSorts = sorts;
+            _settings.Save();
+            Refresh_();
+
+            var (by, ascending) = SortFor(folder);
+            AnnounceOperation("nav.sorted",
+                (sort == null ? "Default order, " : "") +
+                $"sorted by {SortName(by)}, {(ascending ? "ascending" : "descending")}");
+        }
+
+        private static string SortName(SortColumn column) => NameRules.SortsAs(column) switch
+        {
+            SortColumn.Size => "size",
+            SortColumn.Modified => "date modified",
+            _ => "name",
+        };
+
+        /// <summary>File, Sort this folder by: ticks set as it opens, from the active pane's folder.</summary>
+        private ToolStripMenuItem BuildSortMenu()
+        {
+            var menu = new ToolStripMenuItem("Sort this folder &by");
+            var byName = new ToolStripMenuItem("&Name");
+            var bySize = new ToolStripMenuItem("&Size");
+            var byDate = new ToolStripMenuItem("Date &modified");
+            var ascendingItem = new ToolStripMenuItem("&Ascending");
+            var descendingItem = new ToolStripMenuItem("&Descending");
+            var useDefault = new ToolStripMenuItem("&Use the default order");
+
+            bool HasFolder() => !IsDrivesView && !string.IsNullOrEmpty(Active.CurrentPath);
+
+            void Column(SortColumn column)
+            {
+                if (!HasFolder()) return;
+                SetFolderSort(Active.CurrentPath, (column, SortFor(Active.CurrentPath).Ascending));
+            }
+
+            void Direction(bool ascending)
+            {
+                if (!HasFolder()) return;
+                SetFolderSort(Active.CurrentPath, (SortFor(Active.CurrentPath).By, ascending));
+            }
+
+            byName.Click += (_, _) => Column(SortColumn.Name);
+            bySize.Click += (_, _) => Column(SortColumn.Size);
+            byDate.Click += (_, _) => Column(SortColumn.Modified);
+            ascendingItem.Click += (_, _) => Direction(true);
+            descendingItem.Click += (_, _) => Direction(false);
+            useDefault.Click += (_, _) => { if (HasFolder()) SetFolderSort(Active.CurrentPath, null); };
+
+            menu.DropDownItems.AddRange(new ToolStripItem[]
+            {
+                byName, bySize, byDate, new ToolStripSeparator(),
+                ascendingItem, descendingItem, new ToolStripSeparator(), useDefault,
+            });
+
+            menu.DropDownOpening += (_, _) =>
+            {
+                var (by, ascending) = SortFor(Active.CurrentPath);
+                var shown = NameRules.SortsAs(by);
+                byName.Checked = shown == SortColumn.Name;
+                bySize.Checked = shown == SortColumn.Size;
+                byDate.Checked = shown == SortColumn.Modified;
+                ascendingItem.Checked = ascending;
+                descendingItem.Checked = !ascending;
+                useDefault.Checked = FolderSortOf(Active.CurrentPath) == null;
+            };
+            return menu;
+        }
+
+        private Comparison<Entry> ListOrder(string? folder)
+        {
+            var (by, ascending) = SortFor(folder);
+            var cmp = ComparerFor(by);
             bool foldersFirst = _settings.FoldersFirst;
-            bool ascending = _settings.SortAscending;
             return (a, b) =>
             {
                 if (foldersFirst && a.IsDir != b.IsDir) return a.IsDir ? -1 : 1;
@@ -4037,7 +4157,7 @@ namespace ExplorerNative
                     DisplayOverride = FileSearch.Label(root, hit.Path),
                 });
 
-            entries = SortLikeAFolder(entries);
+            entries = SortLikeAFolder(entries, root);
 
             pane.SearchTerm = term;
             pane.SearchTruncated = result.Truncated;
@@ -4509,6 +4629,67 @@ namespace ExplorerNative
             PerfCounters.SelectionChange();
             ScheduleStatusUpdate();
             SchedulePrefetch();
+            ScheduleDetails();
+        }
+
+        /// <summary>How long the cursor rests on a file before its details are said.</summary>
+        private const int DetailsSettleMilliseconds = 1000;
+
+        private System.Windows.Forms.Timer? _detailsTimer;
+        private int _detailsGeneration;
+
+        /// <summary>
+        /// Words and characters, or bitrate, sample rate and length, said once
+        /// the cursor has stopped on a file. Restarted on every move, so arrowing
+        /// through a folder reads nothing; worked out on a worker, and dropped if
+        /// the cursor has moved by the time it is ready. Queued behind the row,
+        /// never interrupting it.
+        /// </summary>
+        private void ScheduleDetails()
+        {
+            _detailsGeneration++;
+            if (_suppressStatus > 0) return;
+            if (Notifications.ChannelsFor("nav.details", _settings) != NotificationChannel.Speech) return;
+
+            if (_detailsTimer == null)
+            {
+                _detailsTimer = new System.Windows.Forms.Timer { Interval = DetailsSettleMilliseconds };
+                _detailsTimer.Tick += async (_, _) =>
+                {
+                    _detailsTimer!.Stop();
+                    try { await SayDetailsAsync(); }
+                    catch { }
+                };
+            }
+
+            _detailsTimer.Stop();
+            _detailsTimer.Start();
+        }
+
+        private async Task SayDetailsAsync()
+        {
+            if (IsDisposed || !_settings.SpeakEnabled) return;
+            var pane = Active;
+            if (!pane.List.Focused || pane.List.SelectedIndices.Count > 1) return;
+
+            int index = CurrentIndex(pane);
+            if (index < 0 || index >= pane.Entries.Count) return;
+            var entry = pane.Entries[index];
+            if (entry.IsDir) return;
+
+            var path = entry.Path;
+            // Reading a placeholder downloads it.
+            if (Drive is { } drive && drive.Owns(path)) return;
+
+            int generation = _detailsGeneration;
+            var audio = _settings.AudioExtensions;
+            var details = await Task.Run(() => FileDetails.Describe(path, audio));
+
+            if (details == null || IsDisposed || generation != _detailsGeneration) return;
+            if (!string.Equals(FocusedPath(), path, StringComparison.OrdinalIgnoreCase)) return;
+
+            ShowStatus(details);
+            Speech.Speak(details, interrupt: false);
         }
 
         private System.Windows.Forms.Timer? _selectionSpeechTimer;
@@ -4570,6 +4751,13 @@ namespace ExplorerNative
                 "Modified" => SortColumn.Modified,
                 _ => SortColumn.Name,
             };
+
+            // A folder with its own order keeps it, changed by the click.
+            if (FolderSortOf(Active.CurrentPath) is { } own)
+            {
+                SetFolderSort(Active.CurrentPath, own.By == col ? (col, !own.Ascending) : (col, true));
+                return;
+            }
 
             if (_settings.SortBy == col) _settings.SortAscending = !_settings.SortAscending;
             else { _settings.SortBy = col; _settings.SortAscending = true; }

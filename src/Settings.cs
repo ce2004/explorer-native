@@ -88,6 +88,14 @@ namespace ExplorerNative
         public bool FoldersFirst { get; set; } = true;
         public SortColumn SortBy { get; set; } = SortColumn.Name;
         public bool SortAscending { get; set; } = true;
+
+        /// <summary>
+        /// Folders sorted their own way, from File, Sort this folder by: the
+        /// folder's path to "Modified descending". A folder not here uses the
+        /// order above. Replaced whole on every change, never edited in place,
+        /// because the sort reads it on a worker.
+        /// </summary>
+        public Dictionary<string, string> FolderSorts { get; set; } = new();
         public SizeUnitStyle SizeUnits { get; set; } = SizeUnitStyle.FullWords;
 
         // There is no SizeDecimals or DateFormat setting. One decimal place and
@@ -620,6 +628,14 @@ namespace ExplorerNative
         public string AudioRestartTrackShortcut { get; set; } = "";
         public string AudioRepeatShortcut { get; set; } = "";
 
+        /// <summary>
+        /// Audio actions whose shortcut works only while one of this application's
+        /// windows is in front, as action names separated by semicolons:
+        /// "PlayPause;VolumeUp". Empty means every shortcut is global, which is
+        /// what they all were before the choice existed.
+        /// </summary>
+        public string AudioLocalShortcuts { get; set; } = "";
+
         // ---------- Startup ----------
         public bool StartWithWindows { get; set; } = true;
         public bool StartMinimised { get; set; } = false;
@@ -1070,6 +1086,7 @@ namespace ExplorerNative
             NoNullStrings();
             DriveSyncPairs ??= new();
             DriveSyncPairs.RemoveAll(p => p == null);
+            FolderSorts ??= new();
 
             Migrate();
 
@@ -1452,6 +1469,13 @@ namespace ExplorerNative
             if (a is int[] x && b is int[] y) return x.AsSpan().SequenceEqual(y);
             if (a is List<DriveSyncPair> || b is List<DriveSyncPair>)
                 return JsonSerializer.Serialize(a, PlainFormat) == JsonSerializer.Serialize(b, PlainFormat);
+            if (a is Dictionary<string, string> sa && b is Dictionary<string, string> sb)
+            {
+                if (sa.Count != sb.Count) return false;
+                foreach (var pair in sa)
+                    if (!sb.TryGetValue(pair.Key, out var other) || pair.Value != other) return false;
+                return true;
+            }
             if (a is System.Collections.Generic.Dictionary<string, JsonElement> da &&
                 b is System.Collections.Generic.Dictionary<string, JsonElement> db)
             {

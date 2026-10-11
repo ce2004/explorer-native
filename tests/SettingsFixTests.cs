@@ -120,6 +120,10 @@ namespace ExplorerNative
                             MaxFileMegabytes = 12, CheckMinutes = 9,
                         },
                     } :
+                    type == typeof(Dictionary<string, string>) ? new Dictionary<string, string>
+                    {
+                        [@"D:\Music é"] = "Modified descending",
+                    } :
                     type == typeof(Dictionary<string, JsonElement>) ? new Dictionary<string, JsonElement>
                     {
                         ["FromANewerBuild"] = JsonDocument.Parse("{\"a\":[1,2,{\"b\":null}]}").RootElement.Clone(),

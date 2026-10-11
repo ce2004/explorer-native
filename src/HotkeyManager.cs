@@ -32,14 +32,89 @@ namespace ExplorerNative
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 
+        private delegate void WinEventProc(IntPtr hook, uint eventType, IntPtr hwnd,
+            int idObject, int idChild, uint thread, uint time);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetWinEventHook(uint eventMin, uint eventMax, IntPtr module,
+            WinEventProc callback, uint process, uint thread, uint flags);
+
+        [DllImport("user32.dll")] private static extern bool UnhookWinEvent(IntPtr hook);
+        [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint process);
+
+        private const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+        private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+
         private readonly MessageWindow _window = new();
         private readonly HashSet<int> _registered = new();
+
+        /// <summary>
+        /// Shortcuts that are this application's only: claimed while one of its
+        /// windows is in front and handed back the moment another program is.
+        /// </summary>
+        private readonly Dictionary<int, Shortcut> _local = new();
+        private readonly HashSet<int> _localClaimed = new();
+        private readonly uint _ownProcess = (uint)Environment.ProcessId;
+
+        // Kept in a field so the collector cannot take the delegate Windows is calling.
+        private WinEventProc? _foregroundProc;
+        private IntPtr _foregroundHook;
 
         public event Action<int>? HotkeyPressed;
 
         public HotkeyManager()
         {
             _window.HotkeyReceived += id => HotkeyPressed?.Invoke(id);
+        }
+
+        /// <summary>
+        /// Claims a combination only while this application is in front.
+        ///
+        /// Still RegisterHotKey, so holding, MOD_NOREPEAT and every check behave
+        /// exactly as for a global one. The difference is when: a foreground
+        /// change event registers it as one of our windows comes forward and
+        /// unregisters it as another program's does, so outside this application
+        /// the key does its usual job. Returns false only if it can never be
+        /// registered; another program owning it shows up as the key doing nothing.
+        /// </summary>
+        public bool RegisterLocal(int id, Shortcut shortcut)
+        {
+            Unregister(id);
+            if (!shortcut.CanRegister) return false;
+
+            _local[id] = shortcut;
+            if (_foregroundHook == IntPtr.Zero)
+            {
+                _foregroundProc = (_, _, hwnd, _, _, _, _) => SyncLocal(hwnd);
+                _foregroundHook = SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_SYSTEM_FOREGROUND,
+                    IntPtr.Zero, _foregroundProc, 0, 0, WINEVENT_OUTOFCONTEXT);
+            }
+            SyncLocal(GetForegroundWindow());
+            return true;
+        }
+
+        private void SyncLocal(IntPtr foreground)
+        {
+            bool ours = false;
+            if (foreground != IntPtr.Zero)
+            {
+                GetWindowThreadProcessId(foreground, out var process);
+                ours = process == _ownProcess;
+            }
+
+            foreach (var (id, shortcut) in _local)
+            {
+                if (ours && !_localClaimed.Contains(id))
+                {
+                    if (RegisterHotKey(_window.Handle, id, shortcut.Modifiers | MOD_NOREPEAT, shortcut.Key))
+                        _localClaimed.Add(id);
+                }
+                else if (!ours && _localClaimed.Remove(id))
+                {
+                    try { UnregisterHotKey(_window.Handle, id); } catch { }
+                }
+            }
         }
 
         /// <summary>
@@ -67,7 +142,8 @@ namespace ExplorerNative
 
         public void Unregister(int id)
         {
-            if (!_registered.Remove(id)) return;
+            _local.Remove(id);
+            if (!_registered.Remove(id) && !_localClaimed.Remove(id)) return;
             try { UnregisterHotKey(_window.Handle, id); } catch { }
         }
 
@@ -75,11 +151,18 @@ namespace ExplorerNative
         {
             foreach (int id in new List<int>(_registered))
                 Unregister(id);
+            foreach (int id in new List<int>(_local.Keys))
+                Unregister(id);
         }
 
         public void Dispose()
         {
             UnregisterAll();
+            if (_foregroundHook != IntPtr.Zero)
+            {
+                try { UnhookWinEvent(_foregroundHook); } catch { }
+                _foregroundHook = IntPtr.Zero;
+            }
             try { _window.DestroyHandle(); } catch { }
         }
 

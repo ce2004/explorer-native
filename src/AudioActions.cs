@@ -426,6 +426,30 @@ namespace ExplorerNative
             return step * Math.Min(1 + repeat / every, cap);
         }
 
+        /// <summary>
+        /// Whether this action's shortcut works everywhere in Windows, or only
+        /// while one of this application's windows is in front.
+        /// </summary>
+        public static bool IsGlobal(Settings settings, AudioAction action)
+        {
+            foreach (var name in (settings.AudioLocalShortcuts ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries))
+                if (string.Equals(name.Trim(), action.ToString(), StringComparison.OrdinalIgnoreCase)) return false;
+            return true;
+        }
+
+        public static void SetGlobal(Settings settings, AudioAction action, bool global)
+        {
+            var local = new List<string>();
+            foreach (var name in (settings.AudioLocalShortcuts ?? "").Split(';', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var trimmed = name.Trim();
+                if (trimmed.Length > 0 && !string.Equals(trimmed, action.ToString(), StringComparison.OrdinalIgnoreCase))
+                    local.Add(trimmed);
+            }
+            if (!global) local.Add(action.ToString());
+            settings.AudioLocalShortcuts = string.Join(";", local);
+        }
+
         public static AudioActionInfo For(AudioAction action)
         {
             foreach (var info in All)

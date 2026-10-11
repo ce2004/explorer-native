@@ -709,7 +709,14 @@ namespace ExplorerNative
                         continue;
                     }
 
-                    if (!_hotkeys.Register(AudioActions.HotkeyId(action.Action), shortcut))
+                    // Not global: claimed only while this application is in front,
+                    // so another program owning it cannot be known yet.
+                    if (!AudioActions.IsGlobal(_settings, action.Action))
+                    {
+                        if (_hotkeys.RegisterLocal(AudioActions.HotkeyId(action.Action), shortcut))
+                            registered.Add(keys);
+                    }
+                    else if (!_hotkeys.Register(AudioActions.HotkeyId(action.Action), shortcut))
                         taken.Add($"{keys} ({label})");
                     else registered.Add(keys);
                 }

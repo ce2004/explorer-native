@@ -339,6 +339,11 @@ namespace ExplorerNative
             Live("nav.tab", "Switched tab", Navigation, Say, "{0}", "Tab 2"),
             Live("nav.sorted", "Sort order changed", Navigation, Bar, "Sorted by {0}", "date modified"),
 
+            // Said once the cursor has rested on a file for a second, after the
+            // row itself: words and characters for text, the sound for audio.
+            Live("nav.details", "File details after a pause", Navigation, Say, "{0}",
+                "320 kilobits per second, 44,100 hertz, 3 minutes 12 seconds"),
+
             // Searching. The count is spoken and the rest is not: a results list
             // cannot be checked by ear — the rows were never read as they were
             // gathered — so how many there are is the one fact nothing else can

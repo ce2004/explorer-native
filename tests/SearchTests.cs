@@ -452,7 +452,7 @@ namespace ExplorerNative
             // Results are a list of files and folders like any other, and
             // somebody with "folders first" set means it here too.
             Check("results are sorted the way every other list is",
-                main.Contains("entries = SortLikeAFolder(entries);", StringComparison.Ordinal));
+                main.Contains("entries = SortLikeAFolder(entries, root);", StringComparison.Ordinal));
 
             // SearchHere and Refresh_ are both `async void`, and only the search
             // itself is inside the try — building the rows, naming the pane and
