@@ -72,9 +72,33 @@ namespace ExplorerNative
             void GetCount(out uint count);
             void GetAt(uint index, out PropertyKey key);
             [PreserveSig] int GetValue(ref PropertyKey key, out PropVariant value);
-            void SetValue(ref PropertyKey key, ref PropVariant value);
-            void Commit();
+            [PreserveSig] int SetValue(ref PropertyKey key, ref PropVariant value);
+            [PreserveSig] int Commit();
         }
+
+        /// <summary>
+        /// Asked of a read-write store before anything is set: whether this
+        /// file type's handler will take a given property at all. Some handlers
+        /// open read-write and then refuse everything at Commit.
+        /// </summary>
+        [ComImport, Guid("C8E2D566-186E-4D49-BF41-6909EAD56ACC"),
+         InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IPropertyStoreCapabilities
+        {
+            [PreserveSig] int IsPropertyWritable(ref PropertyKey key);
+        }
+
+        private const uint GPS_READWRITE = 0x2;
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = true, EntryPoint = "SHGetPropertyStoreFromParsingName")]
+        private static extern int SHGetWritablePropertyStore(
+            string path, IntPtr bindContext, uint flags, ref Guid iid,
+            [MarshalAs(UnmanagedType.Interface)] out IPropertyStore? store);
+
+        [DllImport("propsys.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
+        private static extern int InitPropVariantFromStringVector(
+            [MarshalAs(UnmanagedType.LPArray, ArraySubType = UnmanagedType.LPWStr)] string[] strings,
+            uint count, out PropVariant value);
 
         [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
         private static extern void SHGetPropertyStoreFromParsingName(
@@ -279,6 +303,197 @@ namespace ExplorerNative
             }
             finally { Release(store); }
             return found;
+        }
+
+        private static PropertyKey KeyOf(TagField field) => field switch
+        {
+            TagField.Title => Title,
+            TagField.Artist => Artist,
+            TagField.AlbumArtist => AlbumArtist,
+            TagField.Album => AlbumTitle,
+            TagField.Composer => Composer,
+            TagField.Genre => Genre,
+            TagField.Year => Year,
+            _ => TrackNumber,
+        };
+
+        /// <summary>
+        /// The editable tags as the tag editor shows them: every field present,
+        /// an empty string for one the file does not have. Several artists come
+        /// back as "A; B", which is also how they are typed back in. Null when
+        /// the file could not be opened at all. On a worker.
+        /// </summary>
+        public static Dictionary<TagField, string>? ReadFields(string path)
+        {
+            IPropertyStore? store = null;
+            try { store = Open(path); } catch { }
+            if (store == null) return null;
+            try
+            {
+                var fields = new Dictionary<TagField, string>();
+                foreach (var field in TagFields.All)
+                {
+                    string value = "";
+                    try
+                    {
+                        if (TagFields.IsNumber(field))
+                        {
+                            var number = Number(store, KeyOf(field));
+                            if (number is > 0) value = number.Value.ToString();
+                        }
+                        else value = Text(store, KeyOf(field))?.Trim() ?? "";
+                    }
+                    catch { }
+                    fields[field] = value;
+                }
+                return fields;
+            }
+            finally { Release(store); }
+        }
+
+        /// <summary>
+        /// Writes the given tags to one file through Windows' own property
+        /// handler and commits them. Only the fields in <paramref name="values"/>
+        /// are touched; an empty value removes that tag. Returns null when it
+        /// worked, or a sentence saying why not.
+        ///
+        /// On a worker, and every COM object here is made and released on that
+        /// worker. The file is never renamed or moved; the handler rewrites it in
+        /// place, and its modified date moves the way it does when Explorer saves
+        /// tags.
+        /// </summary>
+        public static string? WriteFields(string path, IReadOnlyDictionary<TagField, string> values)
+        {
+            if (values.Count == 0) return null;
+
+            var iid = typeof(IPropertyStore).GUID;
+            int hr;
+            IPropertyStore? store;
+            try { hr = SHGetWritablePropertyStore(path, IntPtr.Zero, GPS_READWRITE, ref iid, out store); }
+            catch (Exception ex) { return ex.Message; }
+            if (hr < 0 || store == null) return ExplainWriteFailure(path, hr, opening: true);
+
+            try
+            {
+                // A handler that opens read-write but will not take a property
+                // says so here, before anything is half set.
+                if (store is IPropertyStoreCapabilities capabilities)
+                {
+                    var refused = new List<string>();
+                    foreach (var field in values.Keys)
+                    {
+                        var key = KeyOf(field);
+                        // S_FALSE is the no. An error is a handler that does not
+                        // answer the question, and the set below will say.
+                        if (capabilities.IsPropertyWritable(ref key) == 1) refused.Add(TagFields.Label(field));
+                    }
+                    if (refused.Count == values.Count) return CannotWriteThisKind;
+                    if (refused.Count > 0)
+                        return "Windows cannot write " + JoinWords(refused) + " to this kind of file, so nothing was changed.";
+                }
+
+                foreach (var (field, text) in values)
+                {
+                    if (!TryMakeValue(field, text, out var value, out var why)) return why;
+                    try
+                    {
+                        var key = KeyOf(field);
+                        hr = store.SetValue(ref key, ref value);
+                        if (hr < 0) return ExplainWriteFailure(path, hr, opening: false);
+                    }
+                    finally { PropVariantClear(ref value); }
+                }
+
+                hr = store.Commit();
+                return hr < 0 ? ExplainWriteFailure(path, hr, opening: false) : null;
+            }
+            catch (Exception ex) { return ExplainWriteFailure(path, ex.HResult, opening: false); }
+            finally { Release(store); }
+        }
+
+        private const string CannotWriteThisKind = "Windows cannot write tags to this kind of file.";
+
+        private const ushort VT_UI4 = 19;
+        private const ushort VT_LPWSTR = 31;
+
+        /// <summary>
+        /// The variant each field is stored as. Title, album and album artist are
+        /// one string; artist, composer and genre are lists of strings, typed with
+        /// semicolons between them; year and track are unsigned 32-bit numbers.
+        /// Blank is an empty variant, which removes the tag.
+        /// </summary>
+        private static bool TryMakeValue(TagField field, string text, out PropVariant value, out string why)
+        {
+            value = default;
+            why = "";
+            text = text.Trim();
+            if (text.Length == 0) return true;
+
+            if (TagFields.IsNumber(field))
+            {
+                if (!TagFields.TryParseNumber(field, text, out uint number))
+                {
+                    why = TagFields.Label(field) + " must be a number.";
+                    return false;
+                }
+                value.Type = VT_UI4;
+                value.Value1 = (IntPtr)(long)number;
+                return true;
+            }
+
+            if (TagFields.IsList(field))
+            {
+                var parts = TagFields.SplitList(text);
+                if (parts.Length == 0) return true;
+                int hr = InitPropVariantFromStringVector(parts, (uint)parts.Length, out value);
+                if (hr < 0) { why = $"Windows could not make the {TagFields.Label(field)} list (error 0x{hr:X8})."; return false; }
+                return true;
+            }
+
+            value.Type = VT_LPWSTR;
+            value.Value1 = Marshal.StringToCoTaskMemUni(text);
+            return true;
+        }
+
+        private static string JoinWords(List<string> words) =>
+            words.Count == 1 ? words[0] : string.Join(", ", words.GetRange(0, words.Count - 1)) + " or " + words[^1];
+
+        /// <summary>A sentence for an HRESULT from opening, setting or committing.</summary>
+        private static string ExplainWriteFailure(string path, int hr, bool opening)
+        {
+            switch ((uint)hr)
+            {
+                case 0x80070020: // ERROR_SHARING_VIOLATION
+                case 0x80070021: // ERROR_LOCK_VIOLATION
+                case 0x80030020: // STG_E_SHAREVIOLATION
+                case 0x80030021: // STG_E_LOCKVIOLATION
+                    return "It is open in another program; close it and try again.";
+                case 0x80070002:
+                case 0x80070003:
+                case 0x80030002:
+                    return "It is no longer there.";
+                case 0x80070005:
+                case 0x80030005:
+                    try
+                    {
+                        if ((File.GetAttributes(path) & FileAttributes.ReadOnly) != 0) return "The file is read-only.";
+                    }
+                    catch { }
+                    return "Windows was refused permission to change it.";
+                case 0x80070070: // ERROR_DISK_FULL
+                case 0x80030070:
+                    return "The disk is full.";
+                case 0x80004005: // E_FAIL
+                case 0x80004001: // E_NOTIMPL
+                case 0x80040154: // REGDB_E_CLASSNOTREG
+                case 0x80070032: // ERROR_NOT_SUPPORTED
+                case 0x80030001: // STG_E_INVALIDFUNCTION
+                    if (opening) return CannotWriteThisKind;
+                    break;
+            }
+            return opening
+                ? $"Windows could not open it for writing tags (error 0x{hr:X8})."
+                : $"Windows could not save its tags (error 0x{hr:X8}).";
         }
 
         private static string ChannelWord(int count) => count switch

@@ -87,7 +87,8 @@ $p.WaitForExit(120000)
 | TimeStretch / Resampler / SilenceReduction / Equaliser | WSOLA / pitch / silence removal / 20 bands |
 | WasapiPlayback / WasapiRenderer | Ring and pump / device, gain, limiter, meter |
 | Speed/Pitch/Limiter/Silence/Equaliser/Device/Formats Form | Audio dialogs, applied as you arrow |
-| AudioTags / SongPropertiesForm | Property-system tags / as a list |
+| AudioTags / SongPropertiesForm | Property-system tags, read and written / as a list |
+| TagEditing / TagEditorForm | Tag editor: merge, refusals (Drive, Ogg, playing), write, one summary / its window |
 | Shortcut / ShortcutBox / ShortcutsForm / HotkeyManager / ReservedShortcuts | Key text / capture box / shortcut page / RegisterHotKey / refused keys |
 | GoogleDrive / GoogleAuth / GoogleSignInRequiredException | Mount, orphan sweep / OAuth, DPAPI token |
 | CfApi / DriveMount / DriveLetter / DriveFileCache | Cloud Files + CheckLayout / provider / subst / chunk cache |

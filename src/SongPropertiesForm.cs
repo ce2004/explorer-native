@@ -24,7 +24,12 @@ namespace ExplorerNative
         private readonly string _path;
         private IReadOnlyList<SongProperty> _rows = Array.Empty<SongProperty>();
 
-        public SongPropertiesForm(string path)
+        /// <param name="editTags">
+        /// Opens the tag editor for this file over this window and answers
+        /// whether anything was saved. Null when this file could only refuse
+        /// (on Google Drive, or an Ogg file), and then there is no button.
+        /// </param>
+        public SongPropertiesForm(string path, Func<IWin32Window, Task<bool>>? editTags = null)
         {
             _path = path;
 
@@ -68,7 +73,38 @@ namespace ExplorerNative
             // reaches the way out rather than walking back round the buttons.
             close.TabIndex = 0;
             copy.TabIndex = 1;
-            _list.TabIndex = 2;
+            _list.TabIndex = 3;
+
+            if (editTags != null)
+            {
+                var edit = new Button { Text = "&Edit tags…", AutoSize = true, TabIndex = 2 };
+                // Guarded like Shown below: an exception out of a click handler
+                // takes the window with it.
+                edit.Click += async (_, _) =>
+                {
+                    try
+                    {
+                        edit.Enabled = false;
+                        bool saved = await editTags(this);
+                        if (IsDisposed) return;
+                        edit.Enabled = true;
+                        if (saved) { _list.Items.Clear(); await LoadAsync(); }
+                        else _list.Focus();
+                    }
+                    catch (Exception ex)
+                    {
+                        try
+                        {
+                            if (IsDisposed) return;
+                            edit.Enabled = true;
+                            MessageBox.Show(this, "The tags could not be edited: " + ex.Message, "Edit tags",
+                                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        }
+                        catch { }
+                    }
+                };
+                buttons.Controls.Add(edit);
+            }
 
             Controls.Add(_list);
             Controls.Add(buttons);

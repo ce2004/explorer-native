@@ -172,6 +172,13 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "tags")
+            {
+                TagEditTests.RunAll(Check, Equal);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "delete")
             {
                 DeleteTests.RunAll(Check, Equal);
@@ -276,6 +283,7 @@ namespace ExplorerNative
             await Guard("ShortcutSortDetailsTests", () => ShortcutSortDetailsTests.RunAll(Check, Equal));
             await Guard("DriveSizeTests", () => DriveSizeTests.RunAll(Check, Equal));
             await Guard("DriveClientCacheTests", () => DriveClientCacheTests.RunAll(Check, Equal));
+            await Guard("TagEditTests", () => { TagEditTests.RunAll(Check, Equal); return Task.CompletedTask; });
 
             Console.WriteLine($"\n{_passed} passed, {_failed} failed");
             return _failed == 0 ? 0 : 1;
