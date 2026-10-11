@@ -12,6 +12,7 @@ dotnet run --project tests\SelfTest.csproj   # ~1 min, "N passed, M failed", non
 ```
 If the SDK is missing: `Invoke-WebRequest https://dot.net/v1/dotnet-install.ps1 -OutFile dotnet-install.ps1; .\dotnet-install.ps1 -Channel 8.0 -Architecture arm64 -InstallDir "$env:LOCALAPPDATA\Microsoft\dotnet"`
 
+- The project defaults to win-arm64. On an x64 machine build and run the suite with `-r win-x64 -o obj\testout` and run `obj\testout\SelfTest.exe` directly.
 - The suite is a plain console program (`Tests.Main`, `Check`/`Equal`). It compiles the real sources listed in `tests\SelfTest.csproj`, so add any new non-UI file there.
 - MainForm is not in the suite (it needs a message loop). Source-shape tests read MainForm.cs instead. Pin the decision, not the punctuation: a test that breaks when a guard is added teaches people to remove guards.
 - A running app locks bin\Release (MSB3027). Build elsewhere with `-p:BaseOutputPath=obj\<name>\ -p:OutputPath=obj\<name>\`, and delete those dirs (~170MB each) afterwards.
@@ -70,6 +71,7 @@ $p.WaitForExit(120000)
 | Settings / SettingsReset / SettingsForm / SettingChoices / ProtectedFile | Prefs + save / Reset / dialog / drop-down values / DPAPI files |
 | Notifications / SpeechForm / Speech / AudioReport | Message catalogue / speak-or-off page / queued NVDA client / player diagnostics |
 | FolderSizeCalculator / FileSearch / DriveSearch | Folder sizes / local search / Drive search via API |
+| DriveFolderSizes | Drive folder sizes: whole-account listing + changes feed (`DriveSizeIndex`) |
 | FileOperations / RoboCopyEngine / ShellDelete / ClipboardInterop | Managed copy (renames) / robocopy path / recycle and delete / clipboard |
 | ConflictForm / ProgressForm / PromptForm | Paste conflict question / modeless transfer window / labelled prompt |
 | ArchiveFormats / ArchiveEngine / ArchiveForm / ExtractionRules | Format table / front door / Compress dialog / safe targets |
@@ -182,6 +184,11 @@ Our own provider over `cldapi.dll`, so the app's ordinary file code works on the
 
 - Placeholder enumeration costs ~15ms each and never caches. Never walk the letter: panes use the mount's listing (`TryListing`). F5 forgets that listing first. Listing names are the on-disk names after `Sanitise`/`Unique` (`DrivePlaced`).
 - Requests cost ~700ms each. Callbacks are served from `DriveFileCache` (4MB chunks, 1GB pool). Cold reads wait 400ms, then fetch at most 1MB themselves. `MaxOpenFiles` is 3. `SweepIdle` never runs during callbacks. Caches are leased.
+- A cache does not download in its constructor: it starts when warmed (leased and let go unread) or after ~1MB of straight reads, so a tag or thumbnail read costs one small range. Read-ahead is a sliding window of 4, bounded past the furthest chunk read, retrying a failed chunk.
+- Folder sizes on the letter come from `DriveSizeIndex` (DriveFolderSizes.cs): one listing of the account, split by modifiedTime slices 8 at a time, then the changes feed every 20s. One index per drive. Never size a Drive folder by walking it.
+- Interactive listings (mount callbacks, navigation) use the 15s client, 2 tries and no outage wait; monitor and upload listings stay patient. Offline with a cached listing answers from it.
+- A populated folder is marked DISABLE_ON_DEMAND_POPULATION, so outside programs get it without a listing. Renames on the web rename the placeholder; vanished items' placeholders are deleted. Rename/move use `MoveLocal` before falling back to RemoveOne+PlaceOne.
+- Fetch-data is sent in 4MB pieces as they arrive, with long arithmetic (ranges over 2GB).
 - Never call `GetOrAdd(key, factory)` for caches or folders. Use the value overload or `Lazy`.
 - Silently wrong: MARK_IN_SYNC on the root or folders (empty drive); `CfConvertToPlaceholder` on the root (use DISABLE_ON_DEMAND_POPULATION_ON_ROOT); POPULATION_POLICY_FULL; logging 0x8007018E as a failure.
 - Check flag values against `cfapi.h`. `CheckLayout` compares struct sizes (registration 72, CALLBACK_INFO 152, OPERATION_INFO 48). Never remove interop fields that look unused.
@@ -215,13 +222,16 @@ Our own provider over `cldapi.dll`, so the app's ordinary file code works on the
 - Every pass lists both sides; events only make a pass due. State is saved every 2s, and the planner is idempotent.
 - Downloads go to `.partial`, resume, and are verified. Uploads resume (sessions dropped after 6 days). The change test is size plus mtime within 2s. Conflicts are renamed `name (conflict yyyy-MM-dd).ext`.
 - First sync adopts matching files (md5 or size plus mtime). State is keyed by pair id.
-- Space margin is 2GB or 5%. Rate limits are retried for ever with backoff. Big passes announce progress.
+- Space margin is 2GB or 5%. Google's "not now" errors are waited out for at most an hour per action (daily limits excepted), then the file counts as failed. Big passes announce progress.
+- Never overwrite or delete on the strength of the scan alone: re-check the local file and the Drive item just before replacing, recycling or trashing. A changed local file is recycled before a download replaces it.
+- A PC edit updates the Drive file in place (same id, keeps revisions). Files modified in the last 10s or open for writing wait for a later pass.
+- Pause/Remove/Edit stop a running pass before its next action. An unreadable state file is set aside and the pair paused, never treated as a first sync. Duplicate same-name Drive folders are a clash and skipped.
 
 ## The web app (Explorer Connect)
 
 - `web\` is embedded and served by ConnectServer. app.js is the only client: grep it for `/api/` before changing a route. Plain JS with no build step, and `<audio>` is the only audio path.
 - Listens on 127.0.0.1 only (`WebAppPort`, 47810). HTTPS comes from Tailscale Serve on 443, never Funnel, and only our own handler is touched.
-- The `Tailscale-User-Login` header is trusted only when it matches this PC's login. Everyone else needs the pairing code.
+- The `Tailscale-User-Login` header is trusted only when it matches this PC's login AND the TCP peer is tailscaled.exe in session 0 (`TcpOwner.PidOf`), because any local program can send that header. Everyone else needs the pairing code. A failed `tailscale status` keeps the last good login.
 - Every fetch has a timeout. Errors end in a sentence. Every async handler on the PC side has its own try/catch.
 - ConnectFiles copies MainForm's Drive move and copy rules, so change both. Errors are `ConnectException`; after headers go out, just close. Unread bodies are drained.
 - Web delete never deletes permanently (`HasRecycleBin`). Sizes never walk Drive or AppData. Drive files go through `ConnectStreams`/`OpenRange`, never the placeholder.
@@ -239,7 +249,8 @@ Our own provider over `cldapi.dll`, so the app's ordinary file code works on the
 ## Compressing and extracting
 
 - Context-menu commands only. `ArchiveFormats.All` is the format list. We do zip, tar and gzip ourselves; Windows tar does xz, bz2, zst and 7z, plus read-only formats.
-- System32 tar (libarchive 3.8.8) crashes on non-ASCII names. `BsdTar.Executable` falls back to a WinSxS copy and caches the choice.
+- System32 tar (libarchive 3.8.8) crashes on non-ASCII names. `BsdTar.Executable` falls back to a WinSxS copy and caches the choice. A fresh install may have no older copy (this dev VPS): tests gate on `BsdTar.HandlesNames`, and the crash is reported in words.
+- Only a source file that cannot be read is skipped; any failed write to the archive aborts it, so a Replace never puts a partial archive over a good one.
 - libarchive loses non-ASCII names through text, so names go only as arguments or straight to disk. Never list bsdtar formats by name.
 - Pass the format explicitly (`FormatFlags`), extract with `-k`, use junctions for long paths, judge stalls by CPU time. Stage into `.extracting-*` in the destination.
 - Parallel deflate. One worker and sixteen must give byte-identical output. This machine runs ~3.8 cores.

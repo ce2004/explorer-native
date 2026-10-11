@@ -7961,11 +7961,12 @@ namespace ExplorerNative
         {
             if (IsDisposed || RunningTransfers <= 0) return true;
 
+            // Copies, moves, deletes and archives all count here, so the words cover all of them.
             var question = RunningTransfers == 1
-                ? $"A copy is still running. {verb} anyway and abandon it?"
-                : $"{RunningTransfers} copies are still running. {verb} anyway and abandon them?";
+                ? $"A file operation is still running. {verb} anyway and abandon it?"
+                : $"{RunningTransfers} file operations are still running. {verb} anyway and abandon them?";
 
-            if (MessageBox.Show(this, question, "Still copying",
+            if (MessageBox.Show(this, question, "Still working",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes)
                 return true;
 

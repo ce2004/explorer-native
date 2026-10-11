@@ -652,8 +652,8 @@ namespace ExplorerNative
         /// The same file once this has had it: 111ms. The bytes are not slow, the
         /// timing is — so the fix is to spend the seconds somebody takes to
         /// switch windows on the download instead of spending them inside the
-        /// reader. <see cref="CacheOpenedFor"/> starts the four-stream pump in
-        /// the cache's constructor, so opening one is the whole of the work.
+        /// reader. A cache leased here and let go without a read is how the
+        /// cache knows it was warmed, and that starts its four-stream download.
         ///
         /// Returns how many files were taken on, which is not always how many
         /// were asked for — see the two bounds below.
@@ -1099,7 +1099,8 @@ namespace ExplorerNative
             if (accountRoot) onPage?.Invoke(new List<DriveEntry> { sharedDrives });
 
             _driveIds.TryGetValue(relative, out var driveId);
-            var entries = _drive.ListChildren(folderId, token, label: name, driveId: driveId, onPage: onPage)
+            var entries = _drive.ListChildren(folderId, token, label: name, driveId: driveId, onPage: onPage,
+                    interactive: true)
                                 .GetAwaiter().GetResult();
             Interlocked.Increment(ref Listings);
 
@@ -3082,8 +3083,8 @@ namespace ExplorerNative
         /// arrive on filter-driver workers, several at once.
         ///
         /// The factory overload may run the factory more than once for one key
-        /// and keep only one result. A DriveFileCache starts downloading *in its
-        /// constructor*, so every discarded one carried on pulling the file down
+        /// and keep only one result. A DriveFileCache used to start downloading
+        /// in its constructor, so every discarded one carried on pulling the file down
         /// for ever, holding a cancellation source nobody would ever cancel and
         /// evicting the chunks of the file that was actually being played. The
         /// value overload never runs a factory, so each racing thread can dispose

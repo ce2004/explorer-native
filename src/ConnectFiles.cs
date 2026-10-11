@@ -148,10 +148,19 @@ namespace ExplorerNative
                 if (!exists) throw new ConnectException(404, "That folder is not there any more.");
                 if (!isFolder) throw new ConnectException(400, "That is a file; ask for its details instead.");
 
-                // Every folder MeasureOnDrive lists is announced through this, the first being the one asked about.
-                int listed = 0;
                 using var budget = CancellationTokenSource.CreateLinkedTokenSource(token);
                 budget.CancelAfter(DriveSizeBudget);
+
+                // The window's Drive size index first: one listing of the account, then lookups.
+                try
+                {
+                    if (await drive.FolderSizeAsync(folder, budget.Token) is { } known)
+                        return new ConnectSize(folder, known.Bytes, known.Files, known.Folders, true);
+                }
+                catch (OperationCanceledException) when (!token.IsCancellationRequested) { }
+
+                // Every folder MeasureOnDrive lists is announced through this, the first being the one asked about.
+                int listed = 0;
                 try
                 {
                     var (files, bytes) = await drive.MeasureOnDrive(new[] { folder }, _ => Interlocked.Increment(ref listed), budget.Token);

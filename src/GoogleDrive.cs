@@ -1860,18 +1860,20 @@ namespace ExplorerNative
 
             await client.MoveOrRename(id, newName, null, null, token).ConfigureAwait(false);
 
-            // Local only, and both halves needed: RemoveOne takes the placeholder
-            // and its map entries away — for a folder, its whole subtree, which is
-            // right because everything under it is addressed by a path that has
-            // just changed — and PlaceOne puts it back under the new name with the
-            // same id.
-            mount.RemoveOne(path);
-
-            var placed = mount.PlaceOne(folder, new DriveEntry(
-                id, newName,
-                isFolder ? DriveClient.FolderMimeType : "application/octet-stream",
-                isFolder ? 0 : size,
-                modified));
+            // Moved in place first: a populated folder keeps everything under it
+            // and needs no new listing. Only when that is refused, RemoveOne takes
+            // the placeholder and its subtree away and PlaceOne puts it back under
+            // the new name with the same id.
+            var placed = mount.MoveLocal(path, folder, newName);
+            if (placed == null)
+            {
+                mount.RemoveOne(path);
+                placed = mount.PlaceOne(folder, new DriveEntry(
+                    id, newName,
+                    isFolder ? DriveClient.FolderMimeType : "application/octet-stream",
+                    isFolder ? 0 : size,
+                    modified));
+            }
 
             Say("drive.renamed", $"Renamed to {placed ?? newName}");
             return placed ?? newName;
@@ -2131,17 +2133,19 @@ namespace ExplorerNative
 
             await client.MoveOrRename(id, newName, fromId, toId, token).ConfigureAwait(false);
 
-            mount.RemoveOne(fromPath);
-
-            // And put it where it went. Removing the source alone would take the
-            // file off the drive entirely as far as this machine is concerned —
-            // present in Drive, in a folder that has already been populated and
-            // so will not be asked about again.
-            mount.PlaceOne(toFolder, new DriveEntry(
-                id, name,
-                isFolder ? "application/vnd.google-apps.folder" : "application/octet-stream",
-                isFolder ? 0 : size,
-                modified));
+            // Moved in place when the mount can, keeping a populated folder's
+            // contents. Otherwise removed and put where it went: removing the
+            // source alone would take the file off the drive as far as this
+            // machine is concerned, in a folder that will not be asked about again.
+            if (mount.MoveLocal(fromPath, toFolder, name) == null)
+            {
+                mount.RemoveOne(fromPath);
+                mount.PlaceOne(toFolder, new DriveEntry(
+                    id, name,
+                    isFolder ? "application/vnd.google-apps.folder" : "application/octet-stream",
+                    isFolder ? 0 : size,
+                    modified));
+            }
 
             // Nothing on the drive moved by itself, and the placeholder
             // disappearing from the folder is all there would otherwise be to

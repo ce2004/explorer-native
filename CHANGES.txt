@@ -1,3 +1,55 @@
+2.1.0
+New feature: Google Drive folders now show their size in the Size column when folder sizes are set to automatic. The first Drive folder you open takes a few seconds while Explorer Native asks Google about your whole Drive, then every Drive folder's size appears at once and stays up to date.
+Measuring a Google Drive folder with the folder size shortcut is now almost instant, and the web app shows Drive folder sizes the same quick way.
+Google Drive folders you have opened before open straight away when you are offline, instead of waiting about 45 seconds.
+Opening a Google Drive folder in another program, such as File Explorer or a save dialog, no longer downloads its list again when Explorer Native already has it.
+Reading a song's tags or a picture's thumbnail from Google Drive no longer downloads 16 megabytes of the file. Long files on Google Drive play more smoothly and no longer stop downloading after a single network hiccup.
+Copying a folder inside Google Drive is about four times faster.
+Renaming or moving a big Google Drive folder no longer makes its contents download their list again.
+Bug fixed: if a file was renamed on the Google Drive website or another device, Explorer Native kept showing the old name until you restarted it. Files deleted elsewhere also kept appearing.
+Bug fixed: a file being uploaded could vanish from the list if the folder refreshed at the same moment.
+Bug fixed: Google Drive files larger than 2 gigabytes could fail to open in other programs.
+Bug fixed: in Google Drive sync, if you edited a file on your PC while Drive's copy of it was downloading, your edit could be overwritten. Your edit is now kept, and you get both copies.
+Bug fixed: in Google Drive sync, Download only and Drive wins could overwrite a changed file on your PC for good. The PC copy now goes to the Recycle Bin first.
+Bug fixed: in Google Drive sync, editing a file in a folder someone shared with you could leave two copies of it in Drive. Edits now update the same file in Drive, keeping its share link and history.
+Bug fixed: pausing or removing a sync pair now stops it straight away, instead of letting a pass that had already started carry on.
+Bug fixed: a sync pair no longer starts over as if it were new when its saved state can't be read. It pauses and tells you instead.
+Bug fixed: a file still being written, like a recording in progress, no longer holds up every sync pair. It waits until it is finished.
+Bug fixed: one file that Google kept refusing could stall all syncing for ever. After an hour it is skipped and the rest carry on.
+Google Drive sync is much faster with big folders, and no longer slows down the more files it has handled.
+Bug fixed: when a folder is moved to Google Drive, the original is only deleted if it did not change during the upload.
+Bug fixed: changes that happened while a big folder was loading, like a download finishing, could be missed until something else changed.
+Showing Explorer Native from the tray no longer freezes when a network drive has gone to sleep. The Windows right-click menu on a sleeping network drive says it is not responding instead of freezing.
+Bug fixed: measuring the size of your user folder could wander into Google Drive's hidden sync folder and take a very long time.
+Bug fixed: going to a folder could be cancelled and replaced with the Drives list if the previous folder had just disappeared.
+Bug fixed: Refreshed and folder changed were said even when the folder had not refreshed, cutting off the real message.
+Bug fixed: NVDA could keep re-reading the same file while a big folder was still loading.
+Deleting no longer stops other folders from updating while it runs. Closing the window during a delete now asks first.
+Bug fixed: if your disk filled up while replacing an archive, the good archive could be replaced by a broken one. The old archive is now kept.
+Bug fixed: if a copy that replaces a file was cancelled or failed, the original file could be lost. It is now only replaced once the new copy is complete.
+Bug fixed: Fill gaps could make second copies of folders named with a dot or space at the end. It now merges them.
+Bug fixed: archiving a file or folder whose name ends in a dot could put a different file's contents in the archive.
+Bug fixed: moving a folder to another drive left folder shortcuts inside it behind, and said it was complete.
+Copying and moving many files keeps the window responsive, and the progress bar no longer runs ahead of the real copy.
+Copying to the clipboard no longer freezes for several seconds when another program is holding the clipboard.
+If Windows' own archiving tool crashes, which some versions of Windows do on names with emoji or in some languages, Explorer Native now says so in words.
+Bug fixed: pressing the Stop key could freeze the window for a few seconds.
+Bug fixed: with silence reduction on, skipping, stopping or changing speakers could be ignored for a long time during a long quiet stretch.
+Changing speakers no longer silences the old ones while the new ones, like Bluetooth headphones, are connecting.
+Bug fixed: playing again after unplugging your speakers while paused gave a few seconds of silence before switching.
+Buffering is no longer announced after every seek.
+Security fix: another program on your PC could pretend to be you to the web app. Now only Tailscale itself is trusted.
+Bug fixed: the web app could stop answering for good after one bad connection, while Preferences still said it was on.
+Bug fixed: switching the web app on and then quickly off could leave it reachable.
+Bug fixed: your preferences could be lost if the PC lost power just as they were saved.
+Bug fixed: the web app could briefly ask you for the pairing code on your own devices.
+Bug fixed: changes in Preferences did not reach the web app until Explorer Native restarted.
+Bug fixed: in the web app, a slow folder could replace the folder you had just moved to.
+The web app shows its own Explorer Native is not running message instead of an error page when Explorer Native is closed.
+Bug fixed: in the web app, an urgent announcement like a failed copy could be lost if another came right after it.
+Explorer Native no longer reads the clipboard every time you copy something in another program. Copy to iPhone sends text instead of a picture when you copied both.
+Bug fixed: in the web app, recovering from a playback error could restart a different song.
+
 2.0.1
 Big folders open faster. A folder with 100,000 files is ready in about half the time.
 Typing letters to jump to a name keeps up in huge folders, even when many names have accents.
