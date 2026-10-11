@@ -427,7 +427,7 @@ namespace ExplorerNative
                 Check("a placeholder callback's listing has a deadline",
                     mount.Contains("var entries = ListFolder(relative, folderId, deadline.Token);", StringComparison.Ordinal));
                 Check("and so does a data callback, whose keep-alive otherwise holds Windows off for ever",
-                    mount.Contains(".Read(start, (int)wanted, deadline.Token)", StringComparison.Ordinal));
+                    mount.Contains(".Read(at, (int)want, deadline.Token)", StringComparison.Ordinal));
             }
 
             if (cache != null)

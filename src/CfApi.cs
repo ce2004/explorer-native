@@ -67,6 +67,10 @@ namespace ExplorerNative
         {
             MARK_IN_SYNC = 2,
             DEHYDRATE = 4,
+            // 0x10 in cfapi.h (0x08 is ENABLE_ON_DEMAND_POPULATION). Marks a
+            // directory fully populated, the same thing a TRANSFER_PLACEHOLDERS
+            // with its DISABLE flag records.
+            DISABLE_ON_DEMAND_POPULATION = 0x10,
         }
 
         /// <summary>
@@ -79,6 +83,23 @@ namespace ExplorerNative
         public static extern int CfUpdatePlaceholder(
             Microsoft.Win32.SafeHandles.SafeFileHandle fileHandle,
             ref CF_FS_METADATA fsMetadata,
+            IntPtr fileIdentity,
+            uint fileIdentityLength,
+            IntPtr dehydrateRangeArray,
+            uint dehydrateRangeCount,
+            CF_UPDATE_FLAGS updateFlags,
+            IntPtr updateUsn,
+            IntPtr overlapped);
+
+        /// <summary>
+        /// The same call with no metadata and no identity, both of which are
+        /// optional: what changes is the flags alone, and a directory keeps its
+        /// dates and its id.
+        /// </summary>
+        [DllImport(Dll, EntryPoint = "CfUpdatePlaceholder")]
+        public static extern int CfUpdatePlaceholderFlags(
+            Microsoft.Win32.SafeHandles.SafeFileHandle fileHandle,
+            IntPtr fsMetadata,
             IntPtr fileIdentity,
             uint fileIdentityLength,
             IntPtr dehydrateRangeArray,

@@ -173,8 +173,11 @@ namespace ExplorerNative
         /// — which is the same trap <c>DrivePlaced</c> exists to keep the pane
         /// out of.
         ///
-        /// Matching on the id instead is exact. It costs a walk of the folder's
-        /// own listing, which is already in memory, and is done once per hit.
+        /// Matching on the id instead is exact. Answered from
+        /// <see cref="_whereIs"/> when that still holds, checked against
+        /// <c>_ids</c>; the walk of the folder's listing is only the fallback.
+        /// Walking first, lower-casing every row, made a search with many hits
+        /// in one big folder quadratic.
         /// </summary>
         public string? ChildPathForId(string folderFullPath, string driveId)
         {
@@ -182,15 +185,31 @@ namespace ExplorerNative
             if (key == null || string.IsNullOrEmpty(driveId)) return null;
             if (!_listings.TryGetValue(key, out var placed)) return null;
 
+            var prefix = key.Length == 0 ? "" : key + "\\";
+
+            // A hint, and only that: an id in two folders, a placement undone or
+            // a row forgotten all leave it pointing somewhere else, so it counts
+            // only when the map agrees.
+            if (_whereIs.TryGetValue(driveId, out var where) && where.Folder == key &&
+                _ids.TryGetValue((prefix + where.Name).ToLowerInvariant(), out var bound) && bound == driveId)
+                return Path.Combine(folderFullPath, where.Name);
+
             foreach (var item in placed)
             {
-                var childKey = (key.Length == 0 ? item.Name : key + "\\" + item.Name).ToLowerInvariant();
+                var childKey = (prefix + item.Name).ToLowerInvariant();
                 if (_ids.TryGetValue(childKey, out var id) && id == driveId)
                     return Path.Combine(folderFullPath, item.Name);
             }
 
             return null;
         }
+
+        /// <summary>
+        /// Where each Drive id was last placed: its folder's key and its name on
+        /// disk, in the disk's own case. Written beside every <c>_ids</c> entry
+        /// BuildPlaceholders makes and never trusted without checking that.
+        /// </summary>
+        private readonly ConcurrentDictionary<string, (string Folder, string Name)> _whereIs = new(StringComparer.Ordinal);
 
         /// <summary>The Drive folder id for a directory on this mount, or null.</summary>
         public string? FolderIdFor(string? fullPath)
@@ -411,6 +430,134 @@ namespace ExplorerNative
                 return true;
             }
             catch { return false; }
+        }
+
+        /// <summary>
+        /// Moves or renames a placeholder on disk to follow a move or rename
+        /// Drive has already agreed to, and returns the name it was given there
+        /// — or null when it was not moved, and RemoveOne then PlaceOne is the
+        /// way.
+        ///
+        /// RemoveOne then PlaceOne deletes a folder's whole placeholder tree and
+        /// starts it again empty: renaming a populated folder of two thousand
+        /// tracks threw away every placeholder, every listing under it and
+        /// anything hydrated, and the next visit paid Drive for all of it again.
+        /// A placeholder moves like any file inside the sync root, keeping its
+        /// identity, so this moves it and re-keys the maps under it.
+        ///
+        /// Refused rather than risked: the root, a move into itself, a listing
+        /// running in or around it (it would write keys under the old path), a
+        /// move between shared drives (everything below would carry the wrong
+        /// drive), and anything on disk already holding the name.
+        /// </summary>
+        public string? MoveLocal(string fromFullPath, string toFolderFullPath, string driveName)
+        {
+            try
+            {
+                var fromKey = KeyFor(fromFullPath);
+                var toParent = KeyFor(toFolderFullPath);
+                if (fromKey == null || fromKey.Length == 0 || toParent == null) return null;
+                if (!_ids.TryGetValue(fromKey, out var id)) return null;
+
+                bool isFolder = _folders.ContainsKey(fromKey);
+                int cut = fromKey.LastIndexOf('\\');
+                string fromParent = cut < 0 ? "" : fromKey[..cut];
+                string fromLeaf = Path.GetFileName(fromFullPath.TrimEnd(Path.DirectorySeparatorChar));
+
+                if (toParent == fromKey || toParent.StartsWith(fromKey + "\\", StringComparison.Ordinal)) return null;
+                foreach (var busy in _populating.Keys)
+                    if (busy == fromKey || busy.StartsWith(fromKey + "\\", StringComparison.Ordinal) ||
+                        busy == fromParent || busy == toParent)
+                        return null;
+
+                _driveIds.TryGetValue(fromParent, out var fromDrive);
+                _driveIds.TryGetValue(toParent, out var toDrive);
+                if (!string.Equals(fromDrive, toDrive, StringComparison.Ordinal)) return null;
+                if (IsSharedDrivesFolder(toFolderFullPath) || FolderIdFor(fromFullPath) == DriveClient.SharedDrivesId ||
+                    IsSharedDriveRoot(fromFullPath))
+                    return null;
+
+                // Named the way PlaceOne names it, against what the destination
+                // already shows — less the thing itself, so a rename that only
+                // changes case is not numbered against its own old name.
+                var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                _listings.TryGetValue(toParent, out var siblings);
+                if (siblings != null)
+                    foreach (var s in siblings)
+                        if (!(toParent == fromParent && s.Name.Equals(fromLeaf, StringComparison.OrdinalIgnoreCase)))
+                            used.Add(s.Name);
+                var name = Unique(Sanitise(driveName), used, isFolder);
+
+                var target = Path.Combine(toFolderFullPath, name);
+                if (!string.Equals(Path.GetFullPath(fromFullPath).TrimEnd(Path.DirectorySeparatorChar),
+                        Path.GetFullPath(target), StringComparison.Ordinal))
+                {
+                    if (isFolder) Directory.Move(fromFullPath, target);
+                    else File.Move(fromFullPath, target, overwrite: false);
+                }
+
+                var toKey = (toParent.Length == 0 ? name : toParent + "\\" + name).ToLowerInvariant();
+
+                // Its row, from the listing it leaves, to the one it joins.
+                DrivePlaced? row = null;
+                if (_listings.TryGetValue(fromParent, out var leaving))
+                {
+                    row = leaving.FirstOrDefault(p => p.Name.Equals(fromLeaf, StringComparison.OrdinalIgnoreCase));
+                    _listings[fromParent] = leaving
+                        .Where(p => !p.Name.Equals(fromLeaf, StringComparison.OrdinalIgnoreCase)).ToArray();
+                }
+
+                if (toKey != fromKey) RekeyTree(fromKey, toKey);
+                _whereIs[id] = (toParent, name);
+
+                row = row == null
+                    ? new DrivePlaced(name, isFolder, isFolder ? -1 : new FileInfo(target).Length,
+                        File.GetLastWriteTime(target), driveName)
+                    : row with { Name = name, DriveName = driveName };
+
+                if (_listings.TryGetValue(toParent, out var joining))
+                    _listings[toParent] = joining
+                        .Where(p => !p.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                        .Append(row).ToArray();
+
+                return name;
+            }
+            catch (Exception ex)
+            {
+                _log($"  could not move {Path.GetFileName(fromFullPath)} in place: {ex.Message}");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Every map entry at or below <paramref name="from"/>, moved to the same
+        /// place below <paramref name="to"/>. Both are keys: lower case, relative
+        /// to the root.
+        /// </summary>
+        private void RekeyTree(string from, string to)
+        {
+            static void Move<T>(ConcurrentDictionary<string, T> map, string from, string to)
+            {
+                var below = from + "\\";
+                foreach (var (key, value) in map.ToArray())
+                {
+                    if (key != from && !key.StartsWith(below, StringComparison.Ordinal)) continue;
+                    if (map.TryRemove(new KeyValuePair<string, T>(key, value)))
+                        map[to + key[from.Length..]] = value;
+                }
+            }
+
+            Move(_ids, from, to);
+            Move(_folders, from, to);
+            Move(_driveIds, from, to);
+            Move(_listings, from, to);
+            Move(_listedAt, from, to);
+            Move(_populated, from, to);
+
+            var under = from + "\\";
+            foreach (var (id, where) in _whereIs.ToArray())
+                if (where.Folder == from || where.Folder.StartsWith(under, StringComparison.Ordinal))
+                    _whereIs.TryUpdate(id, (to + where.Folder[from.Length..], where.Name), where);
         }
 
         // Rooted for the life of the mount. A delegate handed to native code and
@@ -1039,6 +1186,24 @@ namespace ExplorerNative
                 return false;
             }
 
+            // Offline, with this folder listed before: the listing held is the
+            // answer. Asking waited out the whole deadline — three quarters of a
+            // minute on every folder opened — to fail and show nothing, when
+            // the placeholders from the last listing are still on disk. Not
+            // stamped as listed, so anything wanting a fresh listing still asks
+            // once Drive is back.
+            if (_drive.Health.IsOffline && _listings.TryGetValue(relative, out var held))
+            {
+                _log($"  populate '{relative}': offline, {held.Length} entries from the last listing");
+                if (held.Length > 0 && onPlaced != null)
+                {
+                    try { onPlaced(held); } catch { }
+                }
+                MarkFullyPopulated(relative);
+                populated = true;
+                return false;
+            }
+
             // Timed in two halves, because they are two completely different
             // costs and only one of them can be avoided. The listing is a
             // network round trip to Google and has to happen however the
@@ -1116,13 +1281,15 @@ namespace ExplorerNative
             if (failed) return false;
 
             // The whole listing, now that it is whole, replaces what was there.
-            _listings[relative] = session.Placed.ToArray();
-            _listedAt[relative] = Environment.TickCount64;
-            ForgetGone(relative, session);
+            CommitListing(relative, session);
 
             // Listed, and the placeholders are there — whether this call made them
             // or found them already made. An empty folder is a listed folder too.
             populated = true;
+
+            // And Windows told so, so File Explorer opening it next does not
+            // raise a callback for a listing this has just done.
+            MarkFullyPopulated(relative);
             return placedCount > 0;
             }
             finally
@@ -1409,8 +1576,44 @@ namespace ExplorerNative
                     return;
                 }
 
+                // A listing of this folder already under way — the application
+                // navigating into it — is waited for rather than paid for twice,
+                // and rather than raced: both made the same placeholders, and
+                // each one's listing overwrote the other's map.
+                var waited = System.Diagnostics.Stopwatch.StartNew();
+                if (_populating.TryGetValue(relative, out var running))
+                {
+                    try { running.Wait(PlaceholderDeadline, _closing.Token); } catch { }
+                }
+
+                // Placed already, by Populate or by an earlier listing: what is on
+                // disk is the answer, with no network at all. Populated means
+                // listed this session and not refreshed since, which is what the
+                // window's own panes trust too. And when Drive is offline, any
+                // listing held is better than three quarters of a minute of
+                // Explorer waiting to be told nothing.
+                bool held = _listings.ContainsKey(relative);
+                if (held && (_populated.ContainsKey(relative) || _drive.Health.IsOffline))
+                {
+                    int done = CompleteFromDisk(ref opInfo);
+                    _log($"  '{relative}' answered from what is placed" +
+                         (done == 0 ? "" : $", refused 0x{done:X8}"));
+                    if (done != 0 && done != ErrorCloudFileCancelled) FailPlaceholders(ref opInfo);
+                    return;
+                }
+
+                // What is left of Windows' minute after any wait above. Too little
+                // to list in is a failure now, not a listing cut off later.
+                var left = PlaceholderDeadline - waited.Elapsed;
+                if (left < TimeSpan.FromSeconds(5))
+                {
+                    Say("drive.folder.failed", $"Could not read {Path.GetFileName(relative)}: Google Drive took too long");
+                    FailPlaceholders(ref opInfo);
+                    return;
+                }
+
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(_closing.Token);
-                deadline.CancelAfter(PlaceholderDeadline);
+                deadline.CancelAfter(left);
                 var entries = ListFolder(relative, folderId, deadline.Token);
                 _log($"  populate '{(relative.Length == 0 ? "\\" : relative)}' -> {entries.Count} entries");
 
@@ -1483,14 +1686,26 @@ namespace ExplorerNative
 
                 int hr = CfExecute(ref opInfo, ref opParams);
                 if (hr != 0)
+                {
                     _log($"  TRANSFER_PLACEHOLDERS 0x{hr:X8} for '{relative}' ({array.Length} entries)");
+
+                    // A transfer Windows refused has not completed the request,
+                    // and logging it was all that happened: whoever enumerated
+                    // the folder then waited out Windows' own minute. Failed
+                    // instead, so they get an error now. A request that was
+                    // cancelled refuses this too, which costs nothing.
+                    if (hr != ErrorCloudFileCancelled)
+                    {
+                        Say("drive.folder.failed",
+                            $"Could not read {Path.GetFileName(relative)}: Windows refused the listing");
+                        try { FailPlaceholders(ref opInfo); } catch { }
+                    }
+                }
                 else
                 {
                     // Listed and placed, so the window's own navigation can use
                     // the listing rather than asking Drive a second time.
-                    _listings[relative] = session.Placed.ToArray();
-                    _listedAt[relative] = Environment.TickCount64;
-                    ForgetGone(relative, session);
+                    CommitListing(relative, session);
                     _populated[relative] = true;
 
                     // Anything that was already there may describe other
@@ -1530,6 +1745,20 @@ namespace ExplorerNative
             /// <summary>Every id this listing returned, Google documents included.</summary>
             public readonly HashSet<string> Seen = new(StringComparer.Ordinal);
 
+            /// <summary>
+            /// Kept names given up because the file was renamed in Drive: by id,
+            /// the old name, whose placeholder is now a stale copy to remove.
+            /// </summary>
+            public readonly Dictionary<string, string> Abandoned = new(StringComparer.Ordinal);
+
+            /// <summary>
+            /// The rows the folder's listing held when this started, by instance:
+            /// a row that is not one of these when the listing is committed was
+            /// added meanwhile — an upload's PlaceOne — and is not this listing's
+            /// to drop.
+            /// </summary>
+            public readonly HashSet<DrivePlaced> Before = new(ReferenceEqualityComparer.Instance);
+
             public PlacementSession(DriveMount mount, string relative)
             {
                 // Every name the last listing bound to a file is kept for that
@@ -1537,6 +1766,7 @@ namespace ExplorerNative
                 // still on disk under that name — so a page cannot hand the name
                 // to something else before the file it belongs to arrives.
                 if (!mount._listings.TryGetValue(relative, out var before)) return;
+                foreach (var item in before) Before.Add(item);
                 foreach (var item in before)
                 {
                     var key = (relative.Length == 0 ? item.Name : relative + "\\" + item.Name).ToLowerInvariant();
@@ -1598,9 +1828,22 @@ namespace ExplorerNative
                 // Drive lets two files in one folder share a name and NTFS does
                 // not, so a duplicate has to be renamed or it silently replaces
                 // the first and the folder comes up short.
-                string name = keptNames != null && keptNames.TryGetValue(entry.Id, out var kept)
-                    ? kept
-                    : Unique(Sanitise(entry.Name), used, entry.IsFolder);
+                //
+                // A kept name is kept only while it is still this file's name,
+                // cleaned up or numbered. Kept whatever Drive now called it, a
+                // file renamed on the web stayed under its old name on the letter
+                // for the whole session, F5 or not. The old name stays taken —
+                // its placeholder is on disk until ForgetGone removes it.
+                string name;
+                string? kept = null;
+                keptNames?.TryGetValue(entry.Id, out kept);
+                if (kept != null && StillNamed(kept, entry.Name, entry.IsFolder))
+                    name = kept;
+                else
+                {
+                    if (kept != null && session != null) session.Abandoned[entry.Id] = kept;
+                    name = Unique(Sanitise(entry.Name), used, entry.IsFolder);
+                }
 
                 long size = entry.IsFolder ? 0 : Math.Max(0, entry.Size);
                 long stamp = entry.Modified == default
@@ -1609,6 +1852,7 @@ namespace ExplorerNative
 
                 string child = (relative.Length == 0 ? name : relative + "\\" + name).ToLowerInvariant();
                 _ids[child] = entry.Id;
+                _whereIs[entry.Id] = (relative, name);
                 if (entry.IsFolder) _folders[child] = entry.Id;
                 if (entry.IsFolder && !string.IsNullOrEmpty(entry.DriveId)) _driveIds[child] = entry.DriveId;
 
@@ -1726,19 +1970,29 @@ namespace ExplorerNative
         /// listing no longer holds. Their ids kept answering for their paths, so
         /// a folder trashed on the web and then uploaded again by name was
         /// "merged into" — the upload went into the trashed folder.
+        ///
+        /// And their placeholders go too, off this thread. Dropping only the map
+        /// left a file deleted or moved on the web on disk under its old name,
+        /// so Explorer and robocopy went on finding it, and a copy failed with
+        /// Drive's 404. The same for a file renamed on the web: its old name
+        /// is a second placeholder for the same id once the new one is made.
         /// </summary>
         private void ForgetGone(string relative, PlacementSession session)
         {
+            var stale = new List<(string Name, string Id)>();
+
             foreach (var (id, name) in session.Kept)
             {
-                if (session.Seen.Contains(id)) continue;
+                if (session.Seen.Contains(id) && !session.Abandoned.ContainsKey(id)) continue;
 
                 var key = (relative.Length == 0 ? name : relative + "\\" + name).ToLowerInvariant();
-                _ids.TryRemove(new KeyValuePair<string, string>(key, id));
-                if (_folders.TryRemove(new KeyValuePair<string, string>(key, id)))
+                bool wasBound = _ids.TryRemove(new KeyValuePair<string, string>(key, id));
+                bool wasFolder = _folders.TryRemove(new KeyValuePair<string, string>(key, id));
+                if (wasFolder)
                 {
                     _driveIds.TryRemove(key, out _);
                     _listings.TryRemove(key, out _);
+                    _listedAt.TryRemove(key, out _);
                     _populated.TryRemove(key, out _);
 
                     var below = key + "\\";
@@ -1746,9 +2000,166 @@ namespace ExplorerNative
                     foreach (var k in _folders.Keys) if (k.StartsWith(below, StringComparison.Ordinal)) _folders.TryRemove(k, out _);
                     foreach (var k in _driveIds.Keys) if (k.StartsWith(below, StringComparison.Ordinal)) _driveIds.TryRemove(k, out _);
                     foreach (var k in _listings.Keys) if (k.StartsWith(below, StringComparison.Ordinal)) _listings.TryRemove(k, out _);
+                    foreach (var k in _listedAt.Keys) if (k.StartsWith(below, StringComparison.Ordinal)) _listedAt.TryRemove(k, out _);
                     foreach (var k in _populated.Keys) if (k.StartsWith(below, StringComparison.Ordinal)) _populated.TryRemove(k, out _);
                 }
+
+                // Only what this listing unbound. A name some other placement has
+                // taken over since is that placement's placeholder now.
+                if (wasBound || wasFolder) stale.Add((name, id));
             }
+
+            if (stale.Count == 0) return;
+            string folder = relative.Length == 0 ? Root : Path.Combine(Root, relative);
+            ThreadPool.QueueUserWorkItem(_ =>
+            {
+                foreach (var (name, id) in stale)
+                {
+                    if (_disposed) return;
+                    DeleteStale(Path.Combine(folder, name), id);
+                }
+            });
+        }
+
+        /// <summary>
+        /// Deletes a placeholder this mount no longer stands behind, if it is
+        /// still the one made for <paramref name="id"/>. The identity is read
+        /// first: something placed under the same name since — or a file that is
+        /// not a placeholder at all — is left alone.
+        /// </summary>
+        private bool DeleteStale(string path, string id)
+        {
+            try
+            {
+                if (PlaceholderIdentity(path) != id) return false;
+                if (Directory.Exists(path)) DeleteTree(path);
+                else File.Delete(path);
+                _log($"  removed {Path.GetFileName(path)}: no longer in that Drive folder");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                _log($"  could not remove {Path.GetFileName(path)}: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// A placeholder directory and everything placed in it. Each directory
+        /// is marked fully populated before it is walked, so the walk is only
+        /// ever of what is on disk. Measured, Windows raises no FETCH_PLACEHOLDERS
+        /// for the provider's own enumerations; the mark is there so that never
+        /// becomes a listing of a Drive folder that, being deleted, is gone.
+        /// </summary>
+        private void DeleteTree(string directory)
+        {
+            MarkFullyPopulatedAt(directory);
+            foreach (var entry in Directory.EnumerateFileSystemEntries(directory))
+            {
+                var attributes = File.GetAttributes(entry);
+                if ((attributes & FileAttributes.Directory) != 0 &&
+                    (attributes & FileAttributes.ReparsePoint) == 0)
+                    DeleteTree(entry);
+                else if ((attributes & FileAttributes.Directory) != 0)
+                {
+                    // A placeholder directory is a reparse point of the cloud
+                    // filter's own; anything else that is one is not ours to
+                    // walk into.
+                    if (PlaceholderIdentity(entry) != null) DeleteTree(entry);
+                    else Directory.Delete(entry, false);
+                }
+                else File.Delete(entry);
+            }
+            Directory.Delete(directory, false);
+        }
+
+        /// <summary>
+        /// Tells Windows a directory under the root holds everything it is going
+        /// to, so enumerating it raises no FETCH_PLACEHOLDERS. Best effort: a
+        /// failure leaves the callback to answer, which it can.
+        /// </summary>
+        private void MarkFullyPopulated(string relative)
+        {
+            if (relative.Length == 0) return;   // the root is marked at registration
+            MarkFullyPopulatedAt(Path.Combine(Root, relative));
+        }
+
+        private bool MarkFullyPopulatedAt(string directory)
+        {
+            try
+            {
+                using var handle = CreateFileW(directory, FileReadAttributes,
+                    FileShare.ReadWrite | FileShare.Delete, IntPtr.Zero, FileMode.Open,
+                    FileFlagBackupSemantics | FileFlagOpenReparsePoint, IntPtr.Zero);
+                if (handle.IsInvalid) return false;
+
+                int hr = CfUpdatePlaceholderFlags(handle, IntPtr.Zero, IntPtr.Zero, 0, IntPtr.Zero, 0,
+                    CF_UPDATE_FLAGS.DISABLE_ON_DEMAND_POPULATION, IntPtr.Zero, IntPtr.Zero);
+                if (hr != 0) _log($"  could not mark {Path.GetFileName(directory)} populated: 0x{hr:X8}");
+                return hr == 0;
+            }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// A whole listing, now that it is whole, as the folder's listing — plus
+        /// any row added while it was being fetched. An upload landing in a
+        /// folder mid-listing placed its row with PlaceOne, and the listing,
+        /// started before the upload finished, then overwrote it: the file was on
+        /// disk and in Drive and missing from the pane.
+        /// </summary>
+        private void CommitListing(string relative, PlacementSession session)
+        {
+            var placed = session.Placed.ToArray();
+            _listings.AddOrUpdate(relative, placed, (_, now) =>
+            {
+                var names = new HashSet<string>(placed.Select(p => p.Name), StringComparer.OrdinalIgnoreCase);
+                var prefix = relative.Length == 0 ? "" : relative + "\\";
+                List<DrivePlaced>? merged = null;
+
+                foreach (var row in now)
+                {
+                    if (session.Before.Contains(row) || names.Contains(row.Name)) continue;
+
+                    // One the listing returned as well is already in it, under
+                    // whatever name the listing gave it.
+                    if (_ids.TryGetValue((prefix + row.Name).ToLowerInvariant(), out var id) &&
+                        session.Seen.Contains(id))
+                        continue;
+
+                    (merged ??= new List<DrivePlaced>(placed)).Add(row);
+                    names.Add(row.Name);
+                }
+
+                return merged?.ToArray() ?? placed;
+            });
+            _listedAt[relative] = Environment.TickCount64;
+            ForgetGone(relative, session);
+        }
+
+        /// <summary>
+        /// Whether a name on disk is still a form of what Drive calls the file:
+        /// the name as Sanitise leaves it, or that numbered by Unique. Case is
+        /// not a difference worth a new placeholder, since NTFS would refuse the
+        /// two side by side anyway.
+        /// </summary>
+        internal static bool StillNamed(string onDisk, string driveName, bool folder)
+        {
+            var clean = Sanitise(driveName);
+            if (onDisk.Equals(clean, StringComparison.OrdinalIgnoreCase)) return true;
+
+            // Split the way NameRules.UniqueAmong splits it.
+            int dot = clean.LastIndexOf('.');
+            bool whole = folder || dot <= 0;
+            var stem = whole ? clean : clean[..dot];
+            var extension = whole ? "" : clean[dot..];
+
+            if (onDisk.Length <= stem.Length + extension.Length + 3) return false;
+            if (!onDisk.StartsWith(stem + " (", StringComparison.OrdinalIgnoreCase)) return false;
+            if (!onDisk.EndsWith(")" + extension, StringComparison.OrdinalIgnoreCase)) return false;
+
+            var number = onDisk[(stem.Length + 2)..(onDisk.Length - extension.Length - 1)];
+            return number.Length > 0 && number.All(char.IsAsciiDigit) && number[0] != '0';
         }
 
         private readonly record struct Existing(string Name, string Id, long Size, long Stamp);
@@ -2099,7 +2510,30 @@ namespace ExplorerNative
                 CompletionStatus = unchecked((int)0xC0000001), // STATUS_UNSUCCESSFUL
                 PlaceholderArray = IntPtr.Zero,
             };
-            CfExecute(ref opInfo, ref opParams);
+            int hr = CfExecute(ref opInfo, ref opParams);
+            if (hr != 0 && hr != ErrorCloudFileCancelled)
+                _log($"  failing a folder listing was refused: 0x{hr:X8}");
+        }
+
+        /// <summary>
+        /// Completes a FETCH_PLACEHOLDERS with what is already on disk: nothing
+        /// new handed over, and the directory marked fully populated so Windows
+        /// does not come back to ask. For a folder whose placeholders this mount
+        /// has already made — by Populate, or by an earlier listing.
+        /// </summary>
+        private int CompleteFromDisk(ref CF_OPERATION_INFO opInfo)
+        {
+            var opParams = new CF_OPERATION_PARAMETERS_TRANSFER_PLACEHOLDERS
+            {
+                ParamSize = (uint)Marshal.SizeOf<CF_OPERATION_PARAMETERS_TRANSFER_PLACEHOLDERS>(),
+                Flags = (uint)CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS.DISABLE_ON_DEMAND_POPULATION,
+                CompletionStatus = 0,
+                PlaceholderTotalCount = 0,
+                PlaceholderArray = IntPtr.Zero,
+                PlaceholderCount = 0,
+                EntriesProcessed = 0,
+            };
+            return CfExecute(ref opInfo, ref opParams);
         }
 
         // ---- serving bytes --------------------------------------------------
@@ -2239,9 +2673,8 @@ namespace ExplorerNative
                 long connection = info.ConnectionKey;
                 long transfer = info.TransferKey;
                 long wanted = end - start;
-
-                byte[] bytes;
-                bool fromMemory;
+                long sent = 0;
+                bool fromMemory = true;
 
                 // The keep-alive below is what stops Windows timing this out, so
                 // it is also what would let it wait for ever. DataDeadline is the
@@ -2253,62 +2686,90 @@ namespace ExplorerNative
                 deadline.CancelAfter(DataDeadline);
                 using (deadline)
                 using (new Timer(
-                           _ => { try { CfReportProviderProgress(connection, transfer, wanted, 0); } catch { } },
+                           _ => { try { CfReportProviderProgress(connection, transfer, wanted, Interlocked.Read(ref sent)); } catch { } },
                            null, KeepAliveMilliseconds, KeepAliveMilliseconds))
                 {
-                    (bytes, fromMemory) = cache
-                        .Read(start, (int)wanted, deadline.Token)
-                        .GetAwaiter().GetResult();
-                }
-                // Short is a failure too, and this is the difference between a
-                // copy that retries and one that stops dead.
-                //
-                // `end` is already clamped to the file's size, so anything less
-                // than the whole range is bytes the reader asked for and did not
-                // get — a truncated response from Drive, or a chunk that came
-                // back partly. Transferring them with a success status tells
-                // Windows the request is satisfied while part of the required
-                // range was never sent, so the reader waits for the remainder
-                // until Windows times the whole read out with 0x8007018D: a copy
-                // that fails for no visible reason, where an honest failure here
-                // is retried by robocopy and reported by the player.
-                if (bytes.LongLength < wanted)
-                {
-                    _log($"  short read [{start:N0} +{bytes.LongLength:N0}] of {wanted:N0} wanted");
-                    Fail(ref info, offset, length);
-                    return;
-                }
-
-                var pin = GCHandle.Alloc(bytes, GCHandleType.Pinned);
-                try
-                {
-                    var opInfo = Operation(ref info, CF_OPERATION_TYPE.TRANSFER_DATA);
-                    var opParams = new CF_OPERATION_PARAMETERS_TRANSFER_DATA
+                    // A chunk at a time, each handed over as it arrives. The whole
+                    // range used to be gathered first and transferred once: a big
+                    // read held all of it in memory, gave the reader nothing until
+                    // the last byte was in, and cast the length to int — which a
+                    // range over 2GB overflowed. Pieces end on chunk boundaries,
+                    // which are aligned, or at `end`, which is aligned or the end
+                    // of the file.
+                    long at = start;
+                    while (at < end)
                     {
-                        ParamSize = (uint)Marshal.SizeOf<CF_OPERATION_PARAMETERS_TRANSFER_DATA>(),
-                        Buffer = pin.AddrOfPinnedObject(),
-                        Offset = start,
-                        Length = bytes.LongLength,
-                        CompletionStatus = 0,
-                    };
+                        long pieceEnd = Math.Min(end, (at / DriveCachePool.ChunkBytes + 1) * DriveCachePool.ChunkBytes);
+                        long want = pieceEnd - at;
 
-                    int hr = CfExecute(ref opInfo, ref opParams);
+                        byte[] bytes;
+                        bool memory;
+                        try
+                        {
+                            (bytes, memory) = cache.Read(at, (int)want, deadline.Token)
+                                                   .GetAwaiter().GetResult();
+                        }
+                        catch (Exception ex) when (at > start)
+                        {
+                            // Part sent already: what fails is what is left.
+                            _log("  fetch callback threw: " + ex.Message);
+                            FailRest(ref info, offset, length, at, end);
+                            return;
+                        }
+                        fromMemory &= memory;
 
-                    // The reader let go while we were fetching. Windows reads
-                    // ahead speculatively and cancels what it turns out not to
-                    // need, so this is ordinary traffic and not a fault.
-                    if (hr == ErrorCloudFileCancelled) Interlocked.Increment(ref CancelledTransfers);
-                    else if (hr != 0) _log($"  CfExecute 0x{hr:X8} at [{start:N0} +{bytes.LongLength:N0}]");
+                        // Short is a failure too, and this is the difference
+                        // between a copy that retries and one that stops dead.
+                        //
+                        // `end` is already clamped to the file's size, so anything
+                        // less than the whole piece is bytes the reader asked for
+                        // and did not get — a truncated response from Drive, or a
+                        // chunk that came back partly. Transferring them with a
+                        // success status tells Windows the request is satisfied
+                        // while part of the required range was never sent, so the
+                        // reader waits for the remainder until Windows times the
+                        // whole read out with 0x8007018D: a copy that fails for no
+                        // visible reason, where an honest failure here is retried
+                        // by robocopy and reported by the player.
+                        if (bytes.LongLength < want)
+                        {
+                            _log($"  short read [{at:N0} +{bytes.LongLength:N0}] of {want:N0} wanted");
+                            FailRest(ref info, offset, length, at, end);
+                            return;
+                        }
 
-                    // Only a transfer that was actually handed to the reader counts
-                    // as progress, and the path is marshalled out of the callback
-                    // only when somebody is watching.
-                    if (hr == 0 && Volatile.Read(ref _watchCount) > 0)
-                        NoteFetch(Marshal.PtrToStringUni(info.NormalizedPath), start, start + bytes.LongLength, cache.Size);
-                }
-                finally
-                {
-                    pin.Free();
+                        int hr = TransferPiece(ref info, bytes, at);
+
+                        // The reader let go while we were fetching. Windows reads
+                        // ahead speculatively and cancels what it turns out not to
+                        // need, so this is ordinary traffic and not a fault —
+                        // and nothing after it is wanted either.
+                        if (hr == ErrorCloudFileCancelled)
+                        {
+                            Interlocked.Increment(ref CancelledTransfers);
+                            return;
+                        }
+                        if (hr != 0)
+                        {
+                            _log($"  CfExecute 0x{hr:X8} at [{at:N0} +{bytes.LongLength:N0}]");
+                            FailRest(ref info, offset, length, at, end);
+                            return;
+                        }
+
+                        // Only a transfer that was actually handed to the reader
+                        // counts as progress, and the path is marshalled out of the
+                        // callback only when somebody is watching.
+                        if (Volatile.Read(ref _watchCount) > 0)
+                            NoteFetch(Marshal.PtrToStringUni(info.NormalizedPath), at, pieceEnd, cache.Size);
+
+                        at = pieceEnd;
+                        Interlocked.Exchange(ref sent, at - start);
+
+                        // The ceiling is per piece: a piece that arrived is a
+                        // provider that has not hung, and a whole large range on a
+                        // slow link legitimately takes longer than one deadline.
+                        if (at < end) deadline.CancelAfter(DataDeadline);
+                    }
                 }
 
                 // The transfer that reaches the last byte is the whole file
@@ -2405,6 +2866,44 @@ namespace ExplorerNative
                 _log($"  failing a read at [{offset:N0} +{length:N0}] was refused: 0x{hr:X8}");
             else
                 Interlocked.Increment(ref FailedReads);
+        }
+
+        /// <summary>
+        /// The rest of a read that went wrong part way. Nothing sent yet is the
+        /// whole request, failed as Windows asked for it. After some has been
+        /// sent, the failure names what is left — aligned, since `at` is a chunk
+        /// boundary — and falls back to the whole request if Windows refuses that.
+        /// </summary>
+        private void FailRest(ref CF_CALLBACK_INFO info, long offset, long length, long at, long end)
+        {
+            if (at <= offset || end <= at) { Fail(ref info, offset, length); return; }
+
+            long failedBefore = Interlocked.Read(ref FailedReads);
+            Fail(ref info, at, end - at);
+            if (Interlocked.Read(ref FailedReads) == failedBefore) Fail(ref info, offset, length);
+        }
+
+        /// <summary>One piece of a read handed to Windows. The CfExecute result.</summary>
+        private int TransferPiece(ref CF_CALLBACK_INFO info, byte[] bytes, long at)
+        {
+            var pin = GCHandle.Alloc(bytes, GCHandleType.Pinned);
+            try
+            {
+                var opInfo = Operation(ref info, CF_OPERATION_TYPE.TRANSFER_DATA);
+                var opParams = new CF_OPERATION_PARAMETERS_TRANSFER_DATA
+                {
+                    ParamSize = (uint)Marshal.SizeOf<CF_OPERATION_PARAMETERS_TRANSFER_DATA>(),
+                    Buffer = pin.AddrOfPinnedObject(),
+                    Offset = at,
+                    Length = bytes.LongLength,
+                    CompletionStatus = 0,
+                };
+                return CfExecute(ref opInfo, ref opParams);
+            }
+            finally
+            {
+                pin.Free();
+            }
         }
 
         /// <summary>Reads answered with a failure that Windows accepted.</summary>

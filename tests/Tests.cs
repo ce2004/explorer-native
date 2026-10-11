@@ -156,6 +156,14 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            // Just the Drive provider, over a scratch sync root and a fake Drive.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "drivemount")
+            {
+                await DriveMountTests.RunAll(Check, Equal);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "delete")
             {
                 DeleteTests.RunAll(Check, Equal);
@@ -244,6 +252,7 @@ namespace ExplorerNative
             await Guard("InstallTests", () => { InstallTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("DriveCopyTests", () => DriveCopyTests.RunAll(Check, Equal));
             await Guard("FakeDriveMonitorTests", () => FakeDriveMonitorTests.RunAll(Check, Equal));
+            await Guard("DriveMountTests", () => DriveMountTests.RunAll(Check, Equal));
             await Guard("OddCaseTests", () => OddCaseTests.RunAll(Check, Equal));
             await Guard("TransferFixTests", () => TransferFixTests.RunAll(Check, Equal));
             await Guard("FilesR2Tests", () => FilesR2Tests.RunAll(Check, Equal));

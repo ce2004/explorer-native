@@ -86,6 +86,8 @@ namespace ExplorerNative
         public Func<long, CancellationToken, Task>? OnMedia;
         public Func<long, CancellationToken, Task>? OnPutBytes;
         public Action<string>? AfterMultipartBody;
+        /// <summary>Awaited before a folder listing is answered, with the folder's id.</summary>
+        public Func<string, CancellationToken, Task>? OnList;
         public int CutPutsAfterBytes = -1;
         public int DropMediaMidBody;
         public int DropMultipartMidBody;
@@ -273,6 +275,7 @@ namespace ExplorerNative
 
                 case "list":
                 case "lookup":
+                    if (kind == "list" && OnList is { } onList) await onList(subject, ct);
                     return List(query, kind == "lookup");
 
                 case "changes.start":
