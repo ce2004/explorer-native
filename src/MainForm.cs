@@ -1120,9 +1120,123 @@ namespace ExplorerNative
 
             if (path == null) { Announce("Nothing selected"); return; }
 
-            using var dialog = new SongPropertiesForm(path);
+            // The Edit tags button only where it could do something: not on
+            // the Drive letter and not on an Ogg file, decided from the path.
+            var song = path;
+            Func<IWin32Window, Task<bool>>? editTags =
+                TagEditing.RefusalFor(song, IsOnDrive, null) == null
+                    ? owner => EditTagsAsync(new[] { song }, owner)
+                    : null;
+
+            using var dialog = new SongPropertiesForm(path, editTags);
             dialog.ShowDialog(this);
             RestoreListFocus();
+        }
+
+        private bool IsOnDrive(string path) => Drive is { } drive && drive.Owns(path);
+
+        /// <summary>Shown on the context menu only over an audio file it could tag.</summary>
+        private ToolStripMenuItem _editTagsItem = null!;
+
+        /// <summary>
+        /// Edit tags for the selected files, or the focused one. Folders and
+        /// files that are not audio are left out. Async void like every menu
+        /// command, and guarded the same way.
+        /// </summary>
+        private async void EditTagsForSelection()
+        {
+            try
+            {
+                var paths = SelectedPaths();
+                if (paths.Length == 0 && FocusedPath() is { } focused) paths = new[] { focused };
+
+                var audio = paths.Where(p => !IsDirectoryInView(p) &&
+                                             AudioFiles.IsAudio(p, _settings.AudioExtensions)).ToArray();
+                if (audio.Length == 0)
+                {
+                    Announce(paths.Length == 0 ? "Nothing selected" : "Select one or more audio files to edit their tags", isError: true);
+                    return;
+                }
+
+                await EditTagsAsync(audio, this);
+                if (!IsDisposed) RestoreListFocus();
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) Announce("Could not edit the tags: " + ex.Message, isError: true);
+            }
+        }
+
+        /// <summary>
+        /// Reads the files' tags on a worker, asks for the new ones, writes only
+        /// the fields that were changed on a worker, and says how it went in one
+        /// message. Answers whether any file was saved.
+        ///
+        /// Files on the Google Drive letter are never opened from this process
+        /// (a stuck read there cannot be killed), so they are refused by path
+        /// before anything is read.
+        /// </summary>
+        private async Task<bool> EditTagsAsync(string[] paths, IWin32Window owner)
+        {
+            var drive = paths.Where(IsOnDrive).ToList();
+            var local = paths.Where(p => !IsOnDrive(p)).ToArray();
+            if (local.Length == 0)
+            {
+                Announce(TagEditing.DriveRefusal, isError: true);
+                return false;
+            }
+
+            ShowStatus(local.Length == 1 ? "Reading tags" : $"Reading tags of {local.Length} files");
+            var current = await Task.Run(() =>
+                local.Select(p => TagEditing.IsOggFamily(p) ? null : AudioTags.ReadFields(p)).ToList());
+            if (IsDisposed) return false;
+
+            var fields = TagEditing.Merge(current);
+            string title = local.Length == 1
+                ? "Edit tags — " + Path.GetFileName(local[0])
+                : $"Edit tags — {local.Length} files";
+
+            Dictionary<TagField, string> changes;
+            bool numberInOrder;
+            using (var dialog = new TagEditorForm(title, fields, local.Length))
+            {
+                if (dialog.ShowDialog(owner) != DialogResult.OK) { ShowStatus("Tags not changed"); return false; }
+                changes = dialog.Changes;
+                numberInOrder = dialog.NumberInListOrder;
+            }
+
+            if (changes.Count == 0 && !numberInOrder)
+            {
+                Announce("Nothing was changed");
+                return false;
+            }
+
+            // The player's track is read on this thread, once, before the worker
+            // starts: the worker only compares paths.
+            var playing = Program.AudioState is { HasTrack: true } state ? state.Path : null;
+            bool IsPlaying(string p) => playing != null && string.Equals(p, playing, StringComparison.OrdinalIgnoreCase);
+
+            ShowStatus(local.Length == 1 ? "Saving tags" : $"Saving tags for {local.Length} files");
+            // Drive files are reported, never opened.
+            var results = drive.Select(p => new TagResult(p, TagEditing.DriveRefusal)).ToList();
+            results.AddRange(await Task.Run(() =>
+                TagEditing.Apply(local, changes, numberInOrder, onDrive: null, IsPlaying)));
+            if (IsDisposed) return false;
+
+            var summary = TagEditing.Summary(results);
+            bool anyFailed = results.Any(r => r.Error != null);
+            if (anyFailed)
+            {
+                // A list of reasons is something to read at one's own pace, not a
+                // status line that the next arrow press replaces.
+                ShowStatus(summary);
+                MessageBox.Show(owner, summary, "Edit tags", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+            else Announce(summary);
+
+            // The rows follow on their own: the folder is watched, and a file
+            // rewritten in place updates its row (size, modified) where it is.
+            return results.Any(r => r.Error == null);
         }
 
         /// <summary>Kept so the popup can decide whether they belong on it.</summary>
@@ -1223,6 +1337,11 @@ namespace ExplorerNative
             _contextMenu.Items.Add(_extractHereItem);
 
             _contextMenu.Items.Add(new ToolStripSeparator());
+
+            // Beside Properties, and only over an audio file it could tag: on
+            // the Drive letter or over an Ogg file it could only refuse.
+            _editTagsItem = Item("Edit ta&gs…", Keys.None, EditTagsForSelection);
+            _contextMenu.Items.Add(_editTagsItem);
             _contextMenu.Items.Add(Item("P&roperties", Keys.None, ShowProperties));
             _contextMenu.Items.Add(new ToolStripSeparator());
             _contextMenu.Items.Add(Item("&More Windows options…", Keys.None, ShowShellMenuForSelection));
@@ -4592,6 +4711,11 @@ namespace ExplorerNative
 
             _extractItem.Visible = looksLikeArchive;
             _extractHereItem.Visible = looksLikeArchive;
+
+            _editTagsItem.Visible = focused != null &&
+                                    !IsDirectoryInView(focused) &&
+                                    AudioFiles.IsAudio(focused, _settings.AudioExtensions) &&
+                                    TagEditing.RefusalFor(focused, IsOnDrive, null) == null;
 
             ShowDriveLinkItems();
 
