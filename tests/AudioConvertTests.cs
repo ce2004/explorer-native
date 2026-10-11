@@ -639,6 +639,8 @@ namespace ExplorerNative
             Check("and replacing the original is its own key that asks first",
                 editor.Contains("Keys.Control | Keys.Shift | Keys.S") && editor.Contains("MessageBoxDefaultButton.Button2"));
             Check("the editor has a help key", editor.Contains("Keys.F1"));
+            Check("the editor plays at the player's volume, not full level",
+                editor.Contains("Gain = PlayerGain()") && editor.Contains("Program.AudioGain"));
             Check("the context menu offers Convert audio and Edit audio",
                 main.Contains("Con&vert audio") && main.Contains("Edit &audio"));
             Check("the converter's progress window is never modal",

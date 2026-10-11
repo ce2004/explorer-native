@@ -987,6 +987,9 @@ namespace ExplorerNative
         /// <summary>What the player is doing, for the Audio menu's labels.</summary>
         public static AudioSnapshot? AudioState => _context?.AudioState;
 
+        /// <summary>The player's volume as a gain, or null with no player.</summary>
+        public static float? AudioGain => _context?.AudioGain;
+
         // The three audio diagnostics the Preferences page prints used to be
         // static properties here, and reading them was the only thing that page
         // needed this file for — which meant the self-test could not compile

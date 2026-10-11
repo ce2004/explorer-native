@@ -75,6 +75,7 @@ namespace ExplorerNative
 
         private bool _busy;
         private readonly System.Windows.Forms.Timer _timer;
+        private float _lastGain = float.NaN;
 
         public AudioEditorForm(string path, Settings settings)
         {
@@ -360,7 +361,8 @@ namespace ExplorerNative
 
                 var playback = new WasapiPlayback
                 {
-                    Gain = 1f,
+                    // The player's own level, so editing sounds as listening does.
+                    Gain = PlayerGain(),
                     DecoderFactory = (int rate, int channels, out string why) =>
                     {
                         var inner = TrackDecoder.Open(_path, null, rate, channels, out why);
@@ -408,8 +410,22 @@ namespace ExplorerNative
         }
 
         /// <summary>Stops a "play the selection" at the end mark.</summary>
+        /// <summary>The main player's volume, or full level when there is no player.</summary>
+        private static float PlayerGain()
+        {
+            try { return Program.AudioGain ?? 1f; }
+            catch { return 1f; }
+        }
+
         private void Tick()
         {
+            // Follows the volume keys while editing: they still go to the player.
+            if (_playing && _playback != null)
+            {
+                float gain = PlayerGain();
+                if (!(Math.Abs(gain - _lastGain) <= 0.0001f)) { _playback.Gain = gain; _lastGain = gain; }
+            }
+
             if (!_playing || _playback == null || _stopAt is not { } end) return;
             if (_playback.Position < end) return;
             Pause();

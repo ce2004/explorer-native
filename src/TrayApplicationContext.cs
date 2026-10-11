@@ -1383,6 +1383,12 @@ namespace ExplorerNative
         /// <summary>Whether the limiter is on, and how much is clipping.</summary>
         public string AudioLevelDiagnostic => _audio.DescribeLevel();
 
+        /// <summary>
+        /// The player's volume as a gain, on its own curve, ignoring mute: what
+        /// the audio editor plays at, so editing is heard at the level listened at.
+        /// </summary>
+        public float AudioGain => AudioPlayer.DirectGain(_audio.VolumePercent, _audio.Curve);
+
         /// <summary>What the Audio menu needs to label itself.</summary>
         public AudioSnapshot AudioState => new(
             _audio.HasTrack, _audio.IsPlaying, _audio.IsMuted, _audio.RepeatTrack,
