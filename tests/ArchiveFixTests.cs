@@ -50,7 +50,7 @@ namespace ExplorerNative
             await ReadOnlyArchiveReplacedTests();
             ExtractionLaneCapTests();
 
-            if (!BsdTar.Available) return;
+            if (!BsdTar.HandlesNames) return;
 
             await ManyLockedFilesTests();
             await LookalikeNamesThroughBsdTarTests();
@@ -179,7 +179,7 @@ namespace ExplorerNative
                 var missing = Path.Combine(dir, "was-here.txt");
                 foreach (var format in new[] { ArchiveFormats.Zip, ArchiveFormats.SevenZip })
                 {
-                    if (format.Engine == ArchiveEngineKind.BsdTar && !BsdTar.Available) continue;
+                    if (format.Engine == ArchiveEngineKind.BsdTar && !BsdTar.HandlesNames) continue;
                     var archive = Path.Combine(dir, "x" + format.Extension);
                     string? said = null;
                     try
@@ -491,7 +491,7 @@ namespace ExplorerNative
                 Check("a UTF-8 name without the flag, and one with it, come out as themselves",
                     names.Contains("naïve.txt") && names.Contains("日本.txt"), string.Join(", ", names));
 
-                if (BsdTar.Available)
+                if (BsdTar.HandlesNames)
                 {
                     var src = Path.Combine(dir, "src");
                     Directory.CreateDirectory(src);
@@ -1124,7 +1124,7 @@ namespace ExplorerNative
             try
             {
                 var formats = new List<ArchiveFormat> { ArchiveFormats.Zip, ArchiveFormats.Tar, ArchiveFormats.TarGz };
-                if (BsdTar.Available) formats.AddRange(new[] { ArchiveFormats.SevenZip, ArchiveFormats.TarXz });
+                if (BsdTar.HandlesNames) formats.AddRange(new[] { ArchiveFormats.SevenZip, ArchiveFormats.TarXz });
 
                 foreach (var format in formats)
                 {

@@ -385,7 +385,7 @@ namespace ExplorerNative
                     made.Failed == 0 && TarEngine.List(tgz, ArchiveFormats.TarGz, CancellationToken.None).Count == 1,
                     string.Join("; ", made.Errors));
 
-                if (!BsdTar.Available) return;
+                if (!BsdTar.HandlesNames) return;
 
                 // Replacing a .txz, which the staging name used to hide from bsdtar.
                 var txz = Path.Combine(dir, "again.txz");

@@ -324,7 +324,7 @@ namespace ExplorerNative
         {
             foreach (var format in ArchiveFormats.All.Where(f => f.CanCreate && !f.SingleFile))
             {
-                if (format.Engine == ArchiveEngineKind.BsdTar && !BsdTar.Available) continue;
+                if (format.Engine == ArchiveEngineKind.BsdTar && !BsdTar.HandlesNames) continue;
 
                 var dir = NewDir("rt");
                 try
@@ -537,9 +537,9 @@ namespace ExplorerNative
                         photo == null ? "no entry" : $"{photo.Length} -> {photo.CompressedLength}");
                 }
 
-                if (!BsdTar.Available)
+                if (!BsdTar.HandlesNames)
                 {
-                    Check("the system tar is present to check against", false, "tar.exe missing");
+                    Check("the system tar is present to check against", BsdTar.Available, "tar.exe missing");
                     return;
                 }
 
@@ -1336,9 +1336,9 @@ namespace ExplorerNative
             Check("the machine's memory is readable", BsdTar.PhysicalMemoryBytes() > 0,
                 BsdTar.PhysicalMemoryBytes().ToString());
 
-            if (!BsdTar.Available)
+            if (!BsdTar.HandlesNames)
             {
-                Check("the system tar is present", false, "tar.exe missing");
+                Check("the system tar is present", BsdTar.Available, "tar.exe missing");
                 return;
             }
 

@@ -96,6 +96,19 @@ namespace ExplorerNative
 
         public static bool Available => File.Exists(Executable);
 
+        /// <summary>
+        /// Whether the tar chosen can take a non-ASCII name. False only where
+        /// System32's libarchive is the broken build and WinSxS holds no older
+        /// one — a fresh install of that Windows build. The suite skips its tar
+        /// cases there rather than stopping at the first crash.
+        /// </summary>
+        internal static bool HandlesNames => _handlesNames.Value;
+
+        private static readonly Lazy<bool> _handlesNames = new(() => Available && HandlesNonAscii(Executable));
+
+        /// <summary>STATUS_ACCESS_VIOLATION: what the broken libarchive dies with.</summary>
+        private const int AccessViolation = unchecked((int)0xC0000005);
+
         private static string PrivateRoot => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ExplorerNative", "tar");
 
@@ -1832,7 +1845,10 @@ namespace ExplorerNative
             if (string.IsNullOrEmpty(first) || first == "(null)")
                 first = first == "(null)"
                     ? "This archive is damaged or incomplete."
-                    : $"the system tar stopped with code {process.ExitCode}";
+                    : process.ExitCode == AccessViolation
+                        ? "Windows' own archiving tool crashed, which this version of Windows does on names " +
+                          "with emoji or in some languages. Zip and tar.gz still work."
+                        : $"the system tar stopped with code {process.ExitCode}";
 
             return new Outcome(process.ExitCode, first, delayed, messages);
         }
