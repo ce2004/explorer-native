@@ -7157,7 +7157,15 @@ namespace ExplorerNative
             if (!await DirectoryExistsAsync(path)) { Announce("Select a folder first"); return; }
 
             AnnounceOperation("size.calculating", $"Measuring {Path.GetFileName(path)}");
-            var result = await _folderSizes.CalculateAsync(path);
+
+            // Drive answers for its own folders, without populating the tree.
+            FolderSizeResult? fromDrive = null;
+            if (Drive is { } drive && drive.Owns(path))
+            {
+                try { fromDrive = await drive.FolderSizeAsync(path); } catch { }
+                if (IsDisposed) return;
+            }
+            var result = fromDrive ?? await _folderSizes.CalculateAsync(path);
             if (IsDisposed) return;
 
             var size = SizeFormatter.Format(result.Bytes, _settings.SizeUnits);
@@ -7179,18 +7187,12 @@ namespace ExplorerNative
         /// long after it should have gone quiet — and wrote its answers into a
         /// pane showing something else entirely.
         ///
-        /// Never onto the Drive letter. Measuring a folder means walking its
-        /// whole subtree, and enumerating a cloud directory that has not been
-        /// opened yet *is* a Drive listing — about 1.3 seconds each. So switching
-        /// folder sizes to Automatic quietly asked for one network request per
-        /// directory in the entire Drive, restarted on every navigation, which is
-        /// exactly the thing the provider is built not to do: "Placing the whole
-        /// tree at mount time would be one Drive listing per folder for a library
-        /// nobody has opened yet." It also populates the tree as a side effect,
-        /// so the cost does not even show up as a folder size anybody asked for.
-        ///
-        /// Only the automatic sweep is refused. Ctrl+Shift+S on a Drive folder
-        /// still measures it, because that is somebody asking.
+        /// Never by walking the Drive letter: enumerating a cloud directory that
+        /// has not been opened yet *is* a Drive listing (about 1.3 s each), so a
+        /// walk is one request per folder in the whole Drive, and it populates
+        /// the tree as a side effect. Drive folders are asked of Drive instead: GoogleDrive.FolderSizeAsync
+        /// answers from one listing of the whole account, kept current by the
+        /// changes feed, and nothing on the letter is walked.
         /// </summary>
         private async Task CalculateAllFolderSizesAsync(Pane pane, CancellationToken token)
         {
@@ -7200,15 +7202,22 @@ namespace ExplorerNative
             var drive = Drive;
             var folders = new List<string>();
             foreach (var e in pane.Entries)
-            {
-                if (!e.IsDir) continue;
-                if (drive != null && drive.Owns(e.Path)) continue;
-                folders.Add(e.Path);
-            }
+                if (e.IsDir) folders.Add(e.Path);
 
             foreach (var folder in folders)
             {
                 if (IsDisposed || token.IsCancellationRequested) return;
+
+                if (drive != null && drive.Owns(folder))
+                {
+                    FolderSizeResult? known;
+                    try { known = await drive.FolderSizeAsync(folder, token); }
+                    catch (OperationCanceledException) { return; }
+                    if (IsDisposed || token.IsCancellationRequested) return;
+                    if (known is { } size)
+                        SetSizeOverride(pane, folder, SizeFormatter.Format(size.Bytes, _settings.SizeUnits));
+                    continue;
+                }
 
                 // No cache probe here, deliberately. TryGetCached looks cheap and
                 // is not: it asks the filesystem for the folder's last-write time,

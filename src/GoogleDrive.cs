@@ -707,6 +707,7 @@ namespace ExplorerNative
                 old = _mount;
                 _mount = null;
                 _folders = null;
+                _sizes = null;
             }
 
             // Outside the lock. Dispose waits up to five seconds for callbacks
@@ -1133,6 +1134,45 @@ namespace ExplorerNative
             return folders;
         }
 
+        /// <summary>The size indexes, per drive ("" for My Drive). See <see cref="DriveSizeIndex"/>.</summary>
+        private Dictionary<string, DriveSizeIndex>? _sizes;
+
+        /// <summary>
+        /// How big a folder on the letter is, from Drive's own listing of the
+        /// whole account rather than a walk of its placeholders — which would be
+        /// one Drive listing per folder and populate the tree as a side effect.
+        /// The first answer builds the index; the rest are lookups, refreshed
+        /// through the changes feed. Null when it cannot be told.
+        /// </summary>
+        public async Task<FolderSizeResult?> FolderSizeAsync(string path, CancellationToken token = default)
+        {
+            DriveMount? mount;
+            DriveClient? client;
+            CancellationToken lifetime;
+            lock (_gate) { mount = _mount; client = _client; lifetime = _lifetime.Token; }
+            if (mount == null || client == null || !Owns(mount, path)) return null;
+            if (mount.IsSharedDrivesFolder(path)) return null;
+
+            var id = mount.FolderIdFor(path) ?? mount.IdFor(path);
+            if (id == null) return null;
+            var driveId = mount.DriveIdFor(path);
+            if (driveId == null && mount.IsSharedDriveRoot(path)) driveId = id;
+
+            DriveSizeIndex index;
+            lock (_gate)
+            {
+                _sizes ??= new Dictionary<string, DriveSizeIndex>(StringComparer.Ordinal);
+                if (!_sizes.TryGetValue(driveId ?? "", out index!))
+                    _sizes[driveId ?? ""] = index = new DriveSizeIndex(driveId);
+            }
+
+            try { await index.Refresh(client, lifetime).WaitAsync(token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (Exception ex) { Note($"folder sizes: {ex.Message}"); }
+
+            return index.SizeOf(id);
+        }
+
         /// <summary>Whether a path is the mounted letter itself rather than something in it.</summary>
         private static bool IsMountRoot(DriveMount mount, string path)
         {
@@ -1255,6 +1295,7 @@ namespace ExplorerNative
                 // and the folder graph a search runs on is part of what they
                 // mean. Cheap to drop and one request to rebuild.
                 _folders = null;
+                if (_sizes != null) foreach (var index in _sizes.Values) index.Expire();
             }
             if (mount == null || string.IsNullOrEmpty(path)) return;
 

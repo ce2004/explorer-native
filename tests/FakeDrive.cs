@@ -104,6 +104,7 @@ namespace ExplorerNative
             {
                 var id = "f" + (++_next);
                 _items[id] = new Item { Id = id, Name = name, Parent = parent, MimeType = DriveClient.FolderMimeType };
+                _changed.Add(id);
                 return id;
             }
         }
@@ -119,6 +120,7 @@ namespace ExplorerNative
                     Id = id, Name = name, Parent = parent, MimeType = mime, Data = data,
                     Modified = Ms(modifiedUtc),
                 };
+                _changed.Add(id);
                 return id;
             }
         }
@@ -129,12 +131,19 @@ namespace ExplorerNative
             {
                 _items[id].Data = data;
                 _items[id].Modified = Ms(modifiedUtc);
+                _changed.Add(id);
             }
         }
 
-        public void Trash(string id) { lock (_gate) _items[id].Trashed = true; }
+        public void Trash(string id) { lock (_gate) { _items[id].Trashed = true; _changed.Add(id); } }
 
-        public void Remove(string id) { lock (_gate) _items.Remove(id); }
+        public void Remove(string id) { lock (_gate) { _items.Remove(id); _changed.Add(id); } }
+
+        /// <summary>Ids changed through the methods above, in order: the changes feed.</summary>
+        private readonly List<string> _changed = new();
+
+        /// <summary>Requests that listed the whole account rather than one folder.</summary>
+        public int WholeListings;
 
         public Item? Get(string id) { lock (_gate) return _items.TryGetValue(id, out var i) ? i : null; }
 
@@ -259,9 +268,43 @@ namespace ExplorerNative
                         ["storageQuota"] = new Dictionary<string, object> { ["usage"] = "0", ["limit"] = "0" },
                     });
 
+                case "list" when (query["q"] ?? "").StartsWith("trashed = false", StringComparison.Ordinal):
+                    return ListEverything(query);
+
                 case "list":
                 case "lookup":
                     return List(query, kind == "lookup");
+
+                case "changes.start":
+                    lock (_gate) return Json(200, new Dictionary<string, object> { ["startPageToken"] = _changed.Count.ToString() });
+
+                case "changes":
+                {
+                    int from = int.Parse(query["pageToken"] ?? "0");
+                    var rows = new List<Dictionary<string, object>>();
+                    lock (_gate)
+                    {
+                        for (int i = from; i < _changed.Count; i++)
+                        {
+                            var id = _changed[i];
+                            var row = new Dictionary<string, object> { ["fileId"] = id };
+                            if (_items.TryGetValue(id, out var item))
+                            {
+                                var file = Describe(item);
+                                file["parents"] = new[] { item.Parent };
+                                row["removed"] = false;
+                                row["file"] = file;
+                            }
+                            else row["removed"] = true;
+                            rows.Add(row);
+                        }
+                        return Json(200, new Dictionary<string, object>
+                        {
+                            ["changes"] = rows,
+                            ["newStartPageToken"] = _changed.Count.ToString(),
+                        });
+                    }
+                }
 
                 case "alive":
                 case "get":
@@ -338,6 +381,8 @@ namespace ExplorerNative
             if (request.Content is StringContent text) body = await text.ReadAsStringAsync(ct);
 
             if (path == "/drive/v3/about") return ("about", "", body);
+            if (path == "/drive/v3/changes/startPageToken") return ("changes.start", "", body);
+            if (path == "/drive/v3/changes") return ("changes", "", body);
 
             if (path == "/drive/v3/files")
             {
@@ -414,6 +459,39 @@ namespace ExplorerNative
 
             var answer = new Dictionary<string, object> { ["files"] = page };
             if (lookup) answer["incompleteSearch"] = false;
+            if (start + size < count) answer["nextPageToken"] = (start + size).ToString();
+            return Json(200, answer);
+        }
+
+        /// <summary>A query with no parent: everything not trashed, within any modifiedTime bounds it gives.</summary>
+        private HttpResponseMessage ListEverything(System.Collections.Specialized.NameValueCollection query)
+        {
+            Interlocked.Increment(ref WholeListings);
+            var q = query["q"] ?? "";
+            var after = Regex.Match(q, "modifiedTime >= '([^']*)'") is { Success: true } a ? ParseTime(a.Groups[1].Value) : null;
+            var before = Regex.Match(q, "modifiedTime < '([^']*)'") is { Success: true } b ? ParseTime(b.Groups[1].Value) : null;
+            int size = int.TryParse(query["pageSize"], out var s) ? s : 100;
+            int start = int.TryParse(query["pageToken"], out var p) ? p : 0;
+
+            List<Dictionary<string, object>> page;
+            int count;
+            lock (_gate)
+            {
+                var rows = _items.Values
+                    .Where(i => !i.Trashed && i.Id != Root)
+                    .Where(i => (after == null || i.Modified >= after) && (before == null || i.Modified < before))
+                    .OrderBy(i => i.Id, StringComparer.Ordinal)
+                    .ToList();
+                count = rows.Count;
+                page = rows.Skip(start).Take(size).Select(i =>
+                {
+                    var d = Describe(i);
+                    d["parents"] = new[] { i.Parent };
+                    return d;
+                }).ToList();
+            }
+
+            var answer = new Dictionary<string, object> { ["files"] = page };
             if (start + size < count) answer["nextPageToken"] = (start + size).ToString();
             return Json(200, answer);
         }

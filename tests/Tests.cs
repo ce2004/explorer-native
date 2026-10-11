@@ -240,25 +240,37 @@ namespace ExplorerNative
             EdgeCaseTests();
             ConfigIntegrityTests();
             GoogleDriveTests();
-            await ArchiveTests.RunAll(Check, Equal);
-            InstallTests.RunAll(Check, Equal);
-            await DriveCopyTests.RunAll(Check, Equal);
-            await FakeDriveMonitorTests.RunAll(Check, Equal);
-            await OddCaseTests.RunAll(Check, Equal);
-            await TransferFixTests.RunAll(Check, Equal);
-            await FilesR2Tests.RunAll(Check, Equal);
-            SettingsFixTests.RunAll(Check, Equal);
-            SearchTests.RunAll(Check, Equal);
-            await ConnectTests.RunAll(Check, Equal);
-            ExactSeekTests.RunAll(Check);
-            AudioFixTests.RunAll(Check, Equal);
-            await UpdateFixTests.RunAll(Check, Equal);
-            MainFixTests.RunAll(Check, Equal);
-            DeleteTests.RunAll(Check, Equal);
-            await Round2FixTests.RunAll(Check, Equal);
+            await Guard("ArchiveTests", () => ArchiveTests.RunAll(Check, Equal));
+            await Guard("InstallTests", () => { InstallTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("DriveCopyTests", () => DriveCopyTests.RunAll(Check, Equal));
+            await Guard("FakeDriveMonitorTests", () => FakeDriveMonitorTests.RunAll(Check, Equal));
+            await Guard("OddCaseTests", () => OddCaseTests.RunAll(Check, Equal));
+            await Guard("TransferFixTests", () => TransferFixTests.RunAll(Check, Equal));
+            await Guard("FilesR2Tests", () => FilesR2Tests.RunAll(Check, Equal));
+            await Guard("SettingsFixTests", () => { SettingsFixTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("SearchTests", () => { SearchTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("ConnectTests", () => ConnectTests.RunAll(Check, Equal));
+            await Guard("ExactSeekTests", () => { ExactSeekTests.RunAll(Check); return Task.CompletedTask; });
+            await Guard("AudioFixTests", () => { AudioFixTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("UpdateFixTests", () => UpdateFixTests.RunAll(Check, Equal));
+            await Guard("MainFixTests", () => { MainFixTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("DeleteTests", () => { DeleteTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("Round2FixTests", () => Round2FixTests.RunAll(Check, Equal));
+            await Guard("DriveSizeTests", () => DriveSizeTests.RunAll(Check, Equal));
 
             Console.WriteLine($"\n{_passed} passed, {_failed} failed");
             return _failed == 0 ? 0 : 1;
+        }
+
+        /// <summary>
+        /// One section whose crash is a failure, not the end of the run. The
+        /// system tar on some Windows builds dies on non-Latin names, and that
+        /// used to abort every section after the archive tests.
+        /// </summary>
+        private static async Task Guard(string section, Func<Task> run)
+        {
+            try { await run(); }
+            catch (Exception ex) { Check($"{section} ran to the end", false, ex.GetType().Name + ": " + ex.Message); }
         }
 
         /// <summary>
