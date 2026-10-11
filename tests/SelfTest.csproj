@@ -34,6 +34,7 @@
     <Compile Include="..\src\Resampler.cs" /><Compile Include="..\src\PitchForm.cs" />    <Compile Include="..\src\AudioDecoder.cs" /><Compile Include="..\src\TrackDecoder.cs" /><Compile Include="..\src\LocalByteStream.cs" /><Compile Include="..\src\OggDecoder.cs" /><Compile Include="..\src\OggOpusReader.cs" /><Compile Include="..\src\OggPages.cs" /><Compile Include="..\src\OggVorbisPackets.cs" /><Compile Include="..\src\ExactSeek.cs" /><Compile Include="..\src\VirtualStream.cs" /><Compile Include="..\src\FlacSeek.cs" /><Compile Include="..\src\Mp3Seek.cs" /><Compile Include="..\src\AiffStream.cs" /><Compile Include="..\src\CdTrackStream.cs" />
     <Compile Include="..\src\WasapiPlayback.cs" />
     <Compile Include="..\src\AudioTags.cs" /><Compile Include="..\src\TagEditing.cs" /><Compile Include="..\src\TagEditorForm.cs" /><Compile Include="..\src\FileDetails.cs" />
+    <Compile Include="..\src\AudioEncoders.cs" /><Compile Include="..\src\AudioConvert.cs" /><Compile Include="..\src\AudioEdit.cs" />
     <Compile Include="..\src\AudioPrefetch.cs" />
     <Compile Include="..\src\StreamingSource.cs" />
     <Compile Include="..\src\HoldRepeat.cs" />
@@ -106,6 +107,7 @@
     <Compile Include="ShortcutSortDetailsTests.cs" />
     <Compile Include="TagEditTests.cs" />
     <Compile Include="ArchiveBrowserTests.cs" />
+    <Compile Include="AudioConvertTests.cs" />
   </ItemGroup>
 
   <!-- The managed Ogg Vorbis and Opus decoders, which the suite exercises the

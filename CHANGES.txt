@@ -1,3 +1,11 @@
+2.3.0
+New feature: press Enter on a zip, 7z or tar file to open it like a folder. Arrow through it, press Enter on a song to play it, press Ctrl+C to copy files out, and press Backspace to leave. Shift+Enter still opens the archive in its own app. Zip and tar files open without unpacking the whole thing; 7z and some other kinds are unpacked once in the background the first time.
+New feature: edit the tags of your music. Select one or more MP3, M4A or FLAC files, press the Applications key and choose Edit tags, or use the new Edit tags button in Song properties. With several files, only the boxes you change are written, and Number them in list order sets the track numbers for you.
+New feature: convert audio. Select audio files or a folder, press the Applications key and choose Convert audio, then pick MP3, M4A, Opus, FLAC or WAV and a quality. Your originals are never changed, the new files go beside them with their tags, and if a name is already taken you are asked once for the whole batch.
+New feature: edit audio. Press the Applications key on a song and choose Edit audio. Press Space to play, the arrows to move, and the left and right square brackets to mark the start and end of a part. Delete cuts it, T keeps only it, V changes its volume and N normalises. Ctrl+Z undoes, Ctrl+S saves a new copy named edited, and F1 lists every key. Your original is only replaced if you press Ctrl+Shift+S and say yes, and even then it goes to the Recycle Bin.
+Sorting by date modified now puts the newest file at the top.
+Changing how a folder is sorted is now instant, including on Google Drive, and the cursor stays on the same file.
+
 2.2.0
 New feature: each audio shortcut now has a Global checkbox. Untick it and the shortcut only works while Explorer Native is in front, so the keys keep doing their normal job in every other program.
 New feature: File, Sort this folder by, lets you sort one folder by name, size or date modified, ascending or descending, without changing any other folder. The list re-sorts straight away, and Use the default order puts the folder back.

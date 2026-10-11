@@ -1296,6 +1296,8 @@ namespace ExplorerNative
         private ToolStripMenuItem _extractItem = null!;
         private ToolStripMenuItem _extractHereItem = null!;
         private ToolStripMenuItem _shortcutItem = null!;
+        private ToolStripMenuItem _convertAudioItem = null!;
+        private ToolStripMenuItem _editAudioItem = null!;
 
         /// <summary>
         /// Every "Copy Drive link" entry, on whichever menu it sits.
@@ -1403,6 +1405,15 @@ namespace ExplorerNative
 
             _contextMenu.Items.Add(_extractItem);
             _contextMenu.Items.Add(_extractHereItem);
+
+            // Audio, on the same terms as Extract: shown only when the row is
+            // something they can work on, decided from the name alone. Convert
+            // takes audio files and folders (the audio inside them); Edit takes
+            // one audio file.
+            _convertAudioItem = Item("Con&vert audio…", Keys.None, ConvertAudio);
+            _editAudioItem = Item("Edit &audio…", Keys.None, EditAudio);
+            _contextMenu.Items.Add(_convertAudioItem);
+            _contextMenu.Items.Add(_editAudioItem);
 
             _contextMenu.Items.Add(new ToolStripSeparator());
 
@@ -5136,6 +5147,17 @@ namespace ExplorerNative
                                     AudioFiles.IsAudio(focused, _settings.AudioExtensions) &&
                                     TagEditing.RefusalFor(focused, IsOnDrive, null) == null;
 
+            // The same rule for the audio commands: by name, no reads. Not on
+            // the Drive letter or inside an archive, where nothing can be
+            // written beside a file.
+            bool local = !IsDrivesView && Active.Archive == null &&
+                         !(Drive != null && Drive.Owns(Active.CurrentPath));
+            bool focusedAudio = focused != null && !IsDirectoryInView(focused) &&
+                                AudioFiles.IsAudio(focused, _settings.AudioExtensions);
+            _editAudioItem.Visible = local && focusedAudio;
+            _convertAudioItem.Visible = local && focused != null &&
+                SelectedPaths().Any(p => IsDirectoryInView(p) || AudioFiles.IsAudio(p, _settings.AudioExtensions));
+
             ShowDriveLinkItems();
 
             // A shortcut is a file, and a file written into the Drive letter by
@@ -7106,6 +7128,193 @@ namespace ExplorerNative
             {
                 Active.NeedsRefresh = false;
                 await RefreshAsync();
+            }
+        }
+
+        // ---------- Audio conversion and editing ----------
+
+        /// <summary>
+        /// Converts the selected audio files, and the audio inside selected
+        /// folders, to another format beside where each one is.
+        ///
+        /// Built like Compress: one question before anything starts, one
+        /// conflict question for the whole batch if any target name is taken,
+        /// then a modeless progress window and a one-sentence summary. The
+        /// sources are only ever read. Async void and guarded throughout.
+        /// </summary>
+        private async void ConvertAudio()
+        {
+            if (RefuseInArchive()) return;
+            try
+            {
+                if (IsDrivesView) { Announce("Cannot convert the drive list", isError: true); return; }
+
+                var extensions = _settings.AudioExtensions;
+                var selected = SelectedPaths()
+                    .Where(p => IsDirectoryInView(p) || AudioFiles.IsAudio(p, extensions))
+                    .ToArray();
+                if (selected.Length == 0)
+                {
+                    AnnounceOperation("convert.nothing", "Nothing selected is audio");
+                    return;
+                }
+
+                if (Drive != null && (Drive.Owns(Active.CurrentPath) || selected.Any(p => Drive.Owns(p))))
+                {
+                    Announce("Audio on Google Drive cannot be converted in place. " +
+                             "Copy it to a local folder first.", isError: true);
+                    RestoreListFocus();
+                    return;
+                }
+
+                bool hasFolder = selected.Any(IsDirectoryInView);
+                var unavailable = await Task.Run(AudioConvertForm.Availability);
+                if (IsDisposed) return;
+
+                var what = selected.Length == 1
+                    ? $"Converting \"{Path.GetFileName(selected[0].TrimEnd('\\'))}\""
+                    : $"Converting {NameRules.Items(selected.Length)}";
+                var request = AudioConvertForm.Ask(this, "Convert audio", what,
+                    AudioFormats.ById(_settings.AudioConvertFormat), unavailable, hasFolder,
+                    _settings.AudioConvertSubfolders);
+                if (request == null) { RestoreListFocus(); return; }
+
+                // Remembered once answered, like Compress.
+                _settings.AudioConvertFormat = request.Choice.Id;
+                if (hasFolder) _settings.AudioConvertSubfolders = request.Subfolders;
+                _settings.Save();
+
+                var choice = request.Choice;
+                var here = Active.CurrentPath;
+
+                // The walk and every existence check happen on a worker.
+                var plan = await Task.Run(() => AudioConverter.Plan(
+                    AudioConverter.Gather(selected, request.Subfolders, extensions, CancellationToken.None), choice));
+                if (IsDisposed) return;
+
+                if (plan.Jobs.Count == 0)
+                {
+                    AnnounceOperation("convert.nothing", $"There are no audio files in {FolderDisplayName(selected[0])}");
+                    RestoreListFocus();
+                    return;
+                }
+
+                // Asked once for the batch, never per file, and only about names
+                // already taken by the person's own files.
+                var answer = FileOperations.ConflictChoice.Rename;
+                if (plan.Clashing.Count > 0)
+                {
+                    answer = ConflictForm.Ask(this, plan.Clashing.Select(j => Path.GetFileName(j.Target)).ToList(),
+                        FolderDisplayName(here), filesOnly: true);
+                    RestoreListFocus();
+                    if (answer == FileOperations.ConflictChoice.Cancel) return;
+                }
+
+                var (jobs, skipped) = await Task.Run(() =>
+                {
+                    var resolved = AudioConverter.Resolve(plan, answer, out int left);
+                    return (resolved, left);
+                });
+                if (IsDisposed) return;
+
+                if (jobs.Count == 0)
+                {
+                    AnnounceOperation("convert.done", $"Nothing converted; {NameRules.Items(skipped, "file")} skipped");
+                    RestoreListFocus();
+                    return;
+                }
+
+                var title = jobs.Count == 1
+                    ? $"Converting {Path.GetFileName(jobs[0].Source)} to {choice.FormatName}"
+                    : $"Converting {NameRules.Items(jobs.Count, "file")} to {choice.FormatName}";
+
+                using var cts = new CancellationTokenSource();
+                using var window = new ProgressForm(title, _settings, cts);
+                var progress = new Progress<TransferProgress>(p => window.Update(p));
+
+                BeginTransferTo(here);
+                RunningTransfers++;
+                try
+                {
+                    AnnounceOperation("convert.start", $"Converting {NameRules.Items(jobs.Count, "file")} to {choice.Label}");
+
+                    var task = AudioConverter.RunAsync(jobs, choice, progress, cts.Token);
+                    window.Show();
+
+                    ConvertResult result;
+                    try { result = await task; }
+                    catch (Exception ex)
+                    {
+                        window.Finish();
+                        AnnounceOperation("convert.failed", $"Could not convert: {ex.Message}");
+                        await RefreshDestination(here);
+                        RestoreListFocus();
+                        return;
+                    }
+
+                    window.Finish();
+                    result.Skipped += skipped;
+
+                    // Every folder something landed in, not just the one on screen.
+                    foreach (var folder in result.Written.Select(SafeParent).Append(here)
+                                 .Where(f => !string.IsNullOrEmpty(f)).Distinct(StringComparer.OrdinalIgnoreCase))
+                        await RefreshDestination(folder!);
+
+                    var summary = result.Summary(choice);
+                    if (result.Cancelled) AnnounceOperation("convert.cancelled", summary);
+                    else if (result.Failures.Count > 0)
+                    {
+                        AnnounceOperation("convert.failed", summary);
+                        if (result.Failures.Count > 3)
+                            ShowErrors(result.Failures.Select(f => $"{f.Name}: {f.Reason}").ToList());
+                    }
+                    else AnnounceOperation("convert.done", summary);
+                }
+                finally { RunningTransfers--; EndTransferTo(here); }
+            }
+            catch (Exception ex)
+            {
+                if (IsDisposed) return;
+                AnnounceOperation("convert.failed", $"Could not convert: {ex.Message}");
+                RestoreListFocus();
+            }
+        }
+
+        /// <summary>
+        /// Opens the audio editor on the focused file, in its own window, so the
+        /// file manager stays usable behind it. Saving there never replaces the
+        /// original unless that is the command chosen.
+        /// </summary>
+        private void EditAudio()
+        {
+            if (RefuseInArchive()) return;
+            try
+            {
+                var path = FocusedPath();
+                if (path == null || IsDirectoryInView(path) || !AudioFiles.IsAudio(path, _settings.AudioExtensions))
+                {
+                    Announce("Edit audio works on one audio file", isError: true);
+                    return;
+                }
+
+                if (Drive != null && Drive.Owns(path))
+                {
+                    Announce("Audio on Google Drive cannot be edited in place. Copy it to a local folder first.",
+                        isError: true);
+                    return;
+                }
+
+                var editor = new AudioEditorForm(path, _settings);
+                editor.Saved += saved =>
+                {
+                    var folder = SafeParent(saved);
+                    if (!IsDisposed && folder != null) _ = RefreshDestination(folder);
+                };
+                editor.Show();
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) Announce("Could not open the audio editor: " + ex.Message, isError: true);
             }
         }
 

@@ -458,7 +458,7 @@ namespace ExplorerNative
                 if (reader == null) { Diagnostic = why; return false; }
                 _reader = reader;
 
-                (_nativeRate, _nativeFrame) = NativeFormat(reader);
+                (_nativeRate, _nativeFrame, NativeBits) = NativeFormat(reader);
 
                 // Duration, when the source knows it. A stream that does not say
                 // is playable, it just cannot be scrubbed.
@@ -566,29 +566,38 @@ namespace ExplorerNative
             string.Equals(extension, ".aiff", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(extension, ".aifc", StringComparison.OrdinalIgnoreCase);
 
-        private static (int Rate, int Frame) NativeFormat(IMFSourceReader reader)
+        /// <summary>
+        /// The bits per sample the file itself stores, before Windows turns it
+        /// into float: 16 or 24 for most lossless files, 32 for float WAV, and
+        /// zero when the format does not say (lossy formats mostly do not). Read
+        /// by the converter, so "keep the bit depth" keeps it.
+        /// </summary>
+        public int NativeBits { get; private set; }
+
+        private static (int Rate, int Frame, int Bits) NativeFormat(IMFSourceReader reader)
         {
             IntPtr typePtr = IntPtr.Zero;
             try
             {
                 if (reader.GetNativeMediaType(FirstAudioStream, 0, out typePtr) != 0 || typePtr == IntPtr.Zero)
-                    return (0, 1);
+                    return (0, 1, 0);
 
                 var type = (IMFMediaType)Marshal.GetObjectForIUnknown(typePtr);
                 try
                 {
                     int rate = type.GetUINT32(ref MF_MT_AUDIO_SAMPLES_PER_SECOND, out uint r) == 0 ? (int)r : 0;
+                    int bits = type.GetUINT32(ref MF_MT_AUDIO_BITS_PER_SAMPLE, out uint b) == 0 ? (int)b : 0;
                     int frame = 1;
                     if (type.GetGUID(ref MF_MT_SUBTYPE, out Guid subtype) == 0)
                     {
                         type.GetUINT32(ref MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, out uint profile);
                         frame = FrameFor(subtype, profile);
                     }
-                    return (rate, frame);
+                    return (rate, frame, bits);
                 }
                 finally { try { Marshal.ReleaseComObject(type); } catch { } }
             }
-            catch { return (0, 1); }
+            catch { return (0, 1, 0); }
             finally { if (typePtr != IntPtr.Zero) Marshal.Release(typePtr); }
         }
 
@@ -697,9 +706,20 @@ namespace ExplorerNative
             // silent for the life of the process while the window went on saying
             // it was playing and the engine's clock sat frozen at the position
             // the last one had reached.
+            //
+            // The count and the call are one step, under a lock. Counted with
+            // Interlocked alone, a second decoder opening at the same moment saw
+            // the count already raised, skipped MFStartup, and asked a platform
+            // that the first thread had not started yet for a source reader:
+            // 0xC00D3E85, measured when the converter opened several at once.
             if (Interlocked.Exchange(ref _started, 1) == 1) return;
-            if (Interlocked.Increment(ref _startups) == 1) MFStartup(MF_VERSION, 0);
+            lock (StartupGate)
+            {
+                if (++_startups == 1) MFStartup(MF_VERSION, 0);
+            }
         }
+
+        private static readonly object StartupGate = new();
 
         /// <summary>
         /// Fills <paramref name="destination"/> with interleaved float frames and
@@ -1056,10 +1076,15 @@ namespace ExplorerNative
             // Only if this instance really took one, and only the first time it
             // is disposed. See EnsureStarted for what the unbalanced version
             // costs — it is not a leak, it is the whole player going silent.
-            if (Interlocked.Exchange(ref _started, 0) == 1 &&
-                Interlocked.Decrement(ref _startups) == 0)
+            if (Interlocked.Exchange(ref _started, 0) == 1)
             {
-                try { MFShutdown(); } catch { }
+                lock (StartupGate)
+                {
+                    if (--_startups == 0)
+                    {
+                        try { MFShutdown(); } catch { }
+                    }
+                }
             }
         }
     }
