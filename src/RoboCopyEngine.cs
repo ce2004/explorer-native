@@ -840,10 +840,17 @@ namespace ExplorerNative
             // as it was here was not written by this transfer, and is never
             // deleted. Taken before the first job, on this worker.
             var before = new Dictionary<string, (long Length, DateTime Written)>(StringComparer.OrdinalIgnoreCase);
+
+            // A destination of hundreds of thousands of files takes a while to
+            // list, and Cancel must not wait for it. Cut short, no job has run
+            // yet, so nothing in the destination was written by this transfer:
+            // anything the list did not reach counts as untouched.
+            bool snapshotCut = false;
             var snapshot = Task.Run(() =>
             {
                 foreach (var landing in looseLandings.Keys)
                 {
+                    if (token.IsCancellationRequested) { snapshotCut = true; return; }
                     try
                     {
                         var info = new FileInfo(NameRules.ExactPath(landing));
@@ -864,7 +871,10 @@ namespace ExplorerNative
                                      IgnoreInaccessible = true,
                                      AttributesToSkip = FileAttributes.ReparsePoint,
                                  }))
+                        {
+                            if (token.IsCancellationRequested) { snapshotCut = true; return; }
                             before[file.FullName] = (file.Length, file.LastWriteTimeUtc);
+                        }
                     }
                     catch { }
                 }
@@ -873,7 +883,7 @@ namespace ExplorerNative
             // Whether a file is one that was there before and is exactly as it was.
             bool Untouched(string landing)
             {
-                if (!before.TryGetValue(landing, out var was)) return false;
+                if (!before.TryGetValue(landing, out var was)) return snapshotCut;
                 try
                 {
                     var now = new FileInfo(NameRules.ExactPath(landing));

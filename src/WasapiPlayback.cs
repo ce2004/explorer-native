@@ -1496,8 +1496,6 @@ namespace ExplorerNative
                 string.Equals(current, _renderer.EndpointId, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            double at = Position;
-
             var old = _renderer;
 
             var fresh = new WasapiRenderer
@@ -1604,69 +1602,86 @@ namespace ExplorerNative
             old.Stop();
             old.Dispose();
 
-            if (!sameFormat)
+            // Where to carry on from, taken now: the old device went on playing
+            // the ring while the new one opened, and a position read before that
+            // replayed up to the whole ring — seconds, for a remote track.
+            double at = Position;
+
+            // Whatever happens below, the new device is never left suspended: an
+            // exception after the swap used to leave it silent with the clock
+            // frozen until somebody pressed play.
+            try
             {
-                _channels = fresh.Channels;
-                _ring = new float[AtDeviceRate(RingFrames) * _channels];
-
-                lock (_ringGate) { _writeAt = _readAt = _stored = _lastPassFrames = 0; }
-
-                // The ring is empty again, so the new device is held as a new
-                // track's is until there is enough to keep it fed. Fed straight
-                // away it played a few milliseconds, ran dry and clicked.
+                // The old device may have played the ring dry while this one opened,
+                // so it is held for a prebuffer either way.
                 _waitingForBuffer = true;
 
-                decoder.Reopen(fresh.SampleRate, fresh.Channels);
-                decoder.SeekTo(at);
-
-                // What it settled on this time, which need not be what was asked
-                // for any more than it was the first time.
-                _sourceRate = decoder.SampleRate;
-                _sourceChannels = decoder.Channels < 1 ? 1 : decoder.Channels;
-
-                // Rebuilt here too, and for the reason the resampler below it
-                // says: a stage left pointing at the old chain is a stage the
-                // pump no longer reads through, so the effect silently stops
-                // happening the moment somebody changes output device. Its
-                // settings come back through ApplySilence, which is why they are
-                // kept on this object rather than on the stage.
-                _silence = new SilenceReduction(_sourceChannels, _sourceRate)
+                if (!sameFormat)
                 {
-                    Source = decoder.Read,
-                    ShouldYield = PumpShouldYield,
-                };
-                ApplySilence();
+                    _channels = fresh.Channels;
+                    _ring = new float[AtDeviceRate(RingFrames) * _channels];
 
-                _stretch = new TimeStretch(_sourceChannels) { Source = _silence.Read };
+                    lock (_ringGate) { _writeAt = _readAt = _stored = _lastPassFrames = 0; }
 
-                // And the resampler, which this rebuild used to forget. Without
-                // it the pump went on reading through the *old* one — pointed at
-                // a stretcher that had been replaced — so moving to a device
-                // with a different format silently dropped the pitch shift and
-                // left a dead object in the chain.
-                _pitch = new Resampler(_sourceChannels)
-                {
-                    Source = _stretch.Read,
-                    SampleRate = fresh.SampleRate,
-                };
+                    // The ring is empty again, so the new device is held as a new
+                    // track's is until there is enough to keep it fed. Fed straight
+                    // away it played a few milliseconds, ran dry and clicked.
+                    _waitingForBuffer = true;
 
-                // Both rates together, from the one place that knows how they
-                // combine — see ApplyRates.
-                ApplyRates();
+                    decoder.Reopen(fresh.SampleRate, fresh.Channels);
+                    decoder.SeekTo(at);
 
-                _sourceDone = false;
-                _announcedEnd = false;
-                _emptyReads = 0;
-                _loopAttempts = 0;
+                    // What it settled on this time, which need not be what was asked
+                    // for any more than it was the first time.
+                    _sourceRate = decoder.SampleRate;
+                    _sourceChannels = decoder.Channels < 1 ? 1 : decoder.Channels;
+
+                    // Rebuilt here too, and for the reason the resampler below it
+                    // says: a stage left pointing at the old chain is a stage the
+                    // pump no longer reads through, so the effect silently stops
+                    // happening the moment somebody changes output device. Its
+                    // settings come back through ApplySilence, which is why they are
+                    // kept on this object rather than on the stage.
+                    _silence = new SilenceReduction(_sourceChannels, _sourceRate)
+                    {
+                        Source = decoder.Read,
+                        ShouldYield = PumpShouldYield,
+                    };
+                    ApplySilence();
+
+                    _stretch = new TimeStretch(_sourceChannels) { Source = _silence.Read };
+
+                    // And the resampler, which this rebuild used to forget. Without
+                    // it the pump went on reading through the *old* one — pointed at
+                    // a stretcher that had been replaced — so moving to a device
+                    // with a different format silently dropped the pitch shift and
+                    // left a dead object in the chain.
+                    _pitch = new Resampler(_sourceChannels)
+                    {
+                        Source = _stretch.Read,
+                        SampleRate = fresh.SampleRate,
+                    };
+
+                    // Both rates together, from the one place that knows how they
+                    // combine — see ApplyRates.
+                    ApplyRates();
+
+                    _sourceDone = false;
+                    _announcedEnd = false;
+                    _emptyReads = 0;
+                    _loopAttempts = 0;
+                }
             }
-
-            // From the state now, not the state when the switch began: a pause or
-            // a resume during a slow open went to the old renderer, which is gone.
-            fresh.SetSuspended(_paused || _resting);
+            finally
+            {
+                // From the state now, not the state when the switch began: a pause or
+                // a resume during a slow open went to the old renderer, which is gone.
+                fresh.SetSuspended(_paused || _resting);
+                _switching = false;
+            }
 
             _lastSwitchProblem = "";
             Diagnostic = fresh.Diagnostic;
-            _switching = false;
 
             try { DeviceSwitched?.Invoke(DisplayNameOf(fresh), true); } catch { }
         }

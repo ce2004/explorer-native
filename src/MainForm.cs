@@ -1589,7 +1589,14 @@ namespace ExplorerNative
 
             // A tab that was not watched while it was behind (the window coming
             // back from the tray watches only the front one) is watched now.
-            if (Visible && NeedsWatcher(Active)) ArmWatcher(Active, Active.CurrentPath);
+            // Marked after arming, because arming clears the marks — and a folder
+            // nobody watched may have changed in any way at all.
+            if (Visible && NeedsWatcher(Active))
+            {
+                ArmWatcher(Active, Active.CurrentPath);
+                Active.NeedsRefresh = true;
+                Active.ReloadQuietly = true;
+            }
 
             // A tab that changed while it was hidden is re-read now that it is
             // being looked at.
@@ -1853,8 +1860,16 @@ namespace ExplorerNative
                     if (pane == Active) _pathLabel.Text = PathLabelFor(pane);
 
                     // The watcher went over to the folder that would not open;
-                    // it goes back to the one still on screen.
+                    // it goes back to the one still on screen. That folder went
+                    // unwatched meanwhile, and its pending marks were cleared, so
+                    // it is read again quietly.
                     ArmWatcher(pane, restore);
+                    if (!string.IsNullOrEmpty(restore) && restore != DrivesPath)
+                    {
+                        pane.NeedsRefresh = true;
+                        pane.ReloadQuietly = true;
+                        if (pane == Active) ScheduleWatchCheck();
+                    }
                     return false;
                 }
 
@@ -2524,8 +2539,13 @@ namespace ExplorerNative
             ScheduleWatchCheck();
         }
 
-        /// <summary>A pane showing a folder it has read, with no watcher on it or on the way.</summary>
+        /// <summary>
+        /// A pane showing a folder it has read, with no watcher on it or on the way.
+        /// Not one whose watcher was let go for an eject still pending: re-arming
+        /// it would drop the removal notification that puts it back.
+        /// </summary>
         private static bool NeedsWatcher(Pane pane) =>
+            pane.Removal == null &&
             !string.IsNullOrEmpty(pane.CurrentPath) && pane.CurrentPath != DrivesPath &&
             pane.Watcher == null && pane.ArmingPath == null && !string.IsNullOrEmpty(pane.LastLoadedPath);
 
@@ -7490,12 +7510,18 @@ namespace ExplorerNative
                     FolderSizeResult? fromDrive = null;
                     try { fromDrive = await drive.FolderSizeAsync(path); } catch { }
                     if (IsDisposed) return;
-                    if (fromDrive is not { } known)
+                    if (fromDrive is { } known) result = known;
+                    else
                     {
-                        Announce($"Could not measure {Path.GetFileName(path)}: Google Drive did not answer", isError: true);
-                        return;
+                        // Not in the index (the Shared drives list, or a folder whose
+                        // id is not known yet): Drive's own listings, folder by
+                        // folder, which is slower but still never walks the letter.
+                        int listed = 0;
+                        var (files, bytes) = await Task.Run(() => drive.MeasureOnDrive(
+                            new[] { path }, _ => Interlocked.Increment(ref listed), CancellationToken.None));
+                        if (IsDisposed) return;
+                        result = new FolderSizeResult(bytes, files, Math.Max(0, listed - 1), true);
                     }
-                    result = known;
                 }
                 else result = await _folderSizes.CalculateAsync(path);
                 if (IsDisposed) return;

@@ -1115,8 +1115,14 @@ namespace ExplorerNative
                 long left = _length - _consumed;
                 if (left <= 0)
                 {
-                    if (Changed == null && _inner.ReadByte() >= 0)
-                        Changed = "it grew while it was being archived; the archive holds it as it was when it was opened";
+                    // Only a check: the entry is already whole, so a read failing
+                    // here (a share dropping at the very end) must not end the archive.
+                    try
+                    {
+                        if (Changed == null && _inner.ReadByte() >= 0)
+                            Changed = "it grew while it was being archived; the archive holds it as it was when it was opened";
+                    }
+                    catch (IOException) { }
                     return 0;
                 }
 

@@ -314,9 +314,12 @@ async function confirmBox(title, text, yes) {
 // fetches the first folder while it is still asking what it can play).
 // Each navigation takes a number; an answer that comes back after a newer one
 // started is dropped, or a slow folder would replace the one tapped after it.
+// A quiet refresh takes no number of its own, so it can never outrank a tap;
+// it is dropped instead if the folder it refreshes is no longer the one shown.
 let folderSeq = 0;
 async function openFolder(path, { push = true, focusName = null, quiet = false, ready = null } = {}) {
-  const seq = ++folderSeq;
+  const seq = quiet ? folderSeq : ++folderSeq;
+  const stale = () => seq !== folderSeq || (quiet && path !== state.path);
   try {
     let entries;
     if (path == null) {
@@ -329,7 +332,7 @@ async function openFolder(path, { push = true, focusName = null, quiet = false, 
       entries = await api(mediaUrl('/api/list', path).replace(/&code=[^&]*/, ''));
     }
     if (ready) await ready;
-    if (seq !== folderSeq) return false;
+    if (stale()) return false;
     state.path = path;
     state.entries = entries;
     state.shown = true;
@@ -353,7 +356,7 @@ async function openFolder(path, { push = true, focusName = null, quiet = false, 
     return true;
   } catch (e) {
     if (ready) await ready;
-    if (seq !== folderSeq) return false;
+    if (stale()) return false;
     if (e.status === 401) return false;
     // Nothing on screen yet: the offline screen. A folder already shown,
     // empty or not, stays, and the problem is said over it.

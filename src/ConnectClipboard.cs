@@ -176,19 +176,25 @@ namespace ExplorerNative
         /// <summary>On the STA thread. Keeps the seq: the change was counted when it was announced.</summary>
         private void ReadNow()
         {
-            long seq;
-            lock (_gate)
+            // Reading can pump messages, so a change may be announced meanwhile. Contents read before it are
+            // never labelled with its seq: read again, a few times at most.
+            for (int attempt = 0; attempt < 3; attempt++)
             {
-                if (!_stale) return;
-                seq = _current.Seq;
-            }
-            var read = Read();
-            lock (_gate)
-            {
-                _current = read.State with { Seq = _current.Seq };
-                _png = read.Png;
-                // Reading can pump messages, so a change may have been announced meanwhile: that one stays stale.
-                if (_current.Seq == seq) _stale = false;
+                long seq;
+                lock (_gate)
+                {
+                    if (!_stale) return;
+                    seq = _current.Seq;
+                }
+                var read = Read();
+                lock (_gate)
+                {
+                    if (_current.Seq != seq) continue;
+                    _current = read.State with { Seq = seq };
+                    _png = read.Png;
+                    _stale = false;
+                    return;
+                }
             }
         }
 
