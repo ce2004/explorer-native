@@ -172,6 +172,14 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            // Just the audio converter and editor.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "convert")
+            {
+                await AudioConvertTests.RunAll(Check, Equal);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "delete")
             {
                 DeleteTests.RunAll(Check, Equal);
@@ -276,6 +284,7 @@ namespace ExplorerNative
             await Guard("ShortcutSortDetailsTests", () => ShortcutSortDetailsTests.RunAll(Check, Equal));
             await Guard("DriveSizeTests", () => DriveSizeTests.RunAll(Check, Equal));
             await Guard("DriveClientCacheTests", () => DriveClientCacheTests.RunAll(Check, Equal));
+            await Guard("AudioConvertTests", () => AudioConvertTests.RunAll(Check, Equal));
 
             Console.WriteLine($"\n{_passed} passed, {_failed} failed");
             return _failed == 0 ? 0 : 1;
@@ -6111,7 +6120,7 @@ namespace ExplorerNative
         /// every sample looked identical to one that worked. Amplitude is a
         /// parameter here and the tests below check what comes back out.
         /// </summary>
-        private static void WriteTone(string path, double seconds, double amplitude,
+        internal static void WriteTone(string path, double seconds, double amplitude,
             int rate = 48000, int channels = 2)
         {
             int frames = (int)(rate * seconds);

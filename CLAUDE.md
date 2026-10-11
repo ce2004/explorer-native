@@ -83,6 +83,8 @@ $p.WaitForExit(120000)
 | TrackDecoder / AudioDecoder / OggDecoder | Decoder choice / Media Foundation reader / Concentus+NVorbis |
 | OggPages / OggOpusReader / OggVorbisPackets | Ogg pages, granule bisection / Opus / Vorbis packets |
 | ExactSeek / FlacSeek / Mp3Seek / VirtualStream | Sample-exact seeking |
+| AudioEncoders / AudioConvert / AudioConvertForm | Format table, WAV, own FLAC, Opus, MF sink writer / batch: gather, plan, temp then place / dialog |
+| AudioEdit / AudioEditorForm | Edit list, undo history, EditedDecoder / the editor window |
 | AiffStream / CdTrackStream / LocalByteStream / StreamingSource / AudioPrefetch | AIFF as WAV / CD as WAV / file as IStream / in-memory download / warm cursor file |
 | TimeStretch / Resampler / SilenceReduction / Equaliser | WSOLA / pitch / silence removal / 20 bands |
 | WasapiPlayback / WasapiRenderer | Ring and pump / device, gain, limiter, meter |
@@ -257,6 +259,15 @@ Our own provider over `cldapi.dll`, so the app's ordinary file code works on the
 - Parallel deflate. One worker and sixteen must give byte-identical output. This machine runs ~3.8 cores.
 - `SafeTarget` checks containment (UNC before trimming slashes). Folders are plan entries. Zip64 only when needed. UTF-8 flag on. CRC-32 is the ARM `Crc32` instruction, not `Crc32C`.
 - Progress counts while compressing. Test progress with one file. Unreadable files are skipped, not fatal. Every archive written is round-tripped through bsdtar.
+
+## Converting and editing audio
+
+- Context-menu commands (Convert audio, Edit audio), shown by name only. Not on the Drive letter.
+- Decode with TrackDecoder, encode: WAV and Opus (Concentus OpusOggWriteStream) ourselves; MP3, AAC and FLAC through the MF sink writer, which picks the container from the extension. This is encoding, not the playback chain, so the no-MFT rule does not apply. FLAC falls back to our own encoder (fixed predictors, Rice) when Windows has none. Encoders are probed with MFTEnumEx.
+- Output goes to `.converting-*` with the target's extension and is moved into place only when complete. Never over a source, never over another source in the batch; replacing an existing file only when the person chose Replace (asked once per batch, `ConflictForm` with `filesOnly`).
+- `AudioDecoder`'s MFStartup count and call are one step under a lock: the converter opens decoders in parallel, and the old Interlocked count let a second decoder use MF before the first had started it (0xC00D3E85).
+- Windows reads no tags from WAV and refuses to write them; the summary says so. Opus tags go in OpusTags, FLAC (ours) in VORBIS_COMMENT, the rest through the property store after writing.
+- The editor never writes until save. Its `EditList` is immutable (undo keeps the old one); `EditedDecoder` plays and renders it, through `WasapiPlayback.DecoderFactory`. Save writes "name (edited).ext"; Ctrl+Shift+S replaces the original only after a question, original to the Recycle Bin first.
 
 ## Windows and shell traps
 

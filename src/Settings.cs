@@ -202,6 +202,14 @@ namespace ExplorerNative
         // MainForm falls back to zip for anything it does not recognise.
         public string ArchiveFormatId { get; set; } = "zip";
         public ArchiveLevel ArchiveCompression { get; set; } = ArchiveLevel.Balanced;
+
+        // The last answers given to the Convert audio dialog, on the same terms
+        // as the two above: not preferences, just remembered, and shown filled
+        // in. Stored as the choice's id (AudioFormats), never clamped: an id
+        // this build does not know is left alone and the dialog starts at the
+        // default instead.
+        public string AudioConvertFormat { get; set; } = AudioFormats.DefaultId;
+        public bool AudioConvertSubfolders { get; set; }
         // UseBackgroundEnumeration was here. A folder is always listed on a
         // worker now, and shown as it arrives; listing on the UI thread was a
         // way of freezing the window, not a preference.

@@ -324,6 +324,12 @@ namespace ExplorerNative
             Live("extract.partial", "Partly extracted", FileOperations, Loud, "Extracted {0} items; {1} failed", 20, 4),
             Live("extract.failed", "Could not extract", FileOperations, Loud, "Could not extract: {0}", "the archive is damaged"),
             Live("extract.cancelled", "Extracting cancelled", FileOperations, Say, "Extracting cancelled"),
+            Live("convert.start", "Converting audio started", FileOperations, Bar, "Converting {0} to {1}", "12 files", "MP3, 192 kilobits per second"),
+            Live("convert.done", "Audio converted", FileOperations, Say, "{0}", "Converted 12 files to MP3, 192 kilobits per second."),
+            Live("convert.failed", "Some audio could not be converted", FileOperations, Loud, "{0}",
+                "Converted 11 files to MP3, 192 kilobits per second, 1 failed: song.wma, it could not be read."),
+            Live("convert.cancelled", "Converting cancelled", FileOperations, Say, "{0}", "Converting cancelled after 3 files"),
+            Live("convert.nothing", "Nothing to convert", FileOperations, Say, "There are no audio files in {0}", "Photos"),
 
             Live("conflict.overwrite", "Overwriting", FileOperations, Bar, "Replacing {0}", "song.flac"),
             Live("conflict.rename", "Renamed to avoid a clash", FileOperations, Bar, "Saved as {0}", "song (2).flac"),

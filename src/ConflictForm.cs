@@ -52,11 +52,22 @@ namespace ExplorerNative
             ("Skip these entirely and keep what is there", FileOperations.ConflictChoice.Skip),
         };
 
-        public FileOperations.ConflictChoice Choice =>
-            Options[Math.Clamp(_choice.SelectedIndex, 0, Options.Length - 1)].Choice;
+        /// <summary>
+        /// The options without "fill in what is missing", for things that are
+        /// files rather than folders being merged — converted audio, say. Keep
+        /// both stays first for the same reason it is first above.
+        /// </summary>
+        private static readonly (string Text, FileOperations.ConflictChoice Choice)[] FileOptions =
+            Options.Where(o => o.Choice != FileOperations.ConflictChoice.FillGaps).ToArray();
 
-        public ConflictForm(IReadOnlyList<string> clashing, string destinationName)
+        private readonly (string Text, FileOperations.ConflictChoice Choice)[] _options;
+
+        public FileOperations.ConflictChoice Choice =>
+            _options[Math.Clamp(_choice.SelectedIndex, 0, _options.Length - 1)].Choice;
+
+        public ConflictForm(IReadOnlyList<string> clashing, string destinationName, bool filesOnly = false)
         {
+            _options = filesOnly ? FileOptions : Options;
             Text = "Already there";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterParent;
@@ -82,7 +93,7 @@ namespace ExplorerNative
                 Width = ClientSize.Width - 24,
                 Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top,
             };
-            foreach (var option in Options) _choice.Items.Add(option.Text);
+            foreach (var option in _options) _choice.Items.Add(option.Text);
             _choice.SelectedIndex = 0;
 
             // The label is decoration; this is what is spoken on arrival, and it
@@ -177,9 +188,9 @@ namespace ExplorerNative
         /// happen at all.
         /// </summary>
         public static FileOperations.ConflictChoice Ask(
-            IWin32Window owner, IReadOnlyList<string> clashing, string destinationName)
+            IWin32Window owner, IReadOnlyList<string> clashing, string destinationName, bool filesOnly = false)
         {
-            using var dialog = new ConflictForm(clashing, destinationName);
+            using var dialog = new ConflictForm(clashing, destinationName, filesOnly);
             return dialog.ShowDialog(owner) == DialogResult.OK
                 ? dialog.Choice
                 : FileOperations.ConflictChoice.Cancel;

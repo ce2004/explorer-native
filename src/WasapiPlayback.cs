@@ -290,6 +290,16 @@ namespace ExplorerNative
         /// </summary>
         public bool Loop { get; set; }
 
+        /// <summary>A decoder from (device rate, device channels), with why not when it returns null.</summary>
+        public delegate ITrackDecoder? OpenDecoder(int sampleRate, int channels, out string why);
+
+        /// <summary>
+        /// When set, Start plays what this builds instead of opening the path:
+        /// how the audio editor plays a file through its edits with the same
+        /// pipeline the player uses. Called on the pump thread.
+        /// </summary>
+        public OpenDecoder? DecoderFactory { get; set; }
+
         public string Path { get; private set; } = "";
 
         public string Diagnostic { get; private set; } = "not started";
@@ -689,8 +699,18 @@ namespace ExplorerNative
                 // Whichever decoder can take the file. Media Foundation for
                 // everything Windows decodes, and the managed one for Ogg
                 // Vorbis and Opus, which it does not — see TrackDecoder.
-                var decoder = TrackDecoder.Open(path, stream,
-                    _renderer.SampleRate, _renderer.Channels, out why);
+                //
+                // Or whatever the owner builds instead: the audio editor plays
+                // the file through its edit list (EditedDecoder), made here on
+                // the pump thread like any other decoder.
+                var factory = DecoderFactory;
+                ITrackDecoder? decoder;
+                if (factory != null)
+                {
+                    try { decoder = factory(_renderer.SampleRate, _renderer.Channels, out why); }
+                    catch (Exception ex) { decoder = null; why = ex.Message; }
+                }
+                else decoder = TrackDecoder.Open(path, stream, _renderer.SampleRate, _renderer.Channels, out why);
                 ok = decoder != null;
 
                 if (decoder == null) { opened.Set(); return; }

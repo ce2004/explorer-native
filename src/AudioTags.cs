@@ -8,6 +8,29 @@ namespace ExplorerNative
     /// <summary>One line of the song properties sheet.</summary>
     public sealed record SongProperty(string Name, string Value);
 
+    /// <summary>
+    /// The tags the converter and the editor carry from one file to another.
+    /// Null means absent, the same rule as everywhere else here.
+    /// </summary>
+    public sealed record AudioTagSet(string? Title, string? Artist, string? Album, string? AlbumArtist,
+        string? Genre, uint? Year, uint? Track)
+    {
+        public bool IsEmpty => Title == null && Artist == null && Album == null && AlbumArtist == null &&
+                               Genre == null && Year == null && Track == null;
+
+        /// <summary>The same tags as Vorbis comment fields, for FLAC and Opus, which carry them that way.</summary>
+        public IEnumerable<(string Key, string Value)> VorbisFields()
+        {
+            if (Title != null) yield return ("TITLE", Title);
+            if (Artist != null) yield return ("ARTIST", Artist);
+            if (Album != null) yield return ("ALBUM", Album);
+            if (AlbumArtist != null) yield return ("ALBUMARTIST", AlbumArtist);
+            if (Genre != null) yield return ("GENRE", Genre);
+            if (Year != null) yield return ("DATE", Year.Value.ToString());
+            if (Track != null) yield return ("TRACKNUMBER", Track.Value.ToString());
+        }
+    }
+
     /// <summary>A track's tags as values, for Explorer Native Connect's stat.</summary>
     public sealed record SongSummary(string? Title, string? Artist, string? Album, int? Year, int? Track,
         double? DurationSeconds);
@@ -249,6 +272,109 @@ namespace ExplorerNative
             }
             catch { return null; }
             finally { Release(store); }
+        }
+
+        /// <summary>
+        /// The seven tags the converter copies, or null when the file has none
+        /// of them (or Windows has no property handler for it, as for Ogg).
+        /// Runs on a worker.
+        /// </summary>
+        public static AudioTagSet? ReadTagSet(string path)
+        {
+            IPropertyStore? store = null;
+            try { store = Open(path); } catch { }
+            if (store == null) return null;
+            try
+            {
+                var year = Number(store, Year);
+                var track = Number(store, TrackNumber);
+                var tags = new AudioTagSet(
+                    Text(store, Title), Text(store, Artist), Text(store, AlbumTitle), Text(store, AlbumArtist),
+                    Text(store, Genre),
+                    year is > 0 and < 10000 ? (uint)year.Value : null,
+                    track is > 0 and < 100000 ? (uint)track.Value : null);
+                return tags.IsEmpty ? null : tags;
+            }
+            catch { return null; }
+            finally { Release(store); }
+        }
+
+        private const uint GPS_READWRITE = 0x2;
+        private const ushort VT_UI4 = 19;
+        private const ushort VT_LPWSTR = 31;
+
+        [DllImport("propsys.dll", PreserveSig = true)]
+        private static extern int PSCoerceToCanonicalValue(ref PropertyKey key, ref PropVariant value);
+
+        /// <summary>
+        /// Writes tags into a file through its Windows property handler: ID3 for
+        /// MP3, MP4 atoms for M4A, Vorbis comments for FLAC. Best effort, on a
+        /// worker, and only ever on a file the converter has just made. False
+        /// when Windows would not take them; the audio is fine either way.
+        /// </summary>
+        public static bool WriteTagSet(string path, AudioTagSet tags)
+        {
+            if (tags.IsEmpty) return true;
+
+            IPropertyStore? store = null;
+            try
+            {
+                var iid = typeof(IPropertyStore).GUID;
+                SHGetPropertyStoreFromParsingName(path, IntPtr.Zero, GPS_READWRITE, ref iid, out store);
+                if (store == null) return false;
+
+                int written = 0;
+                if (SetText(store, Title, tags.Title)) written++;
+                if (SetText(store, Artist, tags.Artist)) written++;
+                if (SetText(store, AlbumTitle, tags.Album)) written++;
+                if (SetText(store, AlbumArtist, tags.AlbumArtist)) written++;
+                if (SetText(store, Genre, tags.Genre)) written++;
+                if (SetNumber(store, Year, tags.Year)) written++;
+                if (SetNumber(store, TrackNumber, tags.Track)) written++;
+
+                if (written == 0) return false;
+                store.Commit();
+                return true;
+            }
+            catch { return false; }
+            finally { if (store != null) Release(store); }
+        }
+
+        /// <summary>
+        /// One text tag. Made as plain text and then coerced to whatever the
+        /// property really holds, because Artist and Genre are lists of
+        /// strings, and a plain string set on them is refused.
+        /// </summary>
+        private static bool SetText(IPropertyStore store, PropertyKey key, string? text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return false;
+
+            var value = new PropVariant { Type = VT_LPWSTR, Value1 = Marshal.StringToCoTaskMemUni(text) };
+            var pk = key;
+            try
+            {
+                if (PSCoerceToCanonicalValue(ref pk, ref value) < 0) return false;
+                store.SetValue(ref pk, ref value);
+                return true;
+            }
+            catch { return false; }
+            finally { PropVariantClear(ref value); }
+        }
+
+        private static bool SetNumber(IPropertyStore store, PropertyKey key, uint? number)
+        {
+            if (number == null) return false;
+
+            var value = new PropVariant { Type = VT_UI4, Value1 = (IntPtr)(long)number.Value };
+            var pk = key;
+            try
+            {
+                if (PSCoerceToCanonicalValue(ref pk, ref value) < 0) return false;
+                store.SetValue(ref pk, ref value);
+                return true;
+            }
+            catch { return false; }
+            finally { PropVariantClear(ref value); }
         }
 
         [DllImport("propsys.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
