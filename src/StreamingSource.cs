@@ -265,10 +265,21 @@ namespace ExplorerNative
             _ = Task.Run(async () =>
             {
                 await FetchHead(token).ConfigureAwait(false);
-                for (int i = 0; i < Math.Max(1, _source.Streams); i++)
+                for (int i = 0; i < Workers; i++)
                     _ = Task.Run(() => Worker(token));
             });
         }
+
+        /// <summary>How many download workers a run starts.</summary>
+        private int Workers => Math.Max(1, _source.Streams);
+
+        /// <summary>
+        /// Wakes idle workers when a piece lands or the playhead moves. Awaited,
+        /// not Monitor.Wait: a worker with nothing to fetch used to sit blocking
+        /// a pool thread for the whole of the track, four of them for a Drive
+        /// file, and the pool grows slowly when it is starved.
+        /// </summary>
+        private readonly SemaphoreSlim _wake = new(0, int.MaxValue);
 
         private async Task FetchHead(CancellationToken token)
         {
@@ -302,13 +313,19 @@ namespace ExplorerNative
                     if (_disposed || _released) return;
                     index = NextPiece();
                     if (index >= 0) _fetching.Add(index);
+
+                    // The whole file is held and nothing can be let go of — it
+                    // fits the budget — so there is nothing left for a worker to
+                    // do. A release empties the window and Resume starts new ones.
+                    else if (Length <= _cacheBytes && _pieces.Count >= _pieceCount) return;
                 }
 
                 if (index < 0)
                 {
                     // Nothing worth fetching until the listener moves or a piece
                     // is let go of.
-                    lock (_progress) Monitor.Wait(_progress, 250);
+                    try { await _wake.WaitAsync(250, token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { return; }
                     continue;
                 }
 
@@ -442,6 +459,11 @@ namespace ExplorerNative
         private void Pulse()
         {
             lock (_progress) Monitor.PulseAll(_progress);
+
+            // Enough to wake every worker once; a wake nobody needed only sends
+            // a worker round its loop.
+            int owed = Workers - _wake.CurrentCount;
+            if (owed > 0) try { _wake.Release(owed); } catch { }
         }
 
         /// <summary>

@@ -1,5 +1,7 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace ExplorerNative
 {
@@ -155,6 +157,62 @@ namespace ExplorerNative
             // the searched folder itself.
             populate(path);
             return path;
+        }
+
+        /// <summary>
+        /// Lists every folder the hits' chains pass through, a level at a time
+        /// and <paramref name="parallelism"/> folders at once, filling
+        /// <paramref name="resolved"/> as <see cref="PathForChain"/> would — so
+        /// that walking each hit afterwards finds every folder already listed.
+        ///
+        /// One folder at a time, a search whose hits sat in forty folders paid
+        /// forty listings end to end, at a second or more each. The levels still
+        /// go in order, because a folder can only be found inside its parent
+        /// once the parent has been listed; within a level nothing depends on
+        /// anything else.
+        ///
+        /// <paramref name="populate"/> must be safe to call from several threads
+        /// at once, and is called once per distinct folder per search.
+        /// </summary>
+        public static async Task PopulateAhead(
+            string rootPath, IEnumerable<IReadOnlyList<string>> chains,
+            Action<string> populate,
+            Func<string, string, string?> childPathForId,
+            Dictionary<string, string?> resolved,
+            int parallelism, CancellationToken token)
+        {
+            var walking = new List<(IReadOnlyList<string> Chain, string Path)>();
+            foreach (var chain in chains) walking.Add((chain, rootPath));
+
+            for (int depth = 0; walking.Count > 0; depth++)
+            {
+                token.ThrowIfCancellationRequested();
+
+                var due = new List<string>();
+                var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var (_, path) in walking)
+                    if (seen.Add(path)) due.Add(path);
+
+                await Parallel.ForEachAsync(due,
+                    new ParallelOptions { MaxDegreeOfParallelism = Math.Max(1, parallelism), CancellationToken = token },
+                    (path, _) =>
+                    {
+                        populate(path);
+                        return ValueTask.CompletedTask;
+                    }).ConfigureAwait(false);
+
+                // Down one level, on this thread: the map is not shared.
+                var next = new List<(IReadOnlyList<string> Chain, string Path)>();
+                foreach (var (chain, path) in walking)
+                {
+                    if (depth >= chain.Count) continue;   // at the hit's own folder, listed above
+                    var childId = chain[depth];
+                    if (!resolved.TryGetValue(childId, out var childPath))
+                        resolved[childId] = childPath = childPathForId(path, childId);
+                    if (childPath != null) next.Add((chain, childPath));
+                }
+                walking = next;
+            }
         }
     }
 }

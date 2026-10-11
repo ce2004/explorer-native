@@ -460,7 +460,14 @@ namespace ExplorerNative
                     null, response.StatusCode);
             }
 
+            // Google may hand back a new refresh token in place of the one just
+            // used. Kept only in memory, the next launch read the old one from
+            // disk, which Google may already have retired: a sign-in lost for
+            // no reason the person could see.
+            string before = _refreshToken;
             ReadTokens(body);
+            if (_refreshToken.Length > 0 && !string.Equals(before, _refreshToken, StringComparison.Ordinal))
+                SaveRefreshToken();
             return _access.Token.Length > 0;
         }
 

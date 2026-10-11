@@ -89,6 +89,7 @@
     <Compile Include="DriveCopyTests.cs" />
     <Compile Include="FakeDrive.cs" />
     <Compile Include="DriveSizeTests.cs" />
+    <Compile Include="DriveClientCacheTests.cs" />
     <Compile Include="DriveMonitorTests.cs" />
     <Compile Include="EdgeCaseTests.cs" />
     <Compile Include="TransferFixTests.cs" />

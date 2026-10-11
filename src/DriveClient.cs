@@ -105,15 +105,27 @@ namespace ExplorerNative
         /// <see cref="MadeWithTag"/> — and its answer, the file as JSON, is
         /// returned as though the request had succeeded.
         /// </param>
+        /// <param name="interactive">
+        /// For a request somebody is sitting in front of: a folder being opened,
+        /// a filesystem callback holding up a listing. Everything above is right
+        /// for a transfer with its own window and wrong for these — two minutes
+        /// per attempt, six attempts, and an outage waited out for as long as it
+        /// lasts is a frozen pane, or a callback that outlives Windows' patience.
+        /// So: the fifteen-second client, <see cref="InteractiveAttempts"/>
+        /// attempts with short gaps, and a network that is already known to be
+        /// down fails at once rather than being waited for.
+        /// </param>
         private async Task<HttpResponseMessage> SendWithRetry(
             Func<Task<HttpRequestMessage>> build, HttpCompletionOption completion, CancellationToken token,
-            Func<CancellationToken, Task<string?>>? landed = null)
+            Func<CancellationToken, Task<string?>>? landed = null, bool interactive = false)
         {
             var random = new Random();
             Exception? last = null;
             TimeSpan? asked = null;
             bool refusedOnce = false;
             bool maybeDone = false;
+            int attempts = interactive ? InteractiveAttempts : MaxSmallUploadAttempts;
+            var client = interactive ? _http : _slowMetadata;
 
             async Task<HttpResponseMessage?> AlreadyDone()
             {
@@ -129,10 +141,18 @@ namespace ExplorerNative
                     };
             }
 
-            for (int attempt = 0; attempt < MaxSmallUploadAttempts; attempt++)
+            for (int attempt = 0; attempt < attempts; attempt++)
             {
                 token.ThrowIfCancellationRequested();
-                if (attempt > 0) await Pause(RetryDelay(attempt - 1, random, asked), token);
+                if (attempt > 0)
+                {
+                    var wait = RetryDelay(attempt - 1, random, asked);
+
+                    // Somebody is waiting: a Retry-After of half a minute is
+                    // better reported than sat through.
+                    if (interactive && wait > InteractiveLongestWait) break;
+                    await Pause(wait, token);
+                }
 
                 if (await AlreadyDone() is { } done) return done;
 
@@ -140,7 +160,7 @@ namespace ExplorerNative
                 try
                 {
                     using var request = await build();
-                    response = await Send(request, completion, token, _slowMetadata);
+                    response = await Send(request, completion, token, client);
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
                 {
@@ -163,6 +183,19 @@ namespace ExplorerNative
                     asked = null;
                     maybeDone = true;
 
+                    // Somebody waiting is told now that the network is gone,
+                    // rather than after it comes back.
+                    if (interactive)
+                    {
+                        if (attempt == attempts - 1 ||
+                            (DriveHealth.LooksLikeNetwork(ex) && Health.IsOffline))
+                        {
+                            if (await AlreadyDone() is { } made) return made;
+                            throw;
+                        }
+                        continue;
+                    }
+
                     // An outage is waited out rather than charged to the budget,
                     // exactly as it is for a file. A folder that cannot be
                     // created takes everything underneath it with it, so this is
@@ -173,7 +206,7 @@ namespace ExplorerNative
                         continue;
                     }
 
-                    if (attempt == MaxSmallUploadAttempts - 1)
+                    if (attempt == attempts - 1)
                     {
                         if (await AlreadyDone() is { } made) return made;
                         throw;
@@ -230,6 +263,16 @@ namespace ExplorerNative
             if (await AlreadyDone() is { } finished) return finished;
             throw last ?? new InvalidOperationException("Google Drive would not answer");
         }
+
+        /// <summary>
+        /// Attempts for a request somebody is waiting on. Two fifteen-second
+        /// tries and a second's gap fit inside the forty-five seconds a
+        /// placeholder callback is given; a third would not.
+        /// </summary>
+        private const int InteractiveAttempts = 2;
+
+        /// <summary>The longest gap an interactive request sits through before trying again.</summary>
+        private static readonly TimeSpan InteractiveLongestWait = TimeSpan.FromSeconds(5);
 
         /// <summary>
         /// Whether a create whose answer was lost happened: the file as JSON, or
@@ -310,10 +353,27 @@ namespace ExplorerNative
         {
             _auth = auth;
             _token = auth.AccessToken;
-            _http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-            _slowMetadata = new HttpClient { Timeout = TimeSpan.FromMinutes(2) };
-            _uploads = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
+            _http = new HttpClient(SharedHandler, disposeHandler: false) { Timeout = TimeSpan.FromSeconds(15) };
+            _slowMetadata = new HttpClient(SharedHandler, disposeHandler: false) { Timeout = TimeSpan.FromMinutes(2) };
+            _uploads = new HttpClient(SharedHandler, disposeHandler: false) { Timeout = Timeout.InfiniteTimeSpan };
         }
+
+        /// <summary>
+        /// One connection pool for every request to Google, whichever client it
+        /// goes out on. Three handlers meant three pools: a listing could not
+        /// reuse the connection a read had just warmed, and each paid its own TLS
+        /// handshake — a good part of the ~700ms a request costs. Static, so a
+        /// remount does not leave another pool behind.
+        ///
+        /// The idle and lifetime limits let a connection go before Google's
+        /// front end drops it from under a request, and pick up DNS changes.
+        /// </summary>
+        private static readonly SocketsHttpHandler SharedHandler = new()
+        {
+            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(10),
+            ConnectTimeout = TimeSpan.FromSeconds(10),
+        };
 
         /// <summary>
         /// For the suite only: every request goes to <paramref name="handler"/>
@@ -559,14 +619,23 @@ namespace ExplorerNative
         /// <paramref name="onPage"/> is handed each page as it arrives, so a
         /// folder of several thousand can be shown a thousand at a time rather
         /// than after the last page.
+        ///
+        /// <paramref name="interactive"/> is whether somebody is waiting on the
+        /// answer — see <see cref="SendWithRetry"/>. Left out, a listing with a
+        /// <paramref name="label"/> to announce or an <paramref name="onPage"/>
+        /// to show is one somebody is looking at, and is interactive; the upload,
+        /// copy and folder-monitor callers pass neither and keep the patient
+        /// two-minute client and the outage wait.
         /// </summary>
         public async Task<List<DriveEntry>> ListChildren(
             string folderId, CancellationToken token, int max = 100_000, string? label = null,
-            string? driveId = null, Action<List<DriveEntry>>? onPage = null)
+            string? driveId = null, Action<List<DriveEntry>>? onPage = null, bool? interactive = null)
         {
+            bool waiting = interactive ?? (label != null || onPage != null);
+
             if (folderId == SharedDrivesId)
             {
-                var drives = await ListSharedDrives(token);
+                var drives = await ListSharedDrives(token, waiting);
                 onPage?.Invoke(drives);
                 return drives;
             }
@@ -598,10 +667,11 @@ namespace ExplorerNative
                 // already in it — and a folder holding several thousand files is
                 // several of these pages. One of them running past fifteen
                 // seconds used to end the entire transfer, reported as a
-                // cancellation nobody asked for.
+                // cancellation nobody asked for. Unless somebody is waiting to
+                // see it, when it is the short client and no outage wait.
                 using var response = await SendWithRetry(
                     () => Request(HttpMethod.Get, url, token),
-                    HttpCompletionOption.ResponseContentRead, token);
+                    HttpCompletionOption.ResponseContentRead, token, interactive: waiting);
 
                 var body = await response.Content.ReadAsStringAsync(token);
                 if (!response.IsSuccessStatusCode)
@@ -662,7 +732,7 @@ namespace ExplorerNative
         /// The shared drives this account can see, each as a folder whose id is
         /// the drive's — a shared drive's top folder has the same id as the drive.
         /// </summary>
-        public async Task<List<DriveEntry>> ListSharedDrives(CancellationToken token)
+        public async Task<List<DriveEntry>> ListSharedDrives(CancellationToken token, bool interactive = false)
         {
             var results = new List<DriveEntry>();
             string? page = null;
@@ -675,7 +745,7 @@ namespace ExplorerNative
 
                 using var response = await SendWithRetry(
                     () => Request(HttpMethod.Get, url, token),
-                    HttpCompletionOption.ResponseContentRead, token);
+                    HttpCompletionOption.ResponseContentRead, token, interactive: interactive);
 
                 var body = await response.Content.ReadAsStringAsync(token);
                 if (!response.IsSuccessStatusCode)

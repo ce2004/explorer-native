@@ -314,7 +314,9 @@ namespace ExplorerNative
             Check("a folder's contents are listed before its copy is made",
                 listed >= 0 && created > listed);
             Check("and nothing the copy made is copied again",
-                drive.Split("if (made.Contains(child.Id)) continue;").Length - 1 == 2);
+                drive.Split("made.Contains(child.Id)").Length - 1 >= 2 &&
+                (Between(drive, "private static async Task<int> CopyFilesInto(", "return count;") ?? "")
+                    .Contains("!made.Contains(child.Id)", StringComparison.Ordinal));
 
             Check("and a copy with both ends on the drive is done on the drive",
                 main.Contains("if (allFromDrive) return await CopyWithinDrive(paths, destination, conflicts);",

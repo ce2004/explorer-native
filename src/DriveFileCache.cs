@@ -236,7 +236,124 @@ namespace ExplorerNative
             _poolKey = fileId + "#" + Interlocked.Increment(ref _instances);
             Size = size;
             LastUsed = Environment.TickCount64;
+
+            // Not started here. Opening a cache used to start four 4MB requests
+            // at once, so every byte anything read — Explorer looking for a tag
+            // or a thumbnail, a property sheet, an antivirus peek — cost sixteen
+            // megabytes of a link that gives three or four a second. The
+            // download starts when it is wanted: the file was warmed, or it is
+            // being read straight through. See StartPump.
+            _ahead = Math.Max(Streams * 2, (int)Math.Min(int.MaxValue, pool.Budget / DriveCachePool.ChunkBytes / 4));
+        }
+
+        /// <summary>
+        /// How small reads of a file nobody is reading through are answered: one
+        /// ranged request of at least this much, kept for the reads that follow.
+        /// A request costs the same up to here, and a quarter megabyte covers
+        /// what a tag or thumbnail reader looks at in one go.
+        /// </summary>
+        private const int ColdBytes = 256 * 1024;
+
+        /// <summary>
+        /// How far a reader goes straight through the file before the download
+        /// starts. A copy passes it in its first few callbacks; a tag reader
+        /// never does.
+        /// </summary>
+        private const long SequentialStart = 1024 * 1024;
+
+        /// <summary>
+        /// How many chunks the download may run ahead of the furthest one read:
+        /// a quarter of the pool, so the three files that may be open at once
+        /// fit together, and the download never evicts the chunks just ahead of
+        /// a reader to make room for ones further on. It was unbounded, and a
+        /// file over the whole pool lost its own next chunks to its own tail.
+        /// </summary>
+        private readonly int _ahead;
+
+        /// <summary>Most times one chunk is tried by the download before reads are left to fetch it.</summary>
+        private const int MostChunkFailures = 5;
+
+        private int _pumpStarted;
+        private volatile bool _everRead;
+
+        /// <summary>The chunk the latest read began in, and the furthest any read has reached.</summary>
+        private int _lastReadChunk = -1;
+        private int _highestRead = -1;
+
+        /// <summary>The straight run the reads have made, start and end, for <see cref="SequentialStart"/>.</summary>
+        private long _runStart = -1, _runEnd = -1;
+        private readonly object _runGate = new();
+
+        /// <summary>Wakes the download when a read moves on or a chunk finishes.</summary>
+        private readonly SemaphoreSlim _wake = new(0, 1);
+
+        /// <summary>Chunks the download itself has asked for and not finished with.</summary>
+        private readonly ConcurrentDictionary<int, byte> _pumpFetching = new();
+
+        /// <summary>Chunks the download failed to fetch: how often, and when it may try again.</summary>
+        private readonly ConcurrentDictionary<int, (int Count, long RetryAt)> _failed = new();
+
+        /// <summary>
+        /// The last few cold reads, whole, so the reads that follow a small one
+        /// are memory copies. Two: the head and the tail a decoder looks at.
+        /// </summary>
+        private readonly List<(long At, byte[] Bytes)> _fragments = new();
+        private readonly object _fragmentGate = new();
+
+        /// <summary>
+        /// Starts the download, once. Called when the file is warmed (a lease
+        /// that ends without a read is exactly what warming is) and when the
+        /// reads pass <see cref="SequentialStart"/> straight through.
+        /// </summary>
+        internal void StartPump()
+        {
+            if (_cancel.IsCancellationRequested) return;
+            if (Interlocked.CompareExchange(ref _pumpStarted, 1, 0) != 0) return;
             _ = Task.Run(() => Pump(_cancel.Token));
+        }
+
+        /// <summary>Whether the download has been started, for the suite.</summary>
+        internal bool Pumping => Volatile.Read(ref _pumpStarted) != 0;
+
+        private void Wake()
+        {
+            if (_wake.CurrentCount == 0) try { _wake.Release(); } catch (SemaphoreFullException) { }
+        }
+
+        /// <summary>
+        /// Records where a read is, for the download's window and for deciding
+        /// whether this is a reader going straight through.
+        /// </summary>
+        private void NoteRead(long offset, int length)
+        {
+            _everRead = true;
+            if (length <= 0 || offset >= Size) return;
+
+            long end = Math.Min(Size, offset + length);
+            int first = (int)(offset / DriveCachePool.ChunkBytes);
+            int last = (int)((end - 1) / DriveCachePool.ChunkBytes);
+            Volatile.Write(ref _lastReadChunk, first);
+            int seen;
+            while ((seen = Volatile.Read(ref _highestRead)) < last &&
+                   Interlocked.CompareExchange(ref _highestRead, last, seen) != seen) { }
+
+            bool through;
+            lock (_runGate)
+            {
+                // Overlapping or touching the run so far, within the 4KB a
+                // callback is rounded to, carries it on.
+                if (_runStart >= 0 && offset >= _runStart && offset <= _runEnd + 4096)
+                    _runEnd = Math.Max(_runEnd, end);
+                else
+                {
+                    _runStart = offset;
+                    _runEnd = end;
+                }
+                through = _runEnd - _runStart >= SequentialStart;
+            }
+
+            if (through) StartPump();
+            Wake();
         }
 
         /// <summary>How many chunks the file is, rounded up.</summary>
@@ -289,49 +406,61 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Pulls the file down from the beginning, several chunks at a time, and
-        /// through the same door the callbacks use — so a chunk somebody is
-        /// already waiting on is never fetched twice.
+        /// Pulls the file down ahead of its reader, <see cref="Streams"/> chunks
+        /// in flight at a time, and through the same door the callbacks use — so
+        /// a chunk somebody is already waiting on is never fetched twice.
+        ///
+        /// A sliding window rather than batches: it was four requests, then a
+        /// wait for the slowest of the four, then four more, so one slow
+        /// response idled the other three streams. A failed chunk is tried again
+        /// after a pause rather than ending the download — one 503 used to leave
+        /// the rest of the file to the reads, a chunk at a time.
         /// </summary>
         private async Task Pump(CancellationToken token)
         {
+            var slots = new SemaphoreSlim(Streams, Streams);
             try
             {
                 int chunks = ChunkCount;
-                for (int index = 0; index < chunks && !token.IsCancellationRequested; index += Streams)
+                while (!token.IsCancellationRequested)
                 {
-                    // Standing aside while another file is the one being read and
-                    // this one is not. Clicking through tracks left a whole-file
-                    // download running for each, all splitting a link that gives
-                    // a few megabytes a second between them — and the track
-                    // somebody had just picked took long enough to open that it
-                    // failed. A warmed file nothing has read yet keeps going until
-                    // something else is read.
-                    while (!token.IsCancellationRequested &&
-                           Environment.TickCount64 - LastUsed > YieldAfterMilliseconds &&
-                           _pool.LastReadAt > LastUsed &&
-                           !string.Equals(_pool.LastReader, _poolKey, StringComparison.Ordinal))
-                        await Task.Delay(250, token);
+                    await slots.WaitAsync(token);
 
-                    var batch = new List<Task<byte[]>>();
-                    for (int i = 0; i < Streams && index + i < chunks; i++)
-                        batch.Add(Chunk(index + i));
-
-                    var parts = await Task.WhenAll(batch);
-                    if (token.IsCancellationRequested) break;
-
-                    // A chunk that came back short means the response ended early.
-                    // Reads past it go straight to Drive, which is the fallback a
-                    // download that dies already has.
-                    bool truncated = false;
-                    for (int i = 0; i < parts.Length; i++)
+                    int target;
+                    while (true)
                     {
-                        long want = Math.Min(
-                            DriveCachePool.ChunkBytes,
-                            Size - (long)(index + i) * DriveCachePool.ChunkBytes);
-                        if (parts[i].Length < want) { truncated = true; break; }
+                        // Standing aside while another file is the one being read
+                        // and this one is not. Clicking through tracks left a
+                        // whole-file download running for each, all splitting a
+                        // link that gives a few megabytes a second between them —
+                        // and the track somebody had just picked took long enough
+                        // to open that it failed. A warmed file nothing has read
+                        // yet keeps going until something else is read.
+                        if (Environment.TickCount64 - LastUsed > YieldAfterMilliseconds &&
+                            _pool.LastReadAt > LastUsed &&
+                            !string.Equals(_pool.LastReader, _poolKey, StringComparison.Ordinal))
+                        {
+                            await Task.Delay(250, token);
+                            continue;
+                        }
+
+                        target = NextChunk(chunks, out bool finished);
+                        if (target >= 0) break;
+
+                        // Everything to the end of the file is held, or given up
+                        // on, and nothing is still coming: done. A reader that
+                        // goes back later fetches what it needs itself.
+                        if (finished && slots.CurrentCount == Streams - 1)
+                        {
+                            slots.Release();
+                            return;
+                        }
+
+                        await _wake.WaitAsync(1000, token);
                     }
-                    if (truncated) break;
+
+                    _pumpFetching[target] = 0;
+                    _ = FetchAhead(target, slots, token);
                 }
             }
             catch (OperationCanceledException)
@@ -341,6 +470,74 @@ namespace ExplorerNative
             {
                 // A download that dies leaves the file readable: the reads fall
                 // through to Drive one chunk at a time. Slower, not broken.
+            }
+        }
+
+        /// <summary>
+        /// The next chunk the download should fetch, or -1. The first one from
+        /// where the latest read began that is not held, not on its way and not
+        /// resting after a failure, no further than <see cref="_ahead"/> past
+        /// the furthest read. <paramref name="finished"/> says nothing at all is
+        /// left between there and the end of the file.
+        /// </summary>
+        private int NextChunk(int chunks, out bool finished)
+        {
+            finished = false;
+            int from = Math.Max(0, Volatile.Read(ref _lastReadChunk));
+            int highest = Volatile.Read(ref _highestRead);
+            long limit = Math.Min(chunks, (long)Math.Max(from - 1, highest) + 1 + _ahead);
+            long now = Environment.TickCount64;
+            bool resting = false;
+
+            for (int index = from; index < limit; index++)
+            {
+                if (_pumpFetching.ContainsKey(index) || _inFlight.ContainsKey(index)) { resting = true; continue; }
+                if (_failed.TryGetValue(index, out var failure))
+                {
+                    if (failure.Count >= MostChunkFailures) continue;
+                    if (failure.RetryAt > now) { resting = true; continue; }
+                }
+                if (_pool.Get(_poolKey, index) != null) continue;
+                return index;
+            }
+
+            finished = limit >= chunks && !resting;
+            return -1;
+        }
+
+        /// <summary>
+        /// One chunk for the download, giving its slot back however it ends, and
+        /// noting a failure so the chunk rests before it is tried again.
+        /// </summary>
+        private async Task FetchAhead(int index, SemaphoreSlim slots, CancellationToken token)
+        {
+            bool fetched = false;
+            try
+            {
+                var bytes = await Chunk(index);
+
+                // Short means the response ended early. Retried like a failure;
+                // a file genuinely shorter than it says stops after a few.
+                long want = Math.Min(DriveCachePool.ChunkBytes, Size - (long)index * DriveCachePool.ChunkBytes);
+                fetched = bytes.Length >= want;
+            }
+            catch
+            {
+                // Cancelled, or Drive did not answer: handled below.
+            }
+            finally
+            {
+                if (fetched) _failed.TryRemove(index, out _);
+                else if (!token.IsCancellationRequested)
+                {
+                    int count = _failed.TryGetValue(index, out var before) ? before.Count + 1 : 1;
+                    long rest = Math.Min(15_000, 500L << Math.Min(count - 1, 5));
+                    _failed[index] = (count, Environment.TickCount64 + rest);
+                }
+
+                _pumpFetching.TryRemove(index, out _);
+                slots.Release();
+                Wake();
             }
         }
 
@@ -358,6 +555,7 @@ namespace ExplorerNative
         {
             LastUsed = Environment.TickCount64;
             _pool.NoteRead(_poolKey);
+            NoteRead(offset, length);
             lock (_leaseGate) _readers++;
             try { return await ReadCore(offset, length, token); }
             finally
@@ -393,6 +591,11 @@ namespace ExplorerNative
         public void EndLease()
         {
             lock (_leaseGate) _readers--;
+
+            // A lease that ends with nothing ever read through it is the mount
+            // warming the file ahead of a paste: the one case where the whole
+            // download is wanted before anybody asks for a byte.
+            if (!_everRead) StartPump();
         }
 
         /// <summary>
@@ -431,7 +634,35 @@ namespace ExplorerNative
                 var chunk = _pool.Get(_poolKey, index);
                 if (chunk == null)
                 {
+                    // What an earlier cold read brought back beyond what it was
+                    // asked for.
+                    int kept = FromFragments(at, result.AsSpan(filled, length - filled));
+                    if (kept > 0)
+                    {
+                        filled += kept;
+                        continue;
+                    }
+
                     fromMemory = false;
+
+                    // A file nobody is reading straight through, and nothing on
+                    // its way for this chunk: one small request, at least a
+                    // quarter megabyte, kept for the reads that follow. Four
+                    // whole chunks for a tag reader's 64KB was the cost of
+                    // touching a file at all.
+                    if (!Pumping && !_inFlight.ContainsKey(index))
+                    {
+                        long chunkEnd = Math.Min(Size, (long)(index + 1) * DriveCachePool.ChunkBytes);
+                        int ask = (int)Math.Min(Math.Max(length - filled, ColdBytes), chunkEnd - at);
+                        var cold = await _drive.ReadRange(FileId, at, ask, token);
+                        if (cold.Length == 0) break;
+
+                        int use = Math.Min(cold.Length, length - filled);
+                        Buffer.BlockCopy(cold, 0, result, filled, use);
+                        filled += use;
+                        if (cold.Length > use) KeepFragment(at, cold);
+                        continue;
+                    }
 
                     // Cancellable, which it was not: the token was only looked at
                     // between chunks, so a caller with a deadline still waited as
@@ -473,6 +704,43 @@ namespace ExplorerNative
             return (filled == length ? result : result[..filled], fromMemory);
         }
 
+        /// <summary>How many fragments of cold reads are kept.</summary>
+        private const int MostFragments = 2;
+
+        /// <summary>
+        /// Copies what the kept fragments hold from <paramref name="at"/> on,
+        /// as much as one fragment covers. Zero when none starts at or before it.
+        /// </summary>
+        private int FromFragments(long at, Span<byte> into)
+        {
+            lock (_fragmentGate)
+            {
+                foreach (var (start, bytes) in _fragments)
+                {
+                    if (at < start || at >= start + bytes.Length) continue;
+                    int take = (int)Math.Min(into.Length, start + bytes.Length - at);
+                    bytes.AsSpan((int)(at - start), take).CopyTo(into);
+                    return take;
+                }
+            }
+            return 0;
+        }
+
+        private void KeepFragment(long at, byte[] bytes)
+        {
+            if (_cancel.IsCancellationRequested) return;
+            lock (_fragmentGate)
+            {
+                _fragments.Insert(0, (at, bytes));
+                if (_fragments.Count > MostFragments) _fragments.RemoveAt(_fragments.Count - 1);
+            }
+        }
+
+        private void DropFragments()
+        {
+            lock (_fragmentGate) _fragments.Clear();
+        }
+
         /// <summary>
         /// Stops the download and gives the memory back.
         ///
@@ -488,6 +756,7 @@ namespace ExplorerNative
             lock (_leaseGate) _retired = true;
             try { _cancel.Cancel(); } catch { }
             _pool.DropFile(_poolKey);
+            DropFragments();
         }
 
         /// <summary>
@@ -500,6 +769,7 @@ namespace ExplorerNative
         {
             try { _cancel.Cancel(); } catch { }
             _pool.DropFile(_poolKey);
+            DropFragments();
         }
     }
 }

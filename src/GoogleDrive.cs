@@ -1059,16 +1059,31 @@ namespace ExplorerNative
             // that is not there is not looked for again once per hit inside it.
             var resolved = new Dictionary<string, string?>(StringComparer.Ordinal);
 
+            // Every chain first, out of memory, so the folders they pass through
+            // can be listed four at a time rather than one hit at a time. A Doc
+            // or a Sheet has no bytes anywhere, so it is not placed on the letter
+            // and a result pointing at one would not open.
+            var chains = new Dictionary<string, List<string>?>(StringComparer.Ordinal);
+            foreach (var match in matches)
+                if (!match.IsGoogleDocument && match.ParentId != null && !chains.ContainsKey(match.ParentId))
+                    chains[match.ParentId] = DriveSearch.ChainUnder(realRootId, match.ParentId, parentOf);
+
+            await DriveSearch.PopulateAhead(
+                folderPath, chains.Values.Where(c => c != null).Select(c => (IReadOnlyList<string>)c!),
+                folder => mount.Populate(folder),
+                mount.ChildPathForId,
+                resolved, 4, token).ConfigureAwait(false);
+
             foreach (var match in matches)
             {
                 token.ThrowIfCancellationRequested();
                 if (hits.Count >= most) { truncated = true; break; }
 
-                // A Doc or a Sheet has no bytes anywhere, so it is not placed on
-                // the letter and a result pointing at one would not open.
                 if (match.IsGoogleDocument) continue;
 
-                var chain = DriveSearch.ChainUnder(realRootId, match.ParentId, parentOf);
+                var chain = match.ParentId != null && chains.TryGetValue(match.ParentId, out var known)
+                    ? known
+                    : DriveSearch.ChainUnder(realRootId, match.ParentId, parentOf);
                 if (chain == null) continue;   // somewhere else in the account
 
                 var parentPath = DriveSearch.PathForChain(
@@ -2082,8 +2097,12 @@ namespace ExplorerNative
             // not make, but a shared item is the one place where what is allowed
             // is not obvious from here: a viewer, a commenter, a contributor in
             // a shared drive, an owner who has locked the file down.
-            var rights = await client.RightsOf(id, token).ConfigureAwait(false);
-            var into = await client.RightsOf(toId, token).ConfigureAwait(false);
+            // Both at once: two round trips that do not depend on each other.
+            var rightsAsked = client.RightsOf(id, token);
+            var intoAsked = client.RightsOf(toId, token);
+            await Task.WhenAll(rightsAsked, intoAsked).ConfigureAwait(false);
+            var rights = await rightsAsked.ConfigureAwait(false);
+            var into = await intoAsked.ConfigureAwait(false);
             if (!into.CanAddChildren)
                 throw new InvalidOperationException("you do not have permission to add anything to that folder");
             bool sameDrive = string.Equals(rights.DriveId, into.DriveId, StringComparison.Ordinal);
@@ -2174,13 +2193,19 @@ namespace ExplorerNative
             try { isFolder = Directory.Exists(fromPath); }
             catch { isFolder = false; }
 
-            var into = await client.RightsOf(intoId, token).ConfigureAwait(false);
+            // Both asked at once: each is a round trip, and neither needs the other.
+            var intoAsked = client.RightsOf(intoId, token);
+            var itselfAsked = isFolder ? null : client.RightsOf(id, token);
+            await Task.WhenAll(itselfAsked == null ? new Task[] { intoAsked } : new Task[] { intoAsked, itselfAsked })
+                .ConfigureAwait(false);
+
+            var into = await intoAsked.ConfigureAwait(false);
             if (!into.CanAddChildren)
                 throw new InvalidOperationException("you do not have permission to add anything to that folder");
 
             // A folder's own answer is about what is inside it, and each file
             // inside is refused by Drive on its own if it has to be.
-            if (!isFolder && !(await client.RightsOf(id, token).ConfigureAwait(false)).CanCopy)
+            if (itselfAsked != null && !(await itselfAsked.ConfigureAwait(false)).CanCopy)
                 throw new InvalidOperationException("its owner has not allowed it to be copied");
 
             if (!isFolder)
@@ -2221,27 +2246,62 @@ namespace ExplorerNative
 
             int count = 1;
             var copiedInto = placed != null ? Path.Combine(toFolder, placed) : null;
+            var gate = new object();
+
+            count += await CopyFilesInto(client, mount, children, folderId, copiedInto, made, gate, token, report)
+                .ConfigureAwait(false);
 
             foreach (var child in children)
             {
                 token.ThrowIfCancellationRequested();
-                if (made.Contains(child.Id)) continue;
+                if (!child.IsFolder || made.Contains(child.Id)) continue;
 
-                if (child.IsFolder)
-                {
-                    count += await CopyFolderById(client, mount, child.Id, child.Name,
-                        folderId, copiedInto, made, child.DriveId, token, report).ConfigureAwait(false);
-                    continue;
-                }
-
-                report?.Starting(child.Name);
-                var copy = await client.Copy(child.Id, child.Name, folderId, token).ConfigureAwait(false);
-                if (string.IsNullOrEmpty(copy.Id)) continue;
-                report?.Copied(child.Name, Math.Max(0, child.Size));
-
-                if (copiedInto != null) mount.PlaceOne(copiedInto, copy);
-                count++;
+                count += await CopyFolderById(client, mount, child.Id, child.Name,
+                    folderId, copiedInto, made, child.DriveId, token, report, gate).ConfigureAwait(false);
             }
+
+            return count;
+        }
+
+        /// <summary>Files copied at once within one folder.</summary>
+        private const int CopyStreams = 4;
+
+        /// <summary>
+        /// The files (not folders) of a listing, copied into
+        /// <paramref name="intoId"/> <see cref="CopyStreams"/> at a time.
+        ///
+        /// One at a time, a folder of two hundred tracks was two hundred round
+        /// trips end to end with Google doing all the work and the link idle.
+        /// The folders stay in order, after the files: each has to exist before
+        /// anything goes into it. What is shared is serialised under
+        /// <paramref name="gate"/> — the report, whose listeners count and were
+        /// written for one caller, and the placing, which reads a folder's names
+        /// to choose a free one. A copy already sent when another fails or the
+        /// copy is cancelled is let finish and placed, because Drive has made it.
+        /// </summary>
+        private static async Task<int> CopyFilesInto(DriveClient client, DriveMount mount,
+            List<DriveEntry> children, string intoId, string? intoPath, HashSet<string> made,
+            object gate, CancellationToken token, DriveCopyReport? report)
+        {
+            var files = children.Where(child => !child.IsFolder && !made.Contains(child.Id)).ToList();
+            if (files.Count == 0) return 0;
+
+            int count = 0;
+            await Parallel.ForEachAsync(files,
+                new ParallelOptions { MaxDegreeOfParallelism = CopyStreams, CancellationToken = token },
+                async (child, _) =>
+                {
+                    lock (gate) report?.Starting(child.Name);
+                    var copy = await client.Copy(child.Id, child.Name, intoId, token).ConfigureAwait(false);
+                    if (string.IsNullOrEmpty(copy.Id)) return;
+
+                    lock (gate)
+                    {
+                        report?.Copied(child.Name, Math.Max(0, child.Size));
+                        if (intoPath != null) mount.PlaceOne(intoPath, copy);
+                    }
+                    Interlocked.Increment(ref count);
+                }).ConfigureAwait(false);
 
             return count;
         }
@@ -2311,7 +2371,7 @@ namespace ExplorerNative
         /// </summary>
         private static async Task<int> CopyFolderById(DriveClient client, DriveMount mount,
             string fromId, string name, string intoId, string? intoPath, HashSet<string> made,
-            string? fromDrive, CancellationToken token, DriveCopyReport? report)
+            string? fromDrive, CancellationToken token, DriveCopyReport? report, object gate)
         {
             var children = await client.ListChildren(fromId, token, driveId: fromDrive).ConfigureAwait(false);
 
@@ -2322,32 +2382,24 @@ namespace ExplorerNative
             string? here = null;
             if (intoPath != null)
             {
-                var placed = mount.PlaceOne(intoPath, new DriveEntry(
-                    folderId, name, DriveClient.FolderMimeType, 0, DateTime.UtcNow));
+                string? placed;
+                lock (gate)
+                    placed = mount.PlaceOne(intoPath, new DriveEntry(
+                        folderId, name, DriveClient.FolderMimeType, 0, DateTime.UtcNow));
                 if (placed != null) here = Path.Combine(intoPath, placed);
             }
 
             int count = 1;
+            count += await CopyFilesInto(client, mount, children, folderId, here, made, gate, token, report)
+                .ConfigureAwait(false);
 
             foreach (var child in children)
             {
                 token.ThrowIfCancellationRequested();
-                if (made.Contains(child.Id)) continue;
+                if (!child.IsFolder || made.Contains(child.Id)) continue;
 
-                if (child.IsFolder)
-                {
-                    count += await CopyFolderById(client, mount, child.Id, child.Name,
-                        folderId, here, made, child.DriveId, token, report).ConfigureAwait(false);
-                    continue;
-                }
-
-                report?.Starting(child.Name);
-                var copy = await client.Copy(child.Id, child.Name, folderId, token).ConfigureAwait(false);
-                if (string.IsNullOrEmpty(copy.Id)) continue;
-                report?.Copied(child.Name, Math.Max(0, child.Size));
-
-                if (here != null) mount.PlaceOne(here, copy);
-                count++;
+                count += await CopyFolderById(client, mount, child.Id, child.Name,
+                    folderId, here, made, child.DriveId, token, report, gate).ConfigureAwait(false);
             }
 
             return count;
