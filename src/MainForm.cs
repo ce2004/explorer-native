@@ -5974,7 +5974,7 @@ namespace ExplorerNative
                     tally.BytesDone, tally.BytesTotal, tally.FilesDone, tally.FilesTotal,
                     tally.CurrentItem,
                     elapsed.TotalSeconds > 0.5 ? tally.BytesDone / elapsed.TotalSeconds : 0,
-                    elapsed);
+                    elapsed, PerItemWork: DriveUpload.PerFileWork);
 
                 // Already throttled to ten a second inside DriveUpload, which is
                 // where it has to be: the reports arrive from four upload streams
@@ -6055,7 +6055,10 @@ namespace ExplorerNative
                 window.Finish();
             }
 
+            GoogleDrive.Trace($"window paste: upload finished {(DateTime.UtcNow - started).TotalMilliseconds:F0}ms after start");
+            var refreshing = System.Diagnostics.Stopwatch.StartNew();
             await RefreshDestination(destination);
+            GoogleDrive.Trace($"window paste: refresh afterwards {refreshing.ElapsedMilliseconds}ms");
 
             int done = upload.FilesUploaded;
             var errors = upload.Errors;
@@ -6738,7 +6741,10 @@ namespace ExplorerNative
                 }
             }
 
+            var asking = System.Diagnostics.Stopwatch.StartNew();
             var chosen = await ResolveConflictPolicy(paths, destination);
+            if (Drive != null && Drive.Owns(destination))
+                GoogleDrive.Trace($"window paste: conflict check {asking.ElapsedMilliseconds}ms (includes any question asked)");
             if (chosen == null)
             {
                 AnnounceOperation(move ? "move.cancelled" : "copy.cancelled", "Cancelled");
@@ -8236,7 +8242,9 @@ namespace ExplorerNative
             {
                 if (onDrive)
                 {
+                    var trashing = System.Diagnostics.Stopwatch.StartNew();
                     outcome = await TrashOnDrive(paths);
+                    GoogleDrive.Trace($"window delete: {paths.Length} items trashed in {trashing.ElapsedMilliseconds}ms");
                 }
                 else
                 outcome = await Task.Run(() =>
@@ -8302,7 +8310,9 @@ namespace ExplorerNative
             if (syncChoice == SyncDeleteChoice.DeleteAnyway)
                 await DeleteOtherSyncEnds(touched.Where(t => t.Pair.CopyDeletes).ToList());
 
+            var refreshing = System.Diagnostics.Stopwatch.StartNew();
             await RefreshAsync(landOn, folder: origin);
+            if (onDrive) GoogleDrive.Trace($"window delete: refresh afterwards {refreshing.ElapsedMilliseconds}ms");
             if (IsDisposed) return;
 
             if (outcome.Errors.Count > 0)

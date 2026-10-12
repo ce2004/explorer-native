@@ -172,6 +172,12 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "driveprobe")
+            {
+                await DriveProbe.Run();
+                return 0;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "tags")
             {
                 TagEditTests.RunAll(Check, Equal);
@@ -8903,12 +8909,14 @@ namespace ExplorerNative
                 double uploadsPerSecondAllowed = perUserPerMinute / (double)unitsPerUpload / 60.0;
                 double uploadsPerSecondAsked = DriveUpload.Streams / 0.7;
 
-                Check($"eight streams stay well inside Google's rate limit " +
+                Check($"sixteen streams stay well inside Google's rate limit " +
                       $"({uploadsPerSecondAsked:0.0}/s against {uploadsPerSecondAllowed:0}/s allowed)",
                     uploadsPerSecondAsked < uploadsPerSecondAllowed / 4,
                     "the round trip should be the limit, not the quota");
 
-                Equal("and there are eight of them", "8", DriveUpload.Streams.ToString());
+                // Sixteen, raised from eight after measuring the real account:
+                // 6.8 small files a second at eight, 14.2 at sixteen, none throttled.
+                Equal("and there are sixteen of them", "16", DriveUpload.Streams.ToString());
             }
 
             // ---- an outage is waited out, not charged to the retries ----

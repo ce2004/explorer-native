@@ -108,6 +108,7 @@
     <Compile Include="TagEditTests.cs" />
     <Compile Include="ArchiveBrowserTests.cs" />
     <Compile Include="AudioConvertTests.cs" />
+    <Compile Include="DriveProbe.cs" />
   </ItemGroup>
 
   <!-- The managed Ogg Vorbis and Opus decoders, which the suite exercises the

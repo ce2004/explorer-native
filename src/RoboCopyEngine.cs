@@ -19,14 +19,37 @@ namespace ExplorerNative
         string CurrentItem,
         double BytesPerSecond,
         TimeSpan Elapsed,
-        bool ItemsKnown = false)
+        bool ItemsKnown = false,
+        long PerItemWork = 0)
     {
-        public bool TotalKnown => BytesTotal > 0;
-        public double Percent => TotalKnown ? Math.Clamp(BytesDone * 100.0 / BytesTotal, 0, 100) : 0;
-        public TimeSpan? Remaining =>
-            TotalKnown && BytesPerSecond > 1
-                ? TimeSpan.FromSeconds(Math.Max(0, (BytesTotal - BytesDone) / BytesPerSecond))
-                : null;
+        public bool TotalKnown => BytesTotal > 0 || (PerItemWork > 0 && ItemsTotal > 0);
+
+        // Work is bytes, plus PerItemWork for each item when every item has a
+        // fixed cost of its own. A Drive upload pays about a second a file
+        // whatever its size, so three thousand small files counted by bytes
+        // alone read "0 percent" for minutes, then raced, then guessed hours.
+        private double WorkDone => BytesDone + (double)ItemsDone * PerItemWork;
+        private double WorkTotal => BytesTotal + (double)ItemsTotal * PerItemWork;
+
+        public double Percent => TotalKnown && WorkTotal > 0 ? Math.Clamp(WorkDone * 100.0 / WorkTotal, 0, 100) : 0;
+
+        public TimeSpan? Remaining
+        {
+            get
+            {
+                if (!TotalKnown) return null;
+                if (PerItemWork > 0)
+                {
+                    // The average so far, which settles where a byte rate never
+                    // does when the cost is per file.
+                    if (WorkDone <= 0 || Elapsed.TotalSeconds < 3) return null;
+                    return TimeSpan.FromSeconds(Math.Max(0, Elapsed.TotalSeconds * (WorkTotal - WorkDone) / WorkDone));
+                }
+                return BytesPerSecond > 1
+                    ? TimeSpan.FromSeconds(Math.Max(0, (BytesTotal - BytesDone) / BytesPerSecond))
+                    : null;
+            }
+        }
     }
 
     /// <param name="AlreadyThere">

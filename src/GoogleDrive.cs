@@ -358,6 +358,9 @@ namespace ExplorerNative
         /// deletes and nowhere to say it.
         /// </summary>
 
+        /// <summary>The same trace, for the upload and other callers outside this class.</summary>
+        internal static void Trace(string line) => Note(line);
+
         private static void Note(string line)
         {
             try
@@ -1636,7 +1639,9 @@ namespace ExplorerNative
             // to. Asking Drive for the parent again rebuilds exactly the entries
             // needed — and "it is not part of the mounted Drive" is both untrue and
             // impossible to act on.
+            var clock = System.Diagnostics.Stopwatch.StartNew();
             var id = await IdOrRelist(mount, path, token).ConfigureAwait(false);
+            long idMs = clock.ElapsedMilliseconds;
 
             if (id == null)
             {
@@ -1658,9 +1663,12 @@ namespace ExplorerNative
                 throw;
             }
 
+            long trashMs = clock.ElapsedMilliseconds - idMs;
+
             // Only after Drive has agreed. Removing the placeholder first would
             // hide a file that is still there if the trash call then failed.
             mount.RemoveOne(path);
+            Note($"trash {name}: id {idMs}ms, Drive {trashMs}ms, placeholder {clock.ElapsedMilliseconds - idMs - trashMs}ms");
             Say("drive.trash", $"{name} moved to the Google Drive trash");
             return true;
         }
@@ -1697,10 +1705,12 @@ namespace ExplorerNative
             // made itself are.
             // Patient, and checked: a fast-fail listing during a blip left the
             // parent unknown, ChildFolderId said no, and a duplicate was made.
+            var clock = System.Diagnostics.Stopwatch.StartNew();
             await Task.Run(() =>
             {
                 try { mount.Populate(parentFullPath, interactive: false); } catch { }
             }, token).ConfigureAwait(false);
+            long listMs = clock.ElapsedMilliseconds;
             if (!mount.TryListing(parentFullPath, out _))
             {
                 Say("drive.upload.failed",
@@ -1743,9 +1753,12 @@ namespace ExplorerNative
             // Populated on purpose: it was made a moment ago and it is empty, and
             // that is a Drive listing the first visit does not have to pay for to
             // be told what is already known.
+            long createMs = clock.ElapsedMilliseconds - listMs;
             var placed = mount.PlaceOne(parentFullPath,
                 new DriveEntry(id, name, DriveClient.FolderMimeType, 0, DateTime.UtcNow),
                 populated: true);
+            Note($"folder {name}: waited for parent listing {listMs}ms, Drive {createMs}ms, " +
+                 $"placeholder {clock.ElapsedMilliseconds - listMs - createMs}ms");
 
             if (placed == null) return null;
 
@@ -1952,6 +1965,7 @@ namespace ExplorerNative
 
             if (announce) Say("drive.upload.start", $"Uploading {name} to Google Drive");
 
+            var clock = System.Diagnostics.Stopwatch.StartNew();
             string id;
             try
             {
@@ -1989,8 +2003,10 @@ namespace ExplorerNative
             try { size = new FileInfo(localPath).Length; } catch { }
 
             // Stamped as Drive was told to stamp it; see DriveClient.UploadStamp.
+            long sendMs = clock.ElapsedMilliseconds;
             var entry = new DriveEntry(id, name, "application/octet-stream", size, DriveClient.UploadStamp(localPath));
             var placed = mount.PlaceOne(destinationFolder, entry);
+            Note($"upload {name}: Drive {sendMs}ms, placeholder {clock.ElapsedMilliseconds - sendMs}ms");
 
             // Only now is the old copy expendable: the new one is in Drive, with
             // an id, and nothing that happens next can take it away.

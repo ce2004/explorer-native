@@ -39,6 +39,21 @@ namespace ExplorerNative
             check("OK in Preferences keeps a folder's own order",
                 merged.FolderSorts.TryGetValue(@"C:\Music", out var kept) && kept == "Modified descending", null);
 
+            // A Drive upload's progress counts files as well as bytes: a few big
+            // files sent and thousands of small ones left is not 100 percent.
+            var bigDone = new TransferProgress(1000L * 1024 * 1024, 1024L * 1024 * 1024, 20, 3000, "",
+                5_000_000, TimeSpan.FromSeconds(60), PerItemWork: DriveUpload.PerFileWork);
+            check("big files done and small ones left is not 100 percent", bigDone.Percent < 50, bigDone.Percent.ToString("F0"));
+            var smallDone = new TransferProgress(1024 * 1024, 1024L * 1024 * 1024, 500, 3000, "",
+                10_000, TimeSpan.FromSeconds(60), PerItemWork: DriveUpload.PerFileWork);
+            check("500 of 3000 small files done is not 0 percent", smallDone.Percent > 5, smallDone.Percent.ToString("F0"));
+            check("and the time left follows the files, not the byte rate",
+                smallDone.Remaining is { } left && left.TotalMinutes < 30, smallDone.Remaining?.ToString() ?? "none");
+            var plain = new TransferProgress(50, 100, 1, 2, "", 10, TimeSpan.FromSeconds(5));
+            equal("a copy without a per-file cost still counts bytes", "50", plain.Percent.ToString("F0"));
+            check("uploads send small files sixteen at a time and big ones four",
+                DriveUpload.Streams == 16 && DriveUpload.BigStreams == 4, null);
+
             // Words are runs of anything that is not white space.
             equal("text counts", "3 words, 14 characters", FileDetails.CountText("one two\n three"));
             equal("one word is singular", "1 word, 5 characters", FileDetails.CountText("hello"));
