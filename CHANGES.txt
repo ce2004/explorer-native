@@ -1,3 +1,7 @@
+2.3.2
+Uploading to Google Drive is about three times faster for folders with lots of files. A 1 gigabyte folder of 3000 files now takes about 3 minutes instead of 9.
+Bug fixed: when you uploaded a big folder to Google Drive, the progress window sat at 0 percent and calculating while the folders were being made, then jumped to 100 percent and stayed there while the rest of the files were still going. It now counts the folders as they are made, and the percentage and time remaining move steadily to the end.
+
 2.3.1
 Bug fixed: the audio editor always played at full volume. It now plays at the same volume as the player, and the volume keys change it while you edit.
 
