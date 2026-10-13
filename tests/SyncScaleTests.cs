@@ -812,6 +812,43 @@ namespace ExplorerNative
             };
             Check("the progress line says how many moved", DriveMonitorForm.Progress(s).Contains("1,000 moved"), DriveMonitorForm.Progress(s));
             Equal("and the tally after a pass", "1000 moved, 2 uploaded", DriveMonitor.Tally(2, 0, 0, 1000));
+
+            // Speeds and what is moving.
+            var live = new SyncLive();
+            var pair = new DriveSyncPair { LocalFolder = @"D:\Music", DriveFolderPath = "My Drive/Music" };
+            var syncing = new DriveMonitor.PairStatus(null, null, true)
+            {
+                Phase = DriveMonitor.PhaseSyncing, LocalFound = 2_000_000, DriveFound = 1_996_000, Matched = 1_995_500,
+                StepDone = 1203, StepTotal = 4500, Uploaded = 1000,
+            };
+            List<string> Lines(long at) => DriveMonitorForm.Details(pair, syncing, DateTime.UtcNow, live.Read(at));
+            Check("with nothing moving there is no speed or file line",
+                !Lines(0).Any(l => l.Contains("speed") || l.StartsWith("Uploading")), string.Join(" | ", Lines(0)));
+            const long mb = 1024 * 1024;
+            live.Begin("Music/Live.flac", up: true, 40 * mb, 1000);
+            live.Add("Music/Live.flac", up: true, 12 * mb, 1000);
+            live.Begin("Photos/a.jpg", up: false, 3000, 1500);
+            live.Add("Photos/a.jpg", up: false, 2048, 2000);
+            // The window began with the read at 0, so it is two seconds long.
+            var now = live.Read(2000);
+            Equal("upload speed over the window", (6 * mb).ToString(), now.UpPerSecond.ToString());
+            Equal("download speed over the window", "1024", now.DownPerSecond.ToString());
+            var lines = Lines(2000);
+            var all = string.Join(" | ", lines);
+            Equal("one fact a line, in order", "Syncing now|On the PC: 2,000,000 files|On Google Drive: 1,996,000 files|" +
+                  "Already in both folders: 1,995,500 files|Working on change 1,204 of 4,500|Uploaded: 1,000 files",
+                string.Join("|", lines.Take(6)));
+            Check("the speeds have lines of their own",
+                lines.Contains("Upload speed: 6 megabytes a second") && lines.Contains("Download speed: 1 kilobyte a second"), all);
+            Check("each moving file has a line, with how far a big one has got",
+                lines.Any(l => l.StartsWith(@"Uploading Music\Live.flac, 12")) && lines.Contains(@"Downloading Photos\a.jpg"), all);
+            for (int i = 0; i < 12; i++) live.Begin($"f{i}", up: true, 10, 2100 + i);
+            Equal("past ten it counts the rest", "And 4 more files moving", Lines(2200).Last());
+            live.End("Music/Live.flac", 2300);
+            live.End("Photos/a.jpg", 2300);
+            for (int i = 0; i < 12; i++) live.End($"f{i}", 2300);
+            Check("finished and idle, the speed and file lines go", !Lines(20_000).Any(l => l.Contains("speed") || l.StartsWith("Uploading ")),
+                string.Join(" | ", Lines(20_000)));
         }
 
         private static void Equal(string what, string expected, string actual) =>

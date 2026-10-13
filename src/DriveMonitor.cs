@@ -564,6 +564,14 @@ namespace ExplorerNative
             try { Changed?.Invoke(); } catch { }
         }
 
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SyncLive> _live = new();
+
+        private SyncLive LiveFor(string pairId) => _live.GetOrAdd(pairId, _ => new SyncLive());
+
+        /// <summary>What is moving for the pair right now and how fast, or null if nothing ever has.</summary>
+        public SyncLive.Snapshot? LiveOf(string pairId) =>
+            _live.TryGetValue(pairId, out var live) ? live.Read(Environment.TickCount64) : null;
+
         /// <summary>Live progress, at most a few times a second.</summary>
         private void SetProgress(string pairId, long done, long total)
         {
@@ -3624,6 +3632,7 @@ namespace ExplorerNative
             // Every parent is in `folders` now, so the lanes only read it.
             int done = 0;
             var lanes = new AdaptiveLanes(FastLanes, FastLanesMin, FastLanesMax);
+            var live = LiveFor(pair.Id);
             await Parallel.ForEachAsync(batch,
                 new ParallelOptions { MaxDegreeOfParallelism = FastLanesMax, CancellationToken = token },
                 async (path, ct) =>
@@ -3634,7 +3643,11 @@ namespace ExplorerNative
                     // Started only while the pass runs; once started, finished on
                     // the drain token, so it is recorded rather than left unknown.
                     try { landed = !ct.IsCancellationRequested && await One(path, drain.Token).ConfigureAwait(false); }
-                    finally { lanes.Leave(landed && clock.ElapsedMilliseconds < SlowAnswerMilliseconds); }
+                    finally
+                    {
+                        live.End(path, Environment.TickCount64);
+                        lanes.Leave(landed && clock.ElapsedMilliseconds < SlowAnswerMilliseconds);
+                    }
                 }).ConfigureAwait(false);
             return sent;
 
@@ -3650,12 +3663,18 @@ namespace ExplorerNative
                     DriveClient.DriveUploaded up;
                     remote.TryGetValue(path, out var old);
                     string? replaces = old.Id;
+                    live.Begin(path, up: true, file.Size, Environment.TickCount64);
                     try
                     {
                         void Progress(UploadProgress p)
                         {
                             long delta = p.BytesSent - Interlocked.Read(ref reported);
-                            if (delta > 0) { Interlocked.Add(ref reported, delta); moved(delta); }
+                            if (delta > 0)
+                            {
+                                Interlocked.Add(ref reported, delta);
+                                live.Add(path, up: true, delta, Environment.TickCount64);
+                                moved(delta);
+                            }
                         }
                         if (replaces != null)
                         {
@@ -3683,7 +3702,11 @@ namespace ExplorerNative
 
                     // Landed. Recorded before anything else can go wrong, so the
                     // slow loop can never send it a second time.
-                    if (reported < file.Size) moved(file.Size - reported);
+                    if (reported < file.Size)
+                    {
+                        live.Add(path, up: true, file.Size - reported, Environment.TickCount64);
+                        moved(file.Size - reported);
+                    }
                     lock (_fastGate)
                     {
                         // Drive made a new file instead of updating (as the slow
@@ -3736,6 +3759,22 @@ namespace ExplorerNative
         /// </param>
         /// <param name="old">What the scan saw of the file being replaced.</param>
         private async Task<SyncBase> UploadAsync(
+            DriveClient client, Dictionary<string, string> folders, DriveSyncPair pair, PairState state,
+            string path, string localPath, SyncFile local, string? replaces, SyncFile? old, Action<long> moved,
+            CancellationToken token)
+        {
+            // Shown as moving, with its speed, until it is done or given up.
+            var live = LiveFor(pair.Id);
+            live.Begin(path, up: true, local.Size, Environment.TickCount64);
+            try
+            {
+                return await UploadOneAsync(client, folders, pair, state, path, localPath, local, replaces, old,
+                    n => { live.Add(path, up: true, n, Environment.TickCount64); moved(n); }, token).ConfigureAwait(false);
+            }
+            finally { live.End(path, Environment.TickCount64); }
+        }
+
+        private async Task<SyncBase> UploadOneAsync(
             DriveClient client, Dictionary<string, string> folders, DriveSyncPair pair, PairState state,
             string path, string localPath, SyncFile local, string? replaces, SyncFile? old, Action<long> moved,
             CancellationToken token)
@@ -3958,6 +3997,21 @@ namespace ExplorerNative
         /// </param>
         /// <returns>What both sides now hold, or null when the PC's file changed since the scan and was left alone.</returns>
         private async Task<SyncBase?> DownloadAsync(
+            DriveClient client, string pairId, PairState state, string path, SyncFile remote, string localPath,
+            SyncFile? scanned, bool keepOld, Action<long> moved, CancellationToken token)
+        {
+            // Shown as moving, with its speed, until it is done or given up.
+            var live = LiveFor(pairId);
+            live.Begin(path, up: false, remote.Size, Environment.TickCount64);
+            try
+            {
+                return await DownloadOneAsync(client, pairId, state, path, remote, localPath, scanned, keepOld,
+                    n => { live.Add(path, up: false, n, Environment.TickCount64); moved(n); }, token).ConfigureAwait(false);
+            }
+            finally { live.End(path, Environment.TickCount64); }
+        }
+
+        private async Task<SyncBase?> DownloadOneAsync(
             DriveClient client, string pairId, PairState state, string path, SyncFile remote, string localPath,
             SyncFile? scanned, bool keepOld, Action<long> moved, CancellationToken token)
         {

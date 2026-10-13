@@ -894,6 +894,74 @@ namespace ExplorerNative
         /// <summary>A pass this big is announced as it goes.</summary>
         public static bool IsBig(long bytes, int files) => bytes > 1024L * 1024 * 1024 || files > 200;
     }
+
+    /// <summary>
+    /// What is moving right now for one pair, and how fast each way: the files
+    /// started and not yet finished, and the bytes of the last few seconds.
+    /// Thread-safe; times are Environment.TickCount64 milliseconds.
+    /// </summary>
+    internal sealed class SyncLive
+    {
+        /// <summary>Speeds are worked out over this many milliseconds.</summary>
+        internal const long WindowMs = 5000;
+
+        internal sealed record Moving(string Path, bool Up, long Done, long Size);
+
+        internal sealed record Snapshot(long UpPerSecond, long DownPerSecond, IReadOnlyList<Moving> Files);
+
+        private sealed class Entry { public bool Up; public long Done, Size, Started; }
+
+        private readonly object _gate = new();
+        private readonly Dictionary<string, Entry> _active = new(StringComparer.Ordinal);
+        private readonly Queue<(long At, long Up, long Down)> _samples = new();
+        private long _up, _down, _lastSample = long.MinValue;
+
+        public void Begin(string path, bool up, long size, long now)
+        {
+            lock (_gate) _active[path] = new Entry { Up = up, Size = size, Started = now };
+        }
+
+        public void Add(string path, bool up, long bytes, long now)
+        {
+            lock (_gate)
+            {
+                // Sampled first, so the window starts before these bytes, not after.
+                Sample(now);
+                if (_active.TryGetValue(path, out var entry)) entry.Done = Math.Min(entry.Size, entry.Done + bytes);
+                if (up) _up += bytes; else _down += bytes;
+            }
+        }
+
+        public void End(string path, long now)
+        {
+            lock (_gate) { _active.Remove(path); Sample(now); }
+        }
+
+        /// <summary>Speeds each way over the last few seconds, and the files moving, oldest first.</summary>
+        public Snapshot Read(long now)
+        {
+            lock (_gate)
+            {
+                Sample(now, force: true);
+                var (at, up, down) = _samples.Peek();
+                double seconds = Math.Max(1000, now - at) / 1000.0;
+                var files = _active.OrderBy(e => e.Value.Started)
+                    .Select(e => new Moving(e.Key, e.Value.Up, e.Value.Done, e.Value.Size)).ToList();
+                return new Snapshot((long)((_up - up) / seconds), (long)((_down - down) / seconds), files);
+            }
+        }
+
+        private void Sample(long now, bool force = false)
+        {
+            if (force || now - _lastSample >= 250)
+            {
+                _samples.Enqueue((now, _up, _down));
+                _lastSample = now;
+            }
+            while (_samples.Count > 1 && now - _samples.Peek().At > WindowMs) _samples.Dequeue();
+        }
+    }
+
     /// <summary>
     /// How many uploads run at once, found rather than fixed. Measured on the
     /// real account: 4 at a time gave 4.6 files a second, 8 gave 8.2, 16 gave

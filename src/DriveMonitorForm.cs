@@ -19,6 +19,7 @@ namespace ExplorerNative
         private readonly List<DriveSyncPair> _working;
         private readonly List<DriveSyncPair> _pairs;
         private readonly ListBox _list;
+        private readonly ListBox _details;
         private readonly Button _edit, _remove, _sync;
         private readonly DriveMonitor? _monitor;
 
@@ -35,17 +36,29 @@ namespace ExplorerNative
             MinimizeBox = false;
             MaximizeBox = false;
             ShowInTaskbar = false;
-            ClientSize = new Size(640, 360);
+            ClientSize = new Size(640, 470);
             Font = SystemFonts.MessageBoxFont;
 
             var label = new Label { Text = "&Monitored folders:", AutoSize = true, Location = new Point(12, 12) };
             _list = new ListBox
             {
                 Location = new Point(12, 32),
-                Size = new Size(616, 220),
+                Size = new Size(616, 150),
                 HorizontalScrollbar = true,
                 AccessibleName = "Monitored folders",
                 TabIndex = 0,
+            };
+
+            // The chosen folder's sync, one fact a line, so the arrows go
+            // through it instead of one sentence too long to follow.
+            var detailsLabel = new Label { Text = "S&tatus:", AutoSize = true, Location = new Point(12, 190) };
+            _details = new ListBox
+            {
+                Location = new Point(12, 210),
+                Size = new Size(616, 140),
+                HorizontalScrollbar = true,
+                AccessibleName = "Status",
+                TabIndex = 1,
             };
 
             var info = new Label
@@ -53,15 +66,15 @@ namespace ExplorerNative
                 Text = "Changes here are saved straight away. Folders sync while Explorer Native is running " +
                        "and Google Drive is connected. Enter edits a folder, Delete removes it; removing " +
                        "never deletes any files.",
-                Location = new Point(12, 258),
+                Location = new Point(12, 358),
                 Size = new Size(616, 48),
             };
 
-            var add = MakeButton("&Add...", 12, 1);
-            _edit = MakeButton("&Edit...", 112, 2);
-            _remove = MakeButton("&Remove", 212, 3);
-            _sync = MakeButton("&Sync now", 312, 4);
-            var close = MakeButton("Close", 548, 5);
+            var add = MakeButton("&Add...", 12, 2);
+            _edit = MakeButton("&Edit...", 112, 3);
+            _remove = MakeButton("&Remove", 212, 4);
+            _sync = MakeButton("&Sync now", 312, 5);
+            var close = MakeButton("Close", 548, 6);
             close.DialogResult = DialogResult.Cancel;
 
             add.Click += (_, _) => AddPair();
@@ -80,7 +93,9 @@ namespace ExplorerNative
                 else if (e.KeyCode == Keys.Delete && _pairs.Count > 0) { RemovePair(); e.Handled = e.SuppressKeyPress = true; }
             };
 
-            Controls.AddRange(new Control[] { label, _list, info, add, _edit, _remove, _sync, close });
+            _list.SelectedIndexChanged += (_, _) => FillDetails();
+
+            Controls.AddRange(new Control[] { label, _list, detailsLabel, _details, info, add, _edit, _remove, _sync, close });
             CancelButton = close;
 
             Action refresh = () =>
@@ -90,11 +105,21 @@ namespace ExplorerNative
             if (_monitor != null) _monitor.Changed += refresh;
             FormClosed += (_, _) => { if (_monitor != null) _monitor.Changed -= refresh; };
 
+            // Speeds change with no event to say so, so once a second while a
+            // pass runs and this window is open; nothing at all otherwise.
+            var tick = new System.Windows.Forms.Timer { Interval = 1000 };
+            tick.Tick += (_, _) =>
+            {
+                if (_monitor != null && _pairs.Any(p => _monitor.StatusIfLoaded(p.Id) is { Running: true })) Fill();
+            };
+            tick.Start();
+            FormClosed += (_, _) => tick.Dispose();
+
             Fill();
         }
 
         private Button MakeButton(string text, int x, int tab) =>
-            new() { Text = text, Location = new Point(x, 316), Size = new Size(92, 30), TabIndex = tab };
+            new() { Text = text, Location = new Point(x, 426), Size = new Size(92, 30), TabIndex = tab };
 
         private void Fill()
         {
@@ -122,6 +147,29 @@ namespace ExplorerNative
             bool any = _pairs.Count > 0;
             _edit.Enabled = any;
             _remove.Enabled = any;
+            FillDetails();
+        }
+
+        /// <summary>The status lines of the folder chosen above, changed in place so the arrows keep their line.</summary>
+        private void FillDetails()
+        {
+            int at = _list.SelectedIndex;
+            var lines = at >= 0 && at < _pairs.Count
+                ? Details(_pairs[at], _monitor?.StatusIfLoaded(_pairs[at].Id), DateTime.UtcNow, _monitor?.LiveOf(_pairs[at].Id))
+                : new List<string> { "No folder chosen." };
+
+            if (lines.Count == _details.Items.Count)
+            {
+                for (int i = 0; i < lines.Count; i++)
+                    if (!Equals(_details.Items[i], lines[i])) _details.Items[i] = lines[i];
+                return;
+            }
+            int keep = _details.SelectedIndex;
+            _details.BeginUpdate();
+            _details.Items.Clear();
+            _details.Items.AddRange(lines.ToArray());
+            _details.EndUpdate();
+            if (keep >= 0) _details.SelectedIndex = Math.Min(keep, _details.Items.Count - 1);
         }
 
         /// <summary>
@@ -209,6 +257,80 @@ namespace ExplorerNative
                 text += $", {DriveMonitor.Words(status.DoneBytes)} of {DriveMonitor.Words(status.TotalBytes)}";
             return text;
         }
+
+        /// <summary>
+        /// The Status list, one fact a line, for example:
+        /// "Syncing now", "On the PC: 2,000,000 files", "On Google Drive:
+        /// 1,996,000 files", "Already in both folders: 1,995,500 files",
+        /// "Working on change 1,204 of 4,500", "Uploaded: 1,000 files",
+        /// "Copied: 1.2 gigabytes of 4 gigabytes", "Upload speed: 2.4 megabytes
+        /// a second", "Uploading Music\Live.flac, 12 megabytes of 40 megabytes",
+        /// "And 14 more files moving".
+        /// </summary>
+        internal static List<string> Details(DriveSyncPair pair, DriveMonitor.PairStatus? status, DateTime nowUtc,
+            SyncLive.Snapshot? live)
+        {
+            static string Files(int n) => n == 1 ? "1 file" : $"{n:N0} files";
+            static string Capital(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..];
+
+            var lines = new List<string>();
+            bool running = status is { Running: true };
+            if (pair.Paused) lines.Add("Paused");
+            else if (status?.Problem is { } waiting && waiting.StartsWith("waiting", StringComparison.Ordinal))
+                lines.Add(Capital(waiting));
+            else if (running)
+                lines.Add(status!.CheckTotal > 0 ? "Checking with Google what is already there"
+                    : status.Phase switch
+                    {
+                        DriveMonitor.PhaseScanning => "Reading the PC folder",
+                        DriveMonitor.PhaseListing => "Reading Google Drive",
+                        _ => "Syncing now",
+                    });
+            else if (status?.Problem is { } problem)
+                lines.Add(problem.StartsWith("paused", StringComparison.Ordinal) ||
+                          problem.StartsWith("offline", StringComparison.Ordinal)
+                    ? Capital(problem) : "Problem: " + problem);
+            else if (status?.LastSyncedUtc is DateTime when) lines.Add("Last synced " + Ago(nowUtc - when));
+            else lines.Add("Not synced yet");
+
+            if (status == null) return lines;
+
+            bool stillCounting = running && status.Phase is DriveMonitor.PhaseScanning or DriveMonitor.PhaseListing;
+            if (status.LocalFound > 0)
+                lines.Add($"On the PC: {Files(status.LocalFound)}" + (stillCounting && status.Phase == DriveMonitor.PhaseScanning ? " so far" : ""));
+            if (status.DriveFound > 0)
+                lines.Add($"On Google Drive: {Files(status.DriveFound)}" + (stillCounting ? " so far" : ""));
+            if (running && status.CheckTotal > 0)
+                lines.Add($"Compared with Google: {status.CheckDone:N0} of {Files(status.CheckTotal)}");
+            if (status.Matched > 0) lines.Add($"Already in both folders: {Files(status.Matched)}");
+
+            if (running && status.Phase == DriveMonitor.PhaseSyncing)
+                lines.Add(status.StepTotal == 0 ? "Nothing to copy"
+                    : $"Working on change {Math.Min(status.StepDone + 1, status.StepTotal):N0} of {status.StepTotal:N0}");
+            if (status.Uploaded > 0) lines.Add($"Uploaded: {Files(status.Uploaded)}");
+            if (status.Downloaded > 0) lines.Add($"Downloaded: {Files(status.Downloaded)}");
+            if (status.Moved > 0) lines.Add($"Moved or renamed: {Files(status.Moved)}");
+            if (status.Deleted > 0) lines.Add($"Deleted: {Files(status.Deleted)}");
+            if (status.Failed > 0) lines.Add($"Failed: {Files(status.Failed)}");
+            if (running && status.TotalBytes > 0)
+                lines.Add($"Copied: {DriveMonitor.Words(status.DoneBytes)} of {DriveMonitor.Words(status.TotalBytes)}");
+
+            if (running && live != null)
+            {
+                if (live.UpPerSecond > 0) lines.Add($"Upload speed: {DriveMonitor.Words(live.UpPerSecond)} a second");
+                if (live.DownPerSecond > 0) lines.Add($"Download speed: {DriveMonitor.Words(live.DownPerSecond)} a second");
+                foreach (var f in live.Files.Take(MovingShown))
+                    // How far along only for a file big enough to take a while.
+                    lines.Add($"{(f.Up ? "Uploading" : "Downloading")} {f.Path.Replace('/', '\\')}" +
+                              (f.Size >= 1024 * 1024 ? $", {DriveMonitor.Words(f.Done)} of {DriveMonitor.Words(f.Size)}" : ""));
+                int more = live.Files.Count - MovingShown;
+                if (more > 0) lines.Add(more == 1 ? "And 1 more file moving" : $"And {more:N0} more files moving");
+            }
+            return lines;
+        }
+
+        /// <summary>Files named one a line in Status; the rest are counted.</summary>
+        internal const int MovingShown = 10;
 
         /// <summary>Whether File shows "Google Drive sync configurator": only while Drive is switched on.</summary>
         internal static bool OnFileMenu(Settings settings) => settings.GoogleDriveEnabled;
