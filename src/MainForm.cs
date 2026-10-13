@@ -513,11 +513,7 @@ namespace ExplorerNative
             catch { return null; }
         }
 
-        /// <summary>
-        /// Ctrl+R: relaunch the application and return to this exact spot.
-        /// The replacement is started with --restart so it waits for this
-        /// process to release the single-instance lock instead of bailing out.
-        /// </summary>
+        /// <summary>Help, Changelog (Shift+F1): the built-in CHANGES.txt, no network.</summary>
         private void ShowChangelog()
         {
             using (var log = new ChangelogForm()) log.ShowDialog(this);
@@ -728,9 +724,12 @@ namespace ExplorerNative
 
             // Hidden files, sorting and folders-first change the other tab's
             // listing too, and only the front one is reloaded now.
-            foreach (var pane in _panes)
-                if (pane != Active) { pane.NeedsRefresh = true; pane.ReloadQuietly = true; }
-            Refresh_();
+            // Quietly, as the watcher does. Refresh_ was the F5 path: it re-ran a
+            // search on screen ("Searching for..."), re-read an archive or a
+            // whole Drive listing, and read the first row aloud over
+            // "Preferences saved".
+            foreach (var pane in _panes) { pane.NeedsRefresh = true; pane.ReloadQuietly = true; }
+            ScheduleWatchCheck();
         }
 
         /// <summary>
@@ -965,7 +964,7 @@ namespace ExplorerNative
             // automatic check and no setting for one.
             var help = new ToolStripMenuItem("&Help");
             help.DropDownItems.Add(Item("Check for &updates…", Keys.None, CheckForUpdates));
-            help.DropDownItems.Add(Item("&Changelog", Keys.None, ShowChangelog));
+            help.DropDownItems.Add(Item("&Changelog", Keys.Shift | Keys.F1, ShowChangelog));
             help.DropDownItems.Add(Item("&About Explorer Native", Keys.None, ShowAbout));
             menu.Items.Add(help);
 
@@ -4393,7 +4392,23 @@ namespace ExplorerNative
             Navigate(parent.FullName);
         }
 
+        /// <summary>
+        /// Ctrl+L. Async void from a key, so the whole of it is guarded: anything
+        /// escaping goes to Application.ThreadException and takes the window
+        /// with it, and every other command on a key already carries this.
+        /// </summary>
         private async void GoToPath()
+        {
+            try { await GoToPathAsync(); }
+            catch (Exception ex)
+            {
+                if (IsDisposed) return;
+                Announce($"Could not go to that path: {ex.Message}", isError: true);
+                RestoreListFocus();
+            }
+        }
+
+        private async Task GoToPathAsync()
         {
             var typed = PromptForm.Ask(this, "Go to path", "Path:",
                 IsDrivesView ? "" : Active.CurrentPath);
@@ -7537,7 +7552,7 @@ namespace ExplorerNative
             // must not freeze.
             var destination = intoNewFolder
                 ? await Task.Run(() => FileOperations.UniqueName(
-                    Path.Combine(here, ArchiveFormats.BaseName(archive))))
+                    Path.Combine(here, ArchiveFormats.BaseName(archive)), folder: true))
                 : here;
 
             using var cts = new CancellationTokenSource();
@@ -7709,7 +7724,7 @@ namespace ExplorerNative
                     var folder = Active.CurrentPath;
                     path = await Task.Run(() =>
                     {
-                        var unique = FileOperations.UniqueName(Path.Combine(folder, name));
+                        var unique = FileOperations.UniqueName(Path.Combine(folder, name), folder: true);
                         Directory.CreateDirectory(unique);
                         return unique;
                     });
@@ -7798,7 +7813,7 @@ namespace ExplorerNative
                     var folder = Active.CurrentPath;
                     path = await Task.Run(() =>
                     {
-                        var unique = FileOperations.UniqueName(Path.Combine(folder, name));
+                        var unique = FileOperations.UniqueName(Path.Combine(folder, name), folder: false);
 
                         // CreateNew rather than Create: a file that appeared
                         // between the unique-name check and here belongs to
@@ -7810,7 +7825,7 @@ namespace ExplorerNative
                 }
 
                 await RefreshAsync(path);
-                AnnounceOperation("folder.created", $"Created file {Path.GetFileName(path)}");
+                AnnounceOperation("file.created", $"Created file {Path.GetFileName(path)}");
             }
             catch (Exception ex)
             {
@@ -8098,7 +8113,7 @@ namespace ExplorerNative
 
             if (IsDisposed) return;
             if (errors.Count > 0) Announce("The other copy was not deleted. " + string.Join("; ", errors), isError: true);
-            else Announce("Deleted on both sides");
+            else AnnounceOperation("delete.both", "Deleted on both sides");
         }
 
         /// <summary>
@@ -8246,7 +8261,7 @@ namespace ExplorerNative
             var windowHandle = Handle;
             var fromFolders = paths.Select(SafeParent).Where(f => f != null).Cast<string>()
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            Announce(paths.Length == 1 ? "Deleting" : $"Deleting {paths.Length} items");
+            AnnounceOperation("delete.started", paths.Length == 1 ? "Deleting" : $"Deleting {paths.Length} items");
 
             _deleting = true;
             RunningTransfers++;
@@ -9081,6 +9096,13 @@ namespace ExplorerNative
                 _tabAnnounceTimer?.Dispose();
                 _watchTimer?.Stop();
                 _watchTimer?.Dispose();
+
+                // Both tick into the window: a details read or a selection
+                // count arriving after it has gone touched a disposed list.
+                _detailsTimer?.Stop();
+                _detailsTimer?.Dispose();
+                _selectionSpeechTimer?.Stop();
+                _selectionSpeechTimer?.Dispose();
                 foreach (var pane in _panes) DisarmWatcher(pane);
 
                 // Cancelled, not disposed: background enumerations and size walks

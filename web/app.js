@@ -1330,11 +1330,17 @@ const MEMORY_DOWNLOAD_LIMIT = 512 * 1024 * 1024;
 
 async function downloadToPhone(url, name) {
   const t = addTransfer({ kind: 'download', name, state: 'running', done: 0, total: 0 });
-  const ctrl = new AbortController();
+  let ctrl = new AbortController();
   let stopped = false;
-  t.cancel = async () => { stopped = true; ctrl.abort(); finishTransfer(t, 'cancelled'); };
+  let stall = 0;
+  t.cancel = async () => { stopped = true; clearTimeout(stall); ctrl.abort(); finishTransfer(t, 'cancelled'); };
+  // Every fetch has a timeout: 30 seconds with nothing arriving drops the
+  // attempt, and it is tried again like any other dropped connection.
+  const quiet = () => { clearTimeout(stall); const c = ctrl; stall = setTimeout(() => c.abort(), 30000); };
   for (let attempt = 1; ; attempt++) {
+    ctrl = new AbortController();
     try {
+      quiet();
       const res = await fetch(url, { cache: 'no-store', signal: ctrl.signal });
       if (!res.ok) {
         const data = await res.json().catch(() => null);
@@ -1353,11 +1359,13 @@ async function downloadToPhone(url, name) {
       for (;;) {
         const { done, value } = await reader.read();
         if (done) break;
+        quiet();
         parts.push(value);
         t.done += value.length;
         transferProgress(t);
         renderTransfers();
       }
+      clearTimeout(stall);
       if (stopped) return;
       // A blob is this page's own origin: never one a browser would run as a page.
       let type = res.headers.get('content-type') || 'application/octet-stream';
@@ -1370,8 +1378,9 @@ async function downloadToPhone(url, name) {
       finishTransfer(t, 'done', `Saved to ${DEVICE}`);
       return;
     } catch (err) {
+      clearTimeout(stall);
       if (stopped) return;
-      const network = err.name === 'TypeError' || err.status === 0;
+      const network = err.name === 'TypeError' || err.name === 'AbortError' || err.status === 0;
       if (!network || attempt >= 6) { finishTransfer(t, 'failed', network ? UNREACHABLE : err.message); return; }
       t.state = 'waiting';
       renderTransfers();

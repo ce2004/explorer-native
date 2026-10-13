@@ -1,4 +1,6 @@
 using System;
+using System.Text;
+using System.Diagnostics;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -41,7 +43,84 @@ namespace ExplorerNative
 
         public sealed record PairStatus(
             DateTime? LastSyncedUtc, string? Problem, bool Running, long DoneBytes = 0, long TotalBytes = 0,
-            int CheckDone = 0, int CheckTotal = 0);
+            int CheckDone = 0, int CheckTotal = 0)
+        {
+            /// <summary>Where a running pass is: <see cref="PhaseScanning"/> and the rest. Null when not running.</summary>
+            public string? Phase { get; init; }
+
+            /// <summary>Files found on the PC side, so far or in all.</summary>
+            public int LocalFound { get; init; }
+
+            /// <summary>Files found in the Drive folder, so far or in all.</summary>
+            public int DriveFound { get; init; }
+
+            /// <summary>Files on both sides that are already the same, so nothing is done to them.</summary>
+            public int Matched { get; init; }
+
+            /// <summary>Which of the planned uploads, downloads and deletes this pass is on.</summary>
+            public int StepDone { get; init; }
+            public int StepTotal { get; init; }
+
+            public int Uploaded { get; init; }
+            public int Downloaded { get; init; }
+
+            /// <summary>Files moved or renamed to follow a move on the other side.</summary>
+            public int Moved { get; init; }
+            public int Deleted { get; init; }
+            public int Failed { get; init; }
+        }
+
+        /// <summary>
+        /// Why <paramref name="pair"/> may not be added beside <paramref name="others"/>:
+        /// the same or a nested PC folder, or the same or a nested Drive folder.
+        /// Either way two pairs would sync the same files, and each would upload
+        /// what the other had not recorded. Null when it does not overlap.
+        /// </summary>
+        internal static string? Overlap(DriveSyncPair pair, IEnumerable<DriveSyncPair> others)
+        {
+            static bool Nested(string a, string b, char separator)
+            {
+                a = a.TrimEnd(separator); b = b.TrimEnd(separator);
+                if (a.Length == 0 || b.Length == 0) return a.Length == b.Length;
+                return string.Equals(a, b, StringComparison.OrdinalIgnoreCase) ||
+                       a.StartsWith(b + separator, StringComparison.OrdinalIgnoreCase) ||
+                       b.StartsWith(a + separator, StringComparison.OrdinalIgnoreCase);
+            }
+            foreach (var other in others)
+            {
+                if (other.Id == pair.Id) continue;
+                if (Nested(pair.LocalFolder, other.LocalFolder, Path.DirectorySeparatorChar))
+                    return $"{pair.LocalFolder} overlaps {other.LocalFolder}, which is already monitored as " +
+                           $"{DisplayName(other)}. Two monitored folders may not share files, or both would upload them.";
+                if (pair.DriveFolderId == other.DriveFolderId ||
+                    Nested(pair.DriveFolderPath, other.DriveFolderPath, '/'))
+                    return $"The Drive folder {pair.DriveFolderPath} overlaps {other.DriveFolderPath}, which " +
+                           $"{DisplayName(other)} already syncs. Choose a Drive folder of its own.";
+            }
+            return null;
+        }
+
+        public const string PhaseScanning = "scanning";
+        public const string PhaseListing = "listing";
+        public const string PhaseSyncing = "syncing";
+
+        /// <summary>
+        /// Changes a running pass's status, and tells the window at most twice
+        /// a second (<paramref name="now"/> always), so a scan of two million
+        /// files does not flood the list or the screen reader.
+        /// </summary>
+        private void Report(string pairId, Func<PairStatus, PairStatus> change, bool now = false)
+        {
+            lock (_gate)
+            {
+                if (!_status.TryGetValue(pairId, out var was)) return;
+                _status[pairId] = change(was);
+            }
+            long tick = Environment.TickCount64;
+            if (!now && tick - Interlocked.Read(ref _lastProgressEvent) < 500) return;
+            Interlocked.Exchange(ref _lastProgressEvent, tick);
+            try { Changed?.Invoke(); } catch { }
+        }
 
         /// <summary>A download part way through, and which Drive file it is part of.</summary>
         public sealed record PartialDownload(string RemoteId, long Size, DateTime ModifiedUtc, string? Md5);
@@ -72,6 +151,41 @@ namespace ExplorerNative
             /// Ordinal: ids are case-sensitive.
             /// </summary>
             public Dictionary<string, PendingTrash> PendingTrash { get; set; } = new(StringComparer.Ordinal);
+
+            /// <summary>
+            /// The changes feed: where to read from next, the pair's Drive folders by
+            /// path as last seen, folders to list again whatever the feed says (they
+            /// had something left to do), when Drive was last listed whole, with
+            /// subfolders or not, and what that listing left out. See ListDriveSideAsync.
+            /// </summary>
+            public string? ChangesToken { get; set; }
+            public Dictionary<string, string> FolderIds { get; set; } = new(SyncNameComparer.Instance);
+            public List<string> DirtyFolders { get; set; } = new();
+            public DateTime? LastFullListUtc { get; set; }
+            public bool? ScanSubfolders { get; set; }
+            public List<string> DriveUnusable { get; set; } = new();
+            public List<string> DriveClashing { get; set; } = new();
+
+            /// <summary>
+            /// A large pair's records are a file per folder (see ShardStore):
+            /// these are the folders that have one. Files, Hashes, Partials and
+            /// Uploads above are then empty in the saved state.
+            /// </summary>
+            public bool Sharded { get; set; }
+            public List<string> ShardFolders { get; set; } = new();
+
+            /// <summary>Of those, the folders with records of files: each must be a folder Drive is known to have.</summary>
+            public List<string> RecordFolders { get; set; } = new();
+
+            /// <summary>Set on a batch's state: it saves into these folders' records, not over the whole state.</summary>
+            internal ShardStore? Store;
+
+            /// <summary>The pair's Drive folders by path as they were when the pass began (see EnsureFolderAsync).</summary>
+            internal IReadOnlyDictionary<string, string>? Remembered;
+            internal HashSet<string>? SliceFolders;
+
+            /// <summary>Set when the state holds only these paths of its folders (see ShardStore.SavePaths).</summary>
+            internal HashSet<string>? SlicePaths;
 
             /// <summary>Which two folders this state is about. Changing either starts it again.</summary>
             public string? LocalFolder { get; set; }
@@ -136,7 +250,7 @@ namespace ExplorerNative
         private const long SaveAtOnceBytes = 64L * 1024 * 1024;
 
         /// <summary>How many Drive folders are listed at once.</summary>
-        private const int ListStreams = 4;
+        private const int ListStreams = 16;
 
         /// <summary>Raised on a worker thread whenever a pair's status changes.</summary>
         public event Action? Changed;
@@ -515,6 +629,46 @@ namespace ExplorerNative
         /// One pair, with everything a pass does about how it went. False when
         /// Drive has gone offline and the rest of the pass should wait.
         /// </summary>
+        /// <summary>A small file that says a pass is under way, from when.</summary>
+        private static string RunningMarker(string pairId) => Path.Combine(StateDirectory, pairId + ".running");
+
+        /// <summary>How long after an unfinished pass the next waits before looking at Drive.</summary>
+        internal static TimeSpan AfterCrashWait { get; set; } = TimeSpan.FromSeconds(30);
+
+        /// <summary>
+        /// A pass that died with the process (closed by force, the power going)
+        /// can have sent a file Google stored after all. Listed again within
+        /// seconds, Drive may not show it yet, and it would be sent a second
+        /// time; seen once on the real account, 1.1 seconds apart. So when the
+        /// last pass never finished and began less than two minutes ago, this
+        /// one waits until <see cref="AfterCrashWait"/> after it began. Then it
+        /// marks itself as running. A pass that ends any other way removes the
+        /// mark, so this costs nothing in the ordinary course.
+        /// </summary>
+        private async Task AfterAnUnfinishedPassAsync(DriveSyncPair pair, CancellationToken token)
+        {
+            var marker = RunningMarker(pair.Id);
+            try
+            {
+                if (File.Exists(marker) &&
+                    DateTime.TryParse(File.ReadAllText(marker), System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.RoundtripKind, out var began))
+                {
+                    var since = DateTime.UtcNow - began.ToUniversalTime();
+                    if (since >= TimeSpan.Zero && since < TimeSpan.FromMinutes(2) && since < AfterCrashWait)
+                    {
+                        SetStatus(pair.Id, StatusOf(pair.Id) with { Problem = "waiting a moment for Google, after the last sync was cut short" });
+                        await Task.Delay(AfterCrashWait - since, token).ConfigureAwait(false);
+                        SetStatus(pair.Id, StatusOf(pair.Id) with { Problem = null });
+                    }
+                }
+                Directory.CreateDirectory(StateDirectory);
+                File.WriteAllText(marker, DateTime.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture));
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch { }
+        }
+
         internal async Task<bool> SyncOneAsync(DriveClient client, DriveSyncPair pair, CancellationToken token)
         {
             {
@@ -523,7 +677,17 @@ namespace ExplorerNative
 
                 try
                 {
-                    await SyncPairAsync(client, pair, token).ConfigureAwait(false);
+                    await AfterAnUnfinishedPassAsync(pair, token).ConfigureAwait(false);
+                    try
+                    {
+                        await SyncPairAsync(client, pair, token).ConfigureAwait(false);
+                    }
+                    finally
+                    {
+                        // Reached however the pass ended, short of the process
+                        // dying: anything it sent has been answered (see Drain).
+                        try { File.Delete(RunningMarker(pair.Id)); } catch { }
+                    }
                     lock (_gate) _lastChecked[pair.Id] = DateTime.UtcNow;
                     _saidOffline = false;
                 }
@@ -783,9 +947,498 @@ namespace ExplorerNative
             return known;
         }
 
+        /// <summary>
+        /// Carries out the moves and renames <see cref="SyncMoves.Find"/> sees in
+        /// the plan, and returns the plan without the deletes and copies they
+        /// replace, and how many files moved.
+        ///
+        /// A folder renamed on the PC becomes one rename of the Drive folder
+        /// (the same ids, nothing uploaded) when that is exactly what happened:
+        /// every Drive file under it moved with it, nothing under it is left out
+        /// of the sync, the old folder is gone from the PC and nothing is at the
+        /// new path on Drive. Anything less goes file by file. A file moved on
+        /// the PC is checked by MD5 against Drive's copy first, and Drive's copy
+        /// must still be what the scan saw. A file moved on Drive is the same id,
+        /// and the PC's file must still be what the scan saw. A crash anywhere in
+        /// here leaves both sides holding the file once: the next pass adopts it
+        /// at its new path by MD5 and forgets the old one.
+        /// </summary>
+        private async Task<(List<SyncAction> Plan, int Moved)> MoveWhatMovedAsync(
+            DriveClient client, DriveSyncPair pair, PairState state, SyncRules rules, List<SyncAction> plan,
+            Dictionary<string, SyncFile> local, Dictionary<string, SyncFile> remote, Dictionary<string, string> folders,
+            SyncSkips skips, string root, int generation, CancellationToken token)
+        {
+            var found = SyncMoves.Find(rules, plan, local, remote, state.Files);
+            if (found.Count == 0) return (plan, 0);
+
+            // A file moved on the PC is only taken for the file Drive holds when
+            // its MD5 agrees. Read once, and kept like any other.
+            var checkedMoves = new List<SyncMove>();
+            foreach (var move in found)
+            {
+                token.ThrowIfCancellationRequested();
+                if (!move.OnDrive || move.Was.RemoteMd5 == null) { checkedMoves.Add(move); continue; }
+                var l = local[move.To];
+                string? md5 = state.Hashes.TryGetValue(move.To, out var h) && h.Size == l.Size && h.ModifiedUtc == l.ModifiedUtc
+                    ? h.Md5 : null;
+                if (md5 == null)
+                {
+                    try
+                    {
+                        await using var file = new FileStream(LocalPathFor(root, move.To), FileMode.Open, FileAccess.Read,
+                            FileShare.ReadWrite | FileShare.Delete, 1 << 20, FileOptions.SequentialScan | FileOptions.Asynchronous);
+                        md5 = Convert.ToHexString(await MD5.HashDataAsync(file, token).ConfigureAwait(false)).ToLowerInvariant();
+                        state.Hashes[move.To] = new SyncHashEntry(l.Size, l.ModifiedUtc, md5);
+                    }
+                    catch (Exception) when (!token.IsCancellationRequested) { continue; }
+                }
+                if (string.Equals(md5, move.Was.RemoteMd5, StringComparison.OrdinalIgnoreCase)) checkedMoves.Add(move);
+            }
+            if (checkedMoves.Count == 0) return (plan, 0);
+
+            var done = new HashSet<string>(SyncNameComparer.Instance);
+            int moved = 0;
+
+            void Recorded(SyncMove move, SyncFile at)
+            {
+                lock (_fastGate)
+                {
+                    // Its checksum goes with it (the file is the same), and nothing
+                    // half done is left at the old path to be carried on there.
+                    if (state.Hashes.Remove(move.From, out var hash)) state.Hashes[move.To] = hash;
+                    state.Partials.Remove(move.From);
+                    state.Uploads.Remove(move.From);
+                    state.Files.Remove(move.From);
+                    var l = local.TryGetValue(move.To, out var onPc) ? onPc : local[move.From];
+                    state.Files[move.To] = new SyncBase(l.Size, l.ModifiedUtc, at.Size, at.ModifiedUtc, at.Id ?? move.Was.RemoteId, at.Md5);
+                    done.Add(move.From);
+                    done.Add(move.To);
+                    moved++;
+                    SaveSoon(pair.Id, state);
+                    int count = moved;
+                    Report(pair.Id, s => s with { Moved = count });
+                }
+            }
+
+            // ---- whole folders first ----
+            foreach (var group in checkedMoves.GroupBy(m => (m.OnDrive, Folder: SyncMoves.FolderOf(m)))
+                         .Where(g => g.Key.Folder != null).ToList())
+            {
+                if (Stopped(pair) || GenerationOf(pair.Id) != generation) throw new PairStoppedException();
+                var (fromFolder, toFolder) = group.Key.Folder!.Value;
+                var moves = group.ToList();
+                var froms = new HashSet<string>(moves.Select(m => m.From), SyncNameComparer.Instance);
+                var prefix = fromFolder + "/";
+
+                if (group.Key.OnDrive)
+                {
+                    // Renamed on the PC: rename Drive's folder, if it is exactly that.
+                    if (!folders.TryGetValue(fromFolder, out var folderId) || folders.ContainsKey(toFolder)) continue;
+                    if (skips.AnyUnder(fromFolder) || skips.AnyUnder(toFolder)) continue;
+                    if (remote.Keys.Any(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && !froms.Contains(k))) continue;
+                    if (Directory.Exists(LocalPathFor(root, fromFolder))) continue;
+                    if (folders.Keys.Any(k => k.StartsWith(toFolder + "/", StringComparison.OrdinalIgnoreCase))) continue;
+
+                    var fromParent = SyncMoves.Parent(fromFolder);
+                    var toParent = SyncMoves.Parent(toFolder);
+                    var parentId = await Patiently(pair, () => EnsureFolderAsync(client, folders, pair.DriveFolderId, toParent, token, state.Remembered),
+                        client, token).ConfigureAwait(false);
+                    var oldParentId = fromParent.Length == 0 ? pair.DriveFolderId : folders[fromParent];
+                    string? newName = SyncMoves.Leaf(fromFolder) == SyncMoves.Leaf(toFolder) ? null : SyncMoves.Leaf(toFolder);
+                    bool sameParent = string.Equals(parentId, oldParentId, StringComparison.Ordinal);
+                    await Patiently(pair, async () =>
+                    {
+                        await client.MoveOrRename(folderId, newName, sameParent ? null : oldParentId, sameParent ? null : parentId, token)
+                            .ConfigureAwait(false);
+                        return true;
+                    }, client, token).ConfigureAwait(false);
+                    Kill("moved folder " + fromFolder);
+
+                    // Every folder under it is at its new path now.
+                    foreach (var key in folders.Keys.Where(k => SyncNameComparer.Instance.Equals(k, fromFolder) ||
+                                 k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList())
+                    {
+                        var id = folders[key];
+                        folders.Remove(key);
+                        folders[toFolder + key[fromFolder.Length..]] = id;
+                    }
+                    foreach (var move in moves)
+                    {
+                        var at = remote[move.From];
+                        remote.Remove(move.From);
+                        remote[move.To] = at;
+                        Recorded(move, at);
+                    }
+                }
+                else
+                {
+                    // Renamed on Drive: rename the PC's folder, if it is exactly that.
+                    var oldPath = LocalPathFor(root, fromFolder);
+                    var newPath = LocalPathFor(root, toFolder);
+                    if (!IsInside(root, oldPath) || !IsInside(root, newPath)) continue;
+                    if (!Directory.Exists(oldPath) || Directory.Exists(newPath) || File.Exists(newPath)) continue;
+                    if (folders.ContainsKey(fromFolder)) continue;      // still there on Drive: not a rename
+                    if (skips.AnyUnder(fromFolder) || skips.AnyUnder(toFolder)) continue;
+                    if (local.Keys.Any(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && !froms.Contains(k))) continue;
+                    bool anythingElse;
+                    try { anythingElse = Directory.EnumerateFileSystemEntries(oldPath, "*", SearchOption.AllDirectories)
+                              .Any(e => File.Exists(e) && !froms.Contains(Relative(root, e))); }
+                    catch { continue; }
+                    if (anythingElse) continue;
+                    if (moves.Any(m => !LocalStillAsScanned(LocalPathFor(root, m.From), local[m.From]))) continue;
+
+                    try
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(newPath)!);
+                        Mine(oldPath);
+                        Mine(newPath);
+                        Directory.Move(oldPath, newPath);
+                    }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
+                    Kill("moved local folder " + fromFolder);
+                    foreach (var move in moves)
+                    {
+                        var at = local[move.From];
+                        local.Remove(move.From);
+                        local[move.To] = at;
+                        Recorded(move, remote[move.To]);
+                    }
+                }
+            }
+
+            // ---- then file by file ----
+            var single = checkedMoves.Where(m => !done.Contains(m.From)).ToList();
+            foreach (var folder in single.Where(m => m.OnDrive).Select(m => SyncMoves.Parent(m.To))
+                         .Distinct(SyncNameComparer.Instance).OrderBy(f => f.Count(c => c == '/')))
+            {
+                if (Stopped(pair) || GenerationOf(pair.Id) != generation) throw new PairStoppedException();
+                await Patiently(pair, () => EnsureFolderAsync(client, folders, pair.DriveFolderId, folder, token, state.Remembered), client, token)
+                    .ConfigureAwait(false);
+            }
+
+            // Read before the lanes start: they write `remote` (under the gate) as they go.
+            var scanned = single.Where(m => m.OnDrive).ToDictionary(m => m.From, m => remote[m.From], SyncNameComparer.Instance);
+            var lanes = new AdaptiveLanes(FastLanes, FastLanesMin, FastLanesMax);
+            await Parallel.ForEachAsync(single.Where(m => m.OnDrive),
+                new ParallelOptions { MaxDegreeOfParallelism = FastLanesMax, CancellationToken = token },
+                async (move, ct) =>
+                {
+                    await lanes.EnterAsync(ct).ConfigureAwait(false);
+                    var clock = Stopwatch.StartNew();
+                    bool ok = false;
+                    try { ok = await MoveOnDrive(move, ct).ConfigureAwait(false); }
+                    finally { lanes.Leave(ok && clock.ElapsedMilliseconds < SlowAnswerMilliseconds); }
+                }).ConfigureAwait(false);
+
+            foreach (var move in single.Where(m => !m.OnDrive))
+            {
+                token.ThrowIfCancellationRequested();
+                if (Stopped(pair) || GenerationOf(pair.Id) != generation) throw new PairStoppedException();
+                var oldPath = LocalPathFor(root, move.From);
+                var newPath = LocalPathFor(root, move.To);
+                if (!IsInside(root, oldPath) || !IsInside(root, newPath)) continue;
+                if (!LocalStillAsScanned(oldPath, local[move.From]) || File.Exists(newPath) || Directory.Exists(newPath)) continue;
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(newPath)!);
+                    Mine(oldPath);
+                    Mine(newPath);
+                    File.Move(oldPath, newPath);
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
+                Kill("moved local " + move.From);
+                var at = local[move.From];
+                local.Remove(move.From);
+                local[move.To] = at;
+                Recorded(move, remote[move.To]);
+            }
+
+            // A move tried and not made (Drive's copy or the PC's changed since the
+            // scan, or the move itself failed) leaves both halves alone this pass:
+            // as a delete and a copy they could leave the file twice. The next
+            // pass looks again.
+            var attempted = new HashSet<string>(SyncNameComparer.Instance);
+            foreach (var m in checkedMoves) { attempted.Add(m.From); attempted.Add(m.To); }
+            var rest = plan.Where(a => !done.Contains(a.Path) && !attempted.Contains(a.Path)).ToList();
+            return (rest, moved);
+
+            async Task<bool> MoveOnDrive(SyncMove move, CancellationToken ct)
+            {
+                if (Stopped(pair) || GenerationOf(pair.Id) != generation) return false;
+                var at = scanned[move.From];
+                try
+                {
+                    // Still what the scan saw, or it is an edit and the plan decides.
+                    var now = await Patiently(pair, () => client.FileNow(at.Id!, ct), client, ct).ConfigureAwait(false);
+                    if (now == null || !SameAsScanned(now, at)) return false;
+                    var fromParent = SyncMoves.Parent(move.From);
+                    var toParent = SyncMoves.Parent(move.To);
+                    var oldParentId = fromParent.Length == 0 ? pair.DriveFolderId : folders[fromParent];
+                    var newParentId = toParent.Length == 0 ? pair.DriveFolderId : folders[toParent];
+                    bool sameParent = string.Equals(oldParentId, newParentId, StringComparison.Ordinal);
+                    var newName = Path.GetFileName(LocalPathFor(root, move.To));
+                    await Patiently(pair, async () =>
+                    {
+                        await client.MoveOrRename(at.Id!, newName, sameParent ? null : oldParentId, sameParent ? null : newParentId, ct)
+                            .ConfigureAwait(false);
+                        return true;
+                    }, client, ct).ConfigureAwait(false);
+                }
+                catch (Exception) when (!ct.IsCancellationRequested) { return false; }
+                lock (_fastGate)
+                {
+                    remote.Remove(move.From);
+                    remote[move.To] = at;
+                }
+                Recorded(move, at);
+                Kill("moved " + move.From);
+                return true;
+            }
+        }
+
+        /// <summary>A full path under <paramref name="root"/> as the pair's relative path.</summary>
+        private static string Relative(string root, string full) =>
+            Path.GetRelativePath(root, full).Replace(Path.DirectorySeparatorChar, '/');
+
+        /// <summary>
+        /// How long a pair may go on the changes feed alone before Drive is
+        /// listed whole again, to catch anything the feed did not say.
+        /// </summary>
+        internal static TimeSpan FullListEvery { get; set; } = TimeSpan.FromHours(24);
+
+        /// <summary>Whether a pass may list only what the changes feed says changed.</summary>
+        internal static bool CanListChangesOnly(PairStateView state, DriveSyncPair pair, DateTime nowUtc) =>
+            !string.IsNullOrEmpty(state.ChangesToken) &&
+            state.FolderCount > 0 && state.RootFolderId == pair.DriveFolderId &&
+            state.ScanSubfolders == pair.IncludeSubfolders &&
+            state.LastFullListUtc is { } full && nowUtc - full < FullListEvery && nowUtc >= full;
+
+        /// <summary>What <see cref="CanListChangesOnly"/> needs to know about a pair's saved state.</summary>
+        internal sealed record PairStateView(string? ChangesToken, int FolderCount, string? RootFolderId, bool? ScanSubfolders,
+            DateTime? LastFullListUtc);
+
+        /// <summary>
+        /// Drive's side of a pass: what is in the pair's Drive folder, its
+        /// folders by path, the changes-feed token to keep, and whether this was
+        /// a full listing.
+        ///
+        /// Listed whole the first time, once a day, and whenever anything is in
+        /// doubt. Otherwise only the folders the changes feed says changed are
+        /// listed again (plus any folder a new PC file would go up into, and any
+        /// left over from last time), and the rest is what the last sync
+        /// recorded, which nothing since has touched. A folder renamed, moved or
+        /// deleted on Drive, a token Google will not take, or any failure at all
+        /// here means the whole listing instead, never a partial one taken for
+        /// complete. And a new file is never uploaded on the strength of the
+        /// records alone: its folder is always freshly listed first.
+        /// </summary>
+        private async Task<(Dictionary<string, SyncFile> Remote, Dictionary<string, string> Folders, string? Token, bool Full,
+            SyncSkips Skips)> ListDriveSideAsync(DriveClient client, DriveSyncPair pair, PairState state,
+            Dictionary<string, SyncFile> local, List<string> unusable, Dictionary<string, List<SyncFile>> shadowed,
+            List<string> clashing, CancellationToken token)
+        {
+            string? driveId = null;
+            if (CanListChangesOnly(ViewOf(state), pair, DateTime.UtcNow))
+            {
+                try
+                {
+                    driveId = await client.DriveOf(pair.DriveFolderId, token).ConfigureAwait(false);
+                    var changed = await ListChangedOnlyAsync(client, pair, state, local, driveId, unusable, shadowed, clashing, token)
+                        .ConfigureAwait(false);
+                    if (changed != null)
+                        return (changed.Value.Remote, changed.Value.Folders, changed.Value.Token, false, changed.Value.Skips);
+                }
+                catch (Exception) when (!token.IsCancellationRequested)
+                {
+                    // Anything at all: listed whole instead.
+                }
+                unusable.Clear();
+                clashing.Clear();
+                shadowed.Clear();
+            }
+
+            // Taken before the listing, so a change made while it runs is in
+            // the next pass's feed rather than lost between the two.
+            string? start = null;
+            try
+            {
+                driveId ??= await client.DriveOf(pair.DriveFolderId, token).ConfigureAwait(false);
+                start = await client.ChangesStartToken(driveId, token).ConfigureAwait(false);
+            }
+            catch (Exception) when (!token.IsCancellationRequested) { start = null; }
+
+            var remoteSkips = new SyncSkips();
+            var (remote, folders) = await Patiently(pair,
+                () =>
+                {
+                    unusable.Clear();
+                    clashing.Clear();
+                    shadowed.Clear();
+                    remoteSkips = new SyncSkips();
+                    return ScanRemoteAsync(client, pair.DriveFolderId, pair.IncludeSubfolders, token, unusable, shadowed,
+                        clashing, remoteSkips, WaitScale, found: n => Report(pair.Id, s => s with { DriveFound = n }));
+                }, client, token)
+                .ConfigureAwait(false);
+            return (remote, folders, start, true, remoteSkips);
+        }
+
+        private static PairStateView ViewOf(PairState state) =>
+            new(state.ChangesToken, state.FolderIds.Count, state.FolderIds.TryGetValue("", out var r) ? r : null,
+                state.ScanSubfolders, state.LastFullListUtc);
+
+        /// <summary>
+        /// The changes-feed half of <see cref="ListDriveSideAsync"/>. Null when
+        /// the feed says the folders themselves changed, and Drive has to be
+        /// listed whole.
+        /// </summary>
+        private async Task<(Dictionary<string, SyncFile> Remote, Dictionary<string, string> Folders, string Token,
+            SyncSkips Skips)?> ListChangedOnlyAsync(DriveClient client, DriveSyncPair pair, PairState state,
+            Dictionary<string, SyncFile> local, string? driveId, List<string> unusable,
+            Dictionary<string, List<SyncFile>> shadowed, List<string> clashing, CancellationToken token)
+        {
+            var (changes, next) = await Patiently(pair, () => client.SyncChangesSince(state.ChangesToken!, driveId, token),
+                client, token).ConfigureAwait(false);
+
+            var folderIds = state.FolderIds;
+            var folderAt = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var (path, id) in folderIds) if (!folderAt.TryAdd(id, path)) return null;
+            var fileAt = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var (path, was) in state.Files)
+                if (!string.IsNullOrEmpty(was.RemoteId)) fileAt.TryAdd(was.RemoteId, path);
+
+            var dirty = new HashSet<string>(state.DirtyFolders, SyncNameComparer.Instance);
+            foreach (var c in changes)
+            {
+                if (folderAt.TryGetValue(c.Id, out var folderPath))
+                {
+                    if (folderPath.Length == 0) { dirty.Add(""); continue; }     // the pair's own folder: its name is not ours
+                    if (c.Gone || !c.Folder) return null;
+                    var parentPath = SyncMoves.Parent(folderPath);
+                    var parentId = folderIds.TryGetValue(parentPath, out var p) ? p : null;
+                    if (c.Parent != parentId || c.Name == null ||
+                        !SyncNameComparer.Instance.Equals(c.Name, SyncMoves.Leaf(folderPath))) return null;   // renamed or moved
+                    dirty.Add(folderPath);
+                    continue;
+                }
+                if (c.Folder)
+                {
+                    // A folder new to the pair: its parent's listing finds it and goes in.
+                    if (!c.Gone && c.Parent != null && folderAt.TryGetValue(c.Parent, out var into)) dirty.Add(into);
+                    continue;
+                }
+                if (fileAt.TryGetValue(c.Id, out var was)) dirty.Add(SyncMoves.Parent(was));
+                if (!c.Gone && c.Parent != null && folderAt.TryGetValue(c.Parent, out var now)) dirty.Add(now);
+            }
+
+            // What the records say, for every folder nothing touched.
+            var remote = new Dictionary<string, SyncFile>(SyncNameComparer.Instance);
+            foreach (var (path, was) in state.Files)
+                if (string.IsNullOrEmpty(was.RemoteId)) dirty.Add(SyncMoves.Parent(path));
+            foreach (var (path, was) in state.Files)
+            {
+                if (dirty.Contains(SyncMoves.Parent(path))) continue;
+                remote[path] = new SyncFile(was.RemoteSize, was.RemoteModifiedUtc, was.RemoteId, was.RemoteMd5);
+            }
+
+            // A new PC file is never sent on the records alone: the folder it
+            // would go into (or the nearest one Drive is known to have) is listed.
+            foreach (var path in local.Keys)
+            {
+                if (state.Files.ContainsKey(path) || remote.ContainsKey(path)) continue;
+                var folder = SyncMoves.Parent(path);
+                while (folder.Length > 0 && !folderIds.ContainsKey(folder)) folder = SyncMoves.Parent(folder);
+                dirty.Add(folder);
+            }
+            // And their records were set aside above for a folder now listed.
+            foreach (var path in remote.Keys.Where(p => dirty.Contains(SyncMoves.Parent(p))).ToList()) remote.Remove(path);
+
+            // A folder that should be listed but is not known on Drive cannot be
+            // listed, and its records cannot be trusted either: listed whole.
+            if (dirty.Any(f => !folderIds.ContainsKey(f))) return null;
+            var only = dirty.Select(f => (folderIds[f], f)).ToList();
+            var skips = new SyncSkips();
+
+            // What the last listing left out stays left out (and said), except in
+            // folders listed again now, which say for themselves.
+            void CarryLeftOut()
+            {
+                bool Unlisted(string entry) => !dirty.Contains(SyncMoves.Parent(entry.TrimEnd('/')));
+                unusable.AddRange(state.DriveUnusable.Where(Unlisted));
+                clashing.AddRange(state.DriveClashing.Where(Unlisted));
+            }
+            if (only.Count == 0)
+            {
+                CarryLeftOut();
+                return (remote, new Dictionary<string, string>(folderIds, SyncNameComparer.Instance), next, skips);
+            }
+
+            var (fresh, folders) = await Patiently(pair,
+                () =>
+                {
+                    unusable.Clear();
+                    clashing.Clear();
+                    shadowed.Clear();
+                    skips = new SyncSkips();
+                    return ScanRemoteAsync(client, pair.DriveFolderId, pair.IncludeSubfolders, token, unusable, shadowed,
+                        clashing, skips, WaitScale, only: only, known: folderIds);
+                }, client, token)
+                .ConfigureAwait(false);
+            foreach (var (path, file) in fresh) remote[path] = file;
+            CarryLeftOut();
+            return (remote, folders, next, skips);
+        }
+
+        /// <summary>
+        /// Drive holding one name twice (Google Drive for desktop can leave that
+        /// behind), with nothing synced there yet: the newer copy counts, and if
+        /// the PC's file was the older one, the pass saw a conflict and made a
+        /// third copy. So the PC's file is hashed here, and when it is exactly
+        /// one of the older copies, that copy is the one this path is paired
+        /// with. The other copy is left on Drive as it is. Rare, so only these
+        /// few files are read.
+        /// </summary>
+        private static async Task AdoptMatchingDuplicateAsync(string root, PairState state,
+            Dictionary<string, SyncFile> local, Dictionary<string, SyncFile> remote,
+            Dictionary<string, List<SyncFile>> shadowed, CancellationToken token)
+        {
+            foreach (var (path, older) in shadowed)
+            {
+                if (!local.TryGetValue(path, out var mine) || !remote.TryGetValue(path, out var newer)) continue;
+
+                // Synced before with one of the older copies: that is the pair's
+                // copy, pass after pass, rather than whichever is newest. Unless
+                // the newer one is the PC's own file (a replacement that went up
+                // and was cut off before the old copy went to the trash), which
+                // the Record step finishes.
+                bool synced = state.Files.TryGetValue(path, out var was);
+                var syncedId = synced ? was!.RemoteId : null;
+                var candidates = synced
+                    ? older.Where(c => c.Id == syncedId).ToList()
+                    : older.Where(c => c.Md5 != null && c.Size == mine.Size).ToList();
+                if (candidates.Count == 0) continue;
+                string md5;
+                try
+                {
+                    await using var file = new FileStream(LocalPathFor(root, path), FileMode.Open, FileAccess.Read,
+                        FileShare.ReadWrite | FileShare.Delete, 1 << 20, FileOptions.SequentialScan | FileOptions.Asynchronous);
+                    md5 = Convert.ToHexString(await MD5.HashDataAsync(file, token).ConfigureAwait(false)).ToLowerInvariant();
+                }
+                catch (Exception) when (!token.IsCancellationRequested) { continue; }
+                if (newer.Md5 != null && string.Equals(newer.Md5, md5, StringComparison.OrdinalIgnoreCase)) continue;
+                var match = synced
+                    ? candidates[0]
+                    : candidates.FirstOrDefault(c => string.Equals(c.Md5, md5, StringComparison.OrdinalIgnoreCase));
+                if (match.Id == null) continue;
+                remote[path] = match;
+                older.Remove(match);
+                older.Add(newer);
+            }
+        }
+
         private static bool IsOffline(Exception ex, CancellationToken token)
         {
             if (token.IsCancellationRequested) return false;
+            if (DriveClient.UnknownIfLandedException.In(ex)) return false;
             for (var e = ex; e != null; e = e.InnerException)
             {
                 if (e is SocketException or TaskCanceledException or TimeoutException) return true;
@@ -824,6 +1477,7 @@ namespace ExplorerNative
             }
 
             var root = pair.LocalFolder;
+            state.Remembered = new Dictionary<string, string>(state.FolderIds, SyncNameComparer.Instance);
 
             // A root that has gone (a USB drive unplugged, the folder removed in
             // Windows Explorer, the Drive folder trashed on the website) must
@@ -855,43 +1509,979 @@ namespace ExplorerNative
             // is listed, so the listing does not hold them as well.
             await TrashPendingAsync(client, pair, state, token).ConfigureAwait(false);
 
+            // A large pair goes a batch of folders at a time (see SyncInBatchesAsync).
+            if (UseBatches(state, pair))
+            {
+                if (!state.Sharded) MigrateToShards(pair.Id, state);
+                await SyncInBatchesAsync(client, pair, state, generation, token).ConfigureAwait(false);
+                return;
+            }
+
             // What either side holds and leaves out: never planned, so never
             // taken for deleted and never forgotten.
             var skips = new SyncSkips();
             var localClashing = new List<string>();
-            var local = ScanLocal(root, pair.IncludeSubfolders, skips, localClashing);
+            Report(pair.Id, s => s with
+            {
+                Phase = PhaseScanning, LocalFound = 0, DriveFound = 0, Matched = 0, StepDone = 0, StepTotal = 0,
+                Uploaded = 0, Downloaded = 0, Deleted = 0, Failed = 0, Moved = 0,
+            }, now: true);
+            var local = ScanLocal(root, pair.IncludeSubfolders, skips, localClashing,
+                found: n => Report(pair.Id, s => s with { LocalFound = n }));
+            Report(pair.Id, s => s with { Phase = PhaseListing, LocalFound = local.Count }, now: true);
             var unusable = new List<string>();
             var clashing = new List<string>();
             var shadowed = new Dictionary<string, List<SyncFile>>(SyncNameComparer.Instance);
-            var remoteSkips = new SyncSkips();
-            var (remote, folders) = await Patiently(pair,
-                () =>
-                {
-                    unusable.Clear();
-                    clashing.Clear();
-                    shadowed.Clear();
-                    remoteSkips = new SyncSkips();
-                    return ScanRemoteAsync(client, pair.DriveFolderId, pair.IncludeSubfolders, token, unusable, shadowed,
-                        clashing, remoteSkips, WaitScale);
-                }, client, token)
-                .ConfigureAwait(false);
+            var (remote, folders, feedToken, fullList, remoteSkips) = await ListDriveSideAsync(client, pair, state, local,
+                unusable, shadowed, clashing, token).ConfigureAwait(false);
             skips.Include(remoteSkips);
+            Report(pair.Id, s => s with { DriveFound = remote.Count }, now: true);
 
             // A download of a name that clashes left its part behind, and it
             // would be continued for ever. The clash is said instead.
             foreach (var path in state.Partials.Keys.Where(remoteSkips.Covers).ToList())
             {
-                var part = Path.Combine(root, path.Replace('/', Path.DirectorySeparatorChar)) + ".partial";
+                var part = PartialPath(Path.Combine(root, path.Replace('/', Path.DirectorySeparatorChar)));
                 try { if (IsInside(root, part)) File.Delete(part); } catch { }
                 state.Partials.Remove(path);
             }
 
+            var rules = SyncRules.For(pair);
+            var tally = new PassTally();
+            await ExecuteAsync(client, pair, state, rules, local, remote, folders, skips, shadowed, generation, tally,
+                plan =>
+                {
+                    // The feed's place, saved with the records it goes with. Every
+                    // folder this pass has anything to do in is listed again next
+                    // time, whatever the feed says, so a download that fails or
+                    // waits is not left to the daily full listing.
+                    state.ChangesToken = feedToken;
+                    state.FolderIds = folders;
+                    state.DirtyFolders = plan.Where(a => a.Kind is not (SyncActionKind.Record or SyncActionKind.Forget))
+                        .Select(a => SyncMoves.Parent(a.Path)).Distinct(SyncNameComparer.Instance).ToList();
+                    if (fullList)
+                    {
+                        state.LastFullListUtc = DateTime.UtcNow;
+                        state.ScanSubfolders = pair.IncludeSubfolders;
+                    }
+                    state.DriveUnusable = unusable.ToList();
+                    state.DriveClashing = clashing.ToList();
+                }, scope: null, hold: null, token).ConfigureAwait(false);
+            FinishPass(pair, state, tally, unusable, clashing, localClashing);
+        }
+
+        // ---------------- large pairs: a batch of folders at a time ----------------
+
+        /// <summary>
+        /// Above this many files a pair is synced a batch of folders at a time,
+        /// with its records kept a folder per file (see <see cref="ShardStore"/>).
+        /// Measured over mirrored trees, the whole-tree way kept 787 MB alive at
+        /// 200,000 files (about 4 KB a file) and its state file took 69 seconds
+        /// to write at two million; a batch at a time (20,000 to a batch) kept
+        /// 54 MB at 200,000 and the same 54 MB at 600,000. Settable for the
+        /// tests, which run everything through batches of a few files.
+        /// </summary>
+        internal static int LargePairFiles { get; set; } = 100_000;
+
+        /// <summary>How many PC files a batch gathers before it is synced.</summary>
+        internal static int BatchFiles { get; set; } = 50_000;
+
+        /// <summary>The most actions held back for the end of a pass (possible halves of a move).</summary>
+        internal static int HeldMost { get; set; } = 200_000;
+
+        /// <summary>Whether a pair goes a batch at a time: already does, or is big, or its PC folder is.</summary>
+        private static bool UseBatches(PairState state, DriveSyncPair pair) =>
+            state.Sharded || state.Files.Count > LargePairFiles ||
+            (state.Files.Count == 0 && CountLocalUpTo(pair.LocalFolder, pair.IncludeSubfolders, LargePairFiles + 1) > LargePairFiles);
+
+        /// <summary>Files under a folder, counted up to <paramref name="limit"/> and no further. Nothing kept.</summary>
+        private static int CountLocalUpTo(string root, bool subfolders, int limit)
+        {
+            int count = 0;
+            try
+            {
+                var options = new EnumerationOptions { IgnoreInaccessible = true, RecurseSubdirectories = subfolders, AttributesToSkip = 0 };
+                foreach (var _ in Directory.EnumerateFiles(root, "*", options))
+                    if (++count >= limit) break;
+            }
+            catch { }
+            return count;
+        }
+
+        /// <summary>
+        /// A pair's records, one encrypted file per folder that has any: what a
+        /// batch loads and saves, and nothing else. Each file says which folder
+        /// it is for, so a stale or mismatched one is never taken for another.
+        /// </summary>
+        private sealed class ShardStore
+        {
+            public readonly string Directory;
+            public ShardStore(string pairId) { Directory = Path.Combine(StateDirectory, pairId + ".shards"); }
+
+            public sealed class Shard
+            {
+                public string Folder { get; set; } = "";
+                public Dictionary<string, SyncBase> Files { get; set; } = new(SyncNameComparer.Instance);
+                public Dictionary<string, SyncHashEntry> Hashes { get; set; } = new(SyncNameComparer.Instance);
+                public Dictionary<string, PartialDownload> Partials { get; set; } = new(SyncNameComparer.Instance);
+                public Dictionary<string, UploadSession> Uploads { get; set; } = new(SyncNameComparer.Instance);
+            }
+
+            /// <summary>The file for a folder: named by a hash of the folder as the names comparer sees it.</summary>
+            public string PathOf(string folder)
+            {
+                var key = SyncNameComparer.Key(folder).ToUpperInvariant();
+                var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(key)))[..24].ToLowerInvariant();
+                return Path.Combine(Directory, hash + ".json");
+            }
+
+            public bool Has(string folder) => File.Exists(PathOf(folder));
+
+            /// <summary>
+            /// What each folder held when it was loaded for the batch now running,
+            /// so a save writes only the folders that changed: a pass where nothing
+            /// did used to rewrite every record of every folder.
+            /// </summary>
+            private readonly Dictionary<string, Shard> _asLoaded = new(SyncNameComparer.Instance);
+
+            public void ForgetLoaded() => _asLoaded.Clear();
+
+            private static bool Same<T>(Dictionary<string, T> a, Dictionary<string, T> b)
+            {
+                if (a.Count != b.Count) return false;
+                foreach (var (k, v) in a)
+                    if (!b.TryGetValue(k, out var w) || !EqualityComparer<T>.Default.Equals(v, w)) return false;
+                return true;
+            }
+
+            private static bool Same(Shard a, Shard b) =>
+                Same(a.Files, b.Files) && Same(a.Hashes, b.Hashes) && Same(a.Partials, b.Partials) && Same(a.Uploads, b.Uploads);
+
+            private static Shard CopyOf(Shard s) => new()
+            {
+                Folder = s.Folder,
+                Files = new Dictionary<string, SyncBase>(s.Files, SyncNameComparer.Instance),
+                Hashes = new Dictionary<string, SyncHashEntry>(s.Hashes, SyncNameComparer.Instance),
+                Partials = new Dictionary<string, PartialDownload>(s.Partials, SyncNameComparer.Instance),
+                Uploads = new Dictionary<string, UploadSession>(s.Uploads, SyncNameComparer.Instance),
+            };
+
+            /// <summary>The folder's records, or none. Throws <see cref="InvalidDataException"/> when the file is damaged.</summary>
+            public Shard Load(string folder)
+            {
+                var path = PathOf(folder);
+                string text;
+                try
+                {
+                    if (!File.Exists(path)) return new Shard { Folder = folder };
+                    text = ProtectedFile.ReadAllText(path);
+                }
+                catch (FileNotFoundException) { return new Shard { Folder = folder }; }
+                catch (Exception ex) when (ex is not IOException and not UnauthorizedAccessException)
+                {
+                    throw new InvalidDataException(path, ex);
+                }
+                Shard? shard;
+                try { shard = JsonSerializer.Deserialize<Shard>(text); }
+                catch (Exception ex) { throw new InvalidDataException(path, ex); }
+                if (shard == null) throw new InvalidDataException(path);
+                if (!SyncNameComparer.Instance.Equals(shard.Folder, folder)) return new Shard { Folder = folder };
+                shard.Files = Rekeyed(shard.Files);
+                shard.Hashes = Rekeyed(shard.Hashes);
+                shard.Partials = Rekeyed(shard.Partials);
+                shard.Uploads = Rekeyed(shard.Uploads);
+                return shard;
+            }
+
+            /// <summary>For each folder saved this pass, whether it now has records. Nothing else decides the list.</summary>
+            private readonly Dictionary<string, bool> _present = new(SyncNameComparer.Instance);
+
+            /// <summary>Whether a folder saved this pass has records, or null when it was not saved.</summary>
+            public bool? Present(string folder) => _present.TryGetValue(folder, out var p) ? p : null;
+
+            /// <summary>For each folder saved this pass, whether it holds records of files (not only checksums).</summary>
+            private readonly Dictionary<string, bool> _hasFiles = new(SyncNameComparer.Instance);
+
+            public bool? HasFiles(string folder) => _hasFiles.TryGetValue(folder, out var f) ? f : null;
+
+            public void Save(Shard shard)
+            {
+                var path = PathOf(shard.Folder);
+                bool any = shard.Files.Count + shard.Hashes.Count + shard.Partials.Count + shard.Uploads.Count > 0;
+                _present[shard.Folder] = any;
+                _hasFiles[shard.Folder] = shard.Files.Count > 0;
+                if (!any)
+                {
+                    try { File.Delete(path); } catch { }
+                    return;
+                }
+                System.IO.Directory.CreateDirectory(Directory);
+                var temp = path + "." + Environment.ProcessId + ".tmp";
+                ProtectedFile.WriteAllText(temp, JsonSerializer.Serialize(shard));
+                File.Move(temp, path, overwrite: true);
+            }
+
+            public void Delete(string folder) { try { File.Delete(PathOf(folder)); } catch { } }
+
+            /// <summary>
+            /// Records files for folders the pass did not reach and the list does not
+            /// have (a pass cut off between saving a folder and saving the list):
+            /// their folder is gone from both sides, so they go too.
+            /// </summary>
+            public void SweepOrphans(IReadOnlySet<string> listed, IReadOnlySet<string> visited, SyncSkips skips)
+            {
+                if (!System.IO.Directory.Exists(Directory)) return;
+                var known = new HashSet<string>(listed.Select(PathOf), StringComparer.OrdinalIgnoreCase);
+                foreach (var file in System.IO.Directory.GetFiles(Directory, "*.json"))
+                {
+                    if (known.Contains(file)) continue;
+                    try
+                    {
+                        var shard = JsonSerializer.Deserialize<Shard>(ProtectedFile.ReadAllText(file));
+                        if (shard == null || visited.Contains(shard.Folder) || skips.Covers(shard.Folder + "/")) continue;
+                        File.Delete(file);
+                    }
+                    catch { }
+                }
+            }
+
+            /// <summary>
+            /// Puts a folder's records into a batch's state. A folder's file is what
+            /// was last saved for it: everything that would make one stale (a damaged
+            /// state, a move to this store, a pair's folders changing) takes the
+            /// whole store with it, so a file that is there is current, including one
+            /// saved just before a pass was cut off (an upload session in it, say).
+            /// </summary>
+            public void LoadInto(string folder, PairState slice)
+            {
+                var shard = Load(folder);
+                _asLoaded[folder] = CopyOf(shard);
+                foreach (var (k, v) in shard.Files) slice.Files[k] = v;
+                foreach (var (k, v) in shard.Hashes) slice.Hashes[k] = v;
+                foreach (var (k, v) in shard.Partials) slice.Partials[k] = v;
+                foreach (var (k, v) in shard.Uploads) slice.Uploads[k] = v;
+            }
+
+            /// <summary>
+            /// Puts only <paramref name="paths"/> of a folder's records into a state
+            /// (the end of a batched pass, which needs a few files from many folders).
+            /// </summary>
+            public void LoadPathsInto(string folder, IReadOnlySet<string> paths, PairState slice)
+            {
+                var shard = Load(folder);
+                foreach (var (k, v) in shard.Files) if (paths.Contains(k)) slice.Files[k] = v;
+                foreach (var (k, v) in shard.Hashes) if (paths.Contains(k)) slice.Hashes[k] = v;
+                foreach (var (k, v) in shard.Partials) if (paths.Contains(k)) slice.Partials[k] = v;
+                foreach (var (k, v) in shard.Uploads) if (paths.Contains(k)) slice.Uploads[k] = v;
+            }
+
+            /// <summary>Writes every folder of a batch from its state, each entry to the folder it is in.</summary>
+            public void SaveSlice(PairState slice)
+            {
+                if (slice.SlicePaths != null) { SavePaths(slice); return; }
+                var shards = new Dictionary<string, Shard>(SyncNameComparer.Instance);
+                foreach (var folder in slice.SliceFolders!) shards[folder] = new Shard { Folder = folder };
+                Shard? Of(string path) => shards.TryGetValue(SyncMoves.Parent(path), out var s) ? s : null;
+                foreach (var (k, v) in slice.Files) Of(k)?.Files.TryAdd(k, v);
+                foreach (var (k, v) in slice.Hashes) Of(k)?.Hashes.TryAdd(k, v);
+                foreach (var (k, v) in slice.Partials) Of(k)?.Partials.TryAdd(k, v);
+                foreach (var (k, v) in slice.Uploads) Of(k)?.Uploads.TryAdd(k, v);
+                foreach (var shard in shards.Values)
+                {
+                    if (_asLoaded.TryGetValue(shard.Folder, out var was) && Same(was, shard)) continue;
+                    Save(shard);
+                    _asLoaded[shard.Folder] = CopyOf(shard);
+                }
+            }
+
+            /// <summary>
+            /// For a state holding only some paths of each folder: each folder's
+            /// file read again and only those paths changed in it, everything else
+            /// kept exactly as it was.
+            /// </summary>
+            private void SavePaths(PairState slice)
+            {
+                var paths = slice.SlicePaths!;
+                foreach (var folder in slice.SliceFolders!)
+                {
+                    var shard = Load(folder);
+                    var before = CopyOf(shard);
+                    void Merge<T>(Dictionary<string, T> into, Dictionary<string, T> from)
+                    {
+                        foreach (var k in into.Keys.Where(k => paths.Contains(k) && !from.ContainsKey(k)).ToList()) into.Remove(k);
+                        foreach (var (k, v) in from)
+                            if (paths.Contains(k) && SyncNameComparer.Instance.Equals(SyncMoves.Parent(k), folder)) into[k] = v;
+                    }
+                    Merge(shard.Files, slice.Files);
+                    Merge(shard.Hashes, slice.Hashes);
+                    Merge(shard.Partials, slice.Partials);
+                    Merge(shard.Uploads, slice.Uploads);
+                    if (!Same(before, shard)) Save(shard);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Moves a whole-tree state into a folder-per-file store. The shards are
+        /// written first and the state that says "sharded" last, so a crash in
+        /// between leaves the old state, which is simply moved again.
+        /// </summary>
+        private void MigrateToShards(string pairId, PairState state)
+        {
+            var store = new ShardStore(pairId);
+            try { if (Directory.Exists(store.Directory)) Directory.Delete(store.Directory, true); } catch { }
+            var shards = new Dictionary<string, ShardStore.Shard>(SyncNameComparer.Instance);
+            ShardStore.Shard Of(string path)
+            {
+                var folder = SyncMoves.Parent(path);
+                if (!shards.TryGetValue(folder, out var shard)) shards[folder] = shard = new ShardStore.Shard { Folder = folder };
+                return shard;
+            }
+            foreach (var (k, v) in state.Files) Of(k).Files[k] = v;
+            foreach (var (k, v) in state.Hashes) Of(k).Hashes[k] = v;
+            foreach (var (k, v) in state.Partials) Of(k).Partials[k] = v;
+            foreach (var (k, v) in state.Uploads) Of(k).Uploads[k] = v;
+            foreach (var shard in shards.Values) store.Save(shard);
+
+            state.ShardFolders = shards.Values.Where(s => s.Files.Count + s.Hashes.Count + s.Partials.Count + s.Uploads.Count > 0)
+                .Select(s => s.Folder).ToList();
+            state.RecordFolders = shards.Values.Where(s => s.Files.Count > 0).Select(s => s.Folder).ToList();
+            state.Files.Clear();
+            state.Hashes.Clear();
+            state.Partials.Clear();
+            state.Uploads.Clear();
+            state.Sharded = true;
+            SaveState(pairId, state);
+        }
+
+        /// <summary>What a held action needs at the end of the pass: what each side held, and what was recorded.</summary>
+        private sealed record HeldItem(SyncAction Action, SyncFile? Local, SyncFile? Remote, SyncBase? Was);
+
+        /// <summary>
+        /// A pass over a large pair, a batch of folders at a time, so memory is
+        /// what one batch needs whatever the size of the tree.
+        ///
+        /// The folders are walked shallowest first: each batch is scanned on the
+        /// PC, its records loaded, Drive's side listed afresh (always on a full
+        /// listing; otherwise where the changes feed, a new PC file or a new PC
+        /// folder says to) or taken from the records, and synced exactly as a
+        /// whole small pair is. The subfolders found on either side, or in the
+        /// records, are the next batches.
+        ///
+        /// A move can have its halves in two batches. So once a pair has
+        /// records, whatever could be one half (a new file on one side, a file
+        /// gone from it that the records have) is held back, and at the end the
+        /// held files are synced together, where a move is seen as a move.
+        /// </summary>
+        private async Task SyncInBatchesAsync(DriveClient client, DriveSyncPair pair, PairState header, int generation,
+            CancellationToken token)
+        {
+            try { await SyncInBatchesCoreAsync(client, pair, header, generation, forceFull: false, token).ConfigureAwait(false); }
+            catch (FullListingNeededException why)
+            {
+                GoogleDrive.Trace($"sync {DisplayName(pair)}: listing Drive whole after all, {why.Message}");
+                await SyncInBatchesCoreAsync(client, pair, header, generation, forceFull: true, token).ConfigureAwait(false);
+            }
+        }
+
+        /// <summary>
+        /// A pass on the changes feed found something the records and the feed
+        /// disagree about (records in a folder Drive is not known to have): the
+        /// pass starts again, listing Drive whole, rather than guess.
+        /// </summary>
+        private sealed class FullListingNeededException : Exception
+        {
+            public FullListingNeededException(string why) : base(why) { }
+        }
+
+        private async Task SyncInBatchesCoreAsync(DriveClient client, DriveSyncPair pair, PairState header, int generation,
+            bool forceFull, CancellationToken token)
+        {
+            var root = pair.LocalFolder;
+            var rules = SyncRules.For(pair);
+            var store = new ShardStore(pair.Id);
+            var tally = new PassTally { Batched = true };
+            var unusable = new List<string>();
+            var clashing = new List<string>();
+            var localClashing = new List<string>();
+            var comparer = SyncNameComparer.Instance;
+
+            Report(pair.Id, s => s with
+            {
+                Phase = PhaseScanning, LocalFound = 0, DriveFound = 0, Matched = 0, StepDone = 0, StepTotal = 0,
+                Uploaded = 0, Downloaded = 0, Deleted = 0, Failed = 0, Moved = 0,
+            }, now: true);
+
+            // ---- Drive: the feed, or a full listing ----
+            var shardFolders = new HashSet<string>(header.ShardFolders, comparer);
+            var recordFolders = new HashSet<string>(header.RecordFolders, comparer);
+            string? driveId = null;
+            try { driveId = await client.DriveOf(pair.DriveFolderId, token).ConfigureAwait(false); }
+            catch (Exception) when (!token.IsCancellationRequested) { }
+
+            bool full = forceFull || !CanListChangesOnly(ViewOf(header), pair, DateTime.UtcNow) ||
+                        recordFolders.Any(f => !header.FolderIds.ContainsKey(f));
+            string why = !CanListChangesOnly(ViewOf(header), pair, DateTime.UtcNow) ? "no feed to go on"
+                : full ? "records in a folder Drive is not known to have: " + recordFolders.First(f => !header.FolderIds.ContainsKey(f))
+                : "";
+            var dirty = new HashSet<string>(comparer);
+            string? nextToken = null;
+            if (!full)
+            {
+                try
+                {
+                    var (changes, next) = await Patiently(pair, () => client.SyncChangesSince(header.ChangesToken!, driveId, token),
+                        client, token).ConfigureAwait(false);
+                    var folderAt = new Dictionary<string, string>(StringComparer.Ordinal);
+                    foreach (var (path, id) in header.FolderIds)
+                        if (!folderAt.TryAdd(id, path)) { full = true; why = "one Drive folder at two paths: " + path; }
+                    foreach (var c in changes)
+                    {
+                        if (full) break;
+                        if (folderAt.TryGetValue(c.Id, out var folderPath))
+                        {
+                            if (folderPath.Length == 0) { dirty.Add(""); continue; }
+                            var parentId = header.FolderIds.TryGetValue(SyncMoves.Parent(folderPath), out var pid) ? pid : null;
+                            if (c.Gone || !c.Folder || c.Parent != parentId || c.Name == null ||
+                                !comparer.Equals(c.Name, SyncMoves.Leaf(folderPath)))
+                            {
+                                full = true;
+                                why = $"the folder {folderPath} changed on Drive (now {c.Name}{(c.Gone ? ", gone" : "")})";
+                                break;
+                            }
+                            dirty.Add(folderPath);
+                            continue;
+                        }
+                        // A new folder, or a file: its folder is listed again. A file
+                        // moved here from elsewhere in the pair is found at the end.
+                        if (c.Parent != null && folderAt.TryGetValue(c.Parent, out var into)) dirty.Add(into);
+                    }
+                    nextToken = next;
+                    dirty.UnionWith(header.DirtyFolders);
+                }
+                catch (Exception ex) when (!token.IsCancellationRequested) { full = true; why = "the feed failed: " + GoogleNet.Reason(ex); }
+            }
+            GoogleDrive.Trace($"sync {DisplayName(pair)} a batch at a time: " + (full ? "listing Drive whole, " + why : $"{dirty.Count} folders changed on Drive"));
+            if (full)
+            {
+                dirty.Clear();
+                try { nextToken = await client.ChangesStartToken(driveId, token).ConfigureAwait(false); }
+                catch (Exception) when (!token.IsCancellationRequested) { nextToken = null; }
+            }
+
+            var folders = full
+                ? new Dictionary<string, string>(comparer) { [""] = pair.DriveFolderId }
+                : new Dictionary<string, string>(header.FolderIds, comparer);
+            var knownAtStart = new HashSet<string>(folders.Keys, comparer);
+            var kids = new Dictionary<string, HashSet<string>>(comparer);
+            void Kid(string folder)
+            {
+                if (folder.Length == 0) return;
+                var parent = SyncMoves.Parent(folder);
+                if (!kids.TryGetValue(parent, out var set)) kids[parent] = set = new HashSet<string>(comparer);
+                set.Add(folder);
+            }
+            foreach (var f in folders.Keys) Kid(f);
+            foreach (var f in shardFolders) Kid(f);
+
+            bool hasRecords = shardFolders.Count > 0;
+            var held = new List<HeldItem>();
+            var allSkips = new SyncSkips();
+            var visited = new HashSet<string>(comparer);
+            var listedAll = new HashSet<string>(comparer);
+            var nextDirty = new HashSet<string>(comparer);
+            var queue = new Queue<string>();
+            queue.Enqueue("");
+            int localSeen = 0, driveSeen = 0;
+
+            try
+            {
+                while (queue.Count > 0)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (Stopped(pair) || GenerationOf(pair.Id) != generation) throw new PairStoppedException();
+                    if (tally.SpaceProblem != null) break;
+
+                    // ---- gather: PC first ----
+                    var timing = Stopwatch.StartNew();
+                    long scanMs, recordsMs = 0, listMs = 0;
+                    var batch = new List<string>();
+                    var local = new Dictionary<string, SyncFile>(comparer);
+                    var skips = new SyncSkips();
+                    var subs = new List<(DirectoryInfo Folder, string Relative)>();
+                    var localSubfolders = new Dictionary<string, List<string>>(comparer);
+                    while (queue.Count > 0 && (batch.Count == 0 || local.Count < BatchFiles))
+                    {
+                        var f = queue.Dequeue();
+                        if (!visited.Add(f)) continue;
+                        batch.Add(f);
+                        subs.Clear();
+                        var dir = new DirectoryInfo(f.Length == 0 ? root : LocalPathFor(root, f));
+                        if (f.Length == 0 || dir.Exists)
+                            ScanLocalFolder(dir, f, pair.IncludeSubfolders, local, skips, localClashing, subs);
+                        localSubfolders[f] = subs.Select(x => x.Relative).ToList();
+                    }
+                    localSeen += local.Count;
+                    scanMs = timing.ElapsedMilliseconds;
+
+                    // ---- the records ----
+                    var slice = new PairState
+                    {
+                        Store = store, SliceFolders = new HashSet<string>(batch, comparer), PendingTrash = header.PendingTrash,
+                        LocalFolder = header.LocalFolder, DriveFolderId = header.DriveFolderId, Remembered = header.Remembered,
+                    };
+                    store.ForgetLoaded();
+                    foreach (var f in batch) store.LoadInto(f, slice);
+                    recordsMs = timing.ElapsedMilliseconds - scanMs;
+
+                    // ---- Drive: afresh, or as recorded ----
+                    var freshFolders = new HashSet<string>(comparer);
+                    foreach (var path in local.Keys)
+                        if (!slice.Files.ContainsKey(path)) freshFolders.Add(SyncMoves.Parent(path));
+                    foreach (var (path, was) in slice.Files)
+                        if (string.IsNullOrEmpty(was.RemoteId)) freshFolders.Add(SyncMoves.Parent(path));
+                    var listNow = new List<(string Id, string Relative)>();
+                    foreach (var f in batch)
+                    {
+                        if (!folders.TryGetValue(f, out var id)) continue;
+                        bool afresh = full || dirty.Contains(f) || !knownAtStart.Contains(f) || freshFolders.Contains(f) ||
+                                      localSubfolders[f].Any(sub => !folders.ContainsKey(sub));
+                        if (afresh) listNow.Add((id, f));
+                    }
+                    var listed = new HashSet<string>(listNow.Select(x => x.Relative), comparer);
+                    listedAll.UnionWith(listed);
+
+                    // On the feed, every recorded file's folder must be one Drive is
+                    // known to have; one that is not would read as deleted.
+                    if (!full && slice.Files.Keys.FirstOrDefault(k => !folders.ContainsKey(SyncMoves.Parent(k))) is { } orphan)
+                        throw new FullListingNeededException("records in " + SyncMoves.Parent(orphan) + ", a folder Drive is not known to have");
+
+                    var remote = new Dictionary<string, SyncFile>(comparer);
+                    foreach (var (path, was) in slice.Files)
+                    {
+                        var folder = SyncMoves.Parent(path);
+                        if (listed.Contains(folder) || string.IsNullOrEmpty(was.RemoteId) || !folders.ContainsKey(folder)) continue;
+                        remote[path] = new SyncFile(was.RemoteSize, was.RemoteModifiedUtc, was.RemoteId, was.RemoteMd5);
+                    }
+
+                    var shadowed = new Dictionary<string, List<SyncFile>>(comparer);
+                    if (listNow.Count > 0)
+                    {
+                        var listSkips = new SyncSkips();
+                        var u = new List<string>();
+                        var cl = new List<string>();
+                        var known = folders;
+                        var (fresh, found) = await Patiently(pair,
+                            () =>
+                            {
+                                u.Clear();
+                                cl.Clear();
+                                shadowed.Clear();
+                                listSkips = new SyncSkips();
+                                return ScanRemoteAsync(client, pair.DriveFolderId, pair.IncludeSubfolders, token, u, shadowed, cl,
+                                    listSkips, WaitScale, only: listNow, known: known, descend: false);
+                            }, client, token)
+                            .ConfigureAwait(false);
+                        foreach (var (path, file) in fresh) remote[path] = file;
+                        foreach (var (path, id) in found)
+                            if (folders.TryAdd(path, id)) Kid(path);
+                        skips.Include(listSkips);
+                        unusable.AddRange(u);
+                        clashing.AddRange(cl);
+                    }
+                    driveSeen += remote.Count;
+                    listMs = timing.ElapsedMilliseconds - scanMs - recordsMs;
+                    allSkips.Include(skips);
+                    Report(pair.Id, s => s with { LocalFound = localSeen, DriveFound = driveSeen }, now: true);
+
+                    // ---- the next batches: subfolders on either side, or in the records ----
+                    if (pair.IncludeSubfolders)
+                        foreach (var f in batch)
+                        {
+                            var next = new HashSet<string>(localSubfolders[f], comparer);
+                            if (kids.TryGetValue(f, out var more)) next.UnionWith(more);
+                            foreach (var n in next)
+                                if (!visited.Contains(n) && !allSkips.Covers(n + "/")) queue.Enqueue(n);
+                        }
+
+                    // ---- sync the batch ----
+                    var records = slice.Files;
+                    Func<SyncAction, bool>? hold = hasRecords
+                        ? a => tally.Held.Count < HeldMost && IsMoveHalf(a, local, remote, records)
+                        : null;
+                    int heldBefore = tally.Held.Count;
+                    await ExecuteAsync(client, pair, slice, rules, local, remote, folders, skips, shadowed, generation, tally,
+                        plan => nextDirty.UnionWith(plan.Where(a => a.Kind is not (SyncActionKind.Record or SyncActionKind.Forget))
+                            .Select(a => SyncMoves.Parent(a.Path))),
+                        scope: null, hold, token).ConfigureAwait(false);
+                    GoogleDrive.Trace($"sync {DisplayName(pair)} batch: {batch.Count} folders, {local.Count} PC files, " +
+                                      $"{remote.Count} Drive files ({listNow.Count} folders listed), scan {scanMs} ms, " +
+                                      $"records {recordsMs} ms, listing {listMs} ms, sync {timing.ElapsedMilliseconds - scanMs - recordsMs - listMs} ms");
+                    for (int i = heldBefore; i < tally.Held.Count; i++)
+                    {
+                        var a = tally.Held[i];
+                        held.Add(new HeldItem(a,
+                            local.TryGetValue(a.Path, out var l) ? l : null,
+                            remote.TryGetValue(a.Path, out var r) ? r : null,
+                            records.TryGetValue(a.Path, out var w) ? w : null));
+                    }
+
+                    foreach (var f in batch)
+                    {
+                        if (store.Present(f) is bool p)
+                        {
+                            if (p) shardFolders.Add(f);
+                            else shardFolders.Remove(f);
+                        }
+                        else if (slice.Files.Keys.Any(k => comparer.Equals(SyncMoves.Parent(k), f))) shardFolders.Add(f);
+                        if (store.HasFiles(f) is bool h)
+                        {
+                            if (h) recordFolders.Add(f);
+                            else recordFolders.Remove(f);
+                        }
+                        else if (slice.Files.Keys.Any(k => comparer.Equals(SyncMoves.Parent(k), f))) recordFolders.Add(f);
+                    }
+                    // The folders map only on the feed, where it only grows: part
+                    // way through a full listing it is only part of the tree.
+                    if (!full) header.FolderIds = folders;
+                    header.ShardFolders = shardFolders.ToList();
+                    header.RecordFolders = recordFolders.ToList();
+                    SaveState(pair.Id, header);
+                }
+
+                // ---- the held halves, together ----
+                if (held.Count > 0 && tally.SpaceProblem == null)
+                    await SyncHeldAsync(client, pair, header, store, rules, held, folders, allSkips, shardFolders, recordFolders, full,
+                        generation, tally, nextDirty, token).ConfigureAwait(false);
+
+                // ---- records of folders neither side has any more ----
+                foreach (var f in shardFolders.ToList())
+                {
+                    if (visited.Contains(f) || allSkips.Covers(f + "/")) continue;
+                    if (!pair.IncludeSubfolders && f.Length > 0) continue;
+                    store.Delete(f);
+                    shardFolders.Remove(f);
+                    recordFolders.Remove(f);
+                }
+                if (full && pair.IncludeSubfolders && tally.SpaceProblem == null) store.SweepOrphans(shardFolders, visited, allSkips);
+            }
+            catch (InvalidDataException damaged)
+            {
+                PauseForDamagedShard(pair, header, damaged.Message);
+                return;
+            }
+            catch
+            {
+                // Stopped part way: the folders it made and the folders with
+                // records are kept, so the next pass neither makes a folder twice
+                // nor misses records it wrote.
+                foreach (var (path, id) in folders)
+                    if (!knownAtStart.Contains(path) || !full) header.FolderIds[path] = id;
+                header.ShardFolders = shardFolders.ToList();
+                header.RecordFolders = recordFolders.ToList();
+                try { SaveState(pair.Id, header); } catch { }
+                throw;
+            }
+
+            // What was left out before and has not been listed again this pass.
+            bool Unlisted(string entry) => !listedAll.Contains(SyncMoves.Parent(entry.TrimEnd('/')));
+            if (!full)
+            {
+                unusable.AddRange(header.DriveUnusable.Where(Unlisted));
+                clashing.AddRange(header.DriveClashing.Where(Unlisted));
+            }
+
+            header.ChangesToken = nextToken;
+            header.FolderIds = folders;
+            header.DirtyFolders = nextDirty.ToList();
+            if (full)
+            {
+                header.LastFullListUtc = DateTime.UtcNow;
+                header.ScanSubfolders = pair.IncludeSubfolders;
+            }
+            header.DriveUnusable = unusable.Distinct(StringComparer.Ordinal).ToList();
+            header.DriveClashing = clashing.Distinct(StringComparer.Ordinal).ToList();
+            header.ShardFolders = shardFolders.ToList();
+            header.RecordFolders = recordFolders.ToList();
+            header.Sharded = true;
+            SaveState(pair.Id, header);
+            FinishPass(pair, header, tally, unusable, clashing, localClashing);
+        }
+
+        /// <summary>
+        /// Whether an action could be one half of a move: a new file on one side,
+        /// or a recorded file gone from one side and still on the other.
+        /// </summary>
+        private static bool IsMoveHalf(SyncAction a, IReadOnlyDictionary<string, SyncFile> local,
+            IReadOnlyDictionary<string, SyncFile> remote, IReadOnlyDictionary<string, SyncBase> records)
+        {
+            bool hasL = local.ContainsKey(a.Path), hasR = remote.ContainsKey(a.Path), hasB = records.ContainsKey(a.Path);
+            return a.Kind switch
+            {
+                SyncActionKind.Upload => (!hasB && !hasR && hasL) || (hasB && hasL && !hasR),
+                SyncActionKind.Download => (!hasB && !hasL && hasR) || (hasB && !hasL && hasR),
+                SyncActionKind.DeleteRemote => hasB && !hasL && hasR,
+                SyncActionKind.DeleteLocal => hasB && hasL && !hasR,
+                SyncActionKind.Forget => hasB && (hasL != hasR),
+                _ => false,
+            };
+        }
+
+        /// <summary>
+        /// The end of a batched pass: everything held back, synced together, so
+        /// a move between two batches is seen as one. On the changes feed, a
+        /// file that turned up somewhere new on Drive may have come from a folder
+        /// the feed did not mark; the records are searched for its id, and the
+        /// file it was is added, but only when both are still exactly what was
+        /// recorded, so that the pair is certain to be taken for a move and
+        /// nothing else.
+        /// </summary>
+        private async Task SyncHeldAsync(DriveClient client, DriveSyncPair pair, PairState header, ShardStore store,
+            SyncRules rules, List<HeldItem> held, Dictionary<string, string> folders, SyncSkips skips,
+            HashSet<string> shardFolders, HashSet<string> recordFolders, bool full, int generation, PassTally tally, HashSet<string> nextDirty,
+            CancellationToken token)
+        {
+            var comparer = SyncNameComparer.Instance;
+            var root = pair.LocalFolder;
+            var local = new Dictionary<string, SyncFile>(comparer);
+            var remote = new Dictionary<string, SyncFile>(comparer);
+            var scope = new HashSet<string>(comparer);
+            var involved = new HashSet<string>(comparer);
+            foreach (var h in held)
+            {
+                scope.Add(h.Action.Path);
+                involved.Add(SyncMoves.Parent(h.Action.Path));
+                if (h.Local is { } l) local[h.Action.Path] = l;
+                if (h.Remote is { } r) remote[h.Action.Path] = r;
+            }
+
+            // Moved on Drive from a folder the feed said nothing about.
+            if (!full)
+            {
+                var wanted = new Dictionary<string, (string Path, SyncFile At)>(StringComparer.Ordinal);
+                foreach (var h in held)
+                    if (h.Was == null && h.Local == null && h.Remote is { Id: { } id } r) wanted.TryAdd(id, (h.Action.Path, r));
+                if (wanted.Count > 0)
+                    foreach (var folder in shardFolders.ToList())
+                    {
+                        token.ThrowIfCancellationRequested();
+                        foreach (var (path, was) in store.Load(folder).Files)
+                        {
+                            if (scope.Contains(path) || !wanted.TryGetValue(was.RemoteId, out var to)) continue;
+                            if (SyncPlanner.RemoteChanged(to.At, was)) continue;
+                            var full_ = LocalPathFor(root, path);
+                            FileInfo info;
+                            try { info = new FileInfo(full_); if (!info.Exists) continue; }
+                            catch { continue; }
+                            var now = new SyncFile(info.Length, Truncate(info.LastWriteTimeUtc));
+                            if (SyncPlanner.LocalChanged(now, was)) continue;
+                            local[path] = now;
+                            scope.Add(path);
+                            involved.Add(SyncMoves.Parent(path));
+                            wanted.Remove(was.RemoteId);
+                        }
+                        if (wanted.Count == 0) break;
+                    }
+            }
+
+            // Only these paths' records, however many folders they are in. A move
+            // can land in a folder that is in no batch's records (a new one), so
+            // the destinations' folders are in the set too.
+            var slice = new PairState
+            {
+                Store = store, SliceFolders = involved, SlicePaths = scope, PendingTrash = header.PendingTrash,
+                LocalFolder = header.LocalFolder, DriveFolderId = header.DriveFolderId, Remembered = header.Remembered,
+            };
+            foreach (var f in involved) store.LoadPathsInto(f, scope, slice);
+
+            await ExecuteAsync(client, pair, slice, rules, local, remote, folders, skips,
+                new Dictionary<string, List<SyncFile>>(comparer), generation, tally,
+                plan => nextDirty.UnionWith(plan.Where(a => a.Kind is not (SyncActionKind.Record or SyncActionKind.Forget))
+                    .Select(a => SyncMoves.Parent(a.Path))),
+                scope, hold: null, token).ConfigureAwait(false);
+
+            foreach (var f in involved)
+            {
+                if (store.Present(f) is bool p)
+                {
+                    if (p) shardFolders.Add(f);
+                    else shardFolders.Remove(f);
+                }
+                if (store.HasFiles(f) is bool h)
+                {
+                    if (h) recordFolders.Add(f);
+                    else recordFolders.Remove(f);
+                }
+            }
+        }
+
+        /// <summary>A records file that will not read: kept aside, said, and the pair paused, as for the whole state.</summary>
+        private void PauseForDamagedShard(DriveSyncPair pair, PairState header, string path)
+        {
+            var aside = path + ".damaged-" + DateTime.Now.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture);
+            try { File.Move(path, aside); } catch { try { File.Delete(path); } catch { } }
+            var problem = "paused: part of what it remembered about the last sync could not be read, and was kept as " +
+                          Path.GetFileName(aside) + ". Unpause it to compare that folder afresh; nothing will be deleted.";
+            header.Problem = problem;
+            SaveState(pair.Id, header);
+            SetStatus(pair.Id, new PairStatus(header.LastSyncedUtc, problem, false));
+            _notify("sync.error", $"{DisplayName(pair)} {problem}");
+
+            List<DriveSyncPair>? paused = null;
+            lock (_gate)
+                if (_pairs.Any(p => p.Id == pair.Id))
+                    paused = _pairs.Select(p =>
+                    {
+                        var copy = p.Copy();
+                        if (copy.Id == pair.Id) copy.Paused = true;
+                        return copy;
+                    }).ToList();
+            if (paused != null) SetPairs(paused);
+        }
+
+        /// <summary>
+        /// How long a create already on the wire is let finish once the pass is
+        /// stopped (Pause, Edit, Remove, closing). Cut off mid-request, Google may
+        /// still store it with the answer lost; a pass that starts straight after
+        /// can list the folder before Google's listing shows it, and send it again:
+        /// a second copy, seen once on the real account. Let finish, it is recorded.
+        /// </summary>
+        internal static TimeSpan InFlightGrace { get; set; } = TimeSpan.FromSeconds(20);
+
+        /// <summary>
+        /// A token for one create (an upload, a new folder): it ends
+        /// <see cref="InFlightGrace"/> after <paramref name="pass"/> does, not with it.
+        /// Nothing new should be started on it once the pass has stopped.
+        /// </summary>
+        private sealed class Drain : IDisposable
+        {
+            private readonly CancellationTokenSource _late = new();
+            private readonly CancellationTokenRegistration _when;
+            public Drain(CancellationToken pass)
+            {
+                _when = pass.Register(() => { try { _late.CancelAfter(InFlightGrace); } catch (ObjectDisposedException) { } });
+            }
+            public CancellationToken Token => _late.Token;
+            public void Dispose() { _when.Dispose(); _late.Dispose(); }
+        }
+
+        /// <summary>
+        /// The plan's paths that act on a recorded file being gone from Drive (the
+        /// PC's copy sent up as new, recycled, or forgotten) while Drive, asked
+        /// about that very file, still has it in the same folder: the listing was
+        /// behind. Asked in parallel, and only for these few.
+        /// </summary>
+        private async Task<HashSet<string>> ListedButStillThereAsync(DriveClient client, DriveSyncPair pair, PairState state,
+            List<SyncAction> plan, Dictionary<string, SyncFile> local, Dictionary<string, SyncFile> remote,
+            Dictionary<string, string> folders, CancellationToken token)
+        {
+            var stale = new HashSet<string>(SyncNameComparer.Instance);
+            var ask = new List<(string Path, string Id, string Folder)>();
+            foreach (var a in plan)
+            {
+                if (a.Kind is not (SyncActionKind.DeleteLocal or SyncActionKind.Upload or SyncActionKind.KeepBothLocalWins
+                        or SyncActionKind.Forget)) continue;
+                if (remote.ContainsKey(a.Path) || !local.ContainsKey(a.Path)) continue;
+                if (!state.Files.TryGetValue(a.Path, out var was) || string.IsNullOrEmpty(was.RemoteId)) continue;
+                var parent = SyncMoves.Parent(a.Path);
+                var folderId = parent.Length == 0 ? pair.DriveFolderId : folders.TryGetValue(parent, out var f) ? f : null;
+                if (folderId == null) continue;      // its folder is gone from Drive: really gone
+                ask.Add((a.Path, was.RemoteId, folderId));
+            }
+            if (ask.Count == 0) return stale;
+
+            await Parallel.ForEachAsync(ask, new ParallelOptions { MaxDegreeOfParallelism = ListStreams, CancellationToken = token },
+                async (q, ct) =>
+                {
+                    (string Name, IReadOnlyList<string> Parents)? place;
+                    try { place = await Patiently(pair, () => client.PlaceNow(q.Id, ct), client, ct).ConfigureAwait(false); }
+                    catch (Exception) when (!ct.IsCancellationRequested)
+                    {
+                        // Could not ask: not acted on this pass either.
+                        lock (stale) stale.Add(q.Path);
+                        return;
+                    }
+                    // Still in the same folder under the same name: the listing was
+                    // behind. Renamed or moved, it really is not at this path.
+                    if (place is { } here && here.Parents.Contains(q.Folder, StringComparer.Ordinal) &&
+                        SyncNameComparer.Instance.Equals(here.Name, SyncMoves.Leaf(q.Path)))
+                        lock (stale) stale.Add(q.Path);
+                }).ConfigureAwait(false);
+            return stale;
+        }
+
+        /// <summary>What a pass did, added up across its batches.</summary>
+        private sealed class PassTally
+        {
+            public int Uploaded, Downloaded, Deleted, Failed, Deferred, Moved, Matched;
+            public string? LastError, SpaceProblem;
+
+            /// <summary>Going a batch at a time: the start of a big pass is said once, not per batch.</summary>
+            public bool Batched, Announced;
+
+            /// <summary>Transfers and bytes so far in a batched pass, to tell when it has become a big one.</summary>
+            public long Bytes;
+            public int Transfers;
+            public readonly List<string> Conflicts = new();
+
+            /// <summary>Actions held back by a batch for the end of the pass.</summary>
+            public readonly List<SyncAction> Held = new();
+        }
+
+        /// <summary>
+        /// The doing half of a pass, for one set of files: the PC's, Drive's and
+        /// what was recorded, already listed. Duplicates adopted, checksums
+        /// compared, the plan made, moves followed, then the files themselves.
+        /// <paramref name="scope"/> limits the plan to those paths (the rest of
+        /// what was loaded is left exactly as it is); <paramref name="hold"/>
+        /// takes actions out of this run and into <see cref="PassTally.Held"/>;
+        /// <paramref name="onPlan"/> sees the plan that will run, before it does.
+        /// </summary>
+        private async Task ExecuteAsync(DriveClient client, DriveSyncPair pair, PairState state, SyncRules rules,
+            Dictionary<string, SyncFile> local, Dictionary<string, SyncFile> remote, Dictionary<string, string> folders,
+            SyncSkips skips, Dictionary<string, List<SyncFile>> shadowed, int generation, PassTally tally,
+            Action<List<SyncAction>>? onPlan, IReadOnlySet<string>? scope, Func<SyncAction, bool>? hold,
+            CancellationToken token)
+        {
             // Files already on both sides with nothing remembered about them (a
             // first sync over two copies of one library) are compared by MD5
             // before anything is planned, so a match is adopted, never copied.
-            var rules = SyncRules.For(pair);
+            var name = DisplayName(pair);
+            var root = pair.LocalFolder;
+            await AdoptMatchingDuplicateAsync(root, state, local, remote, shadowed, token).ConfigureAwait(false);
             var md5 = await CheckWhatIsThereAsync(pair, state, rules, local, remote, generation, token).ConfigureAwait(false);
             var plan = SyncPlanner.Ordered(SyncPlanner.Plan(rules, local, remote, state.Files, md5, skips), local, remote);
+            if (scope != null) plan = plan.Where(a => scope.Contains(a.Path)).ToList();
+
+            // Moved or renamed on one side: moved the same way on the other,
+            // rather than deleted in one place and copied again in another.
+            int movedFiles;
+            (plan, movedFiles) = await MoveWhatMovedAsync(client, pair, state, rules, plan, local, remote, folders, skips,
+                root, generation, token).ConfigureAwait(false);
+            tally.Moved += movedFiles;
+
+            // Held back for the end of the pass (see SyncInBatchesAsync): what
+            // might be one half of a move whose other half is in another batch.
+            if (hold != null)
+            {
+                // Decided once per action: asked twice, an action near the limit
+                // could be held and run as well.
+                var held = new HashSet<SyncAction>();
+                foreach (var a in plan) if (hold(a)) { held.Add(a); tally.Held.Add(a); }
+                if (held.Count > 0) plan = plan.Where(a => !held.Contains(a)).ToList();
+            }
+            // A recorded file that a listing just left out may not be gone at all:
+            // Google's folder listing can lag a second or two behind a create or a
+            // move. Taken at its word, the PC's copy went up again (deletes off) or
+            // to the Recycle Bin (deletes on). So the file itself is asked, which is
+            // current; still in its folder, the action waits for the next pass.
+            var stale = await ListedButStillThereAsync(client, pair, state, plan, local, remote, folders, token).ConfigureAwait(false);
+            onPlan?.Invoke(plan);
+            if (stale.Count > 0)
+            {
+                plan = plan.Where(a => !stale.Contains(a.Path)).ToList();
+                tally.Deferred += stale.Count;
+            }
 
             // A download held back because the PC's file changed under it waits
             // in its ".partial". Once the plan decides that path another way (a
@@ -899,12 +2489,23 @@ namespace ExplorerNative
             var decided = new HashSet<string>(plan
                 .Where(a => a.Kind is not (SyncActionKind.Download or SyncActionKind.KeepBothRemoteWins))
                 .Select(a => a.Path), SyncNameComparer.Instance);
-            foreach (var path in state.Partials.Keys.Where(p => !remote.ContainsKey(p) || decided.Contains(p)).ToList())
+            foreach (var path in state.Partials.Keys.Where(p => (scope == null || scope.Contains(p)) &&
+                         (!remote.ContainsKey(p) || decided.Contains(p))).ToList())
             {
-                var part = LocalPathFor(root, path) + ".partial";
+                var part = PartialPath(LocalPathFor(root, path));
                 try { if (IsInside(root, part)) File.Delete(part); } catch { }
                 state.Partials.Remove(path);
             }
+
+            // What is already the same on both sides, and how many steps the
+            // rest is, for the detailed status.
+            var planned = new HashSet<string>(plan.Where(a => a.Kind is not (SyncActionKind.Record or SyncActionKind.Forget)).Select(a => a.Path), SyncNameComparer.Instance);
+            int matched = 0;
+            foreach (var key in local.Keys)
+                if (remote.ContainsKey(key) && !planned.Contains(key)) matched++;
+            tally.Matched += matched;
+            int matchedSoFar = tally.Matched;
+            Report(pair.Id, s => s with { Phase = PhaseSyncing, Matched = matchedSoFar, StepTotal = plan.Count, StepDone = 0 }, now: true);
 
             // How big this pass is, for the progress said along the way.
             long downBytes = 0, upBytes = 0;
@@ -915,8 +2516,16 @@ namespace ExplorerNative
                 if (a.Kind is SyncActionKind.Upload or SyncActionKind.KeepBothLocalWins) { upBytes += local[a.Path].Size; transfers++; }
             }
             long totalBytes = downBytes + upBytes, doneBytes = 0;
-            bool big = SyncSpace.IsBig(totalBytes, transfers);
-            if (big) _notify("sync.start", $"{name}: {Amounts(downBytes, upBytes)}, {transfers:N0} files");
+            tally.Bytes += totalBytes;
+            tally.Transfers += transfers;
+            bool big = tally.Batched ? SyncSpace.IsBig(tally.Bytes, tally.Transfers) : SyncSpace.IsBig(totalBytes, transfers);
+            if (big && !tally.Announced)
+            {
+                tally.Announced = true;
+                _notify("sync.start", tally.Batched
+                    ? $"{name}: a big sync, {tally.Transfers:N0} files so far and more to come"
+                    : $"{name}: {Amounts(downBytes, upBytes)}, {transfers:N0} files");
+            }
             SetProgress(pair.Id, 0, totalBytes);
 
             void Moved(long bytes)
@@ -924,7 +2533,7 @@ namespace ExplorerNative
                 long before = doneBytes;
                 doneBytes += bytes;
                 SetProgress(pair.Id, doneBytes, totalBytes);
-                if (big && SyncSpace.QuarterPassed(before, doneBytes, totalBytes) is int percent and > 0)
+                if (big && !tally.Batched && SyncSpace.QuarterPassed(before, doneBytes, totalBytes) is int percent and > 0)
                     _notify("sync.progress", $"{name}: {percent} percent synced");
             }
 
@@ -936,8 +2545,17 @@ namespace ExplorerNative
             var listings = new Dictionary<string, List<(string Name, bool Folder)>>(StringComparer.Ordinal);
             try
             {
+                // New small files first, many at once (see UploadNewSmallAsync).
+                // One at a time, a folder of a million tiny files was a month
+                // of waiting on Google's round trips, not of sending bytes.
+                var sentFast = await UploadNewSmallAsync(client, pair, state, plan, local, remote, folders, root,
+                    generation, uploadedThisPass, n => { lock (_fastGate) Moved(n); }, token).ConfigureAwait(false);
+                uploaded += sentFast.Count;
+                foreach (var path in sentFast) uploadedThisPass += local[path].Size;
+
                 for (int i = 0; i < plan.Count; i++)
                 {
+                    if (sentFast.Contains(plan[i].Path)) continue;
                     var action = plan[i];
                     token.ThrowIfCancellationRequested();
 
@@ -946,6 +2564,13 @@ namespace ExplorerNative
                     // used to carry on to the end under settings that had gone.
                     if (Stopped(pair) || GenerationOf(pair.Id) != generation) throw new PairStoppedException();
                     SaveSoon(pair.Id, state);
+                    int step = i;
+                    int up = tally.Uploaded + uploaded, down = tally.Downloaded + downloaded,
+                        gone = tally.Deleted + deleted, bad = tally.Failed + failed;
+                    Report(pair.Id, s => s with
+                    {
+                        StepDone = step, Uploaded = up, Downloaded = down, Deleted = gone, Failed = bad,
+                    });
 
                     var path = action.Path;
                     var localPath = LocalPathFor(root, path, listings);
@@ -1067,8 +2692,12 @@ namespace ExplorerNative
                                         }
                                         replaces = now?.Id;
                                     }
+                                    // One-shot uploads finish once started (see Drain); a big one
+                                    // resumes from its session, so it stops when told.
+                                    using var drainOne = new Drain(token);
+                                    var upToken = local[path].Size <= DriveClient.SmallUploadBytes ? drainOne.Token : token;
                                     var sent = await UploadAsync(client, folders, pair, state, path, localPath,
-                                        local[path], replaces, old, Moved, token).ConfigureAwait(false);
+                                        local[path], replaces, old, Moved, upToken).ConfigureAwait(false);
                                     Kill("uploaded " + path);
                                     state.Files[path] = sent;
                                     uploadedThisPass += local[path].Size;
@@ -1155,8 +2784,10 @@ namespace ExplorerNative
                                     var aside = SyncPlanner.ConflictName(path, DateTime.Now, p => remote.ContainsKey(p) || local.ContainsKey(p));
                                     await client.MoveOrRename(remote[path].Id!, Path.GetFileName(aside), null, null, token).ConfigureAwait(false);
                                     Kill("set aside in Drive " + path);
+                                    using var drainOne = new Drain(token);
+                                    var upToken = local[path].Size <= DriveClient.SmallUploadBytes ? drainOne.Token : token;
                                     var sent = await UploadAsync(client, folders, pair, state, path, localPath,
-                                        local[path], null, null, Moved, token).ConfigureAwait(false);
+                                        local[path], null, null, Moved, upToken).ConfigureAwait(false);
                                     Kill("uploaded " + path);
                                     state.Files[path] = sent;
                                     uploadedThisPass += local[path].Size;
@@ -1249,20 +2880,43 @@ namespace ExplorerNative
                 // dropped part way. What was not done is found again next time.
                 SaveState(pair.Id, state);
 
+                tally.Uploaded += uploaded;
+                tally.Downloaded += downloaded;
+                tally.Deleted += deleted;
+                tally.Failed += failed;
+                tally.Deferred += deferred;
+                if (lastError != null) tally.LastError = lastError;
+                tally.SpaceProblem ??= spaceProblem;
+                tally.Conflicts.AddRange(conflicts);
+                Report(pair.Id, s => s with
+                {
+                    Uploaded = tally.Uploaded, Downloaded = tally.Downloaded, Deleted = tally.Deleted, Failed = tally.Failed,
+                    Moved = tally.Moved,
+                }, now: true);
+
                 // Something left for later (a file still being written, an edit
                 // made after the scan) is looked at again within a minute,
                 // whatever the pair's interval.
                 if (deferred > 0) lock (_gate) _due.Add(pair.Id);
             }
 
+        }
+
+        /// <summary>The end of a pass: what it says, and the pair's state as it is left.</summary>
+        private void FinishPass(DriveSyncPair pair, PairState state, PassTally tally,
+            List<string> unusable, List<string> clashing, List<string> localClashing)
+        {
+            var name = DisplayName(pair);
+            var conflicts = tally.Conflicts;
             if (conflicts.Count > 0)
                 _notify("sync.conflict", conflicts.Count == 1
                     ? $"{name}: {conflicts[0]} changed in both places; both copies kept"
                     : $"{name}: {conflicts.Count} files changed in both places; both copies kept");
 
-            if (uploaded + downloaded + deleted > 0)
-                _notify("sync.done", $"{name} synced: " + Tally(uploaded, downloaded, deleted));
+            if (tally.Uploaded + tally.Downloaded + tally.Deleted + tally.Moved > 0)
+                _notify("sync.done", $"{name} synced: " + Tally(tally.Uploaded, tally.Downloaded, tally.Deleted, tally.Moved));
 
+            var spaceProblem = tally.SpaceProblem;
             if (spaceProblem != null)
             {
                 // Not a setting: the pair is not marked paused, so it carries on
@@ -1270,14 +2924,14 @@ namespace ExplorerNative
                 bool newProblem = spaceProblem != state.Problem;
                 state.Problem = spaceProblem;
                 SaveState(pair.Id, state);
-                SetStatus(pair.Id, new PairStatus(state.LastSyncedUtc, spaceProblem, false));
+                SetStatus(pair.Id, StatusOf(pair.Id) with { LastSyncedUtc = state.LastSyncedUtc, Problem = spaceProblem, Running = false, Phase = null });
                 if (newProblem) _notify("sync.space", $"{name} {spaceProblem}");
                 return;
             }
 
-            if (failed > 0)
+            if (tally.Failed > 0)
             {
-                Finish(pair, state, failed == 1 ? lastError : $"{failed} files could not be synced. {lastError}", announce: true);
+                Finish(pair, state, tally.Failed == 1 ? tally.LastError : $"{tally.Failed} files could not be synced. {tally.LastError}", announce: true);
                 return;
             }
 
@@ -1295,6 +2949,7 @@ namespace ExplorerNative
 
             Finish(pair, state, null, announce: false);
         }
+
 
         /// <summary>"x in Google Drive was left out, because Windows sees another item in that folder as the same name".</summary>
         internal static string ClashingNames(IReadOnlyList<string> names)
@@ -1353,13 +3008,14 @@ namespace ExplorerNative
             state.Problem = problem;
             if (synced ?? problem == null) state.LastSyncedUtc = DateTime.UtcNow;
             SaveState(pair.Id, state);
-            SetStatus(pair.Id, new PairStatus(state.LastSyncedUtc, problem, false));
+            SetStatus(pair.Id, StatusOf(pair.Id) with { LastSyncedUtc = state.LastSyncedUtc, Problem = problem, Running = false, Phase = null });
             if (announce && newProblem) _notify("sync.error", $"{DisplayName(pair)} could not sync: {problem}");
         }
 
-        internal static string Tally(int uploaded, int downloaded, int deleted)
+        internal static string Tally(int uploaded, int downloaded, int deleted, int moved = 0)
         {
             var parts = new List<string>();
+            if (moved > 0) parts.Add($"{moved} moved");
             if (uploaded > 0) parts.Add($"{uploaded} uploaded");
             if (downloaded > 0) parts.Add($"{downloaded} downloaded");
             if (deleted > 0) parts.Add($"{deleted} deleted");
@@ -1425,30 +3081,78 @@ namespace ExplorerNative
             }
         }
 
+        /// <summary>What a pair would do if it started now: see <see cref="PreviewAsync"/>.</summary>
+        internal sealed record SyncPreview(
+            int OnPc, int OnDrive, int Same, int ToCompare, int Uploads, int Downloads, int BothKept,
+            int Deletes, long DownBytes, long UpBytes, int LeftOut);
+
         /// <summary>
-        /// What a pair would copy right now, in bytes each way, for the space
-        /// check when it is added or edited: files the other side does not
-        /// already hold at the same size, and only in the directions the mode
-        /// allows, under the pair's own rules.
+        /// What a pair would copy right now, for the space check and the preview
+        /// shown before a new pair starts: both sides listed through the API and
+        /// planned under the pair's own rules, with nothing transferred and
+        /// nothing written. Files with the same name and size on both sides are
+        /// not read here (that could be hours on a big disk): they are counted
+        /// as to be compared, and the first pass compares their checksums before
+        /// it skips a single one.
         /// </summary>
-        internal static async Task<(long Down, long Up)> NeedsAsync(DriveClient client, DriveSyncPair pair, CancellationToken token)
+        internal static async Task<SyncPreview> PreviewAsync(DriveClient client, DriveSyncPair pair, CancellationToken token,
+            Action<string>? progress = null)
         {
             var skips = new SyncSkips();
             var local = Directory.Exists(pair.LocalFolder)
-                ? ScanLocal(pair.LocalFolder, pair.IncludeSubfolders, skips)
+                ? ScanLocal(pair.LocalFolder, pair.IncludeSubfolders, skips,
+                    found: n => progress?.Invoke($"Reading the PC folder, {n:N0} files so far"))
                 : new Dictionary<string, SyncFile>(SyncNameComparer.Instance);
+            progress?.Invoke($"{local.Count:N0} files on the PC. Reading Google Drive");
             var (remote, _) = await ScanRemoteAsync(client, pair.DriveFolderId, pair.IncludeSubfolders, token,
-                skipped: skips).ConfigureAwait(false);
+                skipped: skips, found: n => progress?.Invoke($"{local.Count:N0} files on the PC, {n:N0} in Google Drive so far"))
+                .ConfigureAwait(false);
 
-            var plan = SyncPlanner.Plan(SyncRules.For(pair), local, remote,
-                new Dictionary<string, SyncBase>(SyncNameComparer.Instance), null, skips);
-            long down = 0, up = 0;
+            var rules = SyncRules.For(pair);
+            var none = new Dictionary<string, SyncBase>(SyncNameComparer.Instance);
+            var plan = SyncPlanner.Plan(rules, local, remote, none, null, skips);
+            int compare = SyncPlanner.NeedingHash(rules, local, remote, none).Count;
+            int same = 0, up = 0, down = 0, kept = 0, deletes = 0;
+            long downBytes = 0, upBytes = 0;
             foreach (var a in plan)
             {
-                if (a.Kind is SyncActionKind.Download or SyncActionKind.KeepBothRemoteWins) down += remote[a.Path].Size;
-                if (a.Kind is SyncActionKind.Upload or SyncActionKind.KeepBothLocalWins) up += local[a.Path].Size;
+                switch (a.Kind)
+                {
+                    case SyncActionKind.Record: same++; break;
+                    case SyncActionKind.Upload: up++; upBytes += local[a.Path].Size; break;
+                    case SyncActionKind.Download: down++; downBytes += remote[a.Path].Size; break;
+                    case SyncActionKind.KeepBothLocalWins: kept++; upBytes += local[a.Path].Size; break;
+                    case SyncActionKind.KeepBothRemoteWins: kept++; downBytes += remote[a.Path].Size; break;
+                    case SyncActionKind.DeleteLocal or SyncActionKind.DeleteRemote: deletes++; break;
+                }
             }
-            return (down, up);
+            return new SyncPreview(local.Count, remote.Count, same, compare, up, down, kept, deletes,
+                downBytes, upBytes, skips.Count);
+        }
+
+        /// <summary>The preview as one passage, to be read in one go.</summary>
+        internal static string Describe(SyncPreview p)
+        {
+            var lines = new List<string>
+            {
+                $"On the PC: {p.OnPc:N0} files. In Google Drive: {p.OnDrive:N0} files.",
+            };
+            if (p.ToCompare > 0)
+                lines.Add($"{p.ToCompare:N0} have the same name and size on both sides. Their checksums are compared " +
+                          "with Google's first, and those that match are left as they are, not copied.");
+            if (p.Same > 0) lines.Add($"{p.Same:N0} are already the same on both sides.");
+            lines.Add(p.Uploads > 0 ? $"To upload: {p.Uploads:N0} files, {Words(p.UpBytes)}." : "Nothing to upload.");
+            lines.Add(p.Downloads > 0 ? $"To download: {p.Downloads:N0} files, {Words(p.DownBytes)}." : "Nothing to download.");
+            if (p.BothKept > 0) lines.Add($"Different on the two sides, both copies kept: {p.BothKept:N0}.");
+            if (p.Deletes > 0) lines.Add($"To delete: {p.Deletes:N0}.");
+            if (p.LeftOut > 0) lines.Add($"Left out (hidden, system, or names Windows cannot use): {p.LeftOut:N0}.");
+            return string.Join(Environment.NewLine, lines);
+        }
+
+        internal static async Task<(long Down, long Up)> NeedsAsync(DriveClient client, DriveSyncPair pair, CancellationToken token)
+        {
+            var preview = await PreviewAsync(client, pair, token).ConfigureAwait(false);
+            return (preview.DownBytes, preview.UpBytes);
         }
 
         // ---------------- scanning ----------------
@@ -1473,90 +3177,106 @@ namespace ExplorerNative
         /// listed in <paramref name="clashing"/> to be said.
         /// </remarks>
         internal static Dictionary<string, SyncFile> ScanLocal(string root, bool subfolders, SyncSkips? skipped = null,
-            List<string>? clashing = null)
+            List<string>? clashing = null, Action<int>? found = null)
         {
             var files = new Dictionary<string, SyncFile>(SyncNameComparer.Instance);
-            var options = new EnumerationOptions { IgnoreInaccessible = false, AttributesToSkip = 0 };
-            const FileAttributes leftOut = FileAttributes.Hidden | FileAttributes.System;
-
             var pending = new Stack<(DirectoryInfo Folder, string Relative)>();
             pending.Push((new DirectoryInfo(root), ""));
+            var under = new List<(DirectoryInfo Folder, string Relative)>();
 
             while (pending.Count > 0)
             {
-                var (folder, under) = pending.Pop();
-
-                // The pair's own folder unreadable is a failed pass, never an
-                // empty one; a subfolder is left out as a whole.
-                List<FileSystemInfo> entries;
-                try { entries = folder.EnumerateFileSystemInfos("*", options).ToList(); }
-                catch (Exception) when (under.Length > 0)
-                {
-                    skipped?.Folder(under);
-                    continue;
-                }
-
-                // Every spelling here of each name, as Drive's comparer sees it.
-                var spellings = new Dictionary<string, HashSet<string>>(SyncNameComparer.Instance);
-                foreach (var entry in entries)
-                {
-                    if (entry is DirectoryInfo && !subfolders) continue;
-                    if (!spellings.TryGetValue(entry.Name, out var set))
-                        spellings[entry.Name] = set = new HashSet<string>(StringComparer.Ordinal);
-                    set.Add(entry.Name);
-                }
-
-                foreach (var entry in entries)
-                {
-                    var relative = under.Length == 0 ? entry.Name : under + "/" + entry.Name;
-                    FileAttributes attributes;
-                    try { attributes = entry.Attributes; }
-                    catch { skipped?.File(relative); skipped?.Folder(relative); continue; }
-
-                    // Two spellings of one name: both left out, file or folder.
-                    bool isFolder = (attributes & FileAttributes.Directory) != 0;
-                    if (!(isFolder && !subfolders) &&
-                        spellings.TryGetValue(entry.Name, out var all) && all.Count > 1)
-                    {
-                        if (isFolder) skipped?.Folder(relative);
-                        else skipped?.File(relative);
-                        clashing?.Add(relative + (isFolder ? "/" : ""));
-                        continue;
-                    }
-
-                    if ((attributes & FileAttributes.Directory) != 0)
-                    {
-                        if (!subfolders) continue;
-
-                        // Not walked, as before — and now known to be there.
-                        if ((attributes & leftOut) != 0)
-                        {
-                            skipped?.Folder(relative);
-                            continue;
-                        }
-                        pending.Push(((DirectoryInfo)entry, relative));
-                        continue;
-                    }
-
-                    if ((attributes & leftOut) != 0)
-                    {
-                        skipped?.File(relative);
-                        continue;
-                    }
-
-                    // The planner leaves these out on both sides by name.
-                    if (SyncPlanner.IsSkippedPath(relative)) continue;
-
-                    try
-                    {
-                        var info = (FileInfo)entry;
-                        files[relative] = new SyncFile(info.Length, Truncate(info.LastWriteTimeUtc));
-                    }
-                    catch { skipped?.File(relative); }
-                }
+                var (folder, relative) = pending.Pop();
+                under.Clear();
+                ScanLocalFolder(folder, relative, subfolders, files, skipped, clashing, under, found);
+                foreach (var child in under) pending.Push(child);
             }
 
             return files;
+        }
+
+        private static readonly EnumerationOptions LocalScanOptions = new() { IgnoreInaccessible = false, AttributesToSkip = 0 };
+
+        /// <summary>
+        /// One PC folder of <see cref="ScanLocal"/>: its files into
+        /// <paramref name="files"/>, the subfolders to walk into
+        /// <paramref name="subfoldersOut"/>, and whatever is left out into
+        /// <paramref name="skipped"/>. The pair's own folder unreadable throws
+        /// (a failed pass, never an empty one); a subfolder is left out whole.
+        /// </summary>
+        internal static void ScanLocalFolder(DirectoryInfo folder, string under, bool subfolders,
+            Dictionary<string, SyncFile> files, SyncSkips? skipped, List<string>? clashing,
+            List<(DirectoryInfo Folder, string Relative)> subfoldersOut, Action<int>? found = null)
+        {
+            const FileAttributes leftOut = FileAttributes.Hidden | FileAttributes.System;
+
+            List<FileSystemInfo> entries;
+            try { entries = folder.EnumerateFileSystemInfos("*", LocalScanOptions).ToList(); }
+            catch (Exception) when (under.Length > 0)
+            {
+                skipped?.Folder(under);
+                return;
+            }
+
+            // Every spelling here of each name, as Drive's comparer sees it.
+            var spellings = new Dictionary<string, HashSet<string>>(SyncNameComparer.Instance);
+            foreach (var entry in entries)
+            {
+                if (entry is DirectoryInfo && !subfolders) continue;
+                if (!spellings.TryGetValue(entry.Name, out var set))
+                    spellings[entry.Name] = set = new HashSet<string>(StringComparer.Ordinal);
+                set.Add(entry.Name);
+            }
+
+            foreach (var entry in entries)
+            {
+                var relative = under.Length == 0 ? entry.Name : under + "/" + entry.Name;
+                FileAttributes attributes;
+                try { attributes = entry.Attributes; }
+                catch { skipped?.File(relative); skipped?.Folder(relative); continue; }
+
+                // Two spellings of one name: both left out, file or folder.
+                bool isFolder = (attributes & FileAttributes.Directory) != 0;
+                if (!(isFolder && !subfolders) &&
+                    spellings.TryGetValue(entry.Name, out var all) && all.Count > 1)
+                {
+                    if (isFolder) skipped?.Folder(relative);
+                    else skipped?.File(relative);
+                    clashing?.Add(relative + (isFolder ? "/" : ""));
+                    continue;
+                }
+
+                if (isFolder)
+                {
+                    if (!subfolders) continue;
+
+                    // Not walked, as before, and now known to be there.
+                    if ((attributes & leftOut) != 0)
+                    {
+                        skipped?.Folder(relative);
+                        continue;
+                    }
+                    subfoldersOut.Add(((DirectoryInfo)entry, relative));
+                    continue;
+                }
+
+                if ((attributes & leftOut) != 0)
+                {
+                    skipped?.File(relative);
+                    continue;
+                }
+
+                // The planner leaves these out on both sides by name.
+                if (SyncPlanner.IsSkippedPath(relative)) continue;
+
+                try
+                {
+                    var info = (FileInfo)entry;
+                    files[relative] = new SyncFile(info.Length, Truncate(info.LastWriteTimeUtc));
+                    if (found != null && (files.Count & 511) == 0) found(files.Count);
+                }
+                catch { skipped?.File(relative); }
+            }
         }
 
         /// <summary>
@@ -1590,11 +3310,19 @@ namespace ExplorerNative
         internal static async Task<(Dictionary<string, SyncFile> Files, Dictionary<string, string> Folders)> ScanRemoteAsync(
             DriveClient client, string rootId, bool subfolders, CancellationToken token, List<string>? unusable = null,
             Dictionary<string, List<SyncFile>>? shadowed = null, List<string>? clashing = null, SyncSkips? skipped = null,
-            double waitScale = 1)
+            double waitScale = 1, Action<int>? found = null,
+            IReadOnlyList<(string Id, string Relative)>? only = null, IReadOnlyDictionary<string, string>? known = null,
+            bool descend = true)
         {
+            // With `only`, just those folders are listed (and any folder found in
+            // them that `known` does not have yet, all the way down): the folders
+            // the changes feed says changed. Without, the whole tree.
             var files = new Dictionary<string, SyncFile>(SyncNameComparer.Instance);
-            var folders = new Dictionary<string, string>(SyncNameComparer.Instance) { [""] = rootId };
-            var level = new List<(string Id, string Relative)> { (rootId, "") };
+            var folders = known != null
+                ? new Dictionary<string, string>(known, SyncNameComparer.Instance)
+                : new Dictionary<string, string>(SyncNameComparer.Instance) { [""] = rootId };
+            var level = only != null ? only.ToList() : new List<(string Id, string Relative)> { (rootId, "") };
+            int seen = 0;
 
             while (level.Count > 0)
             {
@@ -1602,12 +3330,18 @@ namespace ExplorerNative
                 var listed = new List<DriveEntry>[level.Count];
                 await Parallel.ForEachAsync(Enumerable.Range(0, level.Count),
                     new ParallelOptions { MaxDegreeOfParallelism = ListStreams, CancellationToken = token },
-                    async (n, ct) => listed[n] = await ListOneFolder(client, level[n].Id, waitScale, ct).ConfigureAwait(false))
+                    async (n, ct) =>
+                    {
+                        listed[n] = await ListOneFolder(client, level[n].Id, waitScale, ct).ConfigureAwait(false);
+                        if (found != null) found(Interlocked.Add(ref seen, listed[n].Count(e => !e.IsFolder)));
+                    })
                     .ConfigureAwait(false);
 
                 var next = new List<(string Id, string Relative)>();
                 for (int n = 0; n < level.Count; n++)
+                {
                     Take(level[n].Relative, listed[n], next);
+                }
                 level = next;
             }
 
@@ -1668,7 +3402,7 @@ namespace ExplorerNative
 
                     if (entry.IsFolder)
                     {
-                        if (folders.TryAdd(path, entry.Id)) next.Add((entry.Id, path));
+                        if (folders.TryAdd(path, entry.Id) && descend) next.Add((entry.Id, path));
                         continue;
                     }
 
@@ -1706,7 +3440,7 @@ namespace ExplorerNative
             {
                 try
                 {
-                    return await client.ListChildren(id, token).ConfigureAwait(false);
+                    return await client.ListChildren(id, token, max: int.MaxValue).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (attempt < 3 && !token.IsCancellationRequested &&
                                            !SyncBackoff.IsDailyLimit(ex) &&
@@ -1777,19 +3511,212 @@ namespace ExplorerNative
 
         // ---------------- copying ----------------
 
+        /// <summary>
+        /// The Drive folder for a path, made if it is not there. Before making one,
+        /// a folder this pair already had at that path (from before this pass) is
+        /// asked about by its id: a folder made a moment ago, by a pass that was
+        /// then stopped, may not be in a listing yet, and making another split the
+        /// files between two folders of one name.
+        /// </summary>
         private static async Task<string> EnsureFolderAsync(
             DriveClient client, Dictionary<string, string> folders, string rootId, string relativeFolder,
-            CancellationToken token)
+            CancellationToken token, IReadOnlyDictionary<string, string>? remembered = null)
         {
             if (relativeFolder.Length == 0) return rootId;
             if (folders.TryGetValue(relativeFolder, out var known)) return known;
 
             int slash = relativeFolder.LastIndexOf('/');
             var parent = await EnsureFolderAsync(client, folders, rootId,
-                slash < 0 ? "" : relativeFolder[..slash], token).ConfigureAwait(false);
-            var id = await client.CreateFolder(relativeFolder[(slash + 1)..], parent, token).ConfigureAwait(false);
+                slash < 0 ? "" : relativeFolder[..slash], token, remembered).ConfigureAwait(false);
+            var name = relativeFolder[(slash + 1)..];
+            if (remembered != null && remembered.TryGetValue(relativeFolder, out var before) &&
+                await client.PlaceNow(before, token).ConfigureAwait(false) is { } place &&
+                place.Parents.Contains(parent, StringComparer.Ordinal) && SyncNameComparer.Instance.Equals(place.Name, name))
+            {
+                folders[relativeFolder] = before;
+                return before;
+            }
+            var id = await client.CreateFolder(name, parent, token).ConfigureAwait(false);
             folders[relativeFolder] = id;
             return id;
+        }
+
+        /// <summary>Serialises the fast lane's changes to the pair's records and its counters.</summary>
+        private readonly object _fastGate = new();
+
+        /// <summary>How many new small files go up at once. As DriveUpload: Google's limit, not bandwidth.</summary>
+        internal const int FastLanes = 16;
+
+        /// <summary>The fewest and most lanes <see cref="AdaptiveLanes"/> may settle on.</summary>
+        internal const int FastLanesMin = 4, FastLanesMax = 48;
+
+        /// <summary>An answer slower than this is Google pushing back: one lane fewer.</summary>
+        internal const int SlowAnswerMilliseconds = 3000;
+
+        /// <summary>Files up to this size go in the fast lane; bigger ones resume, so they go one at a time.</summary>
+        internal const long FastLaneMaxBytes = 4L * 1024 * 1024;
+
+        /// <summary>Below this many new small files the fast lane is not worth what it costs in Pause latency.</summary>
+        internal const int FastLaneMinimum = 64;
+
+        /// <summary>
+        /// Uploads the plan's small files, new ones and in-place replacements,
+        /// <see cref="FastLanes"/> at a time, and returns the paths that went up.
+        /// Only files with no saved session and settled on the PC; the rest
+        /// (conflicts, big files, anything that fails here) is left for the
+        /// careful one-at-a-time loop, which also retries what this could not do.
+        ///
+        /// Duplicates are the danger in doing this in parallel, so: every folder
+        /// the batch needs is made first, one at a time, before any file goes; a
+        /// file is uploaded by the same call as the slow path (which looks for
+        /// its own tag before ever sending again); and the records are written
+        /// under one lock.
+        /// </summary>
+        private async Task<HashSet<string>> UploadNewSmallAsync(
+            DriveClient client, DriveSyncPair pair, PairState state, List<SyncAction> plan,
+            Dictionary<string, SyncFile> local, Dictionary<string, SyncFile> remote, Dictionary<string, string> folders,
+            string root, int generation, long alreadyUp, Action<long> moved, CancellationToken token)
+        {
+            var sent = new HashSet<string>(SyncNameComparer.Instance);
+            long room = _drive.QuotaLimit > 0 ? _drive.QuotaLimit - _drive.QuotaUsed - alreadyUp : long.MaxValue;
+            var batch = new List<string>();
+            foreach (var action in plan)
+            {
+                // New files, and replacements of a Drive file in place (the same
+                // id, so never a second copy). Conflicts stay on the slow path.
+                if (action.Kind != SyncActionKind.Upload) continue;
+                if (!local.TryGetValue(action.Path, out var file) || file.Size > FastLaneMaxBytes) continue;
+                if (state.Uploads.ContainsKey(action.Path)) continue;
+                var localPath = LocalPathFor(root, action.Path);
+                if (StillBeingWritten(localPath, file, DateTime.UtcNow, SettleTime)) continue;
+                if (file.Size > room) break;
+                room -= file.Size;
+                batch.Add(action.Path);
+            }
+            // Only for a big batch. A handful goes the careful way, one file
+            // at a time, where Pause and Edit are heard between every file.
+            if (batch.Count < FastLaneMinimum) return sent;
+
+            // The folders, shallowest first, one at a time. A replacement's
+            // folder is already known from the listing, so this is a lookup.
+            // A create already sent is let finish if the pass stops (see Drain).
+            using var drain = new Drain(token);
+            foreach (var folder in batch.Select(p => p.LastIndexOf('/') is var at and > 0 ? p[..at] : "")
+                         .Distinct(SyncNameComparer.Instance).OrderBy(f => f.Count(c => c == '/')))
+            {
+                token.ThrowIfCancellationRequested();
+                if (Stopped(pair) || GenerationOf(pair.Id) != generation) throw new PairStoppedException();
+                await Patiently(pair, () => EnsureFolderAsync(client, folders, pair.DriveFolderId, folder, drain.Token, state.Remembered), client, drain.Token)
+                    .ConfigureAwait(false);
+            }
+
+            // Every parent is in `folders` now, so the lanes only read it.
+            int done = 0;
+            var lanes = new AdaptiveLanes(FastLanes, FastLanesMin, FastLanesMax);
+            await Parallel.ForEachAsync(batch,
+                new ParallelOptions { MaxDegreeOfParallelism = FastLanesMax, CancellationToken = token },
+                async (path, ct) =>
+                {
+                    await lanes.EnterAsync(ct).ConfigureAwait(false);
+                    var clock = Stopwatch.StartNew();
+                    bool landed = false;
+                    // Started only while the pass runs; once started, finished on
+                    // the drain token, so it is recorded rather than left unknown.
+                    try { landed = !ct.IsCancellationRequested && await One(path, drain.Token).ConfigureAwait(false); }
+                    finally { lanes.Leave(landed && clock.ElapsedMilliseconds < SlowAnswerMilliseconds); }
+                }).ConfigureAwait(false);
+            return sent;
+
+            async Task<bool> One(string path, CancellationToken ct)
+            {
+                    if (Stopped(pair) || GenerationOf(pair.Id) != generation) return false;
+                    var localPath = LocalPathFor(root, path);
+                    int slash = path.LastIndexOf('/');
+                    var parent = slash < 0 ? pair.DriveFolderId : folders[path[..slash]];
+                    var file = local[path];
+                    var stamp = DriveClient.UploadStamp(localPath);
+                    long reported = 0;
+                    DriveClient.DriveUploaded up;
+                    remote.TryGetValue(path, out var old);
+                    string? replaces = old.Id;
+                    try
+                    {
+                        void Progress(UploadProgress p)
+                        {
+                            long delta = p.BytesSent - Interlocked.Read(ref reported);
+                            if (delta > 0) { Interlocked.Add(ref reported, delta); moved(delta); }
+                        }
+                        if (replaces != null)
+                        {
+                            // As the slow path: replaced only while Drive's copy still
+                            // holds what the scan saw. Edited in Drive since, it is a
+                            // conflict, and the slow path defers it for the next pass.
+                            var now = await Patiently(pair, () => client.FileNow(replaces, ct), client, ct).ConfigureAwait(false);
+                            if (now == null || !SameAsScanned(now, old)) return false;
+                            // An update cannot make a second file, so a resend is safe.
+                            up = await Patiently(pair, () => client.UploadDetailed(localPath, Path.GetFileName(localPath), parent,
+                                Progress, ct, null, _ => { }, replaces), client, ct).ConfigureAwait(false);
+                        }
+                        else
+                        {
+                            up = await SendOnceAsync(pair, client, () => client.UploadDetailed(localPath, Path.GetFileName(localPath), parent,
+                                Progress, ct, null, _ => { }, null), file.Size, ct).ConfigureAwait(false);
+                        }
+                    }
+                    catch (Exception) when (!ct.IsCancellationRequested)
+                    {
+                        // Never landed: left for the one-at-a-time loop, which
+                        // says why if it fails there too.
+                        return false;
+                    }
+
+                    // Landed. Recorded before anything else can go wrong, so the
+                    // slow loop can never send it a second time.
+                    if (reported < file.Size) moved(file.Size - reported);
+                    lock (_fastGate)
+                    {
+                        // Drive made a new file instead of updating (as the slow
+                        // path allows for): the old copy is trashed next pass, only
+                        // while it still holds what it held.
+                        if (replaces != null && up.Id != replaces)
+                            state.PendingTrash[replaces] = new PendingTrash(old.Size, old.ModifiedUtc, old.Md5);
+                        state.Files[path] = new SyncBase(file.Size, file.ModifiedUtc, up.Size ?? file.Size,
+                            Truncate(up.ModifiedUtc ?? stamp), up.Id, up.Md5);
+                        sent.Add(path);
+                        done++;
+                        SaveSoon(pair.Id, state);
+                        int count = done;
+                        Report(pair.Id, s => s with { Uploaded = count, StepDone = count });
+                    }
+                    Kill("uploaded " + path);
+                    return true;
+            }
+        }
+
+        /// <summary>
+        /// Sends a new file, once. When Google lost the answer and would not
+        /// say whether it landed, it is never simply sent again (that was a
+        /// second copy, five in the worst test): Drive is asked again, patiently,
+        /// whether the tagged upload is there. There: that is the upload. Drive
+        /// says it is not: sent. Drive still will not say: the file fails this
+        /// pass, and the next pass lists the folder and adopts it if it landed.
+        /// </summary>
+        private async Task<DriveClient.DriveUploaded> SendOnceAsync(DriveSyncPair pair, DriveClient client,
+            Func<Task<DriveClient.DriveUploaded>> send, long size, CancellationToken token)
+        {
+            for (int attempt = 0; ; attempt++)
+            {
+                try { return await Patiently(pair, send, client, token).ConfigureAwait(false); }
+                catch (Exception ex) when (attempt < 3 && !token.IsCancellationRequested &&
+                                           DriveClient.UnknownIfLandedException.Find(ex) is { Lookup: not null })
+                {
+                    var unknown = DriveClient.UnknownIfLandedException.Find(ex)!;
+                    var there = await Patiently(pair,
+                        () => DriveClient.ResolveUploadAsync(unknown, size, token), client, token).ConfigureAwait(false);
+                    if (there != null) return there;
+                    // Drive says it is not there: sending is safe.
+                }
+            }
         }
 
         /// <param name="replaces">
@@ -1803,7 +3730,7 @@ namespace ExplorerNative
             CancellationToken token)
         {
             int slash = path.LastIndexOf('/');
-            var parent = await EnsureFolderAsync(client, folders, pair.DriveFolderId, slash < 0 ? "" : path[..slash], token)
+            var parent = await EnsureFolderAsync(client, folders, pair.DriveFolderId, slash < 0 ? "" : path[..slash], token, state.Remembered)
                 .ConfigureAwait(false);
 
             // A session saved from an earlier, interrupted attempt at this same
@@ -1838,7 +3765,9 @@ namespace ExplorerNative
             {
                 try
                 {
-                    sent = await Send(replaces, resume).ConfigureAwait(false);
+                    sent = replaces == null
+                        ? await SendOnceAsync(pair, client, () => Send(null, resume), local.Size, token).ConfigureAwait(false)
+                        : await Send(replaces, resume).ConfigureAwait(false);
                 }
                 catch (Exception ex) when (replaces != null && !token.IsCancellationRequested && NotFound(ex))
                 {
@@ -1900,6 +3829,24 @@ namespace ExplorerNative
         }
 
         /// <summary>Drive answered 404 somewhere in the chain: the file is not there.</summary>
+        /// <summary>
+        /// Where a download is written until it is whole: the name plus
+        /// ".partial", shortened (with a hash, so two long names never share one)
+        /// when that would pass Windows' 255 characters. A 255-character name
+        /// from Drive used to fail every pass at this step.
+        /// </summary>
+        internal static string PartialPath(string localPath)
+        {
+            const string suffix = ".partial";
+            var name = Path.GetFileName(localPath);
+            if (name.Length + suffix.Length <= 255) return localPath + suffix;
+            var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(name)))[..8];
+            int keep = 255 - suffix.Length - hash.Length - 1;
+            if (char.IsHighSurrogate(name[keep - 1])) keep--;
+            return Path.Combine(Path.GetDirectoryName(localPath) ?? "", name[..keep] + "~" + hash + suffix);
+        }
+
         private static bool NotFound(Exception ex)
         {
             for (var e = ex; e != null; e = e.InnerException)
@@ -1910,7 +3857,7 @@ namespace ExplorerNative
         /// <summary>How much of a download is already on disk and can be continued from.</summary>
         private static long PartialLength(PairState state, string path, string localPath, SyncFile remote)
         {
-            var partial = localPath + ".partial";
+            var partial = PartialPath(localPath);
             if (!state.Partials.TryGetValue(path, out var p) || !File.Exists(partial)) return 0;
             long length;
             try { length = new FileInfo(partial).Length; } catch { return 0; }
@@ -2004,7 +3951,7 @@ namespace ExplorerNative
             SyncFile? scanned, bool keepOld, Action<long> moved, CancellationToken token)
         {
             Directory.CreateDirectory(Path.GetDirectoryName(localPath)!);
-            var partial = localPath + ".partial";
+            var partial = PartialPath(localPath);
 
             long offset = PartialLength(state, path, localPath, remote);
             if (offset == 0)
@@ -2114,6 +4061,12 @@ namespace ExplorerNative
                 state.Partials = Rekeyed(state.Partials);
                 state.Uploads = Rekeyed(state.Uploads);
                 state.Hashes = Rekeyed(state.Hashes);
+                state.FolderIds = Rekeyed(state.FolderIds);
+                state.DirtyFolders ??= new();
+                state.DriveUnusable ??= new();
+                state.DriveClashing ??= new();
+                state.ShardFolders ??= new();
+                state.RecordFolders ??= new();
                 state.PendingTrash = new Dictionary<string, PendingTrash>(state.PendingTrash ?? new(), StringComparer.Ordinal);
                 return (state, StateRead.Fine);
             }
@@ -2145,6 +4098,18 @@ namespace ExplorerNative
             return result;
         }
 
+        /// <summary>Drops what the changes feed relies on, so the next pass lists Drive whole.</summary>
+        private static void ForgetFeed(PairState state)
+        {
+            state.ChangesToken = null;
+            state.FolderIds.Clear();
+            state.DirtyFolders.Clear();
+            state.LastFullListUtc = null;
+            state.ScanSubfolders = null;
+            state.DriveUnusable.Clear();
+            state.DriveClashing.Clear();
+        }
+
         /// <summary>The pair's state, started again where its folders changed (see <see cref="StateFits"/>).</summary>
         private static (PairState State, StateRead How) LoadState(DriveSyncPair pair)
         {
@@ -2157,6 +4122,14 @@ namespace ExplorerNative
                 state.Uploads.Clear();
                 state.LastSyncedUtc = null;
                 state.Problem = null;
+                ForgetFeed(state);
+                if (state.Sharded)
+                {
+                    try { Directory.Delete(new ShardStore(pair.Id).Directory, true); } catch { }
+                    state.Sharded = false;
+                    state.ShardFolders.Clear();
+                    state.RecordFolders.Clear();
+                }
             }
             if (!keepHashes) state.Hashes.Clear();
             state.LocalFolder = pair.LocalFolder;
@@ -2178,6 +4151,12 @@ namespace ExplorerNative
             {
                 try { File.Move(path, aside); }
                 catch { try { File.Copy(path, aside, overwrite: true); File.Delete(path); } catch { } }
+
+                // A large pair's records by folder go with it: without the state
+                // that lists them they are not what was synced.
+                var shards = new ShardStore(pair.Id).Directory;
+                try { if (Directory.Exists(shards)) Directory.Move(shards, shards + ".damaged-" + Path.GetFileName(aside)[^15..]); }
+                catch { try { Directory.Delete(shards, true); } catch { } }
             }
 
             var problem = "paused: what it remembered about the last sync could not be read, and was kept as " +
@@ -2214,13 +4193,22 @@ namespace ExplorerNative
                     if (_removed.Contains(pairId)) return;
                     _savedAt[pairId] = Environment.TickCount64;
                 }
+                if (state.Store != null)
+                {
+                    long began = Environment.TickCount64;
+                    try { state.Store.SaveSlice(state); } catch { }
+                    lock (_gate) _saveCost[pairId] = Environment.TickCount64 - began;
+                    return;
+                }
                 try
                 {
                     Directory.CreateDirectory(StateDirectory);
                     var path = StatePath(pairId);
                     var temp = path + "." + Environment.ProcessId + ".tmp";
+                    long started = Environment.TickCount64;
                     ProtectedFile.WriteAllText(temp, JsonSerializer.Serialize(state));
                     File.Move(temp, path, overwrite: true);
+                    lock (_gate) _saveCost[pairId] = Environment.TickCount64 - started;
                 }
                 catch { }
             }
@@ -2232,11 +4220,23 @@ namespace ExplorerNative
         /// and a crash in between loses at most two seconds of records, which
         /// the next pass adopts again by comparing both sides.
         /// </summary>
+        /// <summary>How long a save took last time, per pair, in milliseconds.</summary>
+        private readonly Dictionary<string, long> _saveCost = new();
+
+        /// <summary>
+        /// Two seconds, or twenty times as long as the last save took. With
+        /// millions of files the records are hundreds of megabytes, and writing
+        /// them every two seconds was the pass doing little else. A crash then
+        /// loses a little more, which the next pass adopts again by MD5.
+        /// </summary>
+        internal static long SaveGap(long lastCostMilliseconds) => Math.Max(2000, lastCostMilliseconds * 20);
+
         private void SaveSoon(string pairId, PairState state, bool now = false)
         {
             if (!now)
                 lock (_gate)
-                    if (_savedAt.TryGetValue(pairId, out var at) && Environment.TickCount64 - at < 2000) return;
+                    if (_savedAt.TryGetValue(pairId, out var at) &&
+                        Environment.TickCount64 - at < SaveGap(_saveCost.TryGetValue(pairId, out var cost) ? cost : 0)) return;
             SaveState(pairId, state);
         }
 
@@ -2251,8 +4251,12 @@ namespace ExplorerNative
                 // Under the state lock, so a save already under way finishes
                 // first, and the next one sees the pair removed.
                 lock (StateLock)
+                {
                     foreach (var file in Directory.GetFiles(StateDirectory, "*.json"))
                         if (!keep.Contains(Path.GetFileName(file))) { try { File.Delete(file); } catch { } }
+                    foreach (var dir in Directory.GetDirectories(StateDirectory, "*.shards"))
+                        if (!keep.Contains(Path.GetFileNameWithoutExtension(dir) + ".json")) { try { Directory.Delete(dir, true); } catch { } }
+                }
             }
             catch { }
         }

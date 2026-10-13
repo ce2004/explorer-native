@@ -1,28 +1,21 @@
 using System;
-using System.Collections.Generic;
 using System.Drawing;
-using System.Globalization;
-using System.Linq;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace ExplorerNative
 {
     /// <summary>
-    /// Help, Changelog: every release on GitHub, newest first.
+    /// Help, Changelog: every version, newest first, from the CHANGES.txt built
+    /// into this executable. No network, so it opens at once and works offline.
     ///
-    /// One list per version. Tab moves from version to version, the arrow keys
-    /// read the changes in the one you are on, and the list's name says which
-    /// version it is and when it came out. After the last version, Tab reaches
-    /// Back. Escape or Back closes the window.
+    /// One list, one change per line, with a "Version 2.3.3" line heading each
+    /// version (Kova's layout). The arrows read line by line; Ctrl+Down and
+    /// Ctrl+Up jump to the next or previous version; Ctrl+C copies the line.
+    /// Escape, Enter or OK closes it.
     /// </summary>
     internal sealed class ChangelogForm : Form
     {
-        private readonly FlowLayoutPanel _versions;
-        private readonly TextBox _status;
-        private readonly Button _back;
-        private readonly CancellationTokenSource _cancel = new();
+        private readonly ListBox _lines;
 
         public ChangelogForm()
         {
@@ -30,129 +23,73 @@ namespace ExplorerNative
             FormBorderStyle = FormBorderStyle.Sizable;
             StartPosition = FormStartPosition.CenterParent;
             MinimizeBox = false;
+            MaximizeBox = false;
             ShowInTaskbar = false;
-            ClientSize = new Size(620, 480);
             Font = SystemFonts.MessageBoxFont;
 
-            _status = new TextBox
+            var lines = Changelog.Lines(Changelog.Embedded(), Updater.CurrentText);
+            if (lines.Count == 0) lines.Add("This build has no changelog in it.");
+
+            _lines = new ListBox
             {
-                Text = "Loading the changelog from GitHub…",
-                ReadOnly = true,
-                BorderStyle = BorderStyle.None,
-                BackColor = SystemColors.Control,
-                Dock = DockStyle.Top,
-                AccessibleRole = AccessibleRole.StaticText,
+                Dock = DockStyle.Fill,
+                HorizontalScrollbar = true,
+                IntegralHeight = false,
                 AccessibleName = "Changelog",
                 TabIndex = 0,
             };
+            _lines.Items.AddRange(lines.ToArray());
+            _lines.SelectedIndex = 0;
+            _lines.KeyDown += OnListKeyDown;
 
-            _versions = new FlowLayoutPanel
-            {
-                Dock = DockStyle.Fill,
-                FlowDirection = FlowDirection.TopDown,
-                WrapContents = false,
-                AutoScroll = true,
-                Padding = new Padding(8),
-                TabIndex = 1,
-            };
-
+            var ok = new Button { Text = "OK", DialogResult = DialogResult.OK, AutoSize = true, TabIndex = 1 };
             var bar = new FlowLayoutPanel
             {
                 Dock = DockStyle.Bottom,
                 FlowDirection = FlowDirection.RightToLeft,
-                Height = 44,
+                AutoSize = true,
                 Padding = new Padding(8),
-                TabIndex = 2,
             };
-            _back = new Button { Text = "&Back", DialogResult = DialogResult.Cancel, AutoSize = true };
-            bar.Controls.Add(_back);
+            bar.Controls.Add(ok);
 
-            Controls.Add(_versions);
+            Controls.Add(_lines);
             Controls.Add(bar);
-            Controls.Add(_status);
-            CancelButton = _back;
+            AcceptButton = ok;
+            CancelButton = ok;
 
-            Shown += async (_, _) =>
-            {
-                _status.Focus();
-                await LoadAsync();
-            };
-            FormClosed += (_, _) =>
-            {
-                _cancel.Cancel();
-                _cancel.Dispose();
-            };
+            // Wide enough for a typical line at this font, tall enough for a page.
+            var line = TextRenderer.MeasureText("M", Font);
+            ClientSize = new Size(Math.Max(640, line.Width * 60), Math.Max(420, line.Height * 22) + bar.PreferredSize.Height);
+
+            Shown += (_, _) => _lines.Focus();
         }
 
-        private async Task LoadAsync()
+        private void OnListKeyDown(object? sender, KeyEventArgs e)
         {
-            List<Updater.ReleaseNotes> releases;
-            try
+            if (e.Control && e.KeyCode == Keys.C)
             {
-                releases = await Updater.AllReleasesAsync(_cancel.Token);
-            }
-            catch (Exception ex)
-            {
-                if (IsDisposed) return;
-                _status.Text = ex switch
+                e.Handled = e.SuppressKeyPress = true;
+                if (_lines.SelectedItem is string text)
                 {
-                    OperationCanceledException => "GitHub did not answer in time.",
-                    // Already a whole sentence: rate limited, not found, unreadable.
-                    Updater.UpdateException => "Could not load the changelog. " + ex.Message,
-                    System.Net.Http.HttpRequestException =>
-                        "Could not load the changelog. GitHub could not be reached: " + ex.Message,
-                    _ => "Could not load the changelog: " + ex.Message,
-                };
-                Speak(_status.Text);
+                    try { Clipboard.SetText(text); Speak("Copied"); }
+                    catch { Speak("Could not copy, another application is holding the clipboard"); }
+                }
                 return;
             }
 
-            if (IsDisposed) return;
+            if (!e.Control || (e.KeyCode != Keys.Down && e.KeyCode != Keys.Up)) return;
+            e.Handled = e.SuppressKeyPress = true;
 
-            if (releases.Count == 0)
+            int step = e.KeyCode == Keys.Down ? 1 : -1;
+            for (int i = _lines.SelectedIndex + step; i >= 0 && i < _lines.Items.Count; i += step)
             {
-                _status.Text = "No releases have been published yet.";
-                Speak(_status.Text);
-                return;
-            }
-
-            _status.Text = releases.Count == 1
-                ? "1 version. Tab moves between versions, the arrow keys read the changes."
-                : $"{releases.Count} versions, newest first. Tab moves between versions, the arrow keys read the changes.";
-
-            _versions.SuspendLayout();
-            int tab = 0;
-            ListBox? first = null;
-            foreach (var release in releases)
-            {
-                var title = $"Version {Updater.Text(release.Version)}" +
-                            (release.Published is DateTime d
-                                ? ", " + d.ToLocalTime().ToString("MMMM d, yyyy", CultureInfo.CurrentCulture)
-                                : "");
-
-                var lines = UpdateForm.Changes(release.Notes);
-                if (lines.Count == 0) lines.Add("No list of changes was published for this version.");
-
-                var label = new Label { Text = title, AutoSize = true, Margin = new Padding(0, 8, 0, 2) };
-                var list = new ListBox
+                if (Changelog.IsHeading((string)_lines.Items[i]))
                 {
-                    Width = 560,
-                    Height = Math.Min(lines.Count, 8) * 18 + 8,
-                    HorizontalScrollbar = true,
-                    AccessibleName = title,
-                    TabIndex = tab++,
-                };
-                list.Items.AddRange(lines.ToArray());
-                list.SelectedIndex = 0;
-                list.Enter += (_, _) => _versions.ScrollControlIntoView(list);
-
-                _versions.Controls.Add(label);
-                _versions.Controls.Add(list);
-                first ??= list;
+                    _lines.SelectedIndex = i;
+                    return;
+                }
             }
-            _versions.ResumeLayout();
-
-            first?.Focus();
+            Speak(step > 0 ? "No more versions" : "This is the newest version");
         }
 
         private static void Speak(string text)

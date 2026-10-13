@@ -1,3 +1,32 @@
+3.0.0
+New: renaming or moving a file or a whole folder in a synced folder is now done the same way on the other side, instead of uploading or downloading everything again. A renamed folder of a thousand songs is one quick change on Google Drive, and nothing is copied twice.
+New: before a new synced folder starts, Explorer Native looks at both sides first and tells you how many files are on each, how many already match, and how many would be uploaded, downloaded or kept twice, then asks whether to start now or save it paused.
+New: after the first sync, a synced folder asks Google only what changed since last time, so a check with nothing to do takes seconds instead of reading the whole of Google Drive again. Once a day it still reads everything, to be sure.
+New: very large synced folders, with millions of files, are now synced a part at a time, so the app uses about the same memory for ten million files as for a few hundred thousand.
+New: files you edited that are already on Google Drive now upload many at once too, not one at a time.
+Bug fixed: if a synced folder was paused, edited or closed while files were uploading and then started again straight away, a file could end up on Google Drive twice. Files already on their way now finish first, and the next check makes sure of what Google already has before sending anything.
+New: folder sync uploads many small files at once, and finds by itself how fast Google will let it go. A folder of tiny files that took a whole day now takes about an hour.
+New: the sync configurator says exactly where a sync is: how many files it has found on the PC and on Google Drive, how many are already the same on both, which change of how many it is on, and how many were uploaded, downloaded, deleted or failed.
+Bug fixed: syncing a folder with more than 100,000 files in one place uploaded everything after the first 100,000 again, every time. The whole folder is now read before anything is decided.
+Bug fixed: the small .gdoc and .gsheet files Google Drive for desktop leaves on your PC were uploaded as junk copies. They are now left alone.
+Bug fixed: a name with an accent written the Mac way, such as one copied from a Mac or a phone, could be copied a second time on both sides. It is now seen as the same name.
+Bug fixed: if Google lost track of an upload during a bad connection, the same file could be uploaded several times. It now asks Google whether the file arrived before ever sending it again.
+Bug fixed: if Google Drive already had two copies of a file and yours matched the older one, the sync made a third. It now pairs your file with the copy that matches.
+Bug fixed: a file from Google Drive with a very long name could never be downloaded. It now comes down like any other.
+Bug fixed: two monitored folders could cover the same files, for example all of D and a folder inside it, and both would upload them. That is now refused when you set it up.
+New: Help, Changelog opens at once and works offline. It is one list, with a Version line before each version's changes: press Control+Down Arrow and Control+Up Arrow to jump between versions, and Control+C to copy a line. Shift+F1 opens it.
+Bug fixed: if a firewall, antivirus or a wrong clock stopped Check for updates or Google Drive from going online, the message only said it could not be reached. It now says what is blocking it and what to check.
+Bug fixed: a slow internet connection could never finish downloading an update, because it gave up after five minutes. It now keeps going as long as the download is moving.
+Bug fixed: setting up Google Drive with a new Google Cloud project, where the Drive API is not switched on yet, read out a long block of code. It now tells you how to switch the Drive API on.
+Bug fixed: pressing OK in Preferences ran your search again, re-read an open archive or Google Drive folder, and talked over Preferences saved. It now updates the list quietly.
+Bug fixed: Deleting, Deleted on both sides and Created file could not be turned off on their own. They are now in Choose what is spoken.
+Bug fixed: making a new folder or file next to a file or folder of the same name could give it a broken number, such as Mix v1 (2).0. It now becomes Mix v1.0 (2).
+Bug fixed: in the audio editor, if replacing the original failed partway, the edited audio could be left under a hidden name with nothing in the original's place. It is now saved as the edited copy and you are told the original is in the Recycle Bin. A failed save no longer leaves a hidden file behind either.
+Bug fixed: replacing the original in the audio editor failed if the same song was paused in the player. The player now lets go of it first.
+Bug fixed: opening the same 7z or rar file twice at once, for example in both tabs, could show a broken or doubled list. The second one now waits for the first.
+Bug fixed: downloading a file to your phone from the web app could sit there for ever if the connection dropped. It now notices after 30 seconds and tries again.
+Better battery life: the Google Drive letter no longer wakes the processor every few seconds when nothing is being downloaded or cleaned up.
+
 2.3.3
 Bug fixed: on some computers, entering a correct Google client ID and secret said Google could not be reached to check them, and nothing was saved, so Google Drive could never be set up. Now the ID and secret are saved and sign-in carries on in the browser, and only a real "wrong ID or secret" answer from Google stops you. If something does go wrong, the message now says exactly what.
 Bug fixed: on networks where IPv6 is broken, which is common on home routers, Google Drive could time out even though web browsers worked. It now connects over IPv4 and IPv6 at the same time, like a browser does, and uses whichever answers first.

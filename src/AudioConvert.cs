@@ -126,7 +126,10 @@ namespace ExplorerNative
                         {
                             if (info is DirectoryInfo dir)
                             {
-                                if (subfolders && (dir.Attributes & FileAttributes.ReparsePoint) == 0)
+                                // Links are skipped, not every reparse point: a
+                                // OneDrive folder is one too, and its subfolders
+                                // were left out of the conversion without a word.
+                                if (subfolders && !NameRules.IsLink(dir))
                                     stack.Push(dir.FullName);
                             }
                             else files.Add(info.FullName);
@@ -368,7 +371,8 @@ namespace ExplorerNative
         {
             if (replace)
             {
-                File.Move(temp, target, overwrite: true);
+                // Replace means replace, a read-only file included, as a paste's does.
+                FileOperations.MoveReplacing(temp, target);
                 return target;
             }
 

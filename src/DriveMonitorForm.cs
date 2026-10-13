@@ -144,7 +144,14 @@ namespace ExplorerNative
             else if (status?.Problem is { } waiting && waiting.StartsWith("waiting", StringComparison.Ordinal))
                 state = waiting;
             else if (status is { Running: true, CheckTotal: > 0 })
-                state = $"checking what is already there, {status.CheckDone:N0} of {status.CheckTotal:N0} files";
+                state = $"checking with Google what is already there, {status.CheckDone:N0} of {status.CheckTotal:N0} " +
+                        $"files compared, {status.LocalFound:N0} on the PC and {status.DriveFound:N0} on Drive";
+            else if (status is { Running: true, Phase: DriveMonitor.PhaseScanning })
+                state = $"reading the PC folder, {status.LocalFound:N0} files found so far";
+            else if (status is { Running: true, Phase: DriveMonitor.PhaseListing })
+                state = $"{status.LocalFound:N0} files on the PC, reading Google Drive, {status.DriveFound:N0} files found so far";
+            else if (status is { Running: true, Phase: DriveMonitor.PhaseSyncing })
+                state = Progress(status);
             else if (status is { Running: true, TotalBytes: > 0 })
                 state = $"syncing, {DriveMonitor.Words(status.DoneBytes)} of {DriveMonitor.Words(status.TotalBytes)}";
             else if (status is { Running: true }) state = "syncing now";
@@ -153,7 +160,20 @@ namespace ExplorerNative
                         problem.StartsWith("offline", StringComparison.Ordinal)
                     ? problem
                     : "problem: " + problem;
-            else if (status?.LastSyncedUtc is DateTime when) state = "last synced " + Ago(nowUtc - when);
+            else if (status?.LastSyncedUtc is DateTime when)
+            {
+                state = "last synced " + Ago(nowUtc - when);
+                if (status.Matched + status.Uploaded + status.Downloaded + status.Deleted + status.Failed + status.Moved > 0)
+                {
+                    var did = new List<string> { $"{status.Matched:N0} on both sides" };
+                    if (status.Moved > 0) did.Add($"{status.Moved:N0} moved");
+                    if (status.Uploaded > 0) did.Add($"{status.Uploaded:N0} uploaded");
+                    if (status.Downloaded > 0) did.Add($"{status.Downloaded:N0} downloaded");
+                    if (status.Deleted > 0) did.Add($"{status.Deleted:N0} deleted");
+                    if (status.Failed > 0) did.Add($"{status.Failed:N0} failed");
+                    state += ", " + string.Join(", ", did);
+                }
+            }
             else state = "not synced yet";
 
             var check = pair.CheckMinutes switch
@@ -166,6 +186,28 @@ namespace ExplorerNative
 
             return $"{DriveMonitor.DisplayName(pair)}: {pair.LocalFolder} and Drive folder {pair.DriveFolderPath}, " +
                    $"{mode}, {deletes}{check}, {state}";
+        }
+
+        /// <summary>
+        /// "1,995,500 already on both sides, change 1,204 of 4,500: 1,000
+        /// uploaded, 200 downloaded, 3 failed, 1.2 gigabytes of 4 gigabytes".
+        /// </summary>
+        internal static string Progress(DriveMonitor.PairStatus status)
+        {
+            var text = $"{status.Matched:N0} already on both sides";
+            if (status.StepTotal == 0) return text + ", nothing to copy";
+
+            text += $", change {Math.Min(status.StepDone + 1, status.StepTotal):N0} of {status.StepTotal:N0}";
+            var done = new List<string>();
+            if (status.Moved > 0) done.Add($"{status.Moved:N0} moved");
+            if (status.Uploaded > 0) done.Add($"{status.Uploaded:N0} uploaded");
+            if (status.Downloaded > 0) done.Add($"{status.Downloaded:N0} downloaded");
+            if (status.Deleted > 0) done.Add($"{status.Deleted:N0} deleted");
+            if (status.Failed > 0) done.Add($"{status.Failed:N0} failed");
+            if (done.Count > 0) text += ": " + string.Join(", ", done);
+            if (status.TotalBytes > 0)
+                text += $", {DriveMonitor.Words(status.DoneBytes)} of {DriveMonitor.Words(status.TotalBytes)}";
+            return text;
         }
 
         /// <summary>Whether File shows "Google Drive sync configurator": only while Drive is switched on.</summary>
@@ -184,7 +226,7 @@ namespace ExplorerNative
         private void AddPair()
         {
             var pair = new DriveSyncPair();
-            using var dialog = new DrivePairForm(pair, "Add a monitored folder");
+            using var dialog = new DrivePairForm(pair, "Add a monitored folder") { Others = _pairs.ToList() };
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
             _pairs.Add(dialog.Pair);
             Commit();
@@ -196,7 +238,8 @@ namespace ExplorerNative
         {
             int at = _list.SelectedIndex;
             if (at < 0 || at >= _pairs.Count) return;
-            using var dialog = new DrivePairForm(_pairs[at].Copy(), "Edit a monitored folder");
+            using var dialog = new DrivePairForm(_pairs[at].Copy(), "Edit a monitored folder")
+                { Others = _pairs.Where((_, i) => i != at).ToList() };
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
             _pairs[at] = dialog.Pair;
             Commit();
@@ -239,9 +282,12 @@ namespace ExplorerNative
     }
 
     /// <summary>
-    /// Add or edit one folder pair. OK checks there is room for it (the PC's
-    /// disk for what comes down, Drive's quota for what goes up) before it is
-    /// saved, and offers to save it paused when there is not.
+    /// Add or edit one folder pair. OK looks at both folders first: before a
+    /// first sync it says what would happen (how many files on each side, how
+    /// many already match, what would be uploaded, downloaded, kept twice or
+    /// deleted) and asks; and for any start it checks there is room (the PC's
+    /// disk for what comes down, Drive's quota for what goes up), offering to
+    /// save the pair paused when there is not.
     /// </summary>
     internal sealed class DrivePairForm : Form
     {
@@ -281,9 +327,16 @@ namespace ExplorerNative
             (1, "1 minute"), (5, "5 minutes"), (15, "15 minutes"), (60, "60 minutes"), (0, "Only when I press Sync now"),
         };
 
+        /// <summary>The other monitored folders, which this one may not overlap.</summary>
+        public List<DriveSyncPair> Others { get; init; } = new();
+
+        /// <summary>The pair as it was when the dialog opened, to tell an edit from a new start.</summary>
+        private readonly DriveSyncPair _original;
+
         public DrivePairForm(DriveSyncPair pair, string title)
         {
             Pair = pair;
+            _original = pair.Copy();
 
             Text = title;
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -475,13 +528,35 @@ namespace ExplorerNative
                 edited.CopyDeletes = _deletes.Checked;
                 edited.Paused = _paused.Checked;
 
+                // Two pairs over the same files would each upload them.
+                if (DriveMonitor.Overlap(edited, Others) is { } overlap)
+                {
+                    MessageBox.Show(this, overlap, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    _local.Focus();
+                    return;
+                }
+
                 // Never start a sync that cannot finish: what would come down
                 // against the PC's free space, what would go up against Drive's.
+                // And never start a first sync (a new pair, or new folders) before
+                // the person has seen what it would do and said yes.
                 if (!edited.Paused)
                 {
-                    var shortage = await RoomProblemAsync(edited);
+                    bool first = IsFirstSync(_original, edited);
+                    var (shortage, preview, failure) = await CheckAsync(edited);
                     if (IsDisposed || _closing.IsCancellationRequested) return;
-                    if (shortage != null)
+
+                    if (first && preview == null)
+                    {
+                        var answer = MessageBox.Show(this,
+                            "Explorer Native could not look at both folders first" +
+                            (failure != null ? ": " + failure : ".") + "\n\n" +
+                            "A first sync never starts without that look. Save this folder paused, and sync it later?",
+                            Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+                        if (answer != DialogResult.Yes) { _local.Focus(); return; }
+                        edited.Paused = true;
+                    }
+                    else if (shortage != null)
                     {
                         var answer = MessageBox.Show(this,
                             shortage + "\n\nSave this folder paused, and sync it later when there is room?",
@@ -493,6 +568,16 @@ namespace ExplorerNative
                             return;
                         }
                         edited.Paused = true;
+                    }
+                    else if (first && preview != null)
+                    {
+                        var answer = MessageBox.Show(this,
+                            DriveMonitor.Describe(preview) + "\n\n" +
+                            "Start syncing now? Yes starts it. No saves it paused, to start later. Cancel goes back.",
+                            "Before the first sync", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question,
+                            MessageBoxDefaultButton.Button3);
+                        if (answer == DialogResult.Cancel) { _local.Focus(); return; }
+                        if (answer == DialogResult.No) edited.Paused = true;
                     }
                 }
 
@@ -519,62 +604,77 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Lists both sides through the API and says, plainly, if what would be
-        /// copied does not fit; null when it does or cannot be told.
+        /// Whether saving <paramref name="edited"/> starts a sync from nothing:
+        /// a new pair, or an edit that changes either folder, which throws the
+        /// records away (see DriveMonitor.StateFits).
         /// </summary>
-        private async Task<string?> RoomProblemAsync(DriveSyncPair pair)
+        internal static bool IsFirstSync(DriveSyncPair original, DriveSyncPair edited) =>
+            string.IsNullOrEmpty(original.LocalFolder) || string.IsNullOrEmpty(original.DriveFolderId) ||
+            !string.Equals(original.LocalFolder.TrimEnd('\\'), edited.LocalFolder.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(original.DriveFolderId, edited.DriveFolderId, StringComparison.Ordinal);
+
+        /// <summary>
+        /// Lists both sides through the API and plans the pair, reading and
+        /// writing nothing else: what it would do (the preview), and, plainly,
+        /// whether what it would copy does not fit. The preview is null when
+        /// it could not be made, with the reason.
+        /// </summary>
+        private async Task<(string? Shortage, DriveMonitor.SyncPreview? Preview, string? Failure)> CheckAsync(DriveSyncPair pair)
         {
             var client = DriveMonitorClient();
-            if (client == null) return null;
+            if (client == null) return (null, null, "Google Drive is not connected");
 
             _checking = true;
             _ok.Enabled = false;
             UseWaitCursor = true;
-            _status.Text = "Checking how much space this needs…";
+            _status.Text = "Looking at both folders before anything is copied…";
             Say(_status.Text);
+            var progress = new Progress<string>(line => { if (!IsDisposed) _status.Text = line; });
             try
             {
                 // On a worker: the PC folder walk and the free-space question
                 // are file system calls, and the PC folder can be a big library
                 // or a share that has gone away.
                 var token = _closing.Token;
-                var (down, up, free, total, letter) = await Task.Run(async () =>
+                var (preview, free, total, letter) = await Task.Run(async () =>
                 {
-                    var (d, u) = await DriveMonitor.NeedsAsync(client, pair, token).ConfigureAwait(false);
-                    var (f, t, l) = d > 0 ? DriveMonitor.DiskOf(pair.LocalFolder) : (0L, 0L, "");
-                    return (d, u, f, t, l);
+                    var p = await DriveMonitor.PreviewAsync(client, pair, token, ((IProgress<string>)progress).Report)
+                        .ConfigureAwait(false);
+                    var (f, t, l) = p.DownBytes > 0 ? DriveMonitor.DiskOf(pair.LocalFolder) : (0L, 0L, "");
+                    return (p, f, t, l);
                 }, token);
-                if (IsDisposed || token.IsCancellationRequested) return null;
+                if (IsDisposed || token.IsCancellationRequested) return (null, null, null);
 
-                if (down > 0)
-                {
-                    if (total > 0 && !SyncSpace.Fits(down, free, total))
-                        return $"This needs {DriveMonitor.Words(down)} and {letter} has " +
-                               $"{DriveMonitor.Words(free)} free, keeping {DriveMonitor.Words(SyncSpace.Margin(total))} spare.";
-                }
+                // The same numbers, in one line under the fields.
+                _status.Text = DriveMonitor.Describe(preview).Replace(Environment.NewLine, " ");
+
+                if (preview.DownBytes > 0 && total > 0 && !SyncSpace.Fits(preview.DownBytes, free, total))
+                    return ($"This needs {DriveMonitor.Words(preview.DownBytes)} and {letter} has " +
+                            $"{DriveMonitor.Words(free)} free, keeping {DriveMonitor.Words(SyncSpace.Margin(total))} spare.",
+                        preview, null);
 
                 var drive = DriveMonitor.Current?.Drive;
-                if (up > 0 && drive is { QuotaLimit: > 0 })
+                if (preview.UpBytes > 0 && drive is { QuotaLimit: > 0 })
                 {
                     long room = drive.QuotaLimit - drive.QuotaUsed;
-                    if (up > room)
-                        return $"This needs {DriveMonitor.Words(up)} in Google Drive, which has " +
-                               $"{DriveMonitor.Words(Math.Max(0, room))} free.";
+                    if (preview.UpBytes > room)
+                        return ($"This needs {DriveMonitor.Words(preview.UpBytes)} in Google Drive, which has " +
+                                $"{DriveMonitor.Words(Math.Max(0, room))} free.", preview, null);
                 }
-
-                _status.Text = "";
-                return null;
+                return (null, preview, null);
             }
             catch (OperationCanceledException) when (_closing.IsCancellationRequested)
             {
-                return null;
+                return (null, null, null);
             }
             catch (Exception ex)
             {
-                // Not knowing is not a reason to refuse: every pass checks again
-                // before each file and pauses itself if it runs out of room.
-                if (!IsDisposed) _status.Text = "Could not check the space needed: " + ex.Message;
-                return null;
+                // Not knowing the space is not a reason to refuse an edit: every
+                // pass checks again before each file and pauses itself if it runs
+                // out of room. A first sync is another matter: see the caller.
+                var reason = GoogleNet.Reason(ex);
+                if (!IsDisposed) _status.Text = "Could not look at both folders: " + reason;
+                return (null, null, reason);
             }
             finally
             {

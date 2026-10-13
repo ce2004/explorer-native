@@ -352,7 +352,8 @@ namespace ExplorerNative
             }
             else
             {
-                _progress.Text = $"{p.ItemsDone} items so far, total not yet known";
+                // NameRules.Items, so one is "1 item", not "1 items", read aloud.
+                _progress.Text = $"{NameRules.Items(p.ItemsDone)} so far, total not yet known";
                 _size.Text = done;
                 _remaining.Text = "calculating";
             }

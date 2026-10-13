@@ -124,7 +124,8 @@ namespace ExplorerNative
         {
             Console.WriteLine("Explorer Native self-test\n");
 
-            StartWatchdog();
+            // The live sync run is hours of real uploads, with no checks between.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") is not ("livesync" or "syncmemory")) StartWatchdog();
 
             // Just the window timings, for measuring one change at a time.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "speed")
@@ -178,6 +179,39 @@ namespace ExplorerNative
                 return 0;
             }
 
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "livesync")
+                return await LiveSyncProbe.Run();
+
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "syncscale")
+            {
+                await Guard("SyncScaleTests", () => SyncScaleTests.RunAll(Check));
+                var (large, batch) = (DriveMonitor.LargePairFiles, DriveMonitor.BatchFiles);
+                DriveMonitor.LargePairFiles = 0;
+                DriveMonitor.BatchFiles = 7;
+                try { await Guard("SyncScaleTests (batches)", () => SyncScaleTests.RunAll((w, ok, d) => Check("[batches] " + w, ok, d))); }
+                finally { DriveMonitor.LargePairFiles = large; DriveMonitor.BatchFiles = batch; }
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "syncmemory")
+            {
+                await SyncScaleTests.RunMemory(Check);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
+            // Just the folder sync's own suites, for working on the sync.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "sync")
+            {
+                await Guard("SyncScaleTests", () => SyncScaleTests.RunAll(Check));
+                await Guard("SyncDuplicateTests", () => SyncDuplicateTests.RunAll(Check, Equal));
+                await FakeDriveMonitorTests.RunAll(Check, Equal);
+                await SyncSuitesInBatches();
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "tags")
             {
                 TagEditTests.RunAll(Check, Equal);
@@ -218,6 +252,8 @@ namespace ExplorerNative
             QuietByDefaultTests();
             RetiredSpeechSwitchTests();
             GoogleConnectFallbackTests();
+            AdaptiveLaneTests();
+            AuditFixTests.Run(Check);
             CountedSpeechTests();
             GainHeadroomTests();
             TimeStretchTests();
@@ -283,7 +319,11 @@ namespace ExplorerNative
             await Guard("InstallTests", () => { InstallTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("DriveCopyTests", () => DriveCopyTests.RunAll(Check, Equal));
             await Guard("FakeDriveMonitorTests", () => FakeDriveMonitorTests.RunAll(Check, Equal));
+            await Guard("SyncDuplicateTests", () => SyncDuplicateTests.RunAll(Check, Equal));
+            await Guard("SyncScaleTests", () => SyncScaleTests.RunAll(Check));
+            await SyncSuitesInBatches();
             await Guard("DriveMountTests", () => DriveMountTests.RunAll(Check, Equal));
+            await Guard("DriveMountTimerTests", () => DriveMountTimerTests.RunAll(Check, Equal));
             await Guard("OddCaseTests", () => OddCaseTests.RunAll(Check, Equal));
             await Guard("TransferFixTests", () => TransferFixTests.RunAll(Check, Equal));
             await Guard("FilesR2Tests", () => FilesR2Tests.RunAll(Check, Equal));
@@ -302,6 +342,8 @@ namespace ExplorerNative
             await Guard("DriveClientCacheTests", () => DriveClientCacheTests.RunAll(Check, Equal));
             await Guard("TagEditTests", () => { TagEditTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("AudioConvertTests", () => AudioConvertTests.RunAll(Check, Equal));
+            await Guard("WebArchiveAudioFixTests", () => WebArchiveAudioFixTests.RunAll(Check, Equal));
+            await Guard("MainFileOpsFixTests", () => MainFileOpsFixTests.RunAll(Check, Equal));
 
             Console.WriteLine($"\n{_passed} passed, {_failed} failed");
             return _failed == 0 ? 0 : 1;
@@ -312,6 +354,32 @@ namespace ExplorerNative
         /// system tar on some Windows builds dies on non-Latin names, and that
         /// used to abort every section after the archive tests.
         /// </summary>
+        /// <summary>
+        /// The folder sync's suites again, every pair going a batch of folders at a
+        /// time (seven files to a batch, so every tree is many batches): the way a
+        /// pair of millions of files runs, held to every rule the whole-tree way is.
+        /// </summary>
+        private static async Task SyncSuitesInBatches()
+        {
+            var (large, batch) = (DriveMonitor.LargePairFiles, DriveMonitor.BatchFiles);
+            DriveMonitor.LargePairFiles = 0;
+            DriveMonitor.BatchFiles = 7;
+            Console.WriteLine("The folder sync again, a batch of folders at a time:");
+            void C(string what, bool ok, string? detail) => Check("[batches] " + what, ok, detail);
+            void E(string what, string expected, string actual) => Equal("[batches] " + what, expected, actual);
+            try
+            {
+                await Guard("SyncScaleTests (batches)", () => SyncScaleTests.RunAll(C));
+                await Guard("SyncDuplicateTests (batches)", () => SyncDuplicateTests.RunAll(C, E));
+                await Guard("FakeDriveMonitorTests (batches)", () => FakeDriveMonitorTests.RunAll(C, E));
+            }
+            finally
+            {
+                DriveMonitor.LargePairFiles = large;
+                DriveMonitor.BatchFiles = batch;
+            }
+        }
+
         private static async Task Guard(string section, Func<Task> run)
         {
             try { await run(); }
@@ -741,7 +809,20 @@ namespace ExplorerNative
             var pending = new DriveMonitor.PairStatus(null, null, true, 0, 0, 1200, 3120);
             Check("the pair says how far checking has got",
                 DriveMonitorForm.Describe(new DriveSyncPair { Name = "Music", LocalFolder = @"D:\Music", DriveFolderPath = "My Drive/Music" }, pending, t0)
-                    .EndsWith("checking what is already there, 1,200 of 3,120 files"));
+                    .Contains("checking with Google what is already there, 1,200 of 3,120 files compared"));
+            var syncing = new DriveMonitor.PairStatus(null, null, true, 1000, 4000)
+            {
+                Phase = DriveMonitor.PhaseSyncing, Matched = 1_995_500, StepDone = 1203, StepTotal = 4500,
+                Uploaded = 1000, Downloaded = 200, Failed = 3,
+            };
+            Check("while syncing it gives the counts, not just a step",
+                DriveMonitorForm.Progress(syncing).StartsWith(
+                    "1,995,500 already on both sides, change 1,204 of 4,500: 1,000 uploaded, 200 downloaded, 3 failed"),
+                DriveMonitorForm.Progress(syncing));
+            Check("and while reading Drive, how many it has found so far",
+                DriveMonitorForm.Describe(new DriveSyncPair { Name = "Music" },
+                    new DriveMonitor.PairStatus(null, null, true) { Phase = DriveMonitor.PhaseListing, LocalFound = 2_000_000, DriveFound = 1_500_000 }, t0)
+                    .EndsWith("2,000,000 files on the PC, reading Google Drive, 1,500,000 files found so far"));
             Check("and says when it is waiting on Google",
                 DriveMonitorForm.Describe(new DriveSyncPair { Name = "Music" },
                     new DriveMonitor.PairStatus(null, "waiting, Google is limiting requests, trying again in 40 seconds", true), t0)
@@ -1424,20 +1505,18 @@ namespace ExplorerNative
             Equal("release notes keep C# and #3 and drop the Markdown",
                 "Faster C# build, fixes track #3|code stays readable", string.Join("|", notes));
 
-            // Help, Changelog: every release, from GitHub itself when it answers.
-            try
-            {
-                var all = Updater.AllReleasesAsync().GetAwaiter().GetResult();
-                Check("the changelog lists the published versions", all.Count >= 4, all.Count.ToString());
-                Check("newest first", all.Zip(all.Skip(1)).All(p => p.First.Version > p.Second.Version));
-                Check("each with its own plain list of changes",
-                    all.Where(r => r.Version >= new Version(1, 0, 2)).All(r => UpdateForm.Changes(r.Notes).Count > 0));
-            }
-            catch (Exception ex) when (ex is System.Net.Http.HttpRequestException or TaskCanceledException
-                                           or Updater.UpdateException)
-            {
-                // Offline, or GitHub limiting checks: nothing to check against.
-            }
+            // Help, Changelog: built into the exe, so it opens offline.
+            var log = Changelog.Lines(Changelog.Embedded(), Updater.CurrentText);
+            var headings = log.Where(Changelog.IsHeading).ToList();
+            Check("the changelog is built in", headings.Count >= 4, headings.Count.ToString());
+            Check("it has this version, marked as the one running",
+                headings.Contains($"Version {Updater.CurrentText}, this one"), headings.FirstOrDefault() ?? "");
+            var versions = headings.Select(h => new Version(h[Changelog.HeadingPrefix.Length..].Split(',')[0])).ToList();
+            Check("newest first", versions.Zip(versions.Skip(1)).All(p => p.First > p.Second));
+            Check("plain text NVDA can read: no backticks, asterisks or Markdown headings",
+                log.All(l => l.IndexOfAny(new[] { '`', '*' }) < 0 && !l.StartsWith('#')));
+            Equal("a version line becomes a heading and blank lines go", "Version 1.0.0|Fixed a thing",
+                string.Join("|", Changelog.Lines("1.0.0\r\nFixed a thing\r\n\r\n", "9.9.9")));
 
             Check("a list with commas and spaces reads all three", mixedChecked == 3, mixedChecked.ToString());
             Check("and a hand-added format is kept as its own row",
@@ -3810,7 +3889,7 @@ namespace ExplorerNative
                     main.Contains(local, StringComparison.Ordinal));
 
             Check("and creating a folder or a file does not do it on the UI thread",
-                main.Contains("var unique = FileOperations.UniqueName(Path.Combine(folder, name));",
+                main.Contains("var unique = FileOperations.UniqueName(Path.Combine(folder, name)",
                     StringComparison.Ordinal));
 
             // The repeat that a held key runs on stops the timer at the top of
@@ -5328,8 +5407,52 @@ namespace ExplorerNative
             }
             finally { listener.Stop(); }
 
-            Equal("an unreachable Google says why, in words", "no answer within 15 seconds",
+            Equal("an unreachable Google says why, in words", "no answer in time",
                 GoogleNet.Reason(new TaskCanceledException()));
+            var blocked = new System.Net.Http.HttpRequestException("An error occurred while sending the request.",
+                new System.Net.Sockets.SocketException((int)System.Net.Sockets.SocketError.AccessDenied));
+            Check("a firewall's refusal is named as one, not as no internet",
+                GoogleNet.Reason(blocked).Contains("firewall or antivirus"), GoogleNet.Reason(blocked));
+            Check("and the update check says the same",
+                NameRules.PlainUpdateFailure(blocked).Contains("firewall or antivirus"));
+            var tls = new System.Net.Http.HttpRequestException("The SSL connection could not be established, see inner exception.",
+                new System.Security.Authentication.AuthenticationException("Authentication failed"));
+            Check("a broken secure connection points at the clock and antivirus",
+                GoogleNet.Reason(tls).Contains("date and time"), GoogleNet.Reason(tls));
+            Check("Google's token error is read out in words, not JSON",
+                GoogleAuth.TokenError("{\"error\":\"invalid_grant\",\"error_description\":\"Bad Request\"}")
+                    == "Bad Request (invalid_grant)");
+            Check("a switched-off Drive API says how to switch it on",
+                DriveClient.Explain(403, "{\"error\":{\"errors\":[{\"reason\":\"accessNotConfigured\"}]}}")
+                    .Contains("press Enable"));
+            Console.WriteLine();
+        }
+
+        /// <summary>The sync's upload width: grows while Google answers fast, shrinks the moment it pushes back.</summary>
+        private static void AdaptiveLaneTests()
+        {
+            Console.WriteLine("Upload lanes find Google's limit:");
+            var lanes = new AdaptiveLanes(16, 4, 48);
+            void Run(int n, bool fast)
+            {
+                for (int i = 0; i < n; i++) { lanes.EnterAsync(CancellationToken.None).Wait(); lanes.Leave(fast); }
+            }
+            Run(16, true);
+            Equal("a run of fast answers adds a lane", "17", lanes.Limit.ToString());
+            Run(5000, true);
+            Equal("but never past the most", "48", lanes.Limit.ToString());
+            Run(3, false);
+            Equal("each slow answer gives one back at once", "45", lanes.Limit.ToString());
+            Run(100, false);
+            Equal("but never below the fewest", "4", lanes.Limit.ToString());
+
+            // The permits really are the limit: with 4 lanes, a fifth waits.
+            var held = Enumerable.Range(0, 4).Select(_ => lanes.EnterAsync(CancellationToken.None)).ToList();
+            Task.WaitAll(held.ToArray());
+            var fifth = lanes.EnterAsync(CancellationToken.None);
+            Check("with every lane busy the next upload waits", !fifth.Wait(100));
+            lanes.Leave(true);
+            Check("and goes as soon as one finishes", fifth.Wait(1000));
             Console.WriteLine();
         }
 

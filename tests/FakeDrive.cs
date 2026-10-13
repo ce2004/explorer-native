@@ -44,6 +44,7 @@ namespace ExplorerNative
             public DateTime Modified = DateTime.UtcNow;
             public bool Trashed;
             public Dictionary<string, string> AppProperties = new();
+            public DateTime Created = DateTime.UtcNow;
             public bool IsFolder => MimeType == DriveClient.FolderMimeType;
             public bool IsDocument => MimeType.StartsWith("application/vnd.google-apps.", StringComparison.Ordinal) && !IsFolder;
             public string Md5 => Convert.ToHexString(MD5.HashData(Data)).ToLowerInvariant();
@@ -162,6 +163,39 @@ namespace ExplorerNative
 
         /// <summary>Ids changed through the methods above, in order: the changes feed.</summary>
         private readonly List<string> _changed = new();
+
+        /// <summary>PATCHes that moved an item to another folder.</summary>
+        public int Moves;
+
+        /// <summary>
+        /// A file that appears without the changes feed saying so, as if Google
+        /// dropped the event: what the "never upload on the records alone" rule
+        /// is there for.
+        /// </summary>
+        public string AddFileUnseen(string name, byte[] data, DateTime modifiedUtc, string parent)
+        {
+            lock (_gate)
+            {
+                var id = "d" + (++_next);
+                _items[id] = new Item { Id = id, Name = name, Parent = parent, Data = data, Modified = Ms(modifiedUtc) };
+                return id;
+            }
+        }
+
+        /// <summary>
+        /// How long a new item stays out of listings and searches, as Google's own
+        /// listing can lag a create by a second or two.
+        /// </summary>
+        public TimeSpan ListingLag = TimeSpan.Zero;
+
+        /// <summary>How long a new file's answer takes after it is stored (cut off meanwhile, it is lost).</summary>
+        public int AnswerDelayMs;
+
+        /// <summary>When set, the changes feed answers with this status (an expired token is 400 or 410).</summary>
+        public int ChangesFail;
+
+        /// <summary>Changes made straight to an item by a test, so the feed sees them like Drive's own.</summary>
+        public void Changed(string id) { lock (_gate) _changed.Add(id); }
 
         /// <summary>Requests that listed the whole account rather than one folder.</summary>
         public int WholeListings;
@@ -303,6 +337,7 @@ namespace ExplorerNative
 
                 case "changes":
                 {
+                    if (ChangesFail > 0) return Error(ChangesFail, "invalid", "Invalid page token");
                     int from = int.Parse(query["pageToken"] ?? "0");
                     var rows = new List<Dictionary<string, object>>();
                     lock (_gate)
@@ -315,6 +350,7 @@ namespace ExplorerNative
                             {
                                 var file = Describe(item);
                                 file["parents"] = new[] { item.Parent };
+                                file["trashed"] = item.Trashed;
                                 row["removed"] = false;
                                 row["file"] = file;
                             }
@@ -334,7 +370,9 @@ namespace ExplorerNative
                 {
                     var item = Get(subject == "root" ? Root : subject);
                     if (item == null) return Error(404, "notFound", "File not found: " + subject);
-                    return Json(200, Describe(item));
+                    var described = Describe(item);
+                    if (item.Id != Root) described["parents"] = new[] { item.Parent };
+                    return Json(200, described);
                 }
 
                 case "media":
@@ -481,8 +519,10 @@ namespace ExplorerNative
             int count;
             lock (_gate)
             {
+                var shownBefore = DateTime.UtcNow - ListingLag;
                 var rows = _items.Values
                     .Where(i => i.Parent == parent && !i.Trashed && i.Id != Root)
+                    .Where(i => ListingLag <= TimeSpan.Zero || i.Created <= shownBefore)
                     .Where(i => tag == null ||
                                 (i.AppProperties.TryGetValue(DriveClient.OperationProperty, out var t) && t == tag))
                     .OrderBy(i => i.IsFolder ? 0 : 1).ThenBy(i => i.Name, StringComparer.Ordinal)
@@ -612,6 +652,9 @@ namespace ExplorerNative
 
             var item = FromMetadata(meta, got.ToArray());
             Interlocked.Increment(ref Uploads);
+            // Stored, and the answer slow to come back: cut off now, the caller
+            // never hears that it landed.
+            if (AnswerDelayMs > 0) await Task.Delay(AnswerDelayMs, ct);
             return Json(200, Describe(item));
         }
 
@@ -709,7 +752,8 @@ namespace ExplorerNative
                     Renames++;
                 }
                 if (json.TryGetProperty("modifiedTime", out var m)) item.Modified = ParseTime(m.GetString()) ?? item.Modified;
-                if (query["addParents"] is { Length: > 0 } to) item.Parent = to;
+                if (query["addParents"] is { Length: > 0 } to) { item.Parent = to; Moves++; }
+                _changed.Add(item.Id);
                 return Json(200, Describe(item));
             }
         }
@@ -733,6 +777,7 @@ namespace ExplorerNative
             {
                 item.Id = (item.IsFolder ? "f" : "d") + (++_next);
                 _items[item.Id] = item;
+                _changed.Add(item.Id);
             }
             return item;
         }

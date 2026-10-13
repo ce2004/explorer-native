@@ -178,6 +178,8 @@ namespace ExplorerNative
             "CON", "PRN", "AUX", "NUL",
             "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
             "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+            // Superscript one, two and three: Windows reserves these as well.
+            "COM¹", "COM²", "COM³", "LPT¹", "LPT²", "LPT³",
         };
 
         /// <summary>
@@ -446,7 +448,9 @@ namespace ExplorerNative
         {
             Updater.UpdateException => ex.Message,
             TaskCanceledException or OperationCanceledException => "GitHub did not answer in time.",
-            System.Net.Http.HttpRequestException => "GitHub could not be reached: " + ex.Message,
+            // The innermost cause: the outer message is often only "see inner
+            // exception", which told a person with working internet nothing.
+            System.Net.Http.HttpRequestException => "GitHub could not be reached: " + GoogleNet.Reason(ex),
             _ => ex.Message,
         };
     }

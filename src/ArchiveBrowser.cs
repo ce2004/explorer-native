@@ -156,6 +156,16 @@ namespace ExplorerNative
                 var name = ExtractionRules.Normalise(entry.Name);
                 if (name.Length == 0) continue;
 
+                // A name nested thousands deep is no real file: Windows could
+                // never extract it, and every level of it was a string kept per
+                // prefix (half a gigabyte from one 32KB name) and a frame in the
+                // folder total, which overflowed the stack and ended the app.
+                if (name.Length > MaxNameLength || name.Count(c => c == '/') > MaxDepth)
+                {
+                    listing.Unsafe++;
+                    continue;
+                }
+
                 // Every folder on the way down, made if the archive did not say.
                 int slash = -1;
                 bool blocked = false;
@@ -201,15 +211,28 @@ namespace ExplorerNative
             siblings.Add(node);
         }
 
+        /// <summary>The deepest and longest member names a listing takes; see Build.</summary>
+        internal const int MaxDepth = 512, MaxNameLength = 4096;
+
+        /// <summary>
+        /// Every folder's size, as the total of what is under it. Walked with a
+        /// stack of its own, not by recursion, so no archive can run the
+        /// thread's stack out.
+        /// </summary>
         private long TotalFolders(string inner)
         {
-            long total = 0;
-            foreach (var child in Children(inner))
+            var order = new List<ArchiveNode>();
+            var pending = new Stack<string>();
+            pending.Push(inner);
+            while (pending.Count > 0)
             {
-                if (child.IsDirectory) child.Size = TotalFolders(child.InnerPath);
-                total += child.Size;
+                foreach (var child in Children(pending.Pop()))
+                    if (child.IsDirectory) { order.Add(child); pending.Push(child.InnerPath); }
             }
-            return total;
+            // Deepest first, so each folder's children are already totalled.
+            for (int i = order.Count - 1; i >= 0; i--)
+                order[i].Size = Children(order[i].InnerPath).Sum(c => c.Size);
+            return Children(inner).Sum(c => c.Size);
         }
 
         private static string LastSegment(string inner)
@@ -368,6 +391,21 @@ namespace ExplorerNative
             var tree = Path.Combine(CacheRoot, "tree-" + Hash(key));
             var finished = tree + ".done";
 
+            // One extraction per archive at a time. A second open (the other
+            // tab, or Enter again after stepping away from a slow 7z) used to
+            // delete the folder the first was still writing into.
+            var gate = TreeGates.GetOrAdd(tree, new SemaphoreSlim(1, 1));
+            gate.Wait(token);
+            try { return OpenThroughTreeLocked(archivePath, format, key, tree, finished, progress, token); }
+            finally { gate.Release(); }
+        }
+
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> TreeGates =
+            new(StringComparer.OrdinalIgnoreCase);
+
+        private static ArchiveListing OpenThroughTreeLocked(string archivePath, ArchiveFormat format, string key,
+            string tree, string finished, IProgress<TransferProgress>? progress, CancellationToken token)
+        {
             bool damaged = false;
             if (!File.Exists(finished) || !Directory.Exists(tree))
             {
@@ -532,8 +570,32 @@ namespace ExplorerNative
 
             var reporter = new ArchiveEngine.Reporter(progress);
             var rules = ExtractionRules.Selecting(destination, select);
-            return TarEngine.Extract(listing.ArchivePath, listing.Format, rules,
+            int done = TarEngine.Extract(listing.ArchivePath, listing.Format, rules,
                 Math.Min(4, ArchiveEngine.RecommendedThreads), reporter, errors, token, estimate: true);
+
+            // A chosen member that is a hard link (GNU tar's second name for a
+            // file) has no data of its own, and the file it names was not part
+            // of the selection, so it was never written and the link failed.
+            // Those files are taken out once more, straight to the link's name.
+            const string marker = ": it is another name for ", tail = ", which was not extracted";
+            var again = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            for (int i = errors.Count - 1; i >= 0; i--)
+            {
+                var line = errors[i];
+                int at = line.IndexOf(marker, StringComparison.Ordinal);
+                int end = line.LastIndexOf(tail, StringComparison.Ordinal);
+                if (at <= 0 || end <= at) continue;
+                var relative = select(ExtractionRules.Normalise(line[..at]));
+                var source = ExtractionRules.Normalise(line[(at + marker.Length)..end]);
+                if (relative == null || source.Length == 0 || again.ContainsKey(source)) continue;
+                again[source] = relative;
+                errors.RemoveAt(i);
+            }
+            if (again.Count == 0) return done;
+
+            var second = ExtractionRules.Selecting(destination, n => again.TryGetValue(n, out var to) ? to : null);
+            return done + TarEngine.Extract(listing.ArchivePath, listing.Format, second,
+                1, new ArchiveEngine.Reporter(null), errors, token, estimate: false);
         }
 
         /// <summary>

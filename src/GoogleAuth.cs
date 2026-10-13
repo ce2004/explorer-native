@@ -202,6 +202,28 @@ namespace ExplorerNative
         public const string ClientFileName = "client_secret.json";
 
         /// <summary>
+        /// The error and its description out of a token endpoint answer, in
+        /// words, rather than the raw JSON read aloud.
+        /// </summary>
+        internal static string TokenError(string payload)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(payload);
+                var root = doc.RootElement;
+                string Of(string name) => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
+                    ? v.GetString() ?? "" : "";
+                var error = Of("error");
+                var description = Of("error_description");
+                if (error.Length > 0)
+                    return description.Length > 0 ? $"{description.TrimEnd('.')} ({error})" : error;
+            }
+            catch (JsonException) { }
+            var text = payload.Trim();
+            return text.StartsWith("<") ? "an unexpected web page came back" : (text.Length > 200 ? text[..200] : text);
+        }
+
+        /// <summary>
         /// Why the last check could not reach Google, when it could not; null
         /// when it got an answer. The pair is accepted unchecked in that case.
         /// </summary>
@@ -524,7 +546,7 @@ namespace ExplorerNative
             // application stops being the thing you are looking at and starts
             // waiting on a browser tab somewhere else — for up to the thirty
             // minutes below, with nothing else to explain the pause.
-            try { Notify?.Invoke("drive.signin.opened", "Waiting for you to allow access in the browser"); }
+            try { Notify?.Invoke("drive.signin.opened", "Waiting for you to allow access in the browser. If Google says the app is not verified, choose Advanced, then Go to the app."); }
             catch { }
 
             // Thirty minutes, not three. A first sign-in on a new PC is account
@@ -605,7 +627,7 @@ namespace ExplorerNative
                 TokenEndpoint, new FormUrlEncodedContent(form), token);
             var payload = await response.Content.ReadAsStringAsync(token);
             if (!response.IsSuccessStatusCode)
-                throw new InvalidOperationException($"token exchange failed: {payload}");
+                throw new InvalidOperationException("Google refused the sign-in: " + TokenError(payload));
 
             ReadTokens(payload);
             SaveRefreshToken();

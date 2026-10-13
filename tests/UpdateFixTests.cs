@@ -33,7 +33,6 @@ namespace ExplorerNative
             ArgumentTests();
             ReleaseNoteTests();
             await CheckTests();
-            await ChangelogPagingTests();
             MarkerTests();
             LogRaceTests();
             await HandoffBurstTests();
@@ -179,69 +178,6 @@ namespace ExplorerNative
                 Check("a server error names its status",
                     down is Updater.UpdateException { Problem: Updater.Problem.Refused } &&
                     down.Message.Contains("503", StringComparison.Ordinal), down?.Message);
-            }
-            finally
-            {
-                Updater.UseHandlerForTests(null);
-            }
-        }
-
-        private static string ReleasesPage(int from, int count) =>
-            "[" + string.Join(",", Enumerable.Range(from, count).Select(i =>
-                $"{{\"tag_name\":\"v1.{i}.0\",\"draft\":false,\"prerelease\":false," +
-                $"\"published_at\":\"2026-01-01T00:00:00Z\",\"body\":\"- change {i}\"}}")) + "]";
-
-        private static async Task ChangelogPagingTests()
-        {
-            var fake = new FakeGitHub();
-            Updater.UseHandlerForTests(fake);
-            try
-            {
-                // Three pages, linked the way GitHub links them.
-                fake.Answer = request =>
-                {
-                    var url = request.RequestUri!.AbsoluteUri;
-                    int page = url.Contains("page=3") ? 3 : url.Contains("page=2") ? 2 : 1;
-                    var r = Json(ReleasesPage((page - 1) * 100, page == 3 ? 5 : 100));
-                    if (page < 3)
-                        r.Headers.TryAddWithoutValidation("Link",
-                            $"<https://api.github.com/repositories/1/releases?per_page=100&page={page + 1}>; rel=\"next\", " +
-                            "<https://api.github.com/repositories/1/releases?per_page=100&page=3>; rel=\"last\"");
-                    return r;
-                };
-                var all = await Updater.AllReleasesAsync();
-                Equal("the changelog reads past the first hundred releases", "205", all.Count.ToString());
-                Check("newest first across the pages",
-                    all.Count > 0 && all[0].Version == new Version(1, 204, 0) && all[^1].Version == new Version(1, 0, 0));
-
-                // A Link header that points at itself stops at the bound.
-                fake.Asked.Clear();
-                fake.Answer = request =>
-                {
-                    var r = Json(ReleasesPage(0, 1));
-                    r.Headers.TryAddWithoutValidation("Link",
-                        "<https://api.github.com/repositories/1/releases?page=2>; rel=\"next\"");
-                    return r;
-                };
-                await Updater.AllReleasesAsync();
-                Equal("a page that never ends is read a bounded number of times",
-                    Updater.MaxReleasePages.ToString(), fake.Asked.Count.ToString());
-
-                // Only GitHub's API is followed.
-                fake.Asked.Clear();
-                fake.Answer = request =>
-                {
-                    var r = Json(ReleasesPage(0, 1));
-                    r.Headers.TryAddWithoutValidation("Link", "<https://example.com/releases?page=2>; rel=\"next\"");
-                    return r;
-                };
-                await Updater.AllReleasesAsync();
-                Equal("a next page somewhere else is not followed", "1", fake.Asked.Count.ToString());
-
-                fake.Answer = _ => new HttpResponseMessage(HttpStatusCode.Forbidden);
-                var limited = await Fails(() => Updater.AllReleasesAsync());
-                Check("the changelog says when GitHub is limiting checks",
-                    limited is Updater.UpdateException { Problem: Updater.Problem.RateLimited });
             }
             finally
             {

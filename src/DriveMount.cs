@@ -557,6 +557,10 @@ namespace ExplorerNative
             Move(_answeredOffline, from, to);
             Move(_markedFull, from, to);
 
+            // A mark is out of the table for a moment while it moves, and a tick
+            // landing then could have stopped the timer.
+            if (!_markedFull.IsEmpty) _reopen.Arm();
+
             var under = from + "\\";
             foreach (var (id, where) in _whereIs.ToArray())
                 if (where.Folder == from || where.Folder.StartsWith(under, StringComparison.Ordinal))
@@ -608,13 +612,109 @@ namespace ExplorerNative
             Root = root;
             _pool = new DriveCachePool(budgetBytes);
             _log = log;
-            _sweep = new Timer(_ => SweepIdle(), null, SweepInterval, SweepInterval);
-            _reopen = new Timer(_ => { try { ReopenStale(); } catch { } }, null, SweepInterval, SweepInterval);
+            // Both stand still until there is something for them to do: a mount
+            // with nothing open and nothing marked wakes nobody up. See WorkTimer.
+            _sweep = new WorkTimer(SweepIdle, () => !_caches.IsEmpty && IdleRelease > TimeSpan.Zero);
+            _reopen = new WorkTimer(() => ReopenStale(), () => !_markedFull.IsEmpty);
             _drive.Health.Changed += OnHealthChanged;
         }
 
         /// <summary>Hands old fully-populated marks back to Windows; see ReopenStale.</summary>
-        private readonly Timer _reopen;
+        private readonly WorkTimer _reopen;
+
+        /// <summary>
+        /// A timer that ticks every <see cref="SweepInterval"/> only while there
+        /// is work for it, so an idle mount costs no wakeups at all (on a laptop,
+        /// a tick every 15 seconds for as long as the app is open is a CPU kept
+        /// out of its deepest sleep for nothing).
+        ///
+        /// Whoever adds work calls <see cref="Arm"/> *after* adding it. After each
+        /// tick the timer stops itself if the work is gone, and it checks under the
+        /// same lock <see cref="Arm"/> takes. Either an add is seen by that check,
+        /// or its Arm comes after the stop and starts the timer again. Nothing is
+        /// ever left waiting with the timer stopped.
+        /// </summary>
+        internal sealed class WorkTimer : IDisposable
+        {
+            private readonly object _gate = new();
+            private readonly Timer _timer;
+            private readonly Action _work;
+            private readonly Func<bool> _hasWork;
+            private bool _armed;
+            private bool _disposed;
+
+            public WorkTimer(Action work, Func<bool> hasWork)
+            {
+                _work = work;
+                _hasWork = hasWork;
+                _timer = new Timer(_ => Tick(), null, Timeout.Infinite, Timeout.Infinite);
+            }
+
+            public bool Armed { get { lock (_gate) return _armed; } }
+
+            /// <summary>Starts ticking, if it is not already. Cheap; call it on every add.</summary>
+            public void Arm()
+            {
+                lock (_gate)
+                {
+                    if (_armed || _disposed) return;
+                    _armed = true;
+                    var every = SweepInterval;
+                    _timer.Change(every, every);
+                }
+            }
+
+            private void Tick()
+            {
+                // A throw on a timer thread ends the process.
+                try { _work(); } catch { }
+                Settle();
+            }
+
+            /// <summary>Stops ticking if, and only if, there is nothing left to do.</summary>
+            internal void Settle()
+            {
+                lock (_gate)
+                {
+                    if (!_armed || _disposed) return;
+                    bool more;
+                    try { more = _hasWork(); } catch { more = true; }
+                    if (more) return;
+                    _armed = false;
+                    _timer.Change(Timeout.Infinite, Timeout.Infinite);
+                }
+            }
+
+            public void Dispose()
+            {
+                lock (_gate)
+                {
+                    _disposed = true;
+                    _armed = false;
+                }
+                _timer.Dispose();
+            }
+        }
+
+        /// <summary>Whether the idle sweep is ticking. For tests.</summary>
+        internal bool SweepArmed => _sweep.Armed;
+
+        /// <summary>Whether the hand-back timer is ticking. For tests.</summary>
+        internal bool ReopenArmed => _reopen.Armed;
+
+        /// <summary>How many files have a cache open. For tests.</summary>
+        internal int OpenCaches => _caches.Count;
+
+        /// <summary>How many folders are marked fully populated. For tests.</summary>
+        internal int MarkedFullCount => _markedFull.Count;
+
+        /// <summary>Records a fully-populated mark and starts the hand-back timer.</summary>
+        private void NoteMarkedFull(string relative)
+        {
+            if (relative.Length == 0) return;   // the root is never handed back
+            _markedFull[relative] = Environment.TickCount64;
+            _reopen.Arm();
+        }
 
         // ---- warming, and letting go again ----------------------------------
 
@@ -625,17 +725,30 @@ namespace ExplorerNative
         /// Set from Preferences, and read on every sweep rather than captured, so
         /// changing it takes effect without remounting.
         /// </summary>
-        public TimeSpan IdleRelease { get; set; } = TimeSpan.Zero;
+        public TimeSpan IdleRelease
+        {
+            get => _idleRelease;
+            set
+            {
+                _idleRelease = value;
+                if (value > TimeSpan.Zero) _sweep?.Arm();
+            }
+        }
+
+        private TimeSpan _idleRelease = TimeSpan.Zero;
 
         /// <summary>
         /// How often the sweep looks. Deliberately much shorter than any idle
         /// setting worth having: the cost is a dictionary walk over at most
         /// <see cref="MaxOpenFiles"/> entries, and a coarse tick would round a
         /// two-minute setting up to something the user did not ask for.
+        ///
+        /// Only while there is work: see <see cref="WorkTimer"/>. Settable for
+        /// tests; read each time a timer is started.
         /// </summary>
-        private static readonly TimeSpan SweepInterval = TimeSpan.FromSeconds(15);
+        internal static TimeSpan SweepInterval = TimeSpan.FromSeconds(15);
 
-        private readonly Timer _sweep;
+        private readonly WorkTimer _sweep;
 
         /// <summary>
         /// How far into a selection <see cref="Warm"/> will look. Enough that a
@@ -1734,7 +1847,7 @@ namespace ExplorerNative
                          (done == 0 ? "" : $", refused 0x{done:X8}"));
                     if (done == 0)
                     {
-                        if (recent) { if (relative.Length > 0) _markedFull[relative] = Environment.TickCount64; }
+                        if (recent) NoteMarkedFull(relative);
                         else _answeredOffline[relative] = true;
                     }
                     if (done != 0 && done != ErrorCloudFileCancelled) FailPlaceholders(ref opInfo);
@@ -1848,7 +1961,7 @@ namespace ExplorerNative
                     // the listing rather than asking Drive a second time.
                     CommitListing(relative, session);
                     _populated[relative] = true;
-                    if (relative.Length > 0) _markedFull[relative] = Environment.TickCount64;
+                    NoteMarkedFull(relative);
 
                     // Anything that was already there may describe other
                     // contents. Checked off this thread: the callback is holding
@@ -2229,7 +2342,7 @@ namespace ExplorerNative
         {
             if (relative.Length == 0) return;   // the root is marked at registration
             if (MarkFullyPopulatedAt(Path.Combine(Root, relative)))
-                _markedFull[relative] = Environment.TickCount64;
+                NoteMarkedFull(relative);
         }
 
         private bool MarkFullyPopulatedAt(string directory)
@@ -3292,6 +3405,10 @@ namespace ExplorerNative
                     continue;
                 }
 
+                // After the add, so a sweep stopping itself either sees this
+                // cache or is started again here. With idle release off there
+                // is nothing to sweep for; switching it on arms it (IdleRelease).
+                if (IdleRelease > TimeSpan.Zero) _sweep.Arm();
                 KeepRecent();
                 return kept;
             }

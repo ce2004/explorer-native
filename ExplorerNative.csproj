@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -12,7 +12,7 @@
     <!-- ARM64 by default; "dotnet publish -r win-x64" builds the x64 copy.
          Release builds stamp Version from the git tag (see .github\workflows). -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-arm64</RuntimeIdentifier>
-    <Version>2.3.3</Version>
+    <Version>3.0.0</Version>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <InvariantGlobalization>true</InvariantGlobalization>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
@@ -26,7 +26,7 @@
          Windows has it installed, which makes the file about 2MB instead of
          152MB. Startup measured the same either way (medians 183ms and 180ms).
          If the runtime is missing, the launcher itself says so and offers the
-         download — for every folder opened, since this is the folder handler.
+         download â€” for every folder opened, since this is the folder handler.
          RollForward Major: a newer .NET is used when 8 has been removed.
 
          Not trimmed. Trimming and WinForms disagree about reflection. -->
@@ -64,6 +64,13 @@
     <EmbeddedResource Include="web\*.*" LogicalName="web/%(Filename)%(Extension)" />
   </ItemGroup>
 
+  <!-- Help, Changelog reads this, so it works offline (see Changelog.cs). -->
+  <ItemGroup>
+    <EmbeddedResource Include="CHANGES.txt">
+      <LogicalName>CHANGES.txt</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
+
   <!-- Ogg Vorbis and Ogg Opus, which Windows will not decode for us.
 
        This is the one exception to "no third-party packages", and it is here
@@ -74,7 +81,7 @@
        this machine and do not help, because that package registers its handlers
        inside the package where only other *packaged* applications can see them.
 
-       Both of these are pure IL — no native binary, nothing per-architecture,
+       Both of these are pure IL â€” no native binary, nothing per-architecture,
        nothing to go wrong on ARM64, and they bundle into the single file like
        any other managed assembly. Together they are about 530KB against a 160MB
        executable. That is the smallest thing that works; the alternatives are

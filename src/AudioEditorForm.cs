@@ -120,6 +120,7 @@ namespace ExplorerNative
                     Say(rate <= 0 ? $"Could not open {Path.GetFileName(_path)}: {why}"
                                   : "This file does not say how long it is, so it cannot be edited");
                     _info.Items[0] = _lastMessage;
+                    _openFailure = _lastMessage;
                     return;
                 }
 
@@ -134,9 +135,18 @@ namespace ExplorerNative
             }
             catch (Exception ex)
             {
-                if (!IsDisposed) Say("Could not open the file: " + ex.Message);
+                if (IsDisposed) return;
+                Say("Could not open the file: " + ex.Message);
+                _openFailure = _lastMessage;
             }
         }
+
+        /// <summary>
+        /// Why the file would not open, once that is known. Every key said
+        /// "Still opening the file" for ever after a failed open, which reads
+        /// as a window that is stuck rather than one that has given up.
+        /// </summary>
+        private string? _openFailure;
 
         /// <summary>The file's rate, length, bit depth, bit rate and tags. On a worker.</summary>
         private static (int Rate, long Frames, int Bits, int? Kbps, AudioTagSet? Tags, string Why) Probe(string path)
@@ -251,7 +261,11 @@ namespace ExplorerNative
 
             if (_history == null)
             {
-                if (IsEditorKey(keyData)) { Say("Still opening the file"); return true; }
+                if (IsEditorKey(keyData))
+                {
+                    Say(_openFailure != null ? _openFailure + ". Press Escape to close" : "Still opening the file");
+                    return true;
+                }
                 return base.ProcessCmdKey(ref msg, keyData);
             }
 
@@ -662,7 +676,30 @@ namespace ExplorerNative
             return request?.Choice;
         }
 
-        private async void SaveAsNew()
+        private async void SaveAsNew() => await BusyWhile(SaveAsNewCore);
+
+        private async void ReplaceOriginal() => await BusyWhile(ReplaceOriginalCore);
+
+        /// <summary>
+        /// A save, busy from the first question to the last word. Busy used to
+        /// end with the render, so while the original went to the Recycle Bin
+        /// and the new file was moved into its place — up to two minutes of
+        /// waiting on the shell — Space played the file being replaced, a second
+        /// Control+Shift+S rendered from an original already in the bin, and the
+        /// window closed under the move.
+        /// </summary>
+        private async Task BusyWhile(Func<Task> save)
+        {
+            _busy = true;
+            try { await save(); }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) Say("Could not save: " + AudioConverter.Reason(ex));
+            }
+            finally { _busy = false; }
+        }
+
+        private async Task SaveAsNewCore()
         {
             try
             {
@@ -707,7 +744,14 @@ namespace ExplorerNative
                 var temp = await Render(edits, choice, AudioConverter.TempPathBeside(target));
                 if (temp == null) return;
 
-                var final = await Task.Run(() => AudioConverter.Place(temp, target, replace: file));
+                string final;
+                try { final = await Task.Run(() => AudioConverter.Place(temp, target, replace: file)); }
+                catch
+                {
+                    // Not left in the person's folder under a hidden temp name.
+                    AudioEncoders.TryDelete(temp);
+                    throw;
+                }
                 if (IsDisposed) return;
                 if (ReferenceEquals(edits, Edits)) _history!.MarkSaved();
                 Saved?.Invoke(final);
@@ -727,7 +771,7 @@ namespace ExplorerNative
         /// will not take the original, nothing is replaced and the edit is kept
         /// under a new name instead.
         /// </summary>
-        private async void ReplaceOriginal()
+        private async Task ReplaceOriginalCore()
         {
             try
             {
@@ -754,17 +798,27 @@ namespace ExplorerNative
                 var temp = await Render(edits, choice, AudioConverter.TempPathBeside(_path));
                 if (temp == null) return;
 
-                // The player must let go of the original before it can move.
+                // The player must let go of the original before it can move, and
+                // so must the main player: pausing it keeps the file open.
                 StopPlayback();
                 await _stopping;
+                try
+                {
+                    if (Program.AudioState is { HasTrack: true } main &&
+                        string.Equals(main.Path, _path, StringComparison.OrdinalIgnoreCase))
+                        Program.RunAudioAction(AudioAction.Stop);
+                }
+                catch { }
+
+                string KeepAsEdited() => AudioConverter.Place(temp,
+                    FileOperations.UniqueName(Path.Combine(Path.GetDirectoryName(_path) ?? "",
+                        $"{Path.GetFileNameWithoutExtension(_path)} (edited){choice.Extension}"), null, folder: false),
+                    replace: false);
 
                 string? refused = await Task.Run(() => ShellDelete.RecycleWithoutUi(_path));
                 if (refused != null)
                 {
-                    var kept = await Task.Run(() => AudioConverter.Place(temp,
-                        FileOperations.UniqueName(Path.Combine(Path.GetDirectoryName(_path) ?? "",
-                            $"{Path.GetFileNameWithoutExtension(_path)} (edited){choice.Extension}"), null, folder: false),
-                        replace: false));
+                    var kept = await Task.Run(KeepAsEdited);
                     if (IsDisposed) return;
                     _history!.MarkSaved();
                     Saved?.Invoke(kept);
@@ -772,7 +826,27 @@ namespace ExplorerNative
                     return;
                 }
 
-                await Task.Run(() => File.Move(temp, _path));
+                // The original is in the Recycle Bin now. If the move fails (an
+                // antivirus or the indexer holding the new file), the edit must
+                // not be left under a hidden temp name with nothing at the
+                // original's: a few tries, then it is kept as "(edited)".
+                Exception? moveFailed = null;
+                for (int attempt = 0; attempt < 5; attempt++)
+                {
+                    try { await Task.Run(() => File.Move(temp, _path)); moveFailed = null; break; }
+                    catch (IOException ex) { moveFailed = ex; await Task.Delay(300); }
+                    catch (UnauthorizedAccessException ex) { moveFailed = ex; await Task.Delay(300); }
+                }
+                if (moveFailed != null)
+                {
+                    var kept = await Task.Run(KeepAsEdited);
+                    if (IsDisposed) return;
+                    _history!.MarkSaved();
+                    Saved?.Invoke(kept);
+                    Say($"The edited audio could not take the original's place ({AudioConverter.Reason(moveFailed)}), " +
+                        $"so it was saved as {Path.GetFileName(kept)}. The original is in the Recycle Bin");
+                    return;
+                }
                 if (IsDisposed) return;
                 Saved?.Invoke(_path);
 
@@ -803,6 +877,9 @@ namespace ExplorerNative
         /// </summary>
         private async Task<string?> Render(EditList edits, AudioFormatChoice choice, string temp)
         {
+            // Put back as it was, not cleared: a save is still busy after the
+            // render, moving the file into place (see BusyWhile).
+            bool wasBusy = _busy;
             _busy = true;
             _notes = "";
             StopPlayback();
@@ -860,7 +937,7 @@ namespace ExplorerNative
                 if (!IsDisposed) Say("Could not save: " + AudioConverter.Reason(ex));
                 return null;
             }
-            finally { _busy = false; }
+            finally { _busy = wasBusy; }
         }
 
         // ---------------------------------------------------------- closing

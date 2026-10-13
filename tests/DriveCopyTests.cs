@@ -565,8 +565,8 @@ namespace ExplorerNative
                 // when something else wants it, so a file warmed and then walked
                 // away from sits there for as long as the mount is up.
                 Check("a file nothing has read is let go on a timer",
-                    mount.Contains("_sweep = new Timer(_ => SweepIdle(), null, SweepInterval, SweepInterval);",
-                        StringComparison.Ordinal),
+                    mount.Contains("new WorkTimer(SweepIdle,", StringComparison.Ordinal) &&
+                    mount.Contains("_sweep.Arm();", StringComparison.Ordinal),
                     "the idle sweep is declared but nothing drives it");
 
                 // Releasing a cache cancels its downloads. A sweep landing inside

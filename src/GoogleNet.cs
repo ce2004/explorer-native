@@ -9,8 +9,8 @@ using System.Threading.Tasks;
 namespace ExplorerNative
 {
     /// <summary>
-    /// The one connection pool for everything that talks to Google: sign-in,
-    /// the client check and Drive.
+    /// The one connection pool for everything that goes online: Google sign-in,
+    /// the client check, Drive, and the update check on GitHub.
     ///
     /// It connects the way a browser does, over IPv6 and IPv4 at once, and keeps
     /// whichever answers first. .NET tries the addresses one after another, so
@@ -70,7 +70,9 @@ namespace ExplorerNative
                 }
                 catch (Exception ex) when (!token.IsCancellationRequested)
                 {
-                    failure ??= ex;
+                    // IPv4's reason over IPv6's: a broken IPv6 says "unreachable"
+                    // and would hide what actually stopped the connection.
+                    if (failure == null || done == second) failure = ex;
                 }
             }
 
@@ -99,7 +101,19 @@ namespace ExplorerNative
         /// </summary>
         public static string Reason(Exception ex)
         {
-            if (ex is TaskCanceledException) return "no answer within 15 seconds";
+            for (var e = ex; e != null; e = e.InnerException)
+            {
+                // 10013, WSAEACCES: a firewall or antivirus refused this program
+                // a connection. The browser is a different program, so it works.
+                if (e is SocketException { SocketErrorCode: SocketError.AccessDenied })
+                    return "something on this PC, usually a firewall or antivirus, is stopping Explorer Native " +
+                           "from going online. Allow ExplorerNative.exe in it and try again";
+                if (e is System.Security.Authentication.AuthenticationException)
+                    return "the secure connection could not be set up. Check that the PC's date and time are right, " +
+                           "and that no antivirus is scanning secure connections for this program";
+            }
+            if (ex is TaskCanceledException or TimeoutException) return "no answer in time";
+
             var inner = ex;
             while (inner.InnerException != null) inner = inner.InnerException;
             var text = inner.Message.Trim().TrimEnd('.');

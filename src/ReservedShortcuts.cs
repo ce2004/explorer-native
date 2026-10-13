@@ -68,6 +68,7 @@ namespace ExplorerNative
             new(Keys.Control | Keys.Tab, "Switch tab"),
             new(Keys.Control | Keys.Shift | Keys.Tab, "Switch tab"),
             new(Keys.Shift | Keys.F10, "The Windows context menu"),
+            new(Keys.Shift | Keys.F1, "The changelog"),
 
             // ---- choosing what is selected ----
             //

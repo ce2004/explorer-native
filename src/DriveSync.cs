@@ -1,4 +1,6 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -137,11 +139,42 @@ namespace ExplorerNative
     {
         public static readonly SyncNameComparer Instance = new();
 
+        /// <summary>
+        /// The name in composed form (NFC), by Windows itself. The shipped app
+        /// runs with InvariantGlobalization, where string.Normalize leaves NFD
+        /// alone, so "Cafe" + U+0301 (as a Mac writes it) and the composed
+        /// "Café" were two names: each side got a second copy of the other.
+        /// A name with nothing at or above U+0300 has no combining mark to
+        /// compose and is already NFC, which is almost every name, for free.
+        /// </summary>
         internal static string Key(string name)
         {
-            try { return name.IsNormalized(NormalizationForm.FormC) ? name : name.Normalize(NormalizationForm.FormC); }
-            catch (ArgumentException) { return name; }      // half a surrogate pair: compared as it is
+            bool plain = true;
+            foreach (var c in name) if (c >= 0x0300) { plain = false; break; }
+            if (plain) return name;
+
+            try
+            {
+                const int NormalizationC = 1;
+                int size = NormalizeString(NormalizationC, name, name.Length, null, 0);
+                for (int attempt = 0; attempt < 3 && size > 0; attempt++)
+                {
+                    var buffer = new char[size];
+                    int written = NormalizeString(NormalizationC, name, name.Length, buffer, buffer.Length);
+                    if (written > 0) return new string(buffer, 0, written);
+                    // ERROR_INSUFFICIENT_BUFFER: the first answer was an estimate.
+                    if (System.Runtime.InteropServices.Marshal.GetLastWin32Error() != 122) break;
+                    size = Math.Max(-written, buffer.Length * 2);
+                }
+            }
+            catch { }
+            return name;    // half a surrogate pair, or Windows refused: compared as it is
         }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll",
+            CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true, ExactSpelling = true)]
+        private static extern int NormalizeString(int form, string source, int sourceLength,
+            char[]? destination, int destinationLength);
 
         public bool Equals(string? a, string? b) =>
             a == null || b == null ? a == b : StringComparer.OrdinalIgnoreCase.Equals(Key(a), Key(b));
@@ -170,11 +203,30 @@ namespace ExplorerNative
 
         public bool IsEmpty => _files.Count == 0 && _folders.Count == 0;
 
+        /// <summary>How many files and folders are left out.</summary>
+        public int Count => _files.Count + _folders.Count;
+
         /// <summary>Everything the other side's scan left out as well.</summary>
         public void Include(SyncSkips other)
         {
             _files.UnionWith(other._files);
             _folders.AddRange(other._folders);
+        }
+
+        /// <summary>
+        /// Whether anything at or under <paramref name="folder"/> is left out, so
+        /// moving the folder whole would carry along things the sync never saw.
+        /// </summary>
+        public bool AnyUnder(string folder)
+        {
+            if (folder.Length == 0) return !IsEmpty;
+            var key = SyncNameComparer.Key(folder.TrimEnd('/')) + "/";
+            foreach (var f in _folders)
+                if (f.Length == 0 || f.StartsWith(key, StringComparison.OrdinalIgnoreCase) ||
+                    key.StartsWith(f, StringComparison.OrdinalIgnoreCase)) return true;
+            foreach (var f in _files)
+                if (SyncNameComparer.Key(f).StartsWith(key, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
         }
 
         public bool Covers(string path)
@@ -216,7 +268,7 @@ namespace ExplorerNative
         /// Drive gave a checksum both times) different contents. Without
         /// checksums the modified time decides.
         /// </summary>
-        private static bool RemoteChanged(SyncFile now, SyncBase was)
+        internal static bool RemoteChanged(SyncFile now, SyncBase was)
         {
             if (!string.Equals(now.Id, was.RemoteId, StringComparison.Ordinal)) return true;
             if (now.Size != was.RemoteSize) return true;
@@ -284,8 +336,18 @@ namespace ExplorerNative
             if (name.StartsWith("~$", StringComparison.Ordinal)) return true;
             if (name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)) return true;
             if (name.EndsWith(".partial", StringComparison.OrdinalIgnoreCase)) return true;
+            // The small link files Google Drive for desktop leaves for Docs,
+            // Sheets and the rest. The documents themselves are not files (the
+            // Drive scan leaves them out), so these would go up as junk copies.
+            if (Array.IndexOf(GoogleLinkExtensions, Path.GetExtension(name).ToLowerInvariant()) >= 0) return true;
             return false;
         }
+
+        private static readonly string[] GoogleLinkExtensions =
+        {
+            ".gdoc", ".gsheet", ".gslides", ".gdraw", ".gform", ".gtable", ".gmap", ".gsite", ".gjam",
+            ".glink", ".gscript", ".gnote", ".gvid",
+        };
 
         /// <summary>True when any part of a relative path is a skipped name.</summary>
         public static bool IsSkippedPath(string relative) =>
@@ -441,6 +503,134 @@ namespace ExplorerNative
         }
     }
 
+    /// <summary>
+    /// A file that moved or was renamed on one side since the last sync, to be
+    /// moved the same way on the other: <see cref="OnDrive"/> means the PC's
+    /// file moved and Drive's copy follows (one request, the same Drive id);
+    /// otherwise Drive's moved and the PC's file follows.
+    /// </summary>
+    public sealed record SyncMove(string From, string To, bool OnDrive, SyncBase Was);
+
+    /// <summary>
+    /// Moves and renames, found in a plan that would otherwise delete a file in
+    /// one place and copy it again in another. A renamed folder of a hundred
+    /// thousand files was a hundred thousand uploads and, with deletes not
+    /// copied, both copies on both sides for good.
+    ///
+    /// Never a guess. A move on Drive is the same Drive id at a new path, which
+    /// is certain. A move on the PC is matched against what the last sync
+    /// recorded: the same size and the same modified time (a move keeps both),
+    /// only where exactly one vanished file and one new file fit, or among
+    /// several alike the one with the same name, and the engine then checks the
+    /// new file's MD5 against Drive's before moving anything. Whatever is unsure
+    /// is left to the plan as it was.
+    /// </summary>
+    public static class SyncMoves
+    {
+        public static List<SyncMove> Find(SyncRules rules, IReadOnlyList<SyncAction> plan,
+            IReadOnlyDictionary<string, SyncFile> local, IReadOnlyDictionary<string, SyncFile> remote,
+            IReadOnlyDictionary<string, SyncBase> last)
+        {
+            var moves = new List<SyncMove>();
+            var kinds = new Dictionary<string, SyncActionKind>(SyncNameComparer.Instance);
+            foreach (var a in plan) kinds[a.Path] = a.Kind;
+            bool up = rules.Mode != SyncMode.DownloadOnly, down = rules.Mode != SyncMode.UploadOnly;
+
+            // ---- moved on Drive: the same id at a new path ----
+            if (down)
+            {
+                var gone = new Dictionary<string, (string Path, SyncBase Was)>(StringComparer.Ordinal);
+                var twice = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var (path, was) in last)
+                {
+                    if (string.IsNullOrEmpty(was.RemoteId) || remote.ContainsKey(path)) continue;
+                    if (!local.TryGetValue(path, out var l) || SyncPlanner.LocalChanged(l, was)) continue;
+                    if (!kinds.TryGetValue(path, out var k) ||
+                        k is not (SyncActionKind.DeleteLocal or SyncActionKind.Upload or SyncActionKind.Forget)) continue;
+                    if (!gone.TryAdd(was.RemoteId, (path, was))) twice.Add(was.RemoteId);
+                }
+                foreach (var id in twice) gone.Remove(id);
+                if (gone.Count > 0)
+                    foreach (var (path, r) in remote)
+                    {
+                        if (r.Id == null || !gone.TryGetValue(r.Id, out var from)) continue;
+                        if (last.ContainsKey(path) || local.ContainsKey(path)) continue;
+                        if (!kinds.TryGetValue(path, out var k) || k != SyncActionKind.Download) continue;
+                        if (SyncPlanner.RemoteChanged(r, from.Was)) continue;      // moved and edited: left to the plan
+                        moves.Add(new SyncMove(from.Path, path, OnDrive: false, from.Was));
+                        gone.Remove(r.Id);
+                    }
+            }
+
+            // ---- moved on the PC: a vanished file and a new one that are the same file ----
+            if (up)
+            {
+                var vanished = new Dictionary<(long, DateTime), List<string>>();
+                foreach (var (path, was) in last)
+                {
+                    if (local.ContainsKey(path) || string.IsNullOrEmpty(was.RemoteId)) continue;
+                    if (!remote.TryGetValue(path, out var r) || r.Id != was.RemoteId || SyncPlanner.RemoteChanged(r, was)) continue;
+                    if (!kinds.TryGetValue(path, out var k) ||
+                        k is not (SyncActionKind.DeleteRemote or SyncActionKind.Download or SyncActionKind.Forget)) continue;
+                    var key = (was.LocalSize, was.LocalModifiedUtc);
+                    if (!vanished.TryGetValue(key, out var list)) vanished[key] = list = new List<string>();
+                    list.Add(path);
+                }
+                if (vanished.Count > 0)
+                {
+                    var arrived = new Dictionary<(long, DateTime), List<string>>();
+                    foreach (var (path, l) in local)
+                    {
+                        if (last.ContainsKey(path) || remote.ContainsKey(path)) continue;
+                        if (!kinds.TryGetValue(path, out var k) || k != SyncActionKind.Upload) continue;
+                        var key = (l.Size, l.ModifiedUtc);
+                        if (!vanished.ContainsKey(key)) continue;
+                        if (!arrived.TryGetValue(key, out var list)) arrived[key] = list = new List<string>();
+                        list.Add(path);
+                    }
+                    foreach (var (key, to) in arrived)
+                    {
+                        var from = vanished[key];
+                        if (from.Count == 1 && to.Count == 1)
+                        {
+                            moves.Add(new SyncMove(from[0], to[0], OnDrive: true, last[from[0]]));
+                            continue;
+                        }
+                        // Several alike (files written in one go): paired by name,
+                        // and only where that name is unique on both sides.
+                        var fromByName = from.GroupBy(Leaf, SyncNameComparer.Instance)
+                            .Where(g => g.Count() == 1)
+                            .ToDictionary(g => g.Key, g => g.First(), SyncNameComparer.Instance);
+                        foreach (var g in to.GroupBy(Leaf, SyncNameComparer.Instance))
+                            if (g.Count() == 1 && fromByName.TryGetValue(g.Key, out var f))
+                                moves.Add(new SyncMove(f, g.First(), OnDrive: true, last[f]));
+                    }
+                }
+            }
+            return moves;
+        }
+
+        public static string Leaf(string path) => path[(path.LastIndexOf('/') + 1)..];
+
+        public static string Parent(string path) => path.LastIndexOf('/') is var at and > 0 ? path[..at] : "";
+
+        /// <summary>
+        /// The folder a move really renames: "a/b/c.txt" to "x/b/c.txt" renames
+        /// "a" to "x", and "a/c.txt" to "x/y/c.txt" moves "a" to "x/y". Null when
+        /// the file's own name changed, or nothing above it did.
+        /// </summary>
+        public static (string From, string To)? FolderOf(SyncMove move)
+        {
+            var from = move.From.Split('/');
+            var to = move.To.Split('/');
+            int i = from.Length - 1, j = to.Length - 1;
+            if (!SyncNameComparer.Instance.Equals(from[i], to[j])) return null;
+            while (i > 0 && j > 0 && SyncNameComparer.Instance.Equals(from[i - 1], to[j - 1])) { i--; j--; }
+            if (i == 0 || j == 0) return null;   // the difference is not a whole folder on both sides
+            return (string.Join('/', from[..i]), string.Join('/', to[..j]));
+        }
+    }
+
     /// <summary>A PC file's MD5, as it was when it was worked out.</summary>
     public sealed record SyncHashEntry(long Size, DateTime ModifiedUtc, string Md5);
 
@@ -523,6 +713,8 @@ namespace ExplorerNative
 
         public static bool IsTransient(Exception error)
         {
+            // Never retried: a resend could be a second copy. See UnknownIfLandedException.
+            if (DriveClient.UnknownIfLandedException.In(error)) return false;
             for (var e = error; e != null; e = e.InnerException)
             {
                 if (e is DriveQuotaException quota) return quota.ResetsOnItsOwn;
@@ -701,5 +893,60 @@ namespace ExplorerNative
 
         /// <summary>A pass this big is announced as it goes.</summary>
         public static bool IsBig(long bytes, int files) => bytes > 1024L * 1024 * 1024 || files > 200;
+    }
+    /// <summary>
+    /// How many uploads run at once, found rather than fixed. Measured on the
+    /// real account: 4 at a time gave 4.6 files a second, 8 gave 8.2, 16 gave
+    /// 15.6, and past about 30 across the account Google stalled requests and
+    /// the rate fell to 6.7. So it starts at a safe width, adds one lane after a
+    /// run of fast answers, and gives one back at once on a slow answer or a
+    /// failure (additive increase, multiplicative-ish decrease, one lane at a
+    /// time). Thread-safe.
+    /// </summary>
+    internal sealed class AdaptiveLanes
+    {
+        private readonly SemaphoreSlim _gate;
+        private readonly int _min, _max;
+        private readonly object _lock = new();
+        private int _limit, _good;
+
+        public AdaptiveLanes(int start, int min, int max)
+        {
+            _min = Math.Max(1, min);
+            _max = Math.Max(_min, max);
+            _limit = Math.Clamp(start, _min, _max);
+            _gate = new SemaphoreSlim(_limit, _max);
+        }
+
+        public int Limit { get { lock (_lock) return _limit; } }
+
+        public Task EnterAsync(CancellationToken token) => _gate.WaitAsync(token);
+
+        /// <summary>Ends one upload. <paramref name="fast"/>: it landed quickly, with no push-back.</summary>
+        public void Leave(bool fast)
+        {
+            lock (_lock)
+            {
+                if (fast)
+                {
+                    if (++_good >= _limit && _limit < _max)
+                    {
+                        _limit++;
+                        _good = 0;
+                        _gate.Release();
+                    }
+                }
+                else
+                {
+                    _good = 0;
+                    if (_limit > _min)
+                    {
+                        _limit--;
+                        return;     // this lane's permit is kept back: one fewer from now on
+                    }
+                }
+            }
+            _gate.Release();
+        }
     }
 }

@@ -113,35 +113,38 @@ namespace ExplorerNative
                     if (!string.Equals(current[i], expected[i], StringComparison.OrdinalIgnoreCase))
                         return false;
 
-                for (int attempt = 0; attempt < 5; attempt++)
-                {
-                    try { Clipboard.Clear(); return true; }
-                    catch (System.Runtime.InteropServices.ExternalException)
-                    {
-                        System.Threading.Thread.Sleep(60);
-                    }
-                }
+                // Once: Clipboard.Clear already retries ten times 100ms apart,
+                // and a loop of five around it froze the window for five
+                // seconds while another program held the clipboard.
+                Clipboard.Clear();
+                return true;
             }
             catch { }
             return false;
         }
 
+        /// <summary>
+        /// Puts text on the clipboard. False when another program held it
+        /// throughout.
+        ///
+        /// One call, retrying inside itself five times 60ms apart, as SetFiles
+        /// does. Clipboard.SetText retries ten times 100ms apart by itself, and
+        /// it sat in a loop of five of its own: Copy path with the clipboard
+        /// held froze the window on the UI thread for over five seconds.
+        /// </summary>
         public static bool SetText(string text)
         {
-            for (int attempt = 0; attempt < 5; attempt++)
+            try
             {
-                try
-                {
-                    if (string.IsNullOrEmpty(text)) Clipboard.Clear();
-                    else Clipboard.SetText(text);
-                    return true;
-                }
-                catch (System.Runtime.InteropServices.ExternalException)
-                {
-                    System.Threading.Thread.Sleep(60);
-                }
+                if (string.IsNullOrEmpty(text)) Clipboard.Clear();
+                else Clipboard.SetDataObject(new DataObject(DataFormats.UnicodeText, text),
+                    copy: true, retryTimes: 5, retryDelay: 60);
+                return true;
             }
-            return false;
+            catch (System.Runtime.InteropServices.ExternalException)
+            {
+                return false;
+            }
         }
     }
 }

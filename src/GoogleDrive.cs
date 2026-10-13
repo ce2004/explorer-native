@@ -465,7 +465,7 @@ namespace ExplorerNative
             }
             catch (Exception ex)
             {
-                Status = $"Could not sign in again: {ex.GetType().Name}: {ex.Message}";
+                Status = $"Could not sign in again: {GoogleNet.Reason(ex)}";
                 return false;
             }
         }
@@ -652,7 +652,7 @@ namespace ExplorerNative
             {
                 Status = token.IsCancellationRequested
                     ? "Not connected."
-                    : $"Could not connect: {ex.GetType().Name}: {ex.Message}";
+                    : $"Could not connect: {GoogleNet.Reason(ex)}";
                 TearDown();
                 return false;
             }

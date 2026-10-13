@@ -300,11 +300,41 @@ namespace ExplorerNative
                     }
 
                     if (ask >= 3)
-                        throw new InvalidOperationException(
+                        throw new UnknownIfLandedException(
                             "Google Drive would not say whether this had already been done, " +
-                            "so it was not sent again: " + ex.Message, ex);
+                            "so it was not sent again: " + ex.Message, ex) { Lookup = landed };
                     await Pause(RetryDelay(ask, random), token);
                 }
+            }
+        }
+
+        /// <summary>
+        /// A create whose answer was lost and whose landed-check also failed.
+        /// Nothing may send it again on the strength of the network error inside:
+        /// it may well be on Drive already, and a resend is a second copy. The
+        /// next pass lists the folder and adopts it if it is there.
+        /// </summary>
+        internal sealed class UnknownIfLandedException : InvalidOperationException
+        {
+            public UnknownIfLandedException(string message, Exception inner) : base(message, inner) { }
+
+            /// <summary>The question that went unanswered, to be asked again later: the file as JSON, or null when it is not there.</summary>
+            public Func<CancellationToken, Task<string?>>? Lookup { get; init; }
+
+            /// <summary>The innermost one in a chain of exceptions, or null.</summary>
+            public static UnknownIfLandedException? Find(Exception? error)
+            {
+                UnknownIfLandedException? found = null;
+                for (var e = error; e != null; e = e.InnerException)
+                    if (e is UnknownIfLandedException u) found = u;
+                return found;
+            }
+
+            public static bool In(Exception? error)
+            {
+                for (var e = error; e != null; e = e.InnerException)
+                    if (e is UnknownIfLandedException) return true;
+                return false;
             }
         }
 
@@ -582,7 +612,7 @@ namespace ExplorerNative
             using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token);
             var body = await response.Content.ReadAsStringAsync(token);
             if (!response.IsSuccessStatusCode)
-                throw new InvalidOperationException($"about failed {(int)response.StatusCode}: {body}");
+                throw new InvalidOperationException(Explain((int)response.StatusCode, body));
 
             using var doc = JsonDocument.Parse(body);
             var root = doc.RootElement;
@@ -859,7 +889,7 @@ namespace ExplorerNative
         internal static string NewOperationTag() => Guid.NewGuid().ToString("N");
 
         /// <summary>The shared drive a folder is in, or null for My Drive. Throws when it cannot be told.</summary>
-        private async Task<string?> DriveOf(string folderId, CancellationToken token)
+        internal async Task<string?> DriveOf(string folderId, CancellationToken token)
         {
             using var request = await Request(HttpMethod.Get,
                 $"{Files}/{Uri.EscapeDataString(folderId)}?fields=driveId", token);

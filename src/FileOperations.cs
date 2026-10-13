@@ -54,6 +54,14 @@ namespace ExplorerNative
 
         public int RenamedCount, SkippedCount, OverwrittenCount;
 
+        /// <summary>
+        /// Replace asked for where a file would go over a folder of its name, or
+        /// a folder over a file. Neither engine will put one over the other, so
+        /// these are failures, not replacements: counted as "replaced" they were
+        /// announced as destroyed and then failed.
+        /// </summary>
+        public readonly List<(string Path, bool FolderThere)> KindClashes = new();
+
         public void Renamed(string path) { RenamedCount++; Remember(_renamed, path); }
         public void Skipped(string path) { SkippedCount++; Remember(_skipped, path); }
         public void Overwritten(string path) { OverwrittenCount++; Remember(_overwritten, path); }
@@ -189,6 +197,12 @@ namespace ExplorerNative
                 {
                     failed++;
                     errors.Add($"{gone}: not found");
+                }
+
+                foreach (var (clash, folderThere) in conflicts.KindClashes)
+                {
+                    failed++;
+                    errors.Add($"{Path.GetFileName(clash)}: a {(folderThere ? "folder" : "file")} of that name is already there");
                 }
             }
             catch (OperationCanceledException)
@@ -358,8 +372,10 @@ namespace ExplorerNative
 
                     if (item.Rename)
                     {
-                        // Same-volume move is a rename: no bytes travel.
-                        File.Move(NameRules.ExactPath(item.Source), NameRules.ExactPath(item.Destination), overwrite: true);
+                        // Same-volume move is a rename: no bytes travel. Over a
+                        // read-only file too, as the copy path does: Replace
+                        // means replace, and File.Move alone refuses one.
+                        MoveReplacing(NameRules.ExactPath(item.Source), NameRules.ExactPath(item.Destination));
                     }
                     else
                     {
@@ -822,6 +838,16 @@ namespace ExplorerNative
                     conflicts.Skipped(desired);
                     return desired;
                 case PasteConflictPolicy.Overwrite:
+                    // A file and a folder are never swapped for each other, as
+                    // the robocopy path and Drive both refuse: said as a failure
+                    // rather than recorded as replaced and then failing.
+                    bool folderThere = Directory.Exists(exactDesired);
+                    if (folderThere != folder)
+                    {
+                        skip = true;
+                        conflicts.KindClashes.Add((desired, folderThere));
+                        return desired;
+                    }
                     conflicts.Overwritten(desired);
                     return desired;
                 case PasteConflictPolicy.Skip:
@@ -956,23 +982,7 @@ namespace ExplorerNative
 
                 // Only now does the original go, in one step. Replace means
                 // replace, a read-only file included.
-                if (written != to)
-                {
-                    try { File.Move(written, to, overwrite: true); }
-                    catch (UnauthorizedAccessException)
-                    {
-                        var attributes = File.GetAttributes(to);
-                        if ((attributes & FileAttributes.ReadOnly) == 0) throw;
-                        File.SetAttributes(to, attributes & ~FileAttributes.ReadOnly);
-                        try { File.Move(written, to, overwrite: true); }
-                        catch
-                        {
-                            // Still the original: it keeps the read-only it had.
-                            try { File.SetAttributes(to, attributes); } catch { }
-                            throw;
-                        }
-                    }
-                }
+                if (written != to) MoveReplacing(written, to);
                 complete = true;
             }
             finally
@@ -1006,6 +1016,31 @@ namespace ExplorerNative
             // closed: set through a handle with buffered data still to go out,
             // the time was overwritten at close and every copy was dated "now".
             CopyDatesAndAttributes(from, to);
+        }
+
+        /// <summary>
+        /// Moves <paramref name="from"/> over <paramref name="to"/>, replacing it
+        /// even when it is read-only. File.Move with overwrite refuses a read-only
+        /// destination; the flag is taken off it only for the move, and put back
+        /// if the move still fails, so the file left there is still the original
+        /// as it was. Shared by every Replace that ends in a move: the copy's swap,
+        /// a same-volume move, and a converted file taking its place.
+        /// </summary>
+        internal static void MoveReplacing(string from, string to)
+        {
+            try { File.Move(from, to, overwrite: true); }
+            catch (UnauthorizedAccessException)
+            {
+                var attributes = File.GetAttributes(to);
+                if ((attributes & FileAttributes.ReadOnly) == 0 || (attributes & FileAttributes.Directory) != 0) throw;
+                File.SetAttributes(to, attributes & ~FileAttributes.ReadOnly);
+                try { File.Move(from, to, overwrite: true); }
+                catch
+                {
+                    try { File.SetAttributes(to, attributes); } catch { }
+                    throw;
+                }
+            }
         }
 
         /// <summary>Attributes a copy carries over, as robocopy's /COPY:DAT does.</summary>

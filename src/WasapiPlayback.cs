@@ -1048,7 +1048,11 @@ namespace ExplorerNative
                     // Paused, resume sets _drained itself, so the net can be
                     // wide: a paused track used to wake the CPU four times a
                     // second for as long as it sat there.
-                    _drained.WaitOne(_paused ? 5000 : 250);
+                    // And the same once a track has played to its end: nothing
+                    // unloads it, and a finished track waking four times a
+                    // second until the next Enter was a battery cost for nothing.
+                    // Seek, Resume, Stop and device changes all set _drained.
+                    _drained.WaitOne(_paused || _resting ? 5000 : 250);
                     continue;
                 }
 

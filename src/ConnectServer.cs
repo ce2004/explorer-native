@@ -1926,9 +1926,13 @@ namespace ExplorerNative
         /// </summary>
         public event Action<string>? CodeGuessing;
 
-        /// <summary>Who a code attempt is counted against: the tailnet user Serve names, or else the address.</summary>
+        /// <summary>
+        /// Who a code attempt is counted against: the tailnet user Serve names, or else the address. The login
+        /// header names the client only when Tailscale itself sent it: any local program can write one, and a
+        /// new name on every try was a new count on every try, so the codes could be tried without waiting.
+        /// </summary>
         private static string ClientKey(Request r) =>
-            r.Headers.TryGetValue("tailscale-user-login", out var l) && l.Length > 0 ? "user:" + l
+            r.Headers.TryGetValue("tailscale-user-login", out var l) && l.Length > 0 && r.FromServe?.Invoke() == true ? "user:" + l
                 : "addr:" + ((r.Socket?.RemoteEndPoint as IPEndPoint)?.Address.ToString() ?? "?");
 
         /// <summary>How long <paramref name="key"/> must wait before trying a code again; zero for not at all.</summary>

@@ -363,6 +363,14 @@ namespace ExplorerNative
                 case "userRateLimitExceeded":
                     return "Google is limiting how fast this account may upload; waiting and " +
                            "trying again.";
+
+                // A new Cloud project has the Drive API switched off, and this is
+                // the first thing a new person meets after signing in.
+                case "accessNotConfigured":
+                case "SERVICE_DISABLED":
+                    return "The Google Drive API is not turned on for this Google Cloud project. " +
+                           "Open the project in the Google Cloud console, go to APIs and services, " +
+                           "Library, find Google Drive API and press Enable, then connect again.";
             }
 
             if (body.StartsWith("{", StringComparison.Ordinal))
@@ -439,6 +447,39 @@ namespace ExplorerNative
         /// replaces anything, because its plan is a snapshot taken minutes (or,
         /// on a big pass, hours) earlier. Throws when Drive cannot be asked.
         /// </summary>
+        /// <summary>
+        /// Where a file or folder is now: its name and parent folders, or null when
+        /// it is gone or in the trash. Asked of the item itself, which is current,
+        /// where a folder listing can lag a second or two behind a change.
+        /// </summary>
+        internal async Task<(string Name, IReadOnlyList<string> Parents)?> PlaceNow(string fileId, CancellationToken token)
+        {
+            using var request = await Request(HttpMethod.Get,
+                $"{Files}/{Uri.EscapeDataString(fileId)}?fields=name,parents,trashed", token);
+            using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token, _slowMetadata);
+            var body = await response.Content.ReadAsStringAsync(token);
+            if ((int)response.StatusCode == 404) return null;
+            if (!response.IsSuccessStatusCode)
+                throw new DriveStatusException((int)response.StatusCode, body,
+                    $"{(int)response.StatusCode}: " + Explain((int)response.StatusCode, body));
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            if (root.TryGetProperty("trashed", out var t) && t.ValueKind == JsonValueKind.True) return null;
+            var parents = new List<string>();
+            if (root.TryGetProperty("parents", out var ps) && ps.ValueKind == JsonValueKind.Array)
+                foreach (var p in ps.EnumerateArray()) if (p.GetString() is { } id) parents.Add(id);
+            return (root.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "", parents);
+        }
+
+        /// <summary>For the live probes: a file's creation time, parents and the tag its create carried, as Drive's JSON.</summary>
+        internal async Task<string> MadeWithTagProbe(string fileId, CancellationToken token)
+        {
+            using var request = await Request(HttpMethod.Get,
+                $"{Files}/{Uri.EscapeDataString(fileId)}?fields=createdTime,modifiedTime,parents,appProperties,size", token);
+            using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token, _slowMetadata);
+            return (await response.Content.ReadAsStringAsync(token)).Replace("\n", " ");
+        }
+
         internal async Task<DriveEntry?> FileNow(string fileId, CancellationToken token)
         {
             using var request = await Request(HttpMethod.Get,
@@ -807,6 +848,24 @@ namespace ExplorerNative
 
         /// <summary>What an upload left in Drive. Size, time and checksum are null when Drive did not say.</summary>
         internal sealed record DriveUploaded(string Id, long? Size, DateTime? ModifiedUtc, string? Md5);
+
+        /// <summary>
+        /// Asks again whether an upload whose answer was lost is on Drive: what
+        /// landed (whole), or null when Drive says it is not there and it is safe
+        /// to send. Throws while Drive still will not say.
+        /// </summary>
+        internal static async Task<DriveUploaded?> ResolveUploadAsync(UnknownIfLandedException unknown, long total,
+            CancellationToken token)
+        {
+            if (unknown.Lookup == null) throw unknown;
+            var found = await unknown.Lookup(token).ConfigureAwait(false);
+            if (found == null) return null;
+            using var doc = JsonDocument.Parse(found);
+            var file = doc.RootElement;
+            bool whole = !file.TryGetProperty("size", out var size) ||
+                         (long.TryParse(size.GetString(), out long bytes) && bytes == total);
+            return whole ? Uploaded(file) : null;
+        }
 
         /// <summary>The fields every upload asks to be answered with.</summary>
         private const string UploadedFields = "id,size,md5Checksum,modifiedTime";

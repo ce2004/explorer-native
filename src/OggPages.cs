@@ -367,6 +367,13 @@ namespace ExplorerNative
 
         private MemoryStream? _partial;
 
+        /// <summary>
+        /// The longest packet assembled. Real ones are a few kilobytes, an OpusTags or Vorbis comment with cover
+        /// art a few megabytes; a damaged or hostile file whose pages all continue the one packet otherwise grew
+        /// it until the process ran out of memory. Longer is dropped, like any packet that cannot be decoded.
+        /// </summary>
+        internal int MostPacketBytes { get; set; } = 64 << 20;
+
         /// <summary>Where the next page is read from.</summary>
         public long NextPage { get; private set; }
 
@@ -430,8 +437,11 @@ namespace ExplorerNative
                     if (dropFirst) dropFirst = false;
                     else if (_partial != null)
                     {
-                        _partial.Write(Body, offset, length);
-                        finished.Add(_partial.ToArray());
+                        if (_partial.Length + length <= MostPacketBytes)
+                        {
+                            _partial.Write(Body, offset, length);
+                            finished.Add(_partial.ToArray());
+                        }
                     }
                     else finished.Add(Body.AsSpan(offset, length).ToArray());
 
@@ -444,6 +454,9 @@ namespace ExplorerNative
                 {
                     _partial ??= new MemoryStream();
                     _partial.Write(Body, offset, length);
+                    // Too long to be real: let it go. The pages still continuing it read as continuations of
+                    // nothing, which are dropped, and the packets after them are placed as usual.
+                    if (_partial.Length > MostPacketBytes) _partial = null;
                 }
 
                 return true;

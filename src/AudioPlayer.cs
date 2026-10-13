@@ -1257,6 +1257,11 @@ namespace ExplorerNative
             string path = NowPlayingPath;
             if (path.Length == 0) return;
 
+            // A finished track is as idle as a paused one: its download is let
+            // go of after the same wait, rather than held (up to a gigabyte)
+            // until the next track. Play starts it buffering again, as after a pause.
+            ArmRelease();
+
             // Repeat is not handled here any more, and that is the whole of what
             // makes it gapless: by the time this runs the ring has drained to
             // nothing, which is how the render thread knew to raise it. The pump

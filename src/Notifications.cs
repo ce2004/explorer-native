@@ -303,6 +303,9 @@ namespace ExplorerNative
             Live("rename.failed", "Rename failed", FileOperations, Loud, "Could not rename: {0}", "a file with that name exists"),
             Live("rename.invalid", "Name not allowed", FileOperations, Say, "{0} cannot be used in a name", "a colon"),
             Live("folder.created", "Folder created", FileOperations, Say, "Created {0}", "New folder"),
+            Live("file.created", "File created", FileOperations, Say, "Created file {0}", "New text document.txt"),
+            Live("delete.started", "Delete started", FileOperations, Say, "Deleting {0} items", 7),
+            Live("delete.both", "Synced folder deleted on both sides", FileOperations, Say, "Deleted on both sides"),
             Live("shortcut.created", "Shortcut created", FileOperations, Say, "Created shortcut {0}",
                 "notes.txt - Shortcut.lnk"),
             // Off: the application that opens speaks for itself. These two were

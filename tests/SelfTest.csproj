@@ -66,7 +66,7 @@
     <Compile Include="..\src\TypeAhead.cs" />
     <Compile Include="..\src\NavigationHistory.cs" />
     <Compile Include="..\src\ShellRegistration.cs" />
-    <Compile Include="..\src\AppInstall.cs" /><Compile Include="..\src\Updater.cs" /><Compile Include="..\src\UpdateForm.cs" /><Compile Include="..\src\ChangelogForm.cs" />
+    <Compile Include="..\src\AppInstall.cs" /><Compile Include="..\src\Updater.cs" /><Compile Include="..\src\UpdateForm.cs" /><Compile Include="..\src\ChangelogForm.cs" /><Compile Include="..\src\Changelog.cs" />
     <Compile Include="..\src\SingleInstance.cs" />
     <Compile Include="..\src\CfApi.cs" />
     <Compile Include="..\src\DriveLetter.cs" />
@@ -91,9 +91,12 @@
     <Compile Include="DriveCopyTests.cs" />
     <Compile Include="FakeDrive.cs" />
     <Compile Include="DriveMountTests.cs" />
+    <Compile Include="DriveMountTimerTests.cs" />
     <Compile Include="DriveSizeTests.cs" />
     <Compile Include="DriveClientCacheTests.cs" />
     <Compile Include="DriveMonitorTests.cs" />
+    <Compile Include="SyncDuplicateTests.cs" />
+    <Compile Include="SyncScaleTests.cs" />
     <Compile Include="EdgeCaseTests.cs" />
     <Compile Include="TransferFixTests.cs" />
     <Compile Include="FilesR2Tests.cs" />
@@ -102,13 +105,17 @@
     <Compile Include="VideoContainerTests.cs" />
     <Compile Include="UpdateFixTests.cs" />
     <Compile Include="MainFixTests.cs" />
+    <Compile Include="MainFileOpsFixTests.cs" />
     <Compile Include="DeleteTests.cs" />
     <Compile Include="Round2FixTests.cs" />
     <Compile Include="ShortcutSortDetailsTests.cs" />
     <Compile Include="TagEditTests.cs" />
     <Compile Include="ArchiveBrowserTests.cs" />
     <Compile Include="AudioConvertTests.cs" />
+    <Compile Include="WebArchiveAudioFixTests.cs" />
     <Compile Include="DriveProbe.cs" />
+    <Compile Include="LiveSyncProbe.cs" />
+    <Compile Include="AuditFixTests.cs" />
   </ItemGroup>
 
   <!-- The managed Ogg Vorbis and Opus decoders, which the suite exercises the
@@ -131,6 +138,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="..\web\*.*" LogicalName="web/%(Filename)%(Extension)" />
+    <EmbeddedResource Include="..\CHANGES.txt" LogicalName="CHANGES.txt" />
   </ItemGroup>
 </Project>
 

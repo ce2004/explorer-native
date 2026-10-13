@@ -328,9 +328,17 @@ namespace ExplorerNative
                     bool media = AudioExtensions().Contains(ext) || ConnectDetails.VideoExtensions.Contains(ext);
                     bool image = ImageExtensions.Contains(ext);
                     var archive = ArchiveFormats.FromName(path);
+                    // The sniff opens the file, so it is a section's kind of try: a file another program holds
+                    // shut, or one Drive will not open, is simply not text, not the end of every other section.
+                    async Task<bool> LooksLikeText()
+                    {
+                        try { return await Task.Run(() => ConnectDetails.LooksLikeText(Bytes().Get(0, 4096)), token).WaitAsync(token); }
+                        catch (OperationCanceledException) when (token.IsCancellationRequested) { partial = true; return false; }
+                        catch { return false; }
+                    }
                     bool textish = !media && !image && archive == null && stat.Size <= 50L << 20 &&
                                    (ConnectDetails.TextExtensions.Contains(ext) ||
-                                    (stat.Size > 0 && (onDrive ? stat.Size <= 4L << 20 : true) && ConnectDetails.LooksLikeText(Bytes().Get(0, 4096))));
+                                    (stat.Size > 0 && (onDrive ? stat.Size <= 4L << 20 : true) && await LooksLikeText()));
 
                     if (textish) await Section("text", () => ConnectDetails.TextStats(OpenStream, ext, token));
                     if (media)
@@ -339,7 +347,7 @@ namespace ExplorerNative
                         {
                             var m = ConnectDetails.Media(Bytes(), path, token) ?? new Dictionary<string, object?>();
                             // The property system for a local file whose own header said nothing about tags.
-                            if (!onDrive && !m.ContainsKey("tags"))
+                            if (!onDrive && !m.ContainsKey("tags") && ReferenceEquals(Io(path), path))
                             {
                                 var s = AudioTags.ReadSummary(path);
                                 if (s != null)
@@ -503,7 +511,8 @@ namespace ExplorerNative
             if (format.Engine == ArchiveEngineKind.Zip) return ConnectDetails.Zip(bytes);
             if (onDrive || format.Engine != ArchiveEngineKind.Tar)
                 return new Dictionary<string, object?> { ["format"] = format.Id };
-            var entries = TarEngine.List(path, format, token);
+            // The literal path: a folder on the way named "dir." is otherwise read as "dir", another archive.
+            var entries = TarEngine.List(Io(path), format, token);
             return new Dictionary<string, object?>
             {
                 ["format"] = format.Id,
@@ -521,6 +530,9 @@ namespace ExplorerNative
         private static async Task<SongSummary?> TagsOf(string path, CancellationToken token)
         {
             if (!ConnectServer.ContentType(path).StartsWith("audio/", StringComparison.Ordinal)) return null;
+            // The property system takes the plain path, which Windows trims: under a folder
+            // ending in a dot it would read the namesake's tags. None is better than wrong.
+            if (!ReferenceEquals(Io(path), path)) return null;
             try { return await Task.Run(() => AudioTags.ReadSummary(path), CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(15), token); }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
             catch { return null; }
@@ -834,7 +846,7 @@ namespace ExplorerNative
             if (move && fromDrive)
             {
                 var alreadyThere = await Task.Run(() => paths.Select(Leaf)
-                    .Where(n => File.Exists(Path.Combine(destination, n)) || Directory.Exists(Path.Combine(destination, n)))
+                    .Where(n => File.Exists(Io(Path.Combine(destination, n))) || Directory.Exists(Io(Path.Combine(destination, n))))
                     .ToHashSet(StringComparer.OrdinalIgnoreCase), token);
                 renamedAway = conflict == PasteConflictPolicy.AutoRename ? alreadyThere : null;
                 var twice = paths.GroupBy(Leaf, StringComparer.OrdinalIgnoreCase).Where(g => g.Count() > 1).Select(g => g.Key).ToList();

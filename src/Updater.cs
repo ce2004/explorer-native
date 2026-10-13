@@ -61,7 +61,7 @@ namespace ExplorerNative
         private static HttpClient CreateClient(HttpMessageHandler? handler)
         {
             var client = handler == null
-                ? new HttpClient { Timeout = TimeSpan.FromMinutes(5) }
+                ? new HttpClient(GoogleNet.Handler, disposeHandler: false) { Timeout = TimeSpan.FromMinutes(5) }
                 : new HttpClient(handler, disposeHandler: false) { Timeout = TimeSpan.FromMinutes(5) };
             // GitHub refuses API requests without one.
             client.DefaultRequestHeaders.UserAgent.ParseAdd("ExplorerNative/" + CurrentText);
@@ -127,6 +127,9 @@ namespace ExplorerNative
                 : base(message, inner) => Problem = problem;
         }
 
+        /// <summary>How long a download may go without a byte arriving.</summary>
+        private static readonly TimeSpan StallLimit = TimeSpan.FromSeconds(60);
+
         public const string RateLimitedMessage = "GitHub is limiting checks right now. Try again in a few minutes.";
 
         /// <summary>
@@ -169,6 +172,12 @@ namespace ExplorerNative
             // A 404 is not "you are up to date": it means the list itself was
             // not there to compare against, and saying "latest" then is a guess.
             ThrowIfRefused(response, "Could not find the list of Explorer Native releases on GitHub.");
+
+            // A hotel or café Wi-Fi sign-in page answers 200 with a web page.
+            if (response.Content.Headers.ContentType?.MediaType is { } type &&
+                type.Contains("html", StringComparison.OrdinalIgnoreCase))
+                throw new UpdateException(Problem.BadAnswer,
+                    "A web page answered instead of GitHub. If this network has a sign-in page, sign in in the browser first.");
 
             await using var body = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
             JsonDocument json;
@@ -229,100 +238,6 @@ namespace ExplorerNative
             }
         }
 
-        /// <summary>One published version and its notes, for Help, Changelog.</summary>
-        public sealed record ReleaseNotes(Version Version, DateTime? Published, string Notes);
-
-        /// <summary>
-        /// Every published release, newest first. Drafts, pre-releases and tags
-        /// that are not version numbers are left out.
-        /// </summary>
-        public static async Task<List<ReleaseNotes>> AllReleasesAsync(CancellationToken cancel = default)
-        {
-            var result = new List<ReleaseNotes>();
-            string? url = $"https://api.github.com/repos/{Repository}/releases?per_page=100";
-
-            // GitHub hands the list out a hundred at a time and says where the
-            // next hundred are in the Link header. The first page alone was the
-            // whole changelog until the hundred-and-first release.
-            for (int page = 0; url != null && page < MaxReleasePages; page++)
-            {
-                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancel);
-                timeout.CancelAfter(TimeSpan.FromSeconds(20));
-
-                using var response = await Http.GetAsync(url, timeout.Token).ConfigureAwait(false);
-                ThrowIfRefused(response, "Could not find the list of Explorer Native releases on GitHub.");
-
-                await using var body = await response.Content.ReadAsStreamAsync(timeout.Token).ConfigureAwait(false);
-                JsonDocument json;
-                try { json = await JsonDocument.ParseAsync(body, cancellationToken: timeout.Token).ConfigureAwait(false); }
-                catch (JsonException ex) { throw Unreadable(ex); }
-
-                using (json)
-                {
-                    if (json.RootElement.ValueKind != JsonValueKind.Array) throw Unreadable(new FormatException("not a list"));
-                    foreach (var release in json.RootElement.EnumerateArray())
-                    {
-                        // One release GitHub describes oddly is left out rather
-                        // than costing the whole changelog.
-                        try
-                        {
-                            if (release.TryGetProperty("draft", out var draft) && draft.ValueKind == JsonValueKind.True) continue;
-                            if (release.TryGetProperty("prerelease", out var pre) && pre.ValueKind == JsonValueKind.True) continue;
-                            if (!release.TryGetProperty("tag_name", out var tag) || tag.ValueKind != JsonValueKind.String ||
-                                !TryParseVersion(tag.GetString() ?? "", out var version)) continue;
-
-                            DateTime? published = null;
-                            if (release.TryGetProperty("published_at", out var at) && at.ValueKind == JsonValueKind.String &&
-                                DateTime.TryParse(at.GetString(), CultureInfo.InvariantCulture,
-                                    DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal, out var when))
-                                published = DateTime.SpecifyKind(when, DateTimeKind.Utc);
-
-                            var notes = release.TryGetProperty("body", out var b) && b.ValueKind == JsonValueKind.String
-                                ? b.GetString() ?? ""
-                                : "";
-                            result.Add(new ReleaseNotes(version, published, notes));
-                        }
-                        catch (InvalidOperationException) { }
-                    }
-                }
-
-                url = NextPage(response);
-            }
-
-            return result.OrderByDescending(r => r.Version).ToList();
-        }
-
-        /// <summary>
-        /// How many pages of a hundred releases the changelog reads. A bound, so
-        /// a Link header that points back at itself cannot loop for ever.
-        /// </summary>
-        internal const int MaxReleasePages = 10;
-
-        /// <summary>
-        /// The rel="next" address from a Link header, or null. Only ever another
-        /// page of GitHub's API: the header is followed without a person seeing it.
-        /// </summary>
-        internal static string? NextPage(HttpResponseMessage response)
-        {
-            if (!response.Headers.TryGetValues("Link", out var values)) return null;
-
-            foreach (var value in values)
-            foreach (var part in value.Split(','))
-            {
-                var pieces = part.Split(';');
-                if (pieces.Length < 2) continue;
-                if (!pieces.Skip(1).Any(p => p.Trim().Replace(" ", "")
-                        .Equals("rel=\"next\"", StringComparison.OrdinalIgnoreCase))) continue;
-
-                var target = pieces[0].Trim().TrimStart('<').TrimEnd('>');
-                if (Uri.TryCreate(target, UriKind.Absolute, out var uri) &&
-                    uri.Scheme == Uri.UriSchemeHttps &&
-                    uri.Host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase))
-                    return uri.AbsoluteUri;
-            }
-            return null;
-        }
-
         /// <summary>
         /// Downloads the release and returns the path of the verified executable.
         /// It is named ExplorerNative.exe in a folder of its own because the
@@ -338,9 +253,11 @@ namespace ExplorerNative
             var partial = target + ".download";
 
             // HttpClient's own timeout stops at the headers once the body is
-            // streamed, so a stalled download would otherwise never end.
+            // streamed, so a stalled download would otherwise never end. Given
+            // up when nothing arrives for a minute (Kova's rule), not after a
+            // fixed five minutes, which a slow line could never beat.
             using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancel);
-            limit.CancelAfter(TimeSpan.FromMinutes(5));
+            limit.CancelAfter(StallLimit);
 
             using (var response = await Http.GetAsync(release.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, limit.Token)
                        .ConfigureAwait(false))
@@ -348,7 +265,21 @@ namespace ExplorerNative
                 ThrowIfRefused(response, $"The download for version {Text(release.Version)} is no longer on GitHub.");
                 await using var source = await response.Content.ReadAsStreamAsync(limit.Token).ConfigureAwait(false);
                 await using var file = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None);
-                await source.CopyToAsync(file, limit.Token).ConfigureAwait(false);
+                var buffer = new byte[81920];
+                int read;
+                try
+                {
+                    while ((read = await source.ReadAsync(buffer, limit.Token).ConfigureAwait(false)) > 0)
+                    {
+                        await file.WriteAsync(buffer.AsMemory(0, read), limit.Token).ConfigureAwait(false);
+                        limit.CancelAfter(StallLimit);
+                    }
+                }
+                catch (OperationCanceledException) when (!cancel.IsCancellationRequested)
+                {
+                    throw new UpdateException(Problem.Refused,
+                        "The download stopped: nothing arrived from GitHub for a minute. Try again.");
+                }
             }
 
             var length = new FileInfo(partial).Length;

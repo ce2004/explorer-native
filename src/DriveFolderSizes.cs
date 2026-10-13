@@ -157,6 +157,67 @@ namespace ExplorerNative
             return doc.RootElement.GetProperty("startPageToken").GetString() ?? "";
         }
 
+        /// <summary>One change from the feed, for the folder sync: what it is, its name and where it is now.</summary>
+        internal sealed record DriveSyncChange(string Id, bool Gone, string? Name, string? Parent, bool Folder, bool Counted);
+
+        /// <summary>
+        /// The folder sync's view of the changes feed: like <see cref="ChangesSince"/>,
+        /// with names, and a trashed file reported as gone. Throws on any refusal,
+        /// including an expired token, so the caller lists everything instead.
+        /// </summary>
+        internal async Task<(List<DriveSyncChange> Changes, string Next)> SyncChangesSince(
+            string pageToken, string? driveId, CancellationToken token)
+        {
+            var changes = new List<DriveSyncChange>();
+            string scope = string.IsNullOrEmpty(driveId)
+                ? ""
+                : $"&driveId={Uri.EscapeDataString(driveId)}&includeItemsFromAllDrives=true";
+            string fields = Uri.EscapeDataString(
+                "nextPageToken,newStartPageToken,changes(fileId,removed,file(id,name,mimeType,parents,trashed))");
+
+            string page = pageToken;
+            while (true)
+            {
+                string url = $"{Changes}?pageToken={Uri.EscapeDataString(page)}&pageSize=1000&includeRemoved=true" +
+                             $"&fields={fields}" + scope;
+                using var response = await SendWithRetry(
+                    () => Request(HttpMethod.Get, url, token), HttpCompletionOption.ResponseContentRead, token)
+                    .ConfigureAwait(false);
+                var body = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
+                if (!response.IsSuccessStatusCode)
+                    throw new DriveStatusException((int)response.StatusCode, body,
+                        $"changes failed {(int)response.StatusCode}: " + Explain((int)response.StatusCode, body));
+
+                using var doc = JsonDocument.Parse(body);
+                var root = doc.RootElement;
+                if (root.TryGetProperty("changes", out var list))
+                    foreach (var c in list.EnumerateArray())
+                    {
+                        var id = c.TryGetProperty("fileId", out var f) ? f.GetString() : null;
+                        if (string.IsNullOrEmpty(id)) continue;
+                        bool gone = c.TryGetProperty("removed", out var r) && r.ValueKind == JsonValueKind.True;
+                        string? name = null, parent = null, mime = null;
+                        if (!gone && c.TryGetProperty("file", out var file))
+                        {
+                            if (file.TryGetProperty("trashed", out var t) && t.ValueKind == JsonValueKind.True) gone = true;
+                            name = file.TryGetProperty("name", out var n) ? n.GetString() : null;
+                            mime = file.TryGetProperty("mimeType", out var m) ? m.GetString() : null;
+                            if (file.TryGetProperty("parents", out var ps) && ps.ValueKind == JsonValueKind.Array &&
+                                ps.GetArrayLength() > 0) parent = ps[0].GetString();
+                        }
+                        bool folder = mime == FolderMimeType;
+                        bool counted = folder || mime == null || !mime.StartsWith("application/vnd.google-apps.", StringComparison.Ordinal);
+                        changes.Add(new DriveSyncChange(id, gone, name, parent, folder, counted));
+                    }
+
+                if (root.TryGetProperty("newStartPageToken", out var done) && done.GetString() is { Length: > 0 } next)
+                    return (changes, next);
+                if (!(root.TryGetProperty("nextPageToken", out var more) && more.GetString() is { Length: > 0 } np))
+                    throw new InvalidOperationException("the changes feed ended without saying where to carry on");
+                page = np;
+            }
+        }
+
         /// <summary>
         /// Everything that changed since <paramref name="pageToken"/>, and the
         /// token to ask from next time. One request when nothing has.

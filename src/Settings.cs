@@ -1038,12 +1038,21 @@ namespace ExplorerNative
             }),
         };
 
-        /// <summary>The categories whose messages "Announce operations" silenced.</summary>
+        /// <summary>
+        /// The categories whose messages "Announce operations" silenced. Not
+        /// Drive's: the sync and upload messages went through the tray, which
+        /// never looked at that box.
+        /// </summary>
         private static readonly string[] OperationCategories =
         {
             Notifications.FileOperations, Notifications.Navigation, Notifications.Clipboard,
-            Notifications.Searching, Notifications.DriveOperations,
+            Notifications.Searching,
         };
+
+        /// <summary>A failure stays spoken whatever an old box said (see What is spoken in CLAUDE.md).</summary>
+        private static bool IsFailure(string id) =>
+            id.Contains("fail", StringComparison.Ordinal) || id.Contains("denied", StringComparison.Ordinal) ||
+            id.Contains("refused", StringComparison.Ordinal) || id.Contains("error", StringComparison.Ordinal);
 
         private void CarryRetiredSpeechSwitches(Dictionary<string, JsonElement>? old)
         {
@@ -1069,12 +1078,15 @@ namespace ExplorerNative
                     foreach (var id in ids) Silence(id);
 
             // Progress was never one of the operations, whatever its category.
-            if (Is("SpeakOperations", JsonValueKind.False))
+            bool operationsOff = Is("SpeakOperations", JsonValueKind.False);
+            if (operationsOff)
                 foreach (var info in Notifications.All)
-                    if (info.Id != "transfer.progress" && Array.IndexOf(OperationCategories, info.Category) >= 0)
+                    if (info.Id != "transfer.progress" && !IsFailure(info.Id) &&
+                        Array.IndexOf(OperationCategories, info.Category) >= 0)
                         Silence(info.Id);
 
-            if (Is("SpeakOnOpen", JsonValueKind.True))
+            // Opening was an operation too: with operations off it never spoke.
+            if (Is("SpeakOnOpen", JsonValueKind.True) && !operationsOff)
             {
                 overrides["file.opening"] = NotificationChannel.Speech;
                 changed = true;

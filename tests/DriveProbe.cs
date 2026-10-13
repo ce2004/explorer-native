@@ -83,14 +83,14 @@ namespace ExplorerNative
 
                 // How many at once Google will take before it slows down: 48 small
                 // files at each width, timed as a batch.
-                for (int f = 0; f < 48; f++)
+                for (int f = 0; f < 192; f++)
                     File.WriteAllText(Path.Combine(local, $"wide{f}.txt"), "width test " + f);
-                foreach (int width in new[] { 4, 8, 16, 24 })
+                foreach (int width in new[] { 16, 32, 48, 64 })
                 {
                     var lanes = new SemaphoreSlim(width);
                     int retried = 0;
                     var batch = Stopwatch.StartNew();
-                    var sends = Enumerable.Range(0, 48).Select(async f =>
+                    var sends = Enumerable.Range(0, 192).Select(async f =>
                     {
                         await lanes.WaitAsync(token);
                         try
@@ -102,8 +102,8 @@ namespace ExplorerNative
                         finally { lanes.Release(); }
                     }).ToList();
                     await Task.WhenAll(sends);
-                    Console.WriteLine($"{batch.ElapsedMilliseconds,7} ms  48 small files, {width} at a time " +
-                                      $"({48000.0 / batch.ElapsedMilliseconds:F1} files a second, {retried} took over 4s)");
+                    Console.WriteLine($"{batch.ElapsedMilliseconds,7} ms  192 small files, {width} at a time " +
+                                      $"({192000.0 / batch.ElapsedMilliseconds:F1} files a second, {retried} took over 4s)");
                 }
             }
             finally
