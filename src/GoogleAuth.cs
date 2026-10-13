@@ -69,7 +69,7 @@ namespace ExplorerNative
         // left on HttpClient's default of a hundred seconds, so a token endpoint
         // that stopped answering could freeze a directory listing for over a
         // minute while every other Drive timeout was carefully set to fifteen.
-        private readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(15) };
+        private readonly HttpClient _http = new(GoogleNet.Handler, disposeHandler: false) { Timeout = TimeSpan.FromSeconds(15) };
 
         /// <summary>
         /// Whether a failed refresh may open a browser and ask for consent.
@@ -202,6 +202,12 @@ namespace ExplorerNative
         public const string ClientFileName = "client_secret.json";
 
         /// <summary>
+        /// Why the last check could not reach Google, when it could not; null
+        /// when it got an answer. The pair is accepted unchecked in that case.
+        /// </summary>
+        public static string? LastCheckProblem { get; private set; }
+
+        /// <summary>
         /// Asks Google whether a client ID and secret are real, without a
         /// browser: the token endpoint is sent a made-up authorization code.
         /// Google checks the client first, so a wrong ID or secret comes back
@@ -211,6 +217,7 @@ namespace ExplorerNative
         /// </summary>
         public static async Task<string?> CheckClientAsync(string clientId, string clientSecret, CancellationToken token)
         {
+            LastCheckProblem = null;
             var form = new Dictionary<string, string>
             {
                 ["grant_type"] = "authorization_code",
@@ -222,7 +229,7 @@ namespace ExplorerNative
 
             try
             {
-                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+                using var http = new HttpClient(GoogleNet.Handler, disposeHandler: false) { Timeout = TimeSpan.FromSeconds(15) };
                 using var response = await http.PostAsync(TokenEndpoint, new FormUrlEncodedContent(form), token)
                     .ConfigureAwait(false);
                 var body = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
@@ -236,14 +243,16 @@ namespace ExplorerNative
                 }
                 catch (JsonException) { }
 
+                // Only a definite "no" refuses. Anything else (a proxy's page, an
+                // odd status) is not proof the pair is wrong, and the browser
+                // sign-in that follows is the real test.
                 return error switch
                 {
-                    "invalid_grant" => null,
                     "invalid_client" => "Google does not accept that client ID and secret. Check both, " +
                                         "and that the client is a Desktop app.",
                     "unauthorized_client" => "Google knows that client but will not let it sign in. Make sure " +
                                              "it is a Desktop app client.",
-                    _ => $"Google gave an unexpected answer ({(int)response.StatusCode} {error}).",
+                    _ => null,
                 };
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -254,7 +263,13 @@ namespace ExplorerNative
             }
             catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
             {
-                return "Google could not be reached to check them. Check the internet connection and press OK again.";
+                // Not reached is not refused. This used to keep the dialog open
+                // and save nothing, so a correct ID and secret could never be
+                // entered on a PC whose connection the check could not use, while
+                // the browser sign-in would have worked. Accepted unchecked; the
+                // reason is kept for the sign-in to report if it fails too.
+                LastCheckProblem = GoogleNet.Reason(ex);
+                return null;
             }
         }
 

@@ -361,7 +361,8 @@ namespace ExplorerNative
             _elapsed.Text = RoboCopyEngine.FormatDuration(p.Elapsed);
 
             // Spoken only at ten percent steps; anything finer is unusable noise.
-            if (_settings.SpeakProgress && _settings.SpeakEnabled && p.TotalKnown)
+            if (_settings.SpeakEnabled && p.TotalKnown &&
+                Notifications.ChannelsFor("transfer.progress", _settings) == NotificationChannel.Speech)
             {
                 int tenth = (int)(p.Percent / 10);
                 if (tenth != _lastSpokenTenth && tenth is > 0 and < 10)

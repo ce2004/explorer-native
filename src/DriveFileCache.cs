@@ -440,7 +440,7 @@ namespace ExplorerNative
                             _pool.LastReadAt > LastUsed &&
                             !string.Equals(_pool.LastReader, _poolKey, StringComparison.Ordinal))
                         {
-                            await Task.Delay(250, token);
+                            await _wake.WaitAsync(1000, token);
                             continue;
                         }
 

@@ -1034,7 +1034,6 @@ namespace ExplorerNative
             // "Nothing is loaded" is an answer to a command that could not run,
             // not chatter about one that did — it is said whatever the category
             // is switched to, or the key just appears to be broken.
-            bool refusal = message.StartsWith("Nothing is", StringComparison.Ordinal);
             var info = AudioActions.For(action);
 
             // The player may have named this event more precisely on the way
@@ -1046,11 +1045,11 @@ namespace ExplorerNative
 
             if (finerId != null && finerMessage == message)
             {
-                SayAudio(finerId, message, speak: refusal || WantsToHear(info.Say));
+                SayAudio(finerId, message);
                 return;
             }
 
-            SayAudio(info.NotificationId, message, speak: refusal || WantsToHear(info.Say));
+            SayAudio(info.NotificationId, message);
 
             // A different sentence is a different event that happened to land
             // during this one — a fade starting, a track finishing — so it is
@@ -1111,14 +1110,6 @@ namespace ExplorerNative
 
             PostUi(() => Notify(id, message));
         }
-
-        private bool WantsToHear(AudioSay category) => category switch
-        {
-            AudioSay.Transport => _settings.AudioAnnounceTransport,
-            AudioSay.Volume => _settings.AudioAnnounceVolume,
-            AudioSay.Seek => _settings.AudioAnnounceSeek,
-            _ => true,
-        };
 
         private string StepSpeed(int direction)
         {
@@ -1435,9 +1426,7 @@ namespace ExplorerNative
 
             if (!string.IsNullOrEmpty(notificationId))
             {
-                // Speaking is the union of the two: the old per-category switches
-                // still silence a whole group, and the catalogue can silence one
-                // message inside a group that is otherwise on.
+                // The catalogue is the one switch for each message.
                 speak = speak &&
                     Notifications.ChannelsFor(notificationId, _settings) == NotificationChannel.Speech;
             }
@@ -1612,7 +1601,7 @@ namespace ExplorerNative
                 {
                     _settings.AudioLastPath = path;
                     BeginReadingTitle(path);
-                    if (_settings.AudioAnnounceStart) SayAudio("audio.play", message);
+                    SayAudio("audio.play", message);
                 });
             });
 
@@ -1695,8 +1684,7 @@ namespace ExplorerNative
 
         private void OnTrackFinished(string path)
         {
-            if (_settings.AudioAnnounceTrackEnd)
-                SayAudio("audio.ended", "Finished " + _audio.DisplayName);
+            SayAudio("audio.ended", "Finished " + _audio.DisplayName);
 
             if (CdTrackStream.IsCdaName(System.IO.Path.GetExtension(path)))
                 PlayNextCdTrack(path);

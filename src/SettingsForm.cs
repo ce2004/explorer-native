@@ -370,22 +370,17 @@ namespace ExplorerNative
             // control anywhere in this dialog, so the only way to silence the app
             // was to hand-edit settings.json.
             AddCheck(panel, "Enable spoken announcements", _working.SpeakEnabled, v => _working.SpeakEnabled = v);
-            AddCheck(panel, "Announce operations (copied, cut, pasted, deleted)", _working.SpeakOperations, v => _working.SpeakOperations = v);
+            AddCheck(panel, "Interrupt current speech for new announcements", _working.InterruptSpeech, v => _working.InterruptSpeech = v);
             AddInfo(panel,
                 "Position in the list (\"69 of 2170\") is announced by NVDA itself, at the end of the row. " +
                 "This app deliberately does not announce it too — doing so only ever produced an echo. " +
                 "Control it in NVDA: Preferences, Settings, Object Presentation, \"Report object position information\".");
-            AddCheck(panel, "Interrupt current speech for new announcements", _working.InterruptSpeech, v => _working.InterruptSpeech = v);
-            AddCheck(panel, "Announce errors", _working.SpeakErrors, v => _working.SpeakErrors = v);
-            AddCheck(panel, "Announce progress during long operations", _working.SpeakProgress, v => _working.SpeakProgress = v);
-            AddCheck(panel, "Say \"Opening\" and the name when launching a file",
-                _working.SpeakOnOpen, v => _working.SpeakOnOpen = v);
 
-            // The whole catalogue, one message at a time, on the page that owns
-            // the subject. It had a category of its own called "Notifications",
-            // which was the wrong name for it twice over: nothing pops up any
-            // more, and the only question it ever asked was whether a message is
-            // spoken.
+            // The whole catalogue, one message at a time. It is the only place a
+            // single message is turned on or off: the boxes that used to sit
+            // here (operations, errors, progress, opening, tab switching) each
+            // shadowed messages in this list, so a message spoke only when both
+            // agreed and the list showed "Speak" for things that never spoke.
             int total = Notifications.All.Count;
             int on = Notifications.All.Count(n => n.Default != NotificationChannel.None);
 
@@ -413,17 +408,6 @@ namespace ExplorerNative
                 "thing you are configuring is a broken button. Half of these only happen when " +
                 "something has gone wrong, and a setting you cannot check without breaking something " +
                 "is a setting nobody trusts.");
-
-            // Progress deliberately has no second box in that dialog, though it
-            // obviously belongs to the same subject. It had one, bound to the
-            // same setting as the box on this page — and because every page's
-            // changes are applied in the order the pages were built, that one
-            // ran last and wrote its own untouched value straight over this one.
-            // Unticking "Announce progress during long operations" did nothing
-            // at all, with no way to tell from either page why.
-            //
-            // One setting, one control. It is spoken every ten percent rather
-            // than on every update; anything finer is unusable noise.
 
             AddInfo(panel, "NVDA controller client: " + Speech.LoadDiagnostic);
 
@@ -478,7 +462,6 @@ namespace ExplorerNative
                 "build one word — \"s\", \"y\", \"s\" becomes \"sys\" — and a longer gap starts again. " +
                 "Raise it if letters typed as a word are being treated separately; lower it if a single " +
                 "letter feels slow to act on its own.");
-            AddCheck(panel, "Announce tab when switching between the two tabs", _working.SpeakTabSwitch, v => _working.SpeakTabSwitch = v);
             AddCheck(panel, "Confirm before deleting", _working.ConfirmDelete, v => _working.ConfirmDelete = v);
             AddEnum<DeleteMode>(panel, "Delete sends files to", _working.Delete, v => _working.Delete = v);
             AddEnum<PasteConflictPolicy>(panel, "When a pasted name already exists", _working.PasteConflict, v => _working.PasteConflict = v);
@@ -918,7 +901,9 @@ namespace ExplorerNative
 
                 // Valid: switch Drive on, so closing Preferences signs in.
                 driveBox.Checked = true;
-                Say("Google accepted them. Signing in");
+                Say(GoogleAuth.LastCheckProblem is { } unreached
+                    ? $"Saved. They could not be checked first ({unreached}). Signing in"
+                    : "Google accepted them. Signing in");
                 return true;
             });
 
@@ -1096,27 +1081,9 @@ namespace ExplorerNative
         {
 
             AddInfo(panel,
-                "What the player says out loud, and when. Everything here is off: the player's " +
-                "shortcuts all do something you can already hear — the volume moves, the track " +
-                "jumps, the music stops — so saying it as well is narration over the thing being " +
-                "narrated, and over the screen reader reading whatever you were on. " +
-                "These switches control speech only; the status bar shows what happened either way.");
-
-            AddCheck(panel, "Say the name when a track starts", _working.AudioAnnounceStart,
-                v => _working.AudioAnnounceStart = v);
-            AddCheck(panel, "Say when a track finishes", _working.AudioAnnounceTrackEnd,
-                v => _working.AudioAnnounceTrackEnd = v);
-            AddCheck(panel, "Say play, pause, stop, mute, repeat and speed", _working.AudioAnnounceTransport,
-                v => _working.AudioAnnounceTransport = v);
-            AddCheck(panel, "Say the volume when it changes", _working.AudioAnnounceVolume,
-                v => _working.AudioAnnounceVolume = v);
-            AddCheck(panel, "Say the position when skipping", _working.AudioAnnounceSeek,
-                v => _working.AudioAnnounceSeek = v);
-
-            AddInfo(panel,
-                "Two things always speak, whatever these are set to. \"Say what is playing\" exists " +
-                "to be asked, and a command that could not run — pressing pause with nothing loaded " +
-                "— says so, or the key would simply seem broken.");
+                "What the player says out loud is chosen one message at a time in Speech, " +
+                "Choose what is spoken, under Playing audio, Volume and Position in a track. " +
+                "The status bar shows what happened either way.");
 
             AddCheck(panel, "Name tracks by their Title tag rather than the file name",
                 _working.AudioAnnounceUsesTitleTag, v => _working.AudioAnnounceUsesTitleTag = v);

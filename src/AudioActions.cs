@@ -32,24 +32,6 @@ namespace ExplorerNative
     }
 
     /// <summary>
-    /// Which preference decides whether an action says anything.
-    ///
-    /// Grouped rather than one switch per action, because the useful question is
-    /// "do I want to hear about the volume" and not "do I want to hear about
-    /// volume up but not volume down".
-    /// </summary>
-    public enum AudioSay
-    {
-        /// <summary>Play, pause, stop, mute, repeat, speed.</summary>
-        Transport,
-        Volume,
-        Seek,
-
-        /// <summary>Asked for directly, so always answered.</summary>
-        Always,
-    }
-
-    /// <summary>
     /// What the player is doing, taken all at once.
     ///
     /// The Audio menu needs several of these facts to label itself, and asking
@@ -62,8 +44,7 @@ namespace ExplorerNative
 
     /// <summary>
     /// One configurable global shortcut: what it is called, where it is kept,
-    /// how it behaves when held, and which announcement preference governs what
-    /// it says.
+    /// and how it behaves when held. What it says is decided by its catalogue id.
     ///
     /// <paramref name="AllowRepeat"/> means holding the key keeps firing it,
     /// driven by <see cref="HoldRepeat"/> rather than by the keyboard's own
@@ -73,7 +54,6 @@ namespace ExplorerNative
         AudioAction Action,
         string Label,
         bool AllowRepeat,
-        AudioSay Say,
         Func<Settings, string> Get,
         Action<Settings, string> Set)
     {
@@ -223,25 +203,25 @@ namespace ExplorerNative
             // Held down, this toggles as fast as the repeat rate allows. That is
             // a deliberate choice rather than an oversight: it is asked for, and
             // it is what the hold-repeat setting is there to control.
-            new AudioActionInfo(AudioAction.PlayPause, "Play or pause", true, AudioSay.Transport,
+            new AudioActionInfo(AudioAction.PlayPause, "Play or pause", true,
                 s => s.AudioPlayPauseShortcut, (s, v) => s.AudioPlayPauseShortcut = v)
                 { NotificationId = "audio.pause", MenuText = "&Pause", AlternateMenuText = "&Play" },
 
-            new AudioActionInfo(AudioAction.Stop, "Stop", false, AudioSay.Transport,
+            new AudioActionInfo(AudioAction.Stop, "Stop", false,
                 s => s.AudioStopShortcut, (s, v) => s.AudioStopShortcut = v)
                 { NotificationId = "audio.stop", MenuText = "&Stop" },
 
             // Held down, these keep moving. Anything with AllowRepeat false does
             // its thing once however long the key is held.
-            new AudioActionInfo(AudioAction.VolumeUp, "Volume up", true, AudioSay.Volume,
+            new AudioActionInfo(AudioAction.VolumeUp, "Volume up", true,
                 s => s.AudioVolumeUpShortcut, (s, v) => s.AudioVolumeUpShortcut = v)
                 { NotificationId = "volume.up", MenuText = "Volume &up", AccelerationCap = 200, AccelerationEvery = 2, HoldDelayMilliseconds = VolumeHoldDelayMilliseconds },
 
-            new AudioActionInfo(AudioAction.VolumeDown, "Volume down", true, AudioSay.Volume,
+            new AudioActionInfo(AudioAction.VolumeDown, "Volume down", true,
                 s => s.AudioVolumeDownShortcut, (s, v) => s.AudioVolumeDownShortcut = v)
                 { NotificationId = "volume.down", MenuText = "Volume &down", AccelerationCap = 200, AccelerationEvery = 2, HoldDelayMilliseconds = VolumeHoldDelayMilliseconds },
 
-            new AudioActionInfo(AudioAction.Mute, "Mute or unmute", false, AudioSay.Transport,
+            new AudioActionInfo(AudioAction.Mute, "Mute or unmute", false,
                 s => s.AudioMuteShortcut, (s, v) => s.AudioMuteShortcut = v)
                 { NotificationId = "volume.muted", MenuText = "&Mute", AlternateMenuText = "Un&mute" },
 
@@ -251,13 +231,13 @@ namespace ExplorerNative
             // a three minute song finished in under half a second of holding —
             // and then stuck at the end, where every further press clamps to the
             // same place. See NudgeRepeatMilliseconds.
-            new AudioActionInfo(AudioAction.SeekBackward, "Skip backward", true, AudioSay.Seek,
+            new AudioActionInfo(AudioAction.SeekBackward, "Skip backward", true,
                 s => s.AudioSeekBackwardShortcut, (s, v) => s.AudioSeekBackwardShortcut = v)
                 { NotificationId = "seek.back", MenuText = "Skip &backward",
                   RepeatMilliseconds = NudgeRepeatMilliseconds,
                   AccelerationCap = SeekAccelerationCap },
 
-            new AudioActionInfo(AudioAction.SeekForward, "Skip forward", true, AudioSay.Seek,
+            new AudioActionInfo(AudioAction.SeekForward, "Skip forward", true,
                 s => s.AudioSeekForwardShortcut, (s, v) => s.AudioSeekForwardShortcut = v)
                 { NotificationId = "seek.forward", MenuText = "Skip &forward",
                   RepeatMilliseconds = NudgeRepeatMilliseconds,
@@ -268,63 +248,63 @@ namespace ExplorerNative
             // for the thing it exists for — moving through something an hour
             // long — and the wrong one for anything else, which is why it has
             // its own pair of shortcuts rather than being the same key faster.
-            new AudioActionInfo(AudioAction.SeekBackwardLong, "Long skip backward", true, AudioSay.Seek,
+            new AudioActionInfo(AudioAction.SeekBackwardLong, "Long skip backward", true,
                 s => s.AudioSeekBackwardLongShortcut, (s, v) => s.AudioSeekBackwardLongShortcut = v)
                 { NotificationId = "seek.back.long", MenuText = "Long skip bac&kward",
                   RepeatMilliseconds = NudgeRepeatMilliseconds,
                   AccelerationCap = LongSeekAccelerationCap },
 
-            new AudioActionInfo(AudioAction.SeekForwardLong, "Long skip forward", true, AudioSay.Seek,
+            new AudioActionInfo(AudioAction.SeekForwardLong, "Long skip forward", true,
                 s => s.AudioSeekForwardLongShortcut, (s, v) => s.AudioSeekForwardLongShortcut = v)
                 { NotificationId = "seek.forward.long", MenuText = "Long skip for&ward",
                   RepeatMilliseconds = NudgeRepeatMilliseconds,
                   AccelerationCap = LongSeekAccelerationCap },
 
-            new AudioActionInfo(AudioAction.RestartTrack, "Back to the start", false, AudioSay.Seek,
+            new AudioActionInfo(AudioAction.RestartTrack, "Back to the start", false,
                 s => s.AudioRestartTrackShortcut, (s, v) => s.AudioRestartTrackShortcut = v)
                 { NotificationId = "audio.restart", MenuText = "Back to the s&tart" },
 
             // E and L rather than the obvious P and D: both were already taken by
             // Pause and Volume down, and two items sharing a letter means the key
             // stops acting and starts cycling.
-            new AudioActionInfo(AudioAction.SpeedUp, "Speed up", true, AudioSay.Transport,
+            new AudioActionInfo(AudioAction.SpeedUp, "Speed up", true,
                 s => s.AudioSpeedUpShortcut, (s, v) => s.AudioSpeedUpShortcut = v)
                 { NotificationId = "audio.speed.up", RepeatMilliseconds = NudgeRepeatMilliseconds, AccelerationCap = 1 },
 
-            new AudioActionInfo(AudioAction.SpeedDown, "Slow down", true, AudioSay.Transport,
+            new AudioActionInfo(AudioAction.SpeedDown, "Slow down", true,
                 s => s.AudioSpeedDownShortcut, (s, v) => s.AudioSpeedDownShortcut = v)
                 { NotificationId = "audio.speed.down", RepeatMilliseconds = NudgeRepeatMilliseconds, AccelerationCap = 1 },
 
-            new AudioActionInfo(AudioAction.ToggleRepeat, "Repeat on or off", false, AudioSay.Transport,
+            new AudioActionInfo(AudioAction.ToggleRepeat, "Repeat on or off", false,
                 s => s.AudioRepeatShortcut, (s, v) => s.AudioRepeatShortcut = v)
                 { NotificationId = "audio.repeat.on", MenuText = "&Repeat this track" },
 
-            new AudioActionInfo(AudioAction.WhatIsPlaying, "Say what is playing", false, AudioSay.Always,
+            new AudioActionInfo(AudioAction.WhatIsPlaying, "Say what is playing", false,
                 s => s.AudioWhatIsPlayingShortcut, (s, v) => s.AudioWhatIsPlayingShortcut = v)
                 { NotificationId = "audio.whatisplaying", MenuText = "Say what is pla&ying" },
 
             // One number each. "What is playing" says everything at once, which
             // is right when you have lost your bearings and wrong when you only
             // want to know how much is left.
-            new AudioActionInfo(AudioAction.SayElapsed, "Say time elapsed", false, AudioSay.Always,
+            new AudioActionInfo(AudioAction.SayElapsed, "Say time elapsed", false,
                 s => s.AudioSayElapsedShortcut, (s, v) => s.AudioSayElapsedShortcut = v)
                 { NotificationId = "position.elapsed", MenuText = "Time &into the track" },
 
-            new AudioActionInfo(AudioAction.SayRemaining, "Say time remaining", false, AudioSay.Always,
+            new AudioActionInfo(AudioAction.SayRemaining, "Say time remaining", false,
                 s => s.AudioSayRemainingShortcut, (s, v) => s.AudioSayRemainingShortcut = v)
                 { NotificationId = "position.remaining", MenuText = "Time still t&o go" },
 
-            new AudioActionInfo(AudioAction.SayTotal, "Say the total length", false, AudioSay.Always,
+            new AudioActionInfo(AudioAction.SayTotal, "Say the total length", false,
                 s => s.AudioSayTotalShortcut, (s, v) => s.AudioSayTotalShortcut = v)
                 { NotificationId = "position.total", MenuText = "Tot&al length" },
 
             // Opens a dialog, so holding it would open a stack of them.
-            new AudioActionInfo(AudioAction.SpeedDialog, "Choose the playback speed", false, AudioSay.Always,
+            new AudioActionInfo(AudioAction.SpeedDialog, "Choose the playback speed", false,
                 s => s.AudioSpeedDialogShortcut, (s, v) => s.AudioSpeedDialogShortcut = v)
                 { NotificationId = "audio.speed.dialog", MenuText = "Playba&ck speed…" },
 
             // The same shape, and a dialog for the same reason.
-            new AudioActionInfo(AudioAction.DeviceDialog, "Choose the output device", false, AudioSay.Always,
+            new AudioActionInfo(AudioAction.DeviceDialog, "Choose the output device", false,
                 s => s.AudioDeviceDialogShortcut, (s, v) => s.AudioDeviceDialogShortcut = v)
                 { NotificationId = "audio.device.dialog", MenuText = "Output de&vice…" },
 
@@ -337,7 +317,7 @@ namespace ExplorerNative
             // L, because P, S, U, D, M, B, F, K, W, T, C, V, R, Y, I, O, A, G
             // and N are all already taken by the menu items above. A shared
             // letter stops acting and starts cycling, which a test checks.
-            new AudioActionInfo(AudioAction.LimiterDialog, "Set up the limiter", false, AudioSay.Always,
+            new AudioActionInfo(AudioAction.LimiterDialog, "Set up the limiter", false,
                 s => s.AudioLimiterDialogShortcut, (s, v) => s.AudioLimiterDialogShortcut = v)
                 { NotificationId = "audio.limiter.dialog", MenuText = "&Limiter…" },
 
@@ -360,7 +340,7 @@ namespace ExplorerNative
             // menu that is open is a much cheaper thing to change than a key that
             // works everywhere in Windows. They disagree now, and that is the
             // cheaper of the two disagreements.
-            new AudioActionInfo(AudioAction.EqualiserDialog, "Open the equaliser", false, AudioSay.Always,
+            new AudioActionInfo(AudioAction.EqualiserDialog, "Open the equaliser", false,
                 s => s.AudioEqualiserDialogShortcut, (s, v) => s.AudioEqualiserDialogShortcut = v)
                 { NotificationId = "audio.equaliser.dialog", MenuText = "E&qualiser…" },
 
@@ -373,7 +353,7 @@ namespace ExplorerNative
             // H, because P is Pause, C is Playback speed, and every other
             // obvious letter in this menu is taken. A shared letter stops
             // acting and starts cycling, which a test checks.
-            new AudioActionInfo(AudioAction.PitchDialog, "Change the pitch", false, AudioSay.Always,
+            new AudioActionInfo(AudioAction.PitchDialog, "Change the pitch", false,
                 s => s.AudioPitchDialogShortcut, (s, v) => s.AudioPitchDialogShortcut = v)
                 { NotificationId = "audio.pitch.dialog", MenuText = "Pitc&h…" },
 
@@ -387,7 +367,7 @@ namespace ExplorerNative
             // The access key is on the second word because S, R, D, U, C, T, I, O
             // and N are every other letter in "silence reduction" and every one
             // of them was already taken.
-            new AudioActionInfo(AudioAction.SilenceDialog, "Silence reduction", false, AudioSay.Always,
+            new AudioActionInfo(AudioAction.SilenceDialog, "Silence reduction", false,
                 s => s.AudioSilenceDialogShortcut, (s, v) => s.AudioSilenceDialogShortcut = v)
                 { NotificationId = "audio.silence.dialog", MenuText = "Silence r&eduction…" },
         };

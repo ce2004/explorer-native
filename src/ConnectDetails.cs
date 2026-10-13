@@ -202,8 +202,6 @@ namespace ExplorerNative
             if (!Order.Contains(name)) _others.Add(name);
         }
 
-        public bool Has(string name) => _values.ContainsKey(name);
-
         /// <summary>"3" and "12" as "3 of 12"; a "3/12" left as the file wrote it becomes the same.</summary>
         public void Numbered(string name, string? number, string? total)
         {

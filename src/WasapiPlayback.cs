@@ -1045,7 +1045,10 @@ namespace ExplorerNative
                     // reacts immediately and a paused one costs four wakeups a
                     // second instead of two hundred. The timeout is the safety
                     // net for a signal that arrives while nothing is waiting.
-                    _drained.WaitOne(250);
+                    // Paused, resume sets _drained itself, so the net can be
+                    // wide: a paused track used to wake the CPU four times a
+                    // second for as long as it sat there.
+                    _drained.WaitOne(_paused ? 5000 : 250);
                     continue;
                 }
 

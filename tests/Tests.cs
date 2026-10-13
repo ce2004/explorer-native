@@ -216,6 +216,8 @@ namespace ExplorerNative
             UpdatesNeverChangeSettingsTests();
             NoShortcutsOnFirstLaunchTests();
             QuietByDefaultTests();
+            RetiredSpeechSwitchTests();
+            GoogleConnectFallbackTests();
             CountedSpeechTests();
             GainHeadroomTests();
             TimeStretchTests();
@@ -4520,10 +4522,12 @@ namespace ExplorerNative
                 // Google itself, when it can be reached: a made-up client is refused.
                 var verdict = GoogleAuth.CheckClientAsync("123-made-up.apps.googleusercontent.com", "GOCSPX-made-up",
                     CancellationToken.None).GetAwaiter().GetResult();
-                // Offline, "could not be reached" is not a refusal and proves nothing.
-                if (verdict == null || !verdict.Contains("could not be reached"))
+                // Offline, the check is skipped rather than refusing, and proves nothing.
+                if (GoogleAuth.LastCheckProblem == null)
                     Check("Google refuses a made-up client ID and secret",
                         verdict != null && verdict.Contains("does not accept"), verdict ?? "accepted");
+                else
+                    Check("unreached, the pair is not refused", verdict == null, verdict ?? "");
                 Check("the saved client file is not readable as text",
                     !File.ReadAllText(Path.Combine(into, GoogleAuth.ClientFileName)).Contains("GOCSPX"));
 
@@ -4754,8 +4758,10 @@ namespace ExplorerNative
             Check("folder sizes default to on demand", defaults.FolderSizes == FolderSizeMode.OnDemand);
             Check("paste conflict defaults to auto rename", defaults.PasteConflict == PasteConflictPolicy.AutoRename);
             Check("speech on by default", defaults.SpeakEnabled);
-            Check("operations announced by default", defaults.SpeakOperations);
-            Check("\"Opening\" announcement off by default", !defaults.SpeakOnOpen);
+            Check("operations announced by default",
+                Notifications.ChannelsFor("copy.done", defaults) == NotificationChannel.Speech);
+            Check("\"Opening\" announcement off by default",
+                Notifications.ChannelsFor("file.opening", defaults) == NotificationChannel.None);
             Check("shell registration off by default (stays portable)",
                 !defaults.RegisterContextMenu);
 
@@ -5263,42 +5269,120 @@ namespace ExplorerNative
             Console.WriteLine("The player says nothing it was not asked to:");
 
             var fresh = new Settings();
-            Check("a new install does not announce a track starting", !fresh.AudioAnnounceStart);
-            Check("nor a track finishing", !fresh.AudioAnnounceTrackEnd);
-            Check("nor the volume changing", !fresh.AudioAnnounceVolume);
-            Check("nor the position when skipping", !fresh.AudioAnnounceSeek);
-            Check("nor play, pause, stop and mute", !fresh.AudioAnnounceTransport);
+            bool Silent(string id) => Notifications.ChannelsFor(id, fresh) == NotificationChannel.None;
+            Check("a new install does not announce a track starting", Silent("audio.play"));
+            Check("nor a track finishing", Silent("audio.ended"));
+            Check("nor the volume changing", Silent("volume.up") && Silent("volume.down"));
+            Check("nor the position when skipping", Silent("seek.forward") && Silent("seek.back"));
+            Check("nor play, pause, stop and mute", Silent("audio.pause") && Silent("audio.stop") && Silent("volume.muted"));
 
-            // The switches only govern speech. The status bar is written either
-            // way, so nothing is lost by being quiet.
+            // Speech only. The status bar is written either way, so nothing is
+            // lost by being quiet.
             Check("the player itself is still on", fresh.AudioPlayerEnabled);
 
-            // A settings file from a build that did announce must be corrected,
-            // once — a default only ever reaches somebody with no file yet.
+            Console.WriteLine();
+        }
+
+        /// <summary>
+        /// The tick boxes that sat in front of "Choose what is spoken" are gone,
+        /// and what they decided is carried into the list, so an update changes
+        /// nothing anybody hears. A message used to speak only when its box and
+        /// its own choice both said so.
+        /// </summary>
+        /// <summary>
+        /// Google connections race IPv6 and IPv4 like a browser. "localhost" has
+        /// both, and a server on 127.0.0.1 only leaves the IPv6 address with
+        /// nothing behind it, which is a PC with broken IPv6 in miniature: the
+        /// request must still arrive, over IPv4, without waiting out a timeout.
+        /// </summary>
+        private static void GoogleConnectFallbackTests()
+        {
+            Console.WriteLine("Google connections fall back to IPv4:");
+
+            var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+            listener.Start();
+            int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+            try
+            {
+                var serve = Task.Run(async () =>
+                {
+                    using var client = await listener.AcceptTcpClientAsync();
+                    using var stream = client.GetStream();
+                    var buffer = new byte[4096];
+                    await stream.ReadAsync(buffer);
+                    var reply = System.Text.Encoding.ASCII.GetBytes(
+                        "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok");
+                    await stream.WriteAsync(reply);
+                });
+
+                using var http = new System.Net.Http.HttpClient(GoogleNet.Handler, disposeHandler: false)
+                    { Timeout = TimeSpan.FromSeconds(10) };
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                string body = "";
+                try { body = http.GetStringAsync($"http://localhost:{port}/").GetAwaiter().GetResult(); }
+                catch (Exception ex) { body = "failed: " + GoogleNet.Reason(ex); }
+                Equal("a server on IPv4 only is reached by name", "ok", body);
+                Check($"without waiting for IPv6 to time out ({clock.ElapsedMilliseconds} ms)",
+                    clock.ElapsedMilliseconds < 3000);
+                serve.Wait(5000);
+            }
+            finally { listener.Stop(); }
+
+            Equal("an unreachable Google says why, in words", "no answer within 15 seconds",
+                GoogleNet.Reason(new TaskCanceledException()));
+            Console.WriteLine();
+        }
+
+        private static void RetiredSpeechSwitchTests()
+        {
+            Console.WriteLine("Retired speech switches carry into the list:");
+
             var sandbox = NewTempDir();
             Settings.OverrideAppDataDir = sandbox;
             try
             {
                 File.WriteAllText(Path.Combine(sandbox, "settings.json"), """
-                    { "SettingsVersion": 4,
-                      "AudioAnnounceVolume": true, "AudioAnnounceSeek": true,
-                      "AudioAnnounceTransport": true, "AudioVolumePercent": 42 }
+                    { "SettingsVersion": 13,
+                      "SpeakTabSwitch": false, "SpeakOnOpen": true, "SpeakErrors": true,
+                      "SpeakProgress": false, "SpeakOperations": true,
+                      "AudioAnnounceVolume": false, "AudioAnnounceTransport": true,
+                      "AudioVolumePercent": 42 }
                     """);
 
                 var loaded = Settings.Load();
-                // An update never changes a setting: what the file says, it keeps.
-                Check("an older file keeps announcing the volume, as it says", loaded.AudioAnnounceVolume);
-                Check("and the position", loaded.AudioAnnounceSeek);
-                Check("and play, pause and stop", loaded.AudioAnnounceTransport);
-                Equal("while everything else in it is left alone", "42", loaded.AudioVolumePercent.ToString());
+                NotificationChannel Of(string id) => Notifications.ChannelsFor(id, loaded);
+
+                Check("an unticked tab box silences \"Switched tab\"", Of("nav.tab") == NotificationChannel.None);
+                Check("a ticked \"Opening\" box speaks \"Opening a file\"", Of("file.opening") == NotificationChannel.Speech);
+                Check("an unticked progress box silences progress", Of("transfer.progress") == NotificationChannel.None);
+                Check("a ticked errors box leaves errors spoken", Of("error.generic") == NotificationChannel.Speech);
+                Check("an unticked volume box keeps \"volume at maximum\" quiet, as it was",
+                    Of("volume.max") == NotificationChannel.None);
+                Check("a ticked transport box keeps \"speed cannot go further\" spoken",
+                    Of("audio.speed.limit") == NotificationChannel.Speech);
+                Check("a ticked operations box leaves operations spoken", Of("copy.done") == NotificationChannel.Speech);
+                Equal("everything else in the file is left alone", "42", loaded.AudioVolumePercent.ToString());
                 Equal("and it is stamped as migrated",
                     Settings.CurrentSettingsVersion.ToString(), loaded.SettingsVersion.ToString());
 
-                // Turning one back on must survive, or the correction would be
-                // applied for ever rather than once.
-                loaded.AudioAnnounceVolume = true;
+                // Once only: turning one back on in the list survives the next load.
+                var overrides = Notifications.ParseOverrides(loaded.SpeechOverrides);
+                overrides["nav.tab"] = NotificationChannel.Speech;
+                loaded.SpeechOverrides = Notifications.FormatOverrides(overrides);
                 loaded.Save();
-                Check("a switch turned back on afterwards stays on", Settings.Load().AudioAnnounceVolume);
+                Check("a message turned back on afterwards stays on",
+                    Notifications.ChannelsFor("nav.tab", Settings.Load()) == NotificationChannel.Speech);
+
+                File.WriteAllText(Path.Combine(sandbox, "settings.json"), """
+                    { "SettingsVersion": 13, "SpeakOperations": false }
+                    """);
+                var quiet = Settings.Load();
+                Check("an unticked operations box silences the operations",
+                    Notifications.ChannelsFor("copy.done", quiet) == NotificationChannel.None &&
+                    Notifications.ChannelsFor("nav.tab", quiet) == NotificationChannel.None);
+                Check("but not errors or progress, which it never covered",
+                    Notifications.ChannelsFor("error.generic", quiet) == NotificationChannel.Speech &&
+                    Notifications.ChannelsFor("transfer.progress", quiet) == NotificationChannel.Speech);
             }
             finally
             {

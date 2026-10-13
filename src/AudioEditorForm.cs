@@ -129,7 +129,6 @@ namespace ExplorerNative
                 _tags = tags;
                 _history = new EditHistory(new EditList(frames, rate));
                 _cursor = 0;
-                _timer.Start();
                 Refresh_();
                 Say($"Editing {Path.GetFileName(_path)}, {AudioPlayer.SpokenTime(_history.Current.Seconds)} long. Press F1 for the keys.");
             }
@@ -352,6 +351,7 @@ namespace ExplorerNative
                     _playback.SeekTo(from);
                     _playback.Resume();
                     _playing = true;
+                    _timer.Start();
                     Refresh_();
                     return;
                 }
@@ -377,6 +377,7 @@ namespace ExplorerNative
                 _playback = playback;
                 _playbackEdits = edits;
                 _playing = true;
+                _timer.Start();
                 Refresh_();
 
                 var device = _settings.AudioOutputDeviceId;
@@ -419,6 +420,9 @@ namespace ExplorerNative
 
         private void Tick()
         {
+            // Only while playing: an idle editor has nothing to follow.
+            if (!_playing) { _timer.Stop(); return; }
+
             // Follows the volume keys while editing: they still go to the player.
             if (_playing && _playback != null)
             {

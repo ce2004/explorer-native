@@ -237,8 +237,6 @@ namespace ExplorerNative
 
         public DriveSizeIndex(string? driveId) { _driveId = driveId; }
 
-        public bool Built { get { lock (_gate) return _built; } }
-
         /// <summary>The next question asks the changes feed first, whatever the clock says.</summary>
         public void Expire()
         {

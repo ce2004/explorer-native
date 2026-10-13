@@ -324,7 +324,7 @@ namespace ExplorerNative
                 {
                     // Nothing worth fetching until the listener moves or a piece
                     // is let go of.
-                    try { await _wake.WaitAsync(250, token).ConfigureAwait(false); }
+                    try { await _wake.WaitAsync(2000, token).ConfigureAwait(false); }
                     catch (OperationCanceledException) { return; }
                     continue;
                 }

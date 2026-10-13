@@ -98,14 +98,6 @@ namespace ExplorerNative
             return (Segments.Count, 0);
         }
 
-        /// <summary>Where on the edited timeline segment <paramref name="index"/> begins.</summary>
-        public long StartOf(int index)
-        {
-            long at = 0;
-            for (int i = 0; i < index && i < Segments.Count; i++) at += Segments[i].Length;
-            return at;
-        }
-
         private (long, long) Order(long from, long to)
         {
             if (from > to) (from, to) = (to, from);

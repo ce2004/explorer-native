@@ -368,12 +368,8 @@ namespace ExplorerNative
         /// The idle and lifetime limits let a connection go before Google's
         /// front end drops it from under a request, and pick up DNS changes.
         /// </summary>
-        private static readonly SocketsHttpHandler SharedHandler = new()
-        {
-            PooledConnectionIdleTimeout = TimeSpan.FromMinutes(5),
-            PooledConnectionLifetime = TimeSpan.FromMinutes(10),
-            ConnectTimeout = TimeSpan.FromSeconds(10),
-        };
+        // Shared with sign-in; connects over IPv4 and IPv6 at once. See GoogleNet.
+        private static readonly SocketsHttpHandler SharedHandler = GoogleNet.Handler;
 
         /// <summary>
         /// For the suite only: every request goes to <paramref name="handler"/>

@@ -70,7 +70,7 @@
     <Compile Include="..\src\SingleInstance.cs" />
     <Compile Include="..\src\CfApi.cs" />
     <Compile Include="..\src\DriveLetter.cs" />
-    <Compile Include="..\src\GoogleAuth.cs" /><Compile Include="..\src\ProtectedFile.cs" />
+    <Compile Include="..\src\GoogleAuth.cs" /><Compile Include="..\src\GoogleNet.cs" /><Compile Include="..\src\ProtectedFile.cs" />
     <Compile Include="..\src\DriveClient.cs" /><Compile Include="..\src\DriveFolderSizes.cs" /><Compile Include="..\src\DriveWrites.cs" /><Compile Include="..\src\DriveHealth.cs" />
     <Compile Include="..\src\DriveFileCache.cs" />
     <Compile Include="..\src\DriveMount.cs" />

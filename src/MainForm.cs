@@ -302,7 +302,6 @@ namespace ExplorerNative
         private System.Windows.Forms.Timer _availabilityTimer = null!;
 
         private Pane Active => _panes[_activeIndex];
-        private Pane Other => _panes[1 - _activeIndex];
         private bool IsDrivesView => Active.CurrentPath == DrivesPath;
 
         /// <summary>
@@ -1820,7 +1819,7 @@ namespace ExplorerNative
         private void ScheduleTabAnnouncement()
         {
             if (IsDisposed) return;
-            if (!_settings.SpeakEnabled || !_settings.SpeakTabSwitch) return;
+            if (!_settings.SpeakEnabled) return;
 
             if (_tabAnnounceTimer == null)
             {
@@ -1838,15 +1837,12 @@ namespace ExplorerNative
 
         private void AnnounceTab()
         {
-            if (!_settings.SpeakEnabled || !_settings.SpeakTabSwitch) return;
             var name = Active.SearchTerm is { } term ? $"Results for {term}"
                 : IsDrivesView ? "Drives"
                 : FolderDisplayName(Active.CurrentPath);
 
-            // Routed rather than spoken straight at NVDA, so where this goes is
-            // decided in the one place that decides it for everything else.
-            // SpeakTabSwitch still gates the group in front of the catalogue, so
-            // both have to agree before anything is said.
+            // Routed rather than spoken straight at NVDA, so "Switched tab" in
+            // Choose what is spoken is the one switch for it.
             AnnounceOperation("nav.tab",
                 $"Tab {_activeIndex + 1}, {name}, {NameRules.Items(Active.Entries.Count)}");
         }
@@ -2804,6 +2800,23 @@ namespace ExplorerNative
             // A change that waited because another window was in front.
             if (_panes[_activeIndex] is { } pane && (pane.NeedsRefresh || pane.Debounce.Pending))
                 ScheduleWatchCheck();
+
+            // Back to the quick poll, and catch up on what it missed.
+            if (_availabilityTimer is { Enabled: true, Interval: not 4000 })
+            {
+                _availabilityTimer.Interval = 4000;
+                CheckCurrentPathStillExists();
+            }
+        }
+
+        /// <summary>
+        /// Behind another window the drive poll slows to every fifteen seconds:
+        /// nobody is looking, and a laptop on battery pays for every wakeup.
+        /// </summary>
+        protected override void OnDeactivate(EventArgs e)
+        {
+            base.OnDeactivate(e);
+            if (_availabilityTimer != null && !IsDisposed) _availabilityTimer.Interval = 15000;
         }
 
         /// <summary>
@@ -4306,7 +4319,7 @@ namespace ExplorerNative
                     Program.PlayAudioFile(onDisk))
                     return;
 
-                if (_settings.SpeakOnOpen) AnnounceOperation($"Opening {name}");
+                AnnounceOperation("file.opening", $"Opening {name}");
 
                 await Task.Run(() => FileLauncher.Open(onDisk));
             }
@@ -5749,7 +5762,7 @@ namespace ExplorerNative
                 Program.PlayAudioFile(path))
                 return;
 
-            if (_settings.SpeakOnOpen) AnnounceOperation($"Opening {name}");
+            AnnounceOperation("file.opening", $"Opening {name}");
 
             Task.Run(() =>
             {
@@ -8085,7 +8098,7 @@ namespace ExplorerNative
 
             if (IsDisposed) return;
             if (errors.Count > 0) Announce("The other copy was not deleted. " + string.Join("; ", errors), isError: true);
-            else AnnounceOperation("Deleted on both sides");
+            else Announce("Deleted on both sides");
         }
 
         /// <summary>
@@ -8233,7 +8246,7 @@ namespace ExplorerNative
             var windowHandle = Handle;
             var fromFolders = paths.Select(SafeParent).Where(f => f != null).Cast<string>()
                 .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            AnnounceOperation(paths.Length == 1 ? "Deleting" : $"Deleting {paths.Length} items");
+            Announce(paths.Length == 1 ? "Deleting" : $"Deleting {paths.Length} items");
 
             _deleting = true;
             RunningTransfers++;
@@ -8830,13 +8843,13 @@ namespace ExplorerNative
 
             if (selected == 0)
             {
-                _statusLabel.Text = $"{prefix}{NameRules.Items(total)}{more}";
+                SetStatusText($"{prefix}{NameRules.Items(total)}{more}");
                 return;
             }
 
             if (selected > MaxSelectionToSum)
             {
-                _statusLabel.Text = $"{prefix}{NameRules.Items(total)}{more}, {selected} selected";
+                SetStatusText($"{prefix}{NameRules.Items(total)}{more}, {selected} selected");
                 return;
             }
 
@@ -8851,9 +8864,9 @@ namespace ExplorerNative
                 if (!entry.IsDir && entry.Size > 0) bytes += entry.Size;
             }
 
-            _statusLabel.Text =
+            SetStatusText(
                 $"{prefix}{NameRules.Items(total)}{more}, {selected} selected " +
-                $"({SizeFormatter.Format(bytes, _settings.SizeUnits)})";
+                $"({SizeFormatter.Format(bytes, _settings.SizeUnits)})");
         }
 
         /// <summary>
@@ -8865,33 +8878,38 @@ namespace ExplorerNative
         /// replace "Deleted 3 items" with the item count — the message would
         /// appear and vanish before it could be read.
         /// </summary>
+        /// <summary>Unchanged text is not set again: each set lays the status strip out, once per arrow press.</summary>
+        private void SetStatusText(string text)
+        {
+            if (!string.Equals(_statusLabel.Text, text, StringComparison.Ordinal)) _statusLabel.Text = text;
+        }
+
         private void ShowStatus(string message)
         {
             _statusTimer?.Stop();
             _statusLabel.Text = message;
         }
 
+        /// <summary>
+        /// A message with no catalogue entry of its own. An error goes out under
+        /// "error.generic", so "Something went wrong" in Choose what is spoken
+        /// decides it, as a finer id would.
+        /// </summary>
         private void Announce(string message, bool isError = false)
         {
+            if (isError) { AnnounceOperation("error.generic", message); return; }
             ShowStatus(message);
-            if (!_settings.SpeakEnabled) return;
-            if (isError && !_settings.SpeakErrors) return;
-            Speech.Speak(message, _settings.InterruptSpeech);
+            if (_settings.SpeakEnabled) Speech.Speak(message, _settings.InterruptSpeech);
         }
-
-        private void AnnounceOperation(string message) => AnnounceOperation(null, message);
 
         /// <summary>
         /// An operation's result, routed by its catalogue id.
         ///
-        /// The id decides where it may go and the sentence is what goes there —
+        /// The id decides whether it is spoken and the sentence is what is said —
         /// the caller knows how many items and which one failed, and the
         /// catalogue's own template exists for previewing rather than for saying.
-        ///
-        /// The old "announce operations" switch still applies on top: it silences
-        /// the whole group, and the catalogue silences one message inside a group
-        /// that is otherwise on. A message with no id keeps the old behaviour
-        /// exactly, so nothing goes quiet merely for not being catalogued yet.
+        /// An unknown id is spoken, so nothing goes quiet merely for not being
+        /// catalogued yet.
         ///
         /// The status bar gets it either way. That is not a channel any more —
         /// writing a silent line costs nothing and interrupts nobody, and a
@@ -8899,20 +8917,12 @@ namespace ExplorerNative
         /// showing before, which is a stale answer to a question somebody has
         /// just asked.
         /// </summary>
-        private void AnnounceOperation(string? notificationId, string message)
+        private void AnnounceOperation(string notificationId, string message)
         {
             ShowStatus(message);
-
-            bool speak = _settings.SpeakEnabled && _settings.SpeakOperations;
-
-            if (!string.IsNullOrEmpty(notificationId) &&
-                Notifications.ById(notificationId) != null)
-            {
-                speak = speak &&
-                    Notifications.ChannelsFor(notificationId, _settings) == NotificationChannel.Speech;
-            }
-
-            if (!speak) return;
+            if (!_settings.SpeakEnabled) return;
+            if (Notifications.ById(notificationId) != null &&
+                Notifications.ChannelsFor(notificationId, _settings) != NotificationChannel.Speech) return;
             Speech.Speak(message, _settings.InterruptSpeech);
         }
 

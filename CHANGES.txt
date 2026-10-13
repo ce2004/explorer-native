@@ -1,3 +1,11 @@
+2.3.3
+Bug fixed: on some computers, entering a correct Google client ID and secret said Google could not be reached to check them, and nothing was saved, so Google Drive could never be set up. Now the ID and secret are saved and sign-in carries on in the browser, and only a real "wrong ID or secret" answer from Google stops you. If something does go wrong, the message now says exactly what.
+Bug fixed: on networks where IPv6 is broken, which is common on home routers, Google Drive could time out even though web browsers worked. It now connects over IPv4 and IPv6 at the same time, like a browser does, and uses whichever answers first.
+Bug fixed: Preferences had a second set of speech tick boxes that fought with Choose what is spoken. For example, Switched tab could say Speak in the list and still never be spoken, because the Announce tab box on the Behaviour page was off. The tick boxes are gone and Choose what is spoken is now the only place to turn each message on or off. Your old choices were carried over, so nothing you hear changes.
+Bug fixed: if you ticked one of the player's speech boxes, such as Say the volume when it changes, nothing was spoken unless the same message was also turned on in Choose what is spoken. Those boxes are gone too; the player's messages are under Playing audio, Volume and Position in a track.
+New: Opening a file and Copy progress every ten percent are now in Choose what is spoken, instead of being separate tick boxes.
+Better battery life: a paused track, the audio editor, Drive folder sync with nothing set up, and Drive downloads now wake the processor far less often while idle, and the check that a drive is still plugged in slows down while the window is in the background.
+
 2.3.2
 Uploading to Google Drive is about three times faster for folders with lots of files. A 1 gigabyte folder of 3000 files now takes about 3 minutes instead of 9.
 Bug fixed: when you uploaded a big folder to Google Drive, the progress window sat at 0 percent and calculating while the folders were being made, then jumped to 100 percent and stayed there while the rest of the files were still going. It now counts the folders as they are made, and the percentage and time remaining move steadily to the end.

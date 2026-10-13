@@ -181,6 +181,7 @@ Pipeline: decoder -> SilenceReduction -> TimeStretch -> Resampler -> ring -> ren
 - `SpeechOverrides` stores only differences from default. Defaults say less, but anything requested or any failure is on (tested for fail/denied/refused).
 - Every example must render. Preview plays even when the message is off. `WiredNotificationIds` must match `Raised` both ways. Never invent events.
 - Routing comes from the catalogue and wording from the code. A finer id replaces the generic one. Unknown ids go to the status bar only.
+- The list is the only per-message switch. Never add a tick box that gates catalogued messages (the old Speak*/AudioAnnounce* boxes did, so a message showing "Speak" never spoke). Only `SpeakEnabled` (master) and `InterruptSpeech` stay. Uncatalogued errors go out as `error.generic`. `CarryRetiredSpeechSwitches` folds old files' boxes into `SpeechOverrides`.
 
 ## Google Drive (Cloud Files provider on a subst letter)
 

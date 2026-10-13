@@ -305,6 +305,10 @@ namespace ExplorerNative
             Live("folder.created", "Folder created", FileOperations, Say, "Created {0}", "New folder"),
             Live("shortcut.created", "Shortcut created", FileOperations, Say, "Created shortcut {0}",
                 "notes.txt - Shortcut.lnk"),
+            // Off: the application that opens speaks for itself. These two were
+            // tick boxes on the Speech page, beside this list rather than in it.
+            Live("file.opening", "Opening a file", FileOperations, Off, "Opening {0}", "notes.txt"),
+            Live("transfer.progress", "Copy progress every ten percent", FileOperations, Say, "{0} percent", 40),
             // ---- Files: archives ----
             //
             // Compressing borrows the transfer window and therefore the transfer

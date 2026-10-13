@@ -48,7 +48,7 @@ namespace ExplorerNative
         /// must be brought along with, rather than being left on the old value
         /// forever because it was written down once.
         /// </summary>
-        public const int CurrentSettingsVersion = 13;
+        public const int CurrentSettingsVersion = 14;
 
         /// <summary>
         /// What the window is called when nothing else has been chosen. Lives
@@ -66,7 +66,14 @@ namespace ExplorerNative
 
         // ---------- Speech ----------
         public bool SpeakEnabled { get; set; } = true;
-        public bool SpeakOperations { get; set; } = true;          // "copied file", "cut 3 items"
+
+        // SpeakOperations, SpeakErrors, SpeakProgress, SpeakOnOpen and
+        // SpeakTabSwitch were here, and so were the player's AudioAnnounce
+        // switches. Each was a tick box that sat in front of messages already in
+        // "Choose what is spoken", so a message spoke only when both agreed and
+        // the list said "Speak" for things that never did. The list is the one
+        // place now; an older file's choices are carried into it by
+        // CarryRetiredSpeechSwitches.
 
         // There is no SpeakPositionInList. It existed, defaulted to false, was
         // offered nowhere in the dialog and read nowhere in the app — a switch
@@ -76,10 +83,6 @@ namespace ExplorerNative
         // in the file implying otherwise.
 
         public bool InterruptSpeech { get; set; } = true;
-        public bool SpeakErrors { get; set; } = true;
-        public bool SpeakProgress { get; set; } = true;            // long copy progress milestones
-        /// <summary>"Opening" and the name when launching a file. Off: the app that opens speaks for itself.</summary>
-        public bool SpeakOnOpen { get; set; } = false;
 
         // ---------- Display ----------
         public bool ShowHiddenFiles { get; set; } = false;
@@ -140,7 +143,6 @@ namespace ExplorerNative
         /// keystroke starts a new one. See <see cref="TypeAheadBuffer"/>.
         /// </summary>
         public int TypeAheadMilliseconds { get; set; } = TypeAheadBuffer.DefaultTimeoutMilliseconds;
-        public bool SpeakTabSwitch { get; set; } = true;
         public bool ConfirmDelete { get; set; } = true;
         public DeleteMode Delete { get; set; } = DeleteMode.RecycleBin;
         public PasteConflictPolicy PasteConflict { get; set; } = PasteConflictPolicy.AutoRename;
@@ -540,35 +542,10 @@ namespace ExplorerNative
         public string SpeechOverrides { get; set; } = "";
 
         // ---- What it says ----
-
-        /// <summary>
-        /// Off. Pressing Enter on a track should play the track, not talk about
-        /// playing the track — the silence that follows is the confirmation, and
-        /// the name was just read out on the row that was activated.
-        /// </summary>
-        public bool AudioAnnounceStart { get; set; }
-
-        /// <summary>Off, for the same reason: the music stopping is the announcement.</summary>
-        public bool AudioAnnounceTrackEnd { get; set; }
-
-        /// <summary>
-        /// Play, pause, stop, mute, repeat and speed.
-        ///
-        /// Off. Every one of them is audible the instant it happens — the music
-        /// starts, stops, goes quiet or changes speed — so saying it as well is
-        /// narration over the thing being narrated.
-        /// </summary>
-        public bool AudioAnnounceTransport { get; set; }
-
-        /// <summary>
-        /// Off. A volume key held down is a stream of "forty-five percent, fifty
-        /// percent" over the top of the music whose volume is being changed, and
-        /// the change itself is the feedback.
-        /// </summary>
-        public bool AudioAnnounceVolume { get; set; }
-
-        /// <summary>Off, for the same reason: the track jumping is the answer.</summary>
-        public bool AudioAnnounceSeek { get; set; }
+        //
+        // Whether the player speaks is decided per message in "Choose what is
+        // spoken" (the Playing audio, Volume and Position categories). See
+        // CarryRetiredSpeechSwitches for the switches that used to be here.
 
         /// <summary>
         /// Name the track by its Title tag rather than its file name. Read on a
@@ -1006,6 +983,9 @@ namespace ExplorerNative
             }
 
             // An older file: anything unrecognised is a setting since removed.
+            // The retired speech switches are read out of it first, so what the
+            // person heard is what they keep hearing.
+            CarryRetiredSpeechSwitches(UnknownSettings);
             UnknownSettings = null;
 
             // THE RULE (2026-10-05, at Conner's request): an update never
@@ -1023,6 +1003,84 @@ namespace ExplorerNative
             // value an earlier version accepted.
 
             SettingsVersion = CurrentSettingsVersion;
+        }
+
+        /// <summary>
+        /// The tick boxes that used to sit in front of "Choose what is spoken",
+        /// and the messages each one silenced while it was unticked.
+        ///
+        /// A message spoke only when its box and its own choice in the list both
+        /// said so. Unticked boxes become "off" on the messages they silenced; a
+        /// ticked box changed nothing, so it carries nothing. The one exception
+        /// is SpeakOnOpen, which gated a message that had no entry in the list.
+        /// </summary>
+        private static readonly (string Name, string[] Ids)[] RetiredSpeechSwitches =
+        {
+            ("SpeakTabSwitch", new[] { "nav.tab" }),
+            ("SpeakErrors", new[] { "error.generic" }),
+            ("SpeakProgress", new[] { "transfer.progress" }),
+            ("AudioAnnounceStart", new[] { "audio.play" }),
+            ("AudioAnnounceTrackEnd", new[] { "audio.ended" }),
+            ("AudioAnnounceTransport", new[]
+            {
+                "audio.pause", "audio.resume", "audio.stop", "volume.muted", "volume.unmuted",
+                "audio.speed.up", "audio.speed.down", "audio.speed.normal", "audio.speed.limit",
+                "audio.repeat.on", "audio.repeat.off",
+            }),
+            ("AudioAnnounceVolume", new[]
+            {
+                "volume.up", "volume.down", "volume.max", "volume.min", "volume.gain", "volume.unmuted.auto",
+            }),
+            ("AudioAnnounceSeek", new[]
+            {
+                "seek.forward", "seek.back", "seek.forward.long", "seek.back.long",
+                "seek.start", "seek.end", "seek.wrapped", "audio.restart",
+            }),
+        };
+
+        /// <summary>The categories whose messages "Announce operations" silenced.</summary>
+        private static readonly string[] OperationCategories =
+        {
+            Notifications.FileOperations, Notifications.Navigation, Notifications.Clipboard,
+            Notifications.Searching, Notifications.DriveOperations,
+        };
+
+        private void CarryRetiredSpeechSwitches(Dictionary<string, JsonElement>? old)
+        {
+            if (old == null || old.Count == 0) return;
+
+            var overrides = Notifications.ParseOverrides(SpeechOverrides);
+            bool changed = false;
+
+            bool Is(string name, JsonValueKind kind) =>
+                old.TryGetValue(name, out var value) && value.ValueKind == kind;
+
+            void Silence(string id)
+            {
+                if (Notifications.ById(id) is not { } info) return;
+                var now = overrides.TryGetValue(id, out var chosen) ? chosen : info.Default;
+                if (now != NotificationChannel.Speech) return;
+                overrides[id] = NotificationChannel.None;
+                changed = true;
+            }
+
+            foreach (var (name, ids) in RetiredSpeechSwitches)
+                if (Is(name, JsonValueKind.False))
+                    foreach (var id in ids) Silence(id);
+
+            // Progress was never one of the operations, whatever its category.
+            if (Is("SpeakOperations", JsonValueKind.False))
+                foreach (var info in Notifications.All)
+                    if (info.Id != "transfer.progress" && Array.IndexOf(OperationCategories, info.Category) >= 0)
+                        Silence(info.Id);
+
+            if (Is("SpeakOnOpen", JsonValueKind.True))
+            {
+                overrides["file.opening"] = NotificationChannel.Speech;
+                changed = true;
+            }
+
+            if (changed) SpeechOverrides = Notifications.FormatOverrides(overrides);
         }
 
         /// <summary>

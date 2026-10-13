@@ -973,9 +973,9 @@ namespace ExplorerNative
                         started = false;
                     }
 
-                    // Nothing to do and nothing asking. One wakeup a second, and
-                    // only to notice that the flag has not changed.
-                    WaitForSingleObject(_wake, 1000);
+                    // Nothing to do and nothing asking. SetSuspended and Stop
+                    // both signal _wake, so the timeout is only a safety net.
+                    WaitForSingleObject(_wake, 10000);
                     continue;
                 }
 

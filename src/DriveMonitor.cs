@@ -469,7 +469,12 @@ namespace ExplorerNative
             var token = _stop.Token;
             while (!token.IsCancellationRequested)
             {
-                try { await _wake.WaitAsync(TimeSpan.FromSeconds(60), token).ConfigureAwait(false); }
+                // With no pairs there is nothing to check: Reload ends in
+                // SyncNow, so adding one wakes this straight away.
+                bool idle;
+                lock (_gate) idle = _pairs.Count == 0;
+                var wait = idle ? TimeSpan.FromMinutes(10) : TimeSpan.FromSeconds(60);
+                try { await _wake.WaitAsync(wait, token).ConfigureAwait(false); }
                 catch (OperationCanceledException) { return; }
 
                 try { await PassAsync(token).ConfigureAwait(false); }
