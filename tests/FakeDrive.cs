@@ -113,9 +113,20 @@ namespace ExplorerNative
         public int DropMultipartMidBody;
         public int SlowMediaMs;
 
+        // Children by parent, built on first use and dropped whenever an item is
+        // added, removed or moved, so a listing does not scan millions of items
+        // the way real Drive's index would not. Only touched under _gate.
+        private Dictionary<string, List<Item>>? _byParent;
+
+        private List<Item> ChildrenOf(string parent)
+        {
+            _byParent ??= _items.Values.GroupBy(i => i.Parent).ToDictionary(g => g.Key, g => g.ToList());
+            return _byParent.TryGetValue(parent, out var children) ? children : new List<Item>();
+        }
+
         public FakeDrive()
         {
-            _items[Root] = new Item { Id = Root, Name = "My Drive", MimeType = DriveClient.FolderMimeType };
+            _items[Root] =new Item { Id = Root, Name = "My Drive", MimeType = DriveClient.FolderMimeType };
         }
 
         // ---------------- building and reading the Drive ----------------
@@ -125,7 +136,7 @@ namespace ExplorerNative
             lock (_gate)
             {
                 var id = "f" + (++_next);
-                _items[id] = new Item { Id = id, Name = name, Parent = parent, MimeType = DriveClient.FolderMimeType };
+                _byParent = null; _items[id] = new Item { Id = id, Name = name, Parent = parent, MimeType = DriveClient.FolderMimeType };
                 _changed.Add(id);
                 return id;
             }
@@ -137,7 +148,7 @@ namespace ExplorerNative
             lock (_gate)
             {
                 var id = "d" + (++_next);
-                _items[id] = new Item
+                _byParent = null; _items[id] = new Item
                 {
                     Id = id, Name = name, Parent = parent, MimeType = mime, Data = data,
                     Modified = Ms(modifiedUtc),
@@ -159,7 +170,10 @@ namespace ExplorerNative
 
         public void Trash(string id) { lock (_gate) { _items[id].Trashed = true; _changed.Add(id); } }
 
-        public void Remove(string id) { lock (_gate) { _items.Remove(id); _changed.Add(id); } }
+        public void Remove(string id) { lock (_gate) { _items.Remove(id); _byParent = null; _changed.Add(id); } }
+
+        /// <summary>Moves an item into another folder, as the website would.</summary>
+        public void MoveTo(string id, string parent) { lock (_gate) { _items[id].Parent = parent; _byParent = null; } }
 
         /// <summary>Ids changed through the methods above, in order: the changes feed.</summary>
         private readonly List<string> _changed = new();
@@ -177,7 +191,7 @@ namespace ExplorerNative
             lock (_gate)
             {
                 var id = "d" + (++_next);
-                _items[id] = new Item { Id = id, Name = name, Parent = parent, Data = data, Modified = Ms(modifiedUtc) };
+                _byParent = null; _items[id] = new Item { Id = id, Name = name, Parent = parent, Data = data, Modified = Ms(modifiedUtc) };
                 return id;
             }
         }
@@ -210,7 +224,7 @@ namespace ExplorerNative
                 var at = folder;
                 foreach (var part in relative.Split('/'))
                 {
-                    var hit = _items.Values.Where(i => i.Parent == at && !i.Trashed && i.Name == part)
+                    var hit = ChildrenOf(at).Where(i => !i.Trashed && i.Name == part)
                         .OrderByDescending(i => i.Modified).FirstOrDefault();
                     if (hit == null) return null;
                     at = hit.Id;
@@ -229,7 +243,7 @@ namespace ExplorerNative
 
         private void Walk(string folder, string prefix, Dictionary<string, byte[]> into)
         {
-            foreach (var item in _items.Values.Where(i => i.Parent == folder && !i.Trashed))
+            foreach (var item in ChildrenOf(folder).Where(i => !i.Trashed))
             {
                 var path = prefix + item.Name;
                 if (item.IsFolder) Walk(item.Id, path + "/", into);
@@ -248,7 +262,7 @@ namespace ExplorerNative
                 while (queue.Count > 0)
                 {
                     var (id, prefix) = queue.Dequeue();
-                    var children = _items.Values.Where(i => i.Parent == id && !i.Trashed).ToList();
+                    var children = ChildrenOf(id).Where(i => !i.Trashed).ToList();
                     found.AddRange(children.GroupBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
                         .Where(g => g.Count() > 1).Select(g => prefix + g.Key));
                     foreach (var f in children.Where(c => c.IsFolder)) queue.Enqueue((f.Id, prefix + f.Name + "/"));
@@ -520,8 +534,7 @@ namespace ExplorerNative
             lock (_gate)
             {
                 var shownBefore = DateTime.UtcNow - ListingLag;
-                var rows = _items.Values
-                    .Where(i => i.Parent == parent && !i.Trashed && i.Id != Root)
+                var rows = ChildrenOf(parent).Where(i => !i.Trashed && i.Id != Root)
                     .Where(i => ListingLag <= TimeSpan.Zero || i.Created <= shownBefore)
                     .Where(i => tag == null ||
                                 (i.AppProperties.TryGetValue(DriveClient.OperationProperty, out var t) && t == tag))
@@ -721,7 +734,7 @@ namespace ExplorerNative
             lock (_gate)
             {
                 item.Id = "d" + (++_next);
-                _items[item.Id] = item;
+                _byParent = null; _items[item.Id] = item;
                 session.Done = item;
             }
             Interlocked.Increment(ref Uploads);
@@ -752,7 +765,7 @@ namespace ExplorerNative
                     Renames++;
                 }
                 if (json.TryGetProperty("modifiedTime", out var m)) item.Modified = ParseTime(m.GetString()) ?? item.Modified;
-                if (query["addParents"] is { Length: > 0 } to) { item.Parent = to; Moves++; }
+                if (query["addParents"] is { Length: > 0 } to) { item.Parent = to; _byParent = null; Moves++; }
                 _changed.Add(item.Id);
                 return Json(200, Describe(item));
             }
@@ -776,7 +789,7 @@ namespace ExplorerNative
             lock (_gate)
             {
                 item.Id = (item.IsFolder ? "f" : "d") + (++_next);
-                _items[item.Id] = item;
+                _byParent = null; _items[item.Id] = item;
                 _changed.Add(item.Id);
             }
             return item;

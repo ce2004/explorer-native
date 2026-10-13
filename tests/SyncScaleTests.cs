@@ -396,7 +396,7 @@ namespace ExplorerNative
 
             var song = rig.Drive.Find(rig.FolderId, "Library/album 000/track 00002.flac")!;
             var other = rig.Drive.Find(rig.FolderId, "Library/album 001")!;
-            rig.Drive.Get(song)!.Parent = other;
+            rig.Drive.MoveTo(song, other);
             rig.Drive.Get(song)!.Name = "moved on the web.flac";
             rig.Drive.Changed(song);
             await rig.Pass();

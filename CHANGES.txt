@@ -1,3 +1,7 @@
+3.0.1
+New: the window title now says where both tabs are, for example Explorer Native: Tab 1: D:\Music: Tab 2: C:\Users\Morgan\Downloads, so Alt+Tab and NVDA+T tell you which folders are open.
+Faster: the first sync of a folder full of small files that are already on Google Drive checks them about three times faster. Two million tiny files took under ten minutes in testing, and nothing was uploaded twice.
+
 3.0.0
 New: renaming or moving a file or a whole folder in a synced folder is now done the same way on the other side, instead of uploading or downloading everything again. A renamed folder of a thousand songs is one quick change on Google Drive, and nothing is copied twice.
 New: before a new synced folder starts, Explorer Native looks at both sides first and tells you how many files are on each, how many already match, and how many would be uploaded, downloaded or kept twice, then asks whether to start now or save it paused.

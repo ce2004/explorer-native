@@ -1481,8 +1481,7 @@ namespace ExplorerNative
         {
             // Set here rather than in the constructor so it follows the setting
             // the instant it is changed, without needing a restart.
-            var title = _settings.DisplayTitle;
-            if (Text != title) Text = title;
+            UpdateTitle();
 
             _folderSizes.TimeoutSeconds = _settings.FolderSizeTimeoutSeconds;
 
@@ -1967,6 +1966,7 @@ namespace ExplorerNative
 
                 pane.CurrentPath = DrivesPath;
                 if (pane == Active) _pathLabel.Text = "Drives";
+                UpdateTitle();
 
                 // Nothing to watch: the drive list is not a folder.
                 DisarmWatcher(pane);
@@ -2027,6 +2027,7 @@ namespace ExplorerNative
 
                 pane.CurrentPath = full;
                 if (pane == Active) _pathLabel.Text = full;
+                UpdateTitle();
 
                 // Watched from before the listing starts, so a file that arrives
                 // while a big folder is still being read is not missed; armed
@@ -2084,6 +2085,8 @@ namespace ExplorerNative
                     }
 
                     if (pane == Active) _pathLabel.Text = PathLabelFor(pane);
+
+                    UpdateTitle();
 
                     // The watcher went over to the folder that would not open;
                     // it goes back to the one still on screen. That folder went
@@ -4252,6 +4255,7 @@ namespace ExplorerNative
 
             pane.CurrentPath = full;
             if (pane == Active) _pathLabel.Text = full;
+            UpdateTitle();
 
             bool sizes = _settings.FolderSizes == FolderSizeMode.Automatic;
             var units = _settings.SizeUnits;
@@ -4773,6 +4777,7 @@ namespace ExplorerNative
 
             SetEntries(pane, entries);
             UpdatePaneName(pane);
+            UpdateTitle();
             if (pane == Active)
             {
                 _pathLabel.Text = PathLabelFor(pane);
@@ -4810,6 +4815,21 @@ namespace ExplorerNative
             pane.SearchTerm is { } term ? $"Results for \"{term}\" in {pane.CurrentPath}"
             : pane.CurrentPath == DrivesPath ? "Drives"
             : pane.CurrentPath;
+
+        /// <summary>
+        /// "Explorer Native: Tab 1: D:\Music: Tab 2: C:\Users\Conner\Downloads",
+        /// so Alt+Tab and NVDA+T say where both tabs are. A tab nothing was
+        /// opened in is left out. The list has focus, not the window, so a
+        /// change here is not read out on every folder.
+        /// </summary>
+        private void UpdateTitle()
+        {
+            var tabs = string.Join(": ", Enumerable.Range(0, _panes.Length)
+                .Where(i => _panes[i] != null && !string.IsNullOrEmpty(_panes[i].CurrentPath))
+                .Select(i => $"Tab {i + 1}: {PathLabelFor(_panes[i])}"));
+            var title = tabs.Length == 0 ? _settings.DisplayTitle : $"{_settings.DisplayTitle}: {tabs}";
+            if (Text != title) Text = title;
+        }
 
         /// <summary>
         /// Stops a search that is still gathering, leaving the pane showing

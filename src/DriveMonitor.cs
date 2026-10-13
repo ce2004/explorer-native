@@ -859,7 +859,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Works out the MD5 of each PC file the plan needs one for, two at a
-        /// time, remembering each in the encrypted state so it is never worked
+        /// time, or eight when they are small, remembering each in the encrypted state so it is never worked
         /// out again. Big checks are announced like big passes, and the pair
         /// says how far it has got.
         ///
@@ -884,6 +884,12 @@ namespace ExplorerNative
             int done = 0;
             var gate = new object();
             var saved = System.Diagnostics.Stopwatch.StartNew();
+            long gap = 2000;
+
+            // Two at a time keeps a hard disk from seeking between big files.
+            // Millions of tiny ones are a file open each, mostly waiting on the
+            // disk and the virus scanner, so more go at once.
+            int lanes = bytes / toHash.Count < HashSmallAverage ? HashLanesSmall : 2;
             void Progress()
             {
                 lock (_gate)
@@ -898,7 +904,7 @@ namespace ExplorerNative
 
             try
             {
-                await Parallel.ForEachAsync(toHash, new ParallelOptions { MaxDegreeOfParallelism = 2, CancellationToken = token },
+                await Parallel.ForEachAsync(toHash, new ParallelOptions { MaxDegreeOfParallelism = lanes, CancellationToken = token },
                     async (path, ct) =>
                     {
                         if (Stopped(pair) || GenerationOf(pair.Id) != generation) throw new PairStoppedException();
@@ -906,8 +912,12 @@ namespace ExplorerNative
                         {
                             var full = Path.Combine(pair.LocalFolder, path.Replace('/', Path.DirectorySeparatorChar));
                             string md5;
+                            // A buffer the size of the file, up to a megabyte: a
+                            // megabyte each for millions of tiny files was most of
+                            // the work.
+                            int buffer = (int)Math.Clamp(local[path].Size, 4096, 1 << 20);
                             await using (var file = new FileStream(full, FileMode.Open, FileAccess.Read,
-                                             FileShare.ReadWrite | FileShare.Delete, 1 << 20, FileOptions.SequentialScan | FileOptions.Asynchronous))
+                                             FileShare.ReadWrite | FileShare.Delete, buffer, FileOptions.SequentialScan | FileOptions.Asynchronous))
                                 md5 = Convert.ToHexString(await MD5.HashDataAsync(file, ct).ConfigureAwait(false)).ToLowerInvariant();
 
                             int before, after;
@@ -917,10 +927,11 @@ namespace ExplorerNative
                                 state.Hashes[path] = new SyncHashEntry(local[path].Size, local[path].ModifiedUtc, md5);
                                 before = done;
                                 after = ++done;
-                                if (saved.ElapsedMilliseconds > 2000)
+                                if (saved.ElapsedMilliseconds > gap)
                                 {
                                     SaveState(pair.Id, state);
                                     saved.Restart();
+                                    lock (_gate) gap = SaveGap(_saveCost.TryGetValue(pair.Id, out var cost) ? cost : 0);
                                 }
                             }
                             Progress();
@@ -4230,6 +4241,10 @@ namespace ExplorerNative
         /// loses a little more, which the next pass adopts again by MD5.
         /// </summary>
         internal static long SaveGap(long lastCostMilliseconds) => Math.Max(2000, lastCostMilliseconds * 20);
+
+        /// <summary>Files checked at once when they average under <see cref="HashSmallAverage"/> bytes.</summary>
+        internal const int HashLanesSmall = 8;
+        internal const long HashSmallAverage = 1 << 20;
 
         private void SaveSoon(string pairId, PairState state, bool now = false)
         {
