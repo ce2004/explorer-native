@@ -549,7 +549,8 @@ namespace ExplorerNative
 
         /// <summary>
         /// Whether a pair runs in this pass: asked for, its PC folder changed, or
-        /// its "check Drive every" time is up. Zero minutes means only on request.
+        /// a minute has passed since Drive was last checked. Zero minutes (tests
+        /// only) means only on request.
         /// </summary>
         private bool TakeDue(DriveSyncPair pair, bool all, DateTime now)
         {

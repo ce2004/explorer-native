@@ -1,3 +1,8 @@
+3.0.4
+Changed: the directions for a synced folder are now called mirrors: 2-way mirror, where a change on either side is made on the other; 1-way mirror, PC to Drive, a backup in Drive; and 1-way mirror, Drive to PC, a copy on this PC.
+New: right under Direction there is an Example box that says what your choice does with your own folders, such as: Put notes.txt in Music on this PC, and within a minute it is in music in Google Drive too. It changes as you change the direction, the folders, or the delete box. Press Tab from Direction to read it.
+Changed: the Check Drive every box is gone. Changes on your PC already start a sync within seconds, and every synced folder now checks Google Drive for changes every minute. A check is one small question to Google, however many files the folder has. Folders set to check less often, or only when you press Sync now, now check every minute too.
+
 3.0.3
 Changed: before a new synced folder starts, what it will do now appears in a box in the window itself, right above OK, instead of a pop-up with Yes, No and Cancel. Press Tab to reach it and read it line by line. Press OK to start syncing, or tick Paused and press OK to save it for later.
 Changed: that summary is in plain sentences, such as 9,364 files, 119.8 gigabytes, will be copied down to this PC.

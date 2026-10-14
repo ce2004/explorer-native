@@ -1083,8 +1083,27 @@ namespace ExplorerNative
                 DriveMonitorForm.Describe(pair, new DriveMonitor.PairStatus(null, "paused: C: is out of space, needs 30 gigabytes more", false), t0)
                     .Contains("paused: C: is out of space, needs 30 gigabytes more"));
             pair.CheckMinutes = 0;
-            Check("a pair checked only on request says so",
-                DriveMonitorForm.Describe(pair, null, t0).Contains("Checks Drive only when you press Sync now."));
+            Check("how often Drive is checked is not a setting, and the row does not mention it",
+                !DriveMonitorForm.Describe(pair, null, t0).Contains("Checks Drive"));
+            Check("Check Drive every is no longer saved, so an old 60 minutes reads as every minute",
+                System.Text.Json.JsonSerializer.Deserialize<Settings>(
+                    "{\"DriveSyncPairs\":[{\"Name\":\"Music\",\"CheckMinutes\":60}]}", Settings.ReadFormat)!
+                    .DriveSyncPairs[0].CheckMinutes == 1 &&
+                !System.Text.Json.JsonSerializer.Serialize(new Settings { DriveSyncPairs = { pair } }, Settings.JsonFormat)
+                    .Contains("CheckMinutes"));
+
+            // The direction's example, with the person's own folders.
+            var two = DrivePairForm.Example(SyncMode.TwoWay, @"C:\Users\Conner\Music", "My Drive/music", deletes: false);
+            Check("the 2-way example names both folders", two.Contains("Music on this PC") && two.Contains("music in Google Drive"));
+            Check("and says a delete comes back when deletes are not copied", two.Contains("comes back from the other"));
+            Check("and that it goes to the bin when they are",
+                DrivePairForm.Example(SyncMode.TwoWay, @"C:\Music", "My Drive/music", deletes: true).Contains("Recycle Bin or the Drive trash"));
+            Check("the backup example says nothing comes down",
+                DrivePairForm.Example(SyncMode.UploadOnly, @"C:\Music", "My Drive/music", false).Contains("ever comes down to this PC"));
+            Check("the download example says nothing goes up",
+                DrivePairForm.Example(SyncMode.DownloadOnly, @"C:\Music", "My Drive/music", false).Contains("ever goes up to Drive"));
+            Check("an example with no folders chosen yet still reads",
+                DrivePairForm.Example(SyncMode.TwoWay, "", "", false).Contains("your folder on this PC"));
         }
 
         /// <summary>
@@ -1198,7 +1217,7 @@ namespace ExplorerNative
                 Mode = SyncMode.TwoWay,
             };
             Equal("a pair is one sentence",
-                @"Music, last synced 2 minutes ago. Keeps C:\Users\Conner\Music and My Drive/Music the same.",
+                @"Music, last synced 2 minutes ago. Mirrors C:\Users\Conner\Music and My Drive/Music both ways.",
                 DriveMonitorForm.Describe(pair, new DriveMonitor.PairStatus(t0, null, false), t0.AddMinutes(2)));
             pair.Mode = SyncMode.UploadOnly;
             pair.CopyDeletes = true;

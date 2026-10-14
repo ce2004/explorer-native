@@ -195,8 +195,8 @@ namespace ExplorerNative
 
         /// <summary>
         /// One pair, what it is doing first, then what it does in plain words:
-        /// "Music, last synced 2 minutes ago. Keeps C:\Users\Conner\Music and
-        /// My Drive/Music the same."
+        /// "Music, last synced 2 minutes ago. Mirrors C:\Users\Conner\Music and
+        /// My Drive/Music both ways."
         /// </summary>
         internal static string Describe(DriveSyncPair pair, DriveMonitor.PairStatus? status, DateTime nowUtc)
         {
@@ -204,7 +204,7 @@ namespace ExplorerNative
             {
                 SyncMode.UploadOnly => $"Copies {pair.LocalFolder} up to {pair.DriveFolderPath}.",
                 SyncMode.DownloadOnly => $"Copies {pair.DriveFolderPath} down to {pair.LocalFolder}.",
-                _ => $"Keeps {pair.LocalFolder} and {pair.DriveFolderPath} the same.",
+                _ => $"Mirrors {pair.LocalFolder} and {pair.DriveFolderPath} both ways.",
             };
             var deletes = pair.CopyDeletes ? " Files you delete are deleted on the other side too." : "";
 
@@ -245,15 +245,7 @@ namespace ExplorerNative
             }
             else state = "waiting to sync";
 
-            var check = pair.CheckMinutes switch
-            {
-                1 => "",
-                <= 0 => " Checks Drive only when you press Sync now.",
-                60 => " Checks Drive every hour.",
-                var m => $" Checks Drive every {m} minutes.",
-            };
-
-            return $"{DriveMonitor.DisplayName(pair)}, {state}. {does}{deletes}{check}";
+            return $"{DriveMonitor.DisplayName(pair)}, {state}. {does}{deletes}";
         }
 
         /// <summary>
@@ -451,7 +443,8 @@ namespace ExplorerNative
     internal sealed class DrivePairForm : Form
     {
         private readonly TextBox _name, _local, _drive, _skipTypes;
-        private readonly ComboBox _mode, _maxSize, _clash, _every;
+        private readonly ComboBox _mode, _maxSize, _clash;
+        private readonly TextBox _example;
         private readonly CheckBox _deletes, _paused, _subfolders;
         private readonly Label _status, _summaryLabel;
         private readonly TextBox _summary;
@@ -468,10 +461,49 @@ namespace ExplorerNative
 
         private static readonly (SyncMode Mode, string Text)[] Modes =
         {
-            (SyncMode.TwoWay, "Two-way: keep both the same"),
-            (SyncMode.UploadOnly, "Upload only: PC to Drive, a backup"),
-            (SyncMode.DownloadOnly, "Download only: Drive to PC"),
+            (SyncMode.TwoWay, "2-way mirror: a change on either side is made on the other"),
+            (SyncMode.UploadOnly, "1-way mirror, PC to Drive: a backup in Drive"),
+            (SyncMode.DownloadOnly, "1-way mirror, Drive to PC: a copy on this PC"),
         };
+
+        /// <summary>
+        /// What the chosen direction does, as one example with the person's own
+        /// folders: "Put notes.txt in Music on this PC, and within a
+        /// minute it is in music in Google Drive too..." Shown under Direction and
+        /// rewritten whenever the direction, either folder or the delete box changes.
+        /// </summary>
+        internal static string Example(SyncMode mode, string localFolder, string drivePath, bool deletes)
+        {
+            var leaf = Path.GetFileName(localFolder.Trim().TrimEnd('\\', '/'));
+            var pc = string.IsNullOrEmpty(leaf) ? "your folder on this PC" : leaf + " on this PC";
+            var driveLeaf = drivePath.Trim().TrimEnd('/');
+            driveLeaf = driveLeaf[(driveLeaf.LastIndexOf('/') + 1)..];
+            var drive = string.IsNullOrEmpty(driveLeaf) ? "your folder in Google Drive" : driveLeaf + " in Google Drive";
+
+            return mode switch
+            {
+                SyncMode.UploadOnly =>
+                    $"Put notes.txt in {pc}, and within a minute it is in {drive} too. " +
+                    "Edit it on the PC, and Drive gets the new version. " +
+                    (deletes
+                        ? "Delete it on the PC, and Drive's copy goes to the Drive trash. "
+                        : "Delete it on the PC, and Drive keeps its copy, as a backup. ") +
+                    "Nothing added or changed in Drive ever comes down to this PC, and a file deleted in Drive is put back from the PC.",
+                SyncMode.DownloadOnly =>
+                    $"Add notes.txt to {drive}, and within a minute it is in {pc} too. " +
+                    "Edit it in Drive, and the PC gets the new version. " +
+                    (deletes
+                        ? "Delete it in Drive, and the PC's copy goes to the Recycle Bin. "
+                        : "Delete it in Drive, and the PC keeps its copy. ") +
+                    "Nothing added or changed on this PC ever goes up to Drive, and a file deleted on the PC comes back from Drive.",
+                _ =>
+                    $"Put notes.txt in {pc}, and within a minute it is in {drive} too. " +
+                    $"Edit it in Drive, and the change comes down to the PC. " +
+                    (deletes
+                        ? "Delete it on either side, and the other side's copy goes to the Recycle Bin or the Drive trash."
+                        : "Delete it on one side, and it comes back from the other. To have deletes copied too, tick Also delete on the other side."),
+            };
+        }
 
         private static readonly (int Megabytes, string Text)[] Sizes =
         {
@@ -483,11 +515,6 @@ namespace ExplorerNative
             (ConflictChoice.KeepBoth, "Keep both copies"),
             (ConflictChoice.PcWins, "This PC's copy wins"),
             (ConflictChoice.DriveWins, "Google Drive's copy wins"),
-        };
-
-        private static readonly (int Minutes, string Text)[] Intervals =
-        {
-            (1, "1 minute"), (5, "5 minutes"), (15, "15 minutes"), (60, "60 minutes"), (0, "Only when I press Sync now"),
         };
 
         /// <summary>The other monitored folders, which this one may not overlap.</summary>
@@ -574,10 +601,24 @@ namespace ExplorerNative
             y += 34;
 
             _mode = Choice("&Direction:", Modes.Select(m => m.Text), Array.FindIndex(Modes, m => m.Mode == pair.Mode));
+            _mode.Width = 368;
             y += 34;
-            _every = Choice("Check Drive e&very:", Intervals.Select(i => i.Text),
-                Array.FindIndex(Intervals, i => i.Minutes == pair.CheckMinutes));
-            y += 34;
+
+            // What the direction does, with the person's own folders, next in
+            // the tab order: arrow through Direction, Tab, and read the example.
+            Controls.Add(new Label { Text = "E&xample:", AutoSize = true, Location = new Point(12, y) });
+            _example = new TextBox
+            {
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Vertical,
+                Location = new Point(12, y + 22),
+                Size = new Size(576, 84),
+                AccessibleName = "Example",
+                TabIndex = tab++,
+            };
+            Controls.Add(_example);
+            y += 116;
             _clash = Choice("Wh&en a file changed in both places:", Clashes.Select(c => c.Text),
                 Array.FindIndex(Clashes, c => c.Choice == pair.WhenBothChanged));
             y += 34;
@@ -594,6 +635,14 @@ namespace ExplorerNative
             y += 28;
             _paused = Check("Pa&used", pair.Paused);
             y += 32;
+
+            void ShowExample() => _example.Text =
+                Example(Modes[Math.Max(0, _mode.SelectedIndex)].Mode, _local.Text, _drive.Text, _deletes.Checked);
+            ShowExample();
+            _mode.SelectedIndexChanged += (_, _) => ShowExample();
+            _deletes.CheckedChanged += (_, _) => ShowExample();
+            _local.TextChanged += (_, _) => ShowExample();
+            _drive.TextChanged += (_, _) => ShowExample();
 
             // Before a first sync, what it will do: a read-only box in the tab
             // order, so it can be read line by line and gone back to. It used to
@@ -704,7 +753,6 @@ namespace ExplorerNative
                 edited.LocalFolder = Path.GetFullPath(_local.Text.Trim()).TrimEnd(Path.DirectorySeparatorChar);
                 edited.Name = string.IsNullOrWhiteSpace(_name.Text) ? Path.GetFileName(edited.LocalFolder) : _name.Text.Trim();
                 edited.Mode = Modes[Math.Max(0, _mode.SelectedIndex)].Mode;
-                edited.CheckMinutes = Intervals[Math.Max(0, _every.SelectedIndex)].Minutes;
                 edited.WhenBothChanged = Clashes[Math.Max(0, _clash.SelectedIndex)].Choice;
                 edited.MaxFileMegabytes = Sizes[Math.Max(0, _maxSize.SelectedIndex)].Megabytes;
                 edited.SkipExtensions = _skipTypes.Text.Trim();
@@ -768,7 +816,6 @@ namespace ExplorerNative
                 Pair.LocalFolder = edited.LocalFolder;
                 Pair.Name = edited.Name;
                 Pair.Mode = edited.Mode;
-                Pair.CheckMinutes = edited.CheckMinutes;
                 Pair.WhenBothChanged = edited.WhenBothChanged;
                 Pair.MaxFileMegabytes = edited.MaxFileMegabytes;
                 Pair.SkipExtensions = edited.SkipExtensions;

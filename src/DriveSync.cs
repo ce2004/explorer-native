@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json.Serialization;
 
 namespace ExplorerNative
 {
@@ -66,7 +67,14 @@ namespace ExplorerNative
 
         public ConflictChoice WhenBothChanged { get; set; } = ConflictChoice.KeepBoth;
 
-        /// <summary>How often Drive is checked, in minutes. Zero: only when Sync now is pressed.</summary>
+        /// <summary>
+        /// How often Drive is checked, in minutes: always 1, since one check is
+        /// one small request to the changes feed however big the folder is. It
+        /// was a setting ("Check Drive every") and is no longer saved, so an old
+        /// 60 or "only when I press Sync now" is read as 1. Tests set 0 so that
+        /// passes run only when asked.
+        /// </summary>
+        [JsonIgnore]
         public int CheckMinutes { get; set; } = 1;
 
         public DriveSyncPair Copy() => (DriveSyncPair)MemberwiseClone();
