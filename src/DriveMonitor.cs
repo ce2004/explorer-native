@@ -3086,6 +3086,17 @@ namespace ExplorerNative
                     SyncHistory.Add(pair.Id, "Uploaded", path);
                 }
 
+                // New song-sized PC files, many at once too (see UploadNewMediumAsync).
+                var sentMedium = await UploadNewMediumAsync(client, pair, state, plan, local, remote, folders, root,
+                    generation, uploadedThisPass, n => { lock (_fastGate) Moved(n); }, token).ConfigureAwait(false);
+                uploaded += sentMedium.Count;
+                foreach (var path in sentMedium)
+                {
+                    uploadedThisPass += local[path].Size;
+                    SyncHistory.Add(pair.Id, "Uploaded", path);
+                }
+                sentFast.UnionWith(sentMedium);
+
                 // And new Drive files coming down, many at once (see DownloadNewSmallAsync).
                 var gotFast = await DownloadNewSmallAsync(client, pair, state, plan, local, remote, root, generation,
                     n => { lock (_fastGate) Moved(n); }, token).ConfigureAwait(false);
@@ -4663,6 +4674,88 @@ namespace ExplorerNative
             }
         }
 
+        /// <summary>New PC files up to this size (and over <see cref="FastLaneMaxBytes"/>) go up many at once.</summary>
+        internal const long FastUploadMaxBytes = 64L * 1024 * 1024;
+
+        /// <summary>
+        /// New PC files between <see cref="FastLaneMaxBytes"/> and
+        /// <see cref="FastUploadMaxBytes"/> (most songs), <see cref="FastLanes"/>
+        /// at a time, through the same UploadAsync as the careful loop: a
+        /// resumable session saved as it starts, and a create sent once
+        /// (SendOnceAsync looks for its own tag before ever sending again), so
+        /// a lost answer is never a second copy. Folders are made first, one at
+        /// a time. Only new files: a file Drive already has is replaced on the
+        /// careful loop. Anything that fails is left there too, which resumes
+        /// its session and says why.
+        /// </summary>
+        private async Task<HashSet<string>> UploadNewMediumAsync(
+            DriveClient client, DriveSyncPair pair, PairState state, List<SyncAction> plan,
+            Dictionary<string, SyncFile> local, Dictionary<string, SyncFile> remote, Dictionary<string, string> folders,
+            string root, int generation, long alreadyUp, Action<long> moved, CancellationToken token)
+        {
+            var sent = new HashSet<string>(SyncNameComparer.Instance);
+            long room = _drive.QuotaLimit > 0 ? _drive.QuotaLimit - _drive.QuotaUsed - alreadyUp : long.MaxValue;
+            var batch = new List<string>();
+            foreach (var action in plan)
+            {
+                if (action.Kind != SyncActionKind.Upload) continue;
+                if (!local.TryGetValue(action.Path, out var file) || file.Size <= FastLaneMaxBytes || file.Size > FastUploadMaxBytes) continue;
+                if (remote.TryGetValue(action.Path, out var there) && there.Id != null) continue;
+                if (StillBeingWritten(LocalPathFor(root, action.Path), file, DateTime.UtcNow, SettleTime)) continue;
+                if (file.Size > room) break;
+                room -= file.Size;
+                batch.Add(action.Path);
+            }
+            if (batch.Count < FastDownloadMinimum) return sent;
+
+            using (var drain = new Drain(token))
+                foreach (var folder in batch.Select(p => p.LastIndexOf('/') is var at and > 0 ? p[..at] : "")
+                             .Distinct(SyncNameComparer.Instance).OrderBy(f => f.Count(c => c == '/')))
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (Stopped(pair) || GenerationOf(pair.Id) != generation) throw new PairStoppedException();
+                    await Patiently(pair, () => EnsureFolderAsync(client, folders, pair.DriveFolderId, folder, drain.Token, state.Remembered),
+                        client, drain.Token).ConfigureAwait(false);
+                }
+
+            int done = 0;
+            var lanes = new AdaptiveLanes(FastLanes, FastLanesMin, FastLanesMax);
+            await Parallel.ForEachAsync(batch,
+                new ParallelOptions { MaxDegreeOfParallelism = FastLanesMax, CancellationToken = token },
+                async (path, ct) =>
+                {
+                    await lanes.EnterAsync(ct).ConfigureAwait(false);
+                    var clock = Stopwatch.StartNew();
+                    bool landed = false;
+                    try { landed = await One(path, ct).ConfigureAwait(false); }
+                    finally { lanes.Leave(landed && clock.ElapsedMilliseconds < SlowAnswerMilliseconds * 4); }
+                }).ConfigureAwait(false);
+            return sent;
+
+            async Task<bool> One(string path, CancellationToken ct)
+            {
+                if (Stopped(pair) || GenerationOf(pair.Id) != generation) return false;
+                SyncBase up;
+                try
+                {
+                    up = await UploadAsync(client, folders, pair, state, path, LocalPathFor(root, path), local[path],
+                        null, null, moved, ct).ConfigureAwait(false);
+                }
+                catch (Exception) when (!ct.IsCancellationRequested) { return false; }
+                lock (_fastGate)
+                {
+                    state.Files[path] = up;
+                    sent.Add(path);
+                    done++;
+                    SaveSoon(pair.Id, state);
+                    int count = done;
+                    Report(pair.Id, s => s with { Uploaded = count, StepDone = count });
+                }
+                Kill("uploaded " + path);
+                return true;
+            }
+        }
+
         /// <summary>Drive files up to this size, new to the PC, come down many at once; bigger ones one at a time.</summary>
         internal const long FastDownloadMaxBytes = 64L * 1024 * 1024;
 
@@ -4805,8 +4898,12 @@ namespace ExplorerNative
             // file carries on from where Google says it stopped. Only one of the
             // same kind: a session that updates a file is not resumed to make a
             // new one, or the other way round.
+            // The records are shared by every upload running at once
+            // (UploadNewMediumAsync), so they are only touched under _fastGate.
             string? resume = null;
-            if (state.Uploads.TryGetValue(path, out var saved) && saved.Size == local.Size &&
+            UploadSession? saved;
+            lock (_fastGate) state.Uploads.TryGetValue(path, out saved);
+            if (saved != null && saved.Size == local.Size &&
                 Math.Abs((saved.ModifiedUtc - local.ModifiedUtc).TotalSeconds) <= 2 &&
                 DateTime.UtcNow - saved.StartedUtc < SessionLifetime &&
                 (saved.Replaces == null || saved.Replaces == replaces))
@@ -4825,8 +4922,11 @@ namespace ExplorerNative
                     token, resuming,
                     session =>
                     {
-                        state.Uploads[path] = new UploadSession(session, local.Size, local.ModifiedUtc, DateTime.UtcNow, into);
-                        SaveSoon(pair.Id, state, now: local.Size >= SaveAtOnceBytes);
+                        lock (_fastGate)
+                        {
+                            state.Uploads[path] = new UploadSession(session, local.Size, local.ModifiedUtc, DateTime.UtcNow, into);
+                            SaveSoon(pair.Id, state, now: local.Size >= SaveAtOnceBytes);
+                        }
                     },
                     into);
             try
@@ -4842,7 +4942,7 @@ namespace ExplorerNative
                     // The file to update went between the check and the upload
                     // (trashed on the website): this becomes a new file. Should
                     // the old one be there after all, it is trashed below.
-                    state.Uploads.Remove(path);
+                    lock (_fastGate) state.Uploads.Remove(path);
                     sent = await Send(null, null).ConfigureAwait(false);
                 }
             }
@@ -4853,12 +4953,12 @@ namespace ExplorerNative
                 // pass, and the session is what lets the upload carry on next
                 // time), and not Google saying "not now": a session that will not
                 // take is not kept.
-                state.Uploads.Remove(path);
+                lock (_fastGate) state.Uploads.Remove(path);
                 throw;
             }
 
             if (reported < local.Size) moved(local.Size - reported);
-            state.Uploads.Remove(path);
+            lock (_fastGate) state.Uploads.Remove(path);
 
             // Updated in place, there is nothing left over. A new file beside
             // the old one (a session started before updates were done in place)

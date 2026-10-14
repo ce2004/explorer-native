@@ -224,6 +224,29 @@ namespace ExplorerNative
                 Check("fast downloads: the next pass has nothing to do", rig.Drive.MediaReads - reads == 40);
             }
 
+            // Twelve new song-sized PC files go up at once, each exactly once.
+            using (var rig = new Rig(sandbox, SyncMode.UploadOnly))
+            {
+                var expected = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < 12; i++)
+                {
+                    var data = Noise(5 * 1024 * 1024 + i * 1000, 100 + i);
+                    rig.Write($"Album {i % 3}/{i:00} song.flac", data, T0.AddMinutes(i));
+                    expected[$"Album {i % 3}/{i:00} song.flac"] = data;
+                }
+                int uploads = rig.Drive.Uploads;
+                await rig.Pass();
+                var drive = rig.DriveTree();
+                Check("fast uploads: every song-sized file went up whole",
+                    expected.All(kv => drive.TryGetValue(kv.Key, out var got) && got.AsSpan().SequenceEqual(kv.Value)),
+                    $"{drive.Count} on Drive");
+                Equal("fast uploads: one upload each, no second copies", "12", (rig.Drive.Uploads - uploads).ToString());
+                Check("fast uploads: no name twice in a Drive folder", rig.Drive.Duplicates(rig.FolderId).Count == 0,
+                    string.Join(", ", rig.Drive.Duplicates(rig.FolderId)));
+                Equal("fast uploads: and the history has each one", "12",
+                    SyncHistory.Read(rig.Pair.Id).Count(e => e.What == "Uploaded").ToString());
+            }
+
             // A big file streamed in one go, the connection dropping half way: picked up from where it stopped.
             using (var rig = new Rig(sandbox, SyncMode.DownloadOnly))
             {

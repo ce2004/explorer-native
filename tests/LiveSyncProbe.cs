@@ -349,13 +349,27 @@ namespace ExplorerNative
                     File.WriteAllBytes(path, bytes);
                     File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddMinutes(-10));
                 }
+                // And twelve song-sized ones, which go up many at once too.
+                for (int i = 0; i < 12; i++)
+                {
+                    var path = Path.Combine(up, "Flac", $"{i:00} track.flac");
+                    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                    var bytes = new byte[6 * 1024 * 1024 + random.Next(100_000)];
+                    random.NextBytes(bytes);
+                    File.WriteAllBytes(path, bytes);
+                    File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddMinutes(-10));
+                }
                 var bigBytes = new byte[40 * 1024 * 1024];
                 random.NextBytes(bigBytes);
                 File.WriteAllBytes(Path.Combine(up, "film.mkv"), bigBytes);
                 File.SetLastWriteTimeUtc(Path.Combine(up, "film.mkv"), DateTime.UtcNow.AddMinutes(-10));
 
-                var sent = await PassUntilSettled(client, Pair(up, driveId), "1. sending 121 files up with the monitor", token);
+                var sendClock = Stopwatch.StartNew();
+                var sent = await PassUntilSettled(client, Pair(up, driveId), "1. sending 133 files up with the monitor", token);
+                Console.WriteLine($"    sending took {sendClock.Elapsed.TotalSeconds:F1}s in all");
                 Check("everything went up", sent.Failed == 0, $"{sent.Failed} failed");
+                var (onDrive, twice, _) = await CountDrive(client, driveId, token);
+                Check("Drive holds each of the 133 exactly once", onDrive == 133 && twice == 0, $"{onDrive} files, {twice} names twice");
 
                 DriveSyncPair Down(string folder) => new()
                 {
@@ -405,7 +419,7 @@ namespace ExplorerNative
                 monitor.Dispose();
 
                 var history = SyncHistory.Read(pair.Id);
-                Check("the history lists the 121 downloads", history.Count(e => e.What == "Downloaded") == 121, $"{history.Count} lines");
+                Check("the history lists the 133 downloads", history.Count(e => e.What == "Downloaded") == 133, $"{history.Count} lines");
                 Console.WriteLine("    newest history line: " + (history.Count > 0 ? SyncHistory.Describe(history[0], DateTime.Now) : "none"));
             }
             catch (Exception ex) { Check("the live run finished", false, ex.Message); }
