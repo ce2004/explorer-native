@@ -21,6 +21,7 @@ namespace ExplorerNative
         {
             await InteractiveListings(check);
             await ColdReads(check);
+            await DroppedMemoryGoesBack(check);
             await SequentialReadsStartTheDownload(check);
             await WarmingStartsTheDownload(check);
             await FailedChunksAreRetried(check);
@@ -134,6 +135,50 @@ namespace ExplorerNative
                     tail.AsSpan().SequenceEqual(data.AsSpan(tailAt, 4096)) && !cache.Pumping, null);
             }
             finally { cache.Dispose(); }
+        }
+
+        /// <summary>
+        /// A file the cache lets go of is given back to Windows within seconds,
+        /// not just back to .NET, which kept it committed until some later
+        /// full collection: 400MB dropped still showed as 400MB.
+        /// </summary>
+        private static async Task DroppedMemoryGoesBack(Action<string, bool, string?> check)
+        {
+            var after = MemoryGiveBack.After;
+            MemoryGiveBack.After = TimeSpan.FromMilliseconds(200);
+            try
+            {
+                var pool = new DriveCachePool(1024L * 1024 * 1024);
+                for (int i = 0; i < 100; i++)
+                {
+                    var bytes = new byte[Chunk];
+                    for (int at = 0; at < bytes.Length; at += 4096) bytes[at] = 1;
+                    pool.Put("song", i, bytes);
+                }
+                MemoryGiveBack.Collect();
+                long held = GC.GetGCMemoryInfo().TotalCommittedBytes;
+                int before = MemoryGiveBack.Collections;
+                var paused = GC.GetTotalPauseDuration();
+
+                pool.DropFile("song");
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                while (MemoryGiveBack.Collections == before && clock.ElapsedMilliseconds < 5000) await Task.Delay(50);
+                long left = GC.GetGCMemoryInfo().TotalCommittedBytes;
+                var pause = GC.GetTotalPauseDuration() - paused;
+
+                check($"Drive cache: 400MB dropped goes back to Windows within seconds " +
+                      $"({held / 1048576}MB committed before, {left / 1048576}MB after, {pause.TotalMilliseconds:0}ms pause)",
+                    held - left > 300L * 1024 * 1024,
+                    $"committed {held / 1048576}MB before, {left / 1048576}MB after, collection pause {pause.TotalMilliseconds:0}ms");
+                check("Drive cache: and the pause it costs is short", pause < TimeSpan.FromMilliseconds(250),
+                    $"{pause.TotalMilliseconds:0}ms");
+
+                int now = MemoryGiveBack.Collections;
+                MemoryGiveBack.Freed(4L * 1024 * 1024);
+                await Task.Delay(500);
+                check("Drive cache: a small release costs no collection", MemoryGiveBack.Collections == now, null);
+            }
+            finally { MemoryGiveBack.After = after; }
         }
 
         private static async Task SequentialReadsStartTheDownload(Action<string, bool, string?> check)

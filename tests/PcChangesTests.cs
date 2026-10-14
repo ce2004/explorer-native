@@ -22,6 +22,67 @@ namespace ExplorerNative
         private const double Fast = 0.0005;
         private static readonly DateTime T0 = new(2025, 3, 1, 12, 0, 0, DateTimeKind.Utc);
 
+        /// <summary>
+        /// A walk on several threads finds exactly what one thread does: the
+        /// same files with the same sizes and times, the same hidden things
+        /// left out, the same clashing names.
+        /// </summary>
+        private static void ParallelWalkMatchesOneThread(string sandbox)
+        {
+            var root = Path.Combine(sandbox, "parallel");
+            for (int a = 0; a < 40; a++)
+                for (int b = 0; b < 30; b++)
+                {
+                    var folder = Path.Combine(root, $"Artist {a}", $"Album {b}");
+                    Directory.CreateDirectory(folder);
+                    for (int f = 0; f < 5; f++)
+                    {
+                        var file = Path.Combine(folder, $"{f:00} song.mp3");
+                        File.WriteAllText(file, new string('x', a + b + f));
+                        File.SetLastWriteTimeUtc(file, T0.AddMinutes(a * 100 + b * 5 + f));
+                    }
+                }
+            Directory.CreateDirectory(Path.Combine(root, "Artist 3", "Empty"));
+            var hidden = Path.Combine(root, "Artist 5", "Hidden");
+            Directory.CreateDirectory(hidden);
+            File.WriteAllText(Path.Combine(hidden, "inside.txt"), "x");
+            new DirectoryInfo(hidden).Attributes |= FileAttributes.Hidden;
+            var hiddenFile = Path.Combine(root, "Artist 7", "Album 2", "secret.txt");
+            File.WriteAllText(hiddenFile, "x");
+            File.SetAttributes(hiddenFile, FileAttributes.Hidden);
+            File.WriteAllText(Path.Combine(root, "Artist 9", "Album 1", "café.txt"), "one");
+            File.WriteAllText(Path.Combine(root, "Artist 9", "Album 1", "café.txt"), "two");
+
+            (Dictionary<string, SyncFile> Files, SyncSkips Skips, List<string> Clashing) Walk(int workers)
+            {
+                var was = DriveMonitor.ScanWorkers;
+                DriveMonitor.ScanWorkers = workers;
+                try
+                {
+                    var skips = new SyncSkips();
+                    var clashing = new List<string>();
+                    var files = DriveMonitor.ScanLocal(root, true, skips, clashing);
+                    clashing.Sort(StringComparer.Ordinal);
+                    return (files, skips, clashing);
+                }
+                finally { DriveMonitor.ScanWorkers = was; }
+            }
+
+            var one = Walk(1);
+            var many = Walk(8);
+            Check($"parallel walk: one thread finds {one.Files.Count:N0} files", one.Files.Count == 40 * 30 * 5);
+            Check("parallel walk: eight threads find the same files, sizes and times",
+                many.Files.Count == one.Files.Count &&
+                one.Files.All(kv => many.Files.TryGetValue(kv.Key, out var other) && other.Equals(kv.Value)),
+                $"{many.Files.Count} against {one.Files.Count}");
+            Check("parallel walk: and leave out the same hidden things",
+                many.Skips.Count == one.Skips.Count && many.Skips.Covers("Artist 5/Hidden/inside.txt") &&
+                many.Skips.Covers("Artist 7/Album 2/secret.txt"),
+                $"{many.Skips.Count} against {one.Skips.Count}");
+            Check("parallel walk: and the same clashing names",
+                many.Clashing.SequenceEqual(one.Clashing) && one.Clashing.Count == 2, string.Join(", ", many.Clashing));
+        }
+
         public static async Task RunAll(Action<string, bool, string?> check)
         {
             _check = check;
@@ -34,6 +95,7 @@ namespace ExplorerNative
             try
             {
                 PartialScanMatchesAWalk(sandbox);
+                ParallelWalkMatchesOneThread(sandbox);
                 WatcherTrust();
                 JournalNamesTheFolders(sandbox);
                 await PassesUseTheJournal(sandbox, batched: false);

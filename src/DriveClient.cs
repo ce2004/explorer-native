@@ -1164,6 +1164,84 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// A whole file, from <paramref name="offset"/> to <paramref name="size"/>,
+        /// in one request, into <paramref name="destination"/> as it arrives; each
+        /// block written is handed to <paramref name="written"/> (to be hashed and
+        /// counted). For the folder sync, which used to ask for 8MB, wait, write,
+        /// and ask again: a round trip to Google between every 8MB, and an 8MB
+        /// array each time.
+        ///
+        /// A connection that drops or goes quiet for <see cref="ReadAttemptLimit"/>
+        /// is asked again from the byte it got to; six tries in a row with
+        /// nothing arriving, or a refusal, and it throws as <see cref="ReadRange"/>
+        /// does, with the same sentences, so the sync waits Google out the same way.
+        /// </summary>
+        internal async Task DownloadTo(string fileId, long offset, long size, Stream destination,
+            Action<ReadOnlyMemory<byte>> written, CancellationToken token)
+        {
+            var buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(256 * 1024);
+            try
+            {
+                int fruitless = 0;
+                Exception? last = null;
+                while (offset < size)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (fruitless > 0)
+                    {
+                        if (fruitless >= 6) throw last ?? new IOException("Google Drive kept stopping part way through.");
+                        await Pause(ReadRetryDelays[Math.Min(fruitless - 1, ReadRetryDelays.Length - 1)], token);
+                    }
+
+                    long before = offset;
+                    using var attempt = CancellationTokenSource.CreateLinkedTokenSource(token);
+                    attempt.CancelAfter(ReadAttemptLimit);
+                    try
+                    {
+                        using var request = await Request(HttpMethod.Get, $"{Files}/{fileId}?alt=media", attempt.Token);
+                        request.Headers.Range = new RangeHeaderValue(offset, null);
+                        using var response = await Send(request, HttpCompletionOption.ResponseHeadersRead, attempt.Token);
+                        if (response.StatusCode != HttpStatusCode.PartialContent && response.StatusCode != HttpStatusCode.OK)
+                        {
+                            var body = await response.Content.ReadAsStringAsync(attempt.Token);
+                            var message = $"range read failed {(int)response.StatusCode}: {body}";
+                            if (!WorthRetrying((int)response.StatusCode, body)) throw new InvalidOperationException(message);
+                            throw new RetryableReadException(message);
+                        }
+                        // The whole file sent from byte zero, when the middle was asked for.
+                        if (response.StatusCode == HttpStatusCode.OK && offset > 0)
+                            throw new RetryableReadException($"the range from {offset:N0} was ignored and the whole file was sent");
+
+                        await using var stream = await response.Content.ReadAsStreamAsync(attempt.Token);
+                        while (offset < size)
+                        {
+                            int want = (int)Math.Min(buffer.Length, size - offset);
+                            int n = await stream.ReadAsync(buffer.AsMemory(0, want), attempt.Token);
+                            if (n <= 0) break;
+                            await destination.WriteAsync(buffer.AsMemory(0, n), token);
+                            written(buffer.AsMemory(0, n));
+                            offset += n;
+                            attempt.CancelAfter(ReadAttemptLimit);
+                        }
+                        if (offset < size) throw new RetryableReadException($"the download ended after {offset:N0} of {size:N0} bytes");
+                        return;
+                    }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                    catch (OperationCanceledException ex)
+                    {
+                        last = new TimeoutException($"Google Drive stopped sending at {offset:N0} of {size:N0} bytes", ex);
+                    }
+                    catch (RetryableReadException ex) { last = ex; }
+                    catch (HttpRequestException ex) { last = ex; }
+                    catch (IOException ex) { last = ex; }
+
+                    fruitless = offset > before ? 1 : fruitless + 1;
+                }
+            }
+            finally { System.Buffers.ArrayPool<byte>.Shared.Return(buffer); }
+        }
+
+        /// <summary>
         /// The longest a single ranged read may take, retries included.
         ///
         /// Twenty seconds: comfortably more than one fifteen-second request, so a

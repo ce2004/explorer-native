@@ -857,6 +857,21 @@ namespace ExplorerNative
             RestoreListFocus();
         }
 
+        /// <summary>Ctrl+Shift+Y: every synced folder that is not paused, now.</summary>
+        private void SyncAllNow()
+        {
+            var monitor = DriveMonitor.Current;
+            if (monitor == null || !DriveMonitorForm.OnFileMenu(_settings)) { Announce("Google Drive is not switched on"); return; }
+            AnnounceOperation("sync.all", monitor.SyncAllNow());
+        }
+
+        private void PauseOrResumeAll()
+        {
+            var monitor = DriveMonitor.Current;
+            if (monitor == null) return;
+            AnnounceOperation("sync.all", monitor.PauseAll(!monitor.AllPaused));
+        }
+
         private void BuildMenu()
         {
             var menu = new MenuStrip();
@@ -885,6 +900,20 @@ namespace ExplorerNative
             _syncConfiguratorItem.Visible = DriveMonitorForm.OnFileMenu(_settings);
             file.DropDownItems.Add(_syncConfiguratorItem);
             file.DropDownOpening += (_, _) => _syncConfiguratorItem.Visible = DriveMonitorForm.OnFileMenu(_settings);
+
+            // Every synced folder at once. The key works whenever the window
+            // has focus; the items show only while there are synced folders.
+            var syncAll = Item("S&ync all Google Drive folders now", Keys.Control | Keys.Shift | Keys.Y, SyncAllNow);
+            var pauseAll = Item("Pa&use all syncing", Keys.None, PauseOrResumeAll);
+            file.DropDownItems.Add(syncAll);
+            file.DropDownItems.Add(pauseAll);
+            file.DropDownOpening += (_, _) =>
+            {
+                var monitor = DriveMonitor.Current;
+                bool any = DriveMonitorForm.OnFileMenu(_settings) && monitor != null && monitor.Pairs.Count > 0;
+                syncAll.Visible = pauseAll.Visible = any;
+                if (any) pauseAll.Text = monitor!.AllPaused ? "Res&ume all syncing" : "Pa&use all syncing";
+            };
             file.DropDownOpening += (_, _) => ShowArchiveHidden();
 
             file.DropDownItems.Add(new ToolStripSeparator());

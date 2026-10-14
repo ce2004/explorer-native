@@ -472,11 +472,13 @@ namespace ExplorerNative
         /// </summary>
         public void Release()
         {
+            long held;
             lock (_gate)
             {
                 if (_disposed || _released || Cacheable <= 0) return;
                 _released = true;
                 try { _run.Cancel(); } catch { }
+                held = _held;
                 _pieces.Clear();
                 _fetching.Clear();
                 _held = 0;
@@ -484,6 +486,7 @@ namespace ExplorerNative
                 Interlocked.Exchange(ref _prefix, 0);
             }
             Pulse();
+            MemoryGiveBack.Freed(held);
         }
 
         /// <summary>Starts downloading again after a release. Harmless if it never stopped.</summary>

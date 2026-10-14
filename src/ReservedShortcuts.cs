@@ -58,6 +58,7 @@ namespace ExplorerNative
             new(Keys.Control | Keys.R, "Restart the application"),
             new(Keys.Control | Keys.Shift | Keys.S, "Calculate folder size"),
             new(Keys.Control | Keys.Shift | Keys.A, "Announce the current folder"),
+            new(Keys.Control | Keys.Shift | Keys.Y, "Sync all Google Drive folders now"),
             new(Keys.F7, "New file"),
             new(Keys.F8, "New folder"),
             new(Keys.F2, "Rename"),

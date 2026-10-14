@@ -46,6 +46,11 @@ namespace ExplorerNative
                 Path.Combine(real, $"google-drive-token-v{GoogleAuth.ScopeVersion}.dat")) { AllowConsent = false };
             var client = new DriveClient(auth);
 
+            // EXPLORERNATIVE_LIVESYNC_NEW=1: the 3.0.4 sync changes against the
+            // real account, in a throwaway folder that goes to the Drive trash after.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_LIVESYNC_NEW") == "1")
+                return await NewFeatures(client);
+
             // EXPLORERNATIVE_LIVESYNC_TRASH=1: the test folder goes to the Drive
             // trash (one request, recoverable) and the local copy is deleted.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_LIVESYNC_TRASH") == "1")
@@ -308,6 +313,116 @@ namespace ExplorerNative
         private static int CountLocal(string root) =>
             Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories)
                 .Count(f => !SyncPlanner.IsSkipped(Path.GetFileName(f)));
+
+        /// <summary>
+        /// Downloads many at once against one at a time, a big file streamed,
+        /// the first sync starting from the summary's listing, and a quiet minute
+        /// costing one shared look, all on the real account. The files are made
+        /// here and sent up by the monitor itself into zz-livesync-new-*, which
+        /// goes to the Drive trash at the end (recoverable for 30 days).
+        /// </summary>
+        private static async Task<int> NewFeatures(DriveClient client)
+        {
+            var work = Path.Combine(Path.GetTempPath(), "en-livenew-" + Guid.NewGuid().ToString("N")[..8]);
+            var sandbox = Path.Combine(work, "appdata");
+            Directory.CreateDirectory(sandbox);
+            var previous = Settings.OverrideAppDataDir;
+            Settings.OverrideAppDataDir = sandbox;
+            string? driveId = null;
+            using var stop = new CancellationTokenSource(TimeSpan.FromHours(2));
+            var token = stop.Token;
+            try
+            {
+                var name = "zz-livesync-new-" + Path.GetFileName(work)[11..];
+                driveId = await client.CreateFolder(name, await client.RootId(token), token);
+                Console.WriteLine($"Drive folder: My Drive/{name}");
+
+                // 120 song-sized files in 4 folders, and one 40MB file.
+                var up = Path.Combine(work, "up");
+                var random = new Random(3004);
+                for (int i = 0; i < 120; i++)
+                {
+                    var path = Path.Combine(up, $"Album {i % 4}", $"{i:000} song.mp3");
+                    Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                    var bytes = new byte[150_000 + random.Next(150_000)];
+                    random.NextBytes(bytes);
+                    File.WriteAllBytes(path, bytes);
+                    File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddMinutes(-10));
+                }
+                var bigBytes = new byte[40 * 1024 * 1024];
+                random.NextBytes(bigBytes);
+                File.WriteAllBytes(Path.Combine(up, "film.mkv"), bigBytes);
+                File.SetLastWriteTimeUtc(Path.Combine(up, "film.mkv"), DateTime.UtcNow.AddMinutes(-10));
+
+                var sent = await PassUntilSettled(client, Pair(up, driveId), "1. sending 121 files up with the monitor", token);
+                Check("everything went up", sent.Failed == 0, $"{sent.Failed} failed");
+
+                DriveSyncPair Down(string folder) => new()
+                {
+                    Name = "Live download test", LocalFolder = folder, DriveFolderId = driveId, DriveFolderPath = "My Drive/" + name,
+                    Mode = SyncMode.DownloadOnly, CopyDeletes = false, CheckMinutes = 1, IncludeSubfolders = true,
+                };
+                bool Same(string folder) => Directory.EnumerateFiles(up, "*", SearchOption.AllDirectories).All(f =>
+                {
+                    var other = Path.Combine(folder, Path.GetRelativePath(up, f));
+                    return File.Exists(other) && File.ReadAllBytes(other).AsSpan().SequenceEqual(File.ReadAllBytes(f));
+                });
+
+                // 2. One at a time, as before, for comparison.
+                var slowFolder = Path.Combine(work, "down-one-at-a-time");
+                Directory.CreateDirectory(slowFolder);
+                DriveMonitor.FastDownloadMinimum = int.MaxValue;
+                var (_, slow) = await OnePass(client, Down(slowFolder), "2. downloading one at a time (the old way)", token);
+                DriveMonitor.FastDownloadMinimum = 8;
+                Check("one at a time: every file arrived exactly", Same(slowFolder));
+
+                // 3. The summary, then the first sync from it, many at once.
+                var fastFolder = Path.Combine(work, "down-at-once");
+                Directory.CreateDirectory(fastFolder);
+                var pair = Down(fastFolder);
+                var look = Stopwatch.StartNew();
+                await DriveMonitor.PreviewAsync(client, pair, token);
+                Console.WriteLine($"\n3. the summary took {look.Elapsed.TotalSeconds:F1}s");
+                var monitor = NewMonitor();
+                var clock = Stopwatch.StartNew();
+                await monitor.SyncOneAsync(client, pair, token);
+                var fast = clock.Elapsed;
+                Console.WriteLine($"  {fast.TotalSeconds:F1}s: {DriveMonitorForm.Describe(pair, monitor.StatusOf(pair.Id), DateTime.UtcNow)}");
+                Check("the first sync started from the summary's listing", monitor.LastUsedSavedListing);
+                Check("many at once: every file arrived exactly, the 40MB one too", Same(fastFolder));
+                Console.WriteLine($"    one at a time {slow.TotalSeconds:F1}s, many at once {fast.TotalSeconds:F1}s " +
+                                  $"({slow.TotalSeconds / Math.Max(0.1, fast.TotalSeconds):F1} times as fast)");
+
+                // 4. A quiet minute: one shared look, and the pair does not run.
+                var now = DateTime.UtcNow;
+                var pairs = new List<DriveSyncPair> { pair };
+                await monitor.SyncOneAsync(client, pair, token);
+                await monitor.DuePairsAsync(client, pairs, false, now.AddMinutes(2), token);
+                await monitor.SyncOneAsync(client, pair, token);
+                var quiet = await monitor.DuePairsAsync(client, pairs, false, now.AddMinutes(4), token);
+                Check("a quiet minute does not run the pair", quiet.Count == 0, $"{quiet.Count} ran");
+                Check("and it took one shared look at Google", monitor.SharedLooks == 1, $"{monitor.SharedLooks} looks");
+                monitor.Dispose();
+
+                var history = SyncHistory.Read(pair.Id);
+                Check("the history lists the 121 downloads", history.Count(e => e.What == "Downloaded") == 121, $"{history.Count} lines");
+                Console.WriteLine("    newest history line: " + (history.Count > 0 ? SyncHistory.Describe(history[0], DateTime.Now) : "none"));
+            }
+            catch (Exception ex) { Check("the live run finished", false, ex.Message); }
+            finally
+            {
+                DriveMonitor.FastDownloadMinimum = 8;
+                if (driveId != null)
+                {
+                    try { await client.Trash(driveId, CancellationToken.None); Console.WriteLine("\nThe test folder went to the Google Drive trash."); }
+                    catch (Exception ex) { Console.WriteLine("\nCould not trash the test folder: " + ex.Message); }
+                }
+                Settings.OverrideAppDataDir = previous;
+                try { Directory.Delete(work, recursive: true); } catch { }
+            }
+            Console.WriteLine($"\n{(_failed == 0 ? "All passed" : $"{_failed} failed")}");
+            return _failed == 0 ? 0 : 1;
+        }
 
         private static DriveSyncPair Pair(string local, string driveId) => new()
         {

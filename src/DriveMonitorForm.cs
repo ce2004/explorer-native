@@ -20,7 +20,7 @@ namespace ExplorerNative
         private readonly List<DriveSyncPair> _pairs;
         private readonly LineList _list;
         private readonly LineList _details;
-        private readonly Button _edit, _remove, _sync;
+        private readonly Button _edit, _remove, _sync, _history;
         private readonly DriveMonitor? _monitor;
 
         /// <param name="working">Preferences' own copy of the pairs, kept in step.</param>
@@ -72,8 +72,10 @@ namespace ExplorerNative
             _edit = MakeButton("&Edit...", 112, 3);
             _remove = MakeButton("&Remove", 212, 4);
             _sync = MakeButton("&Sync now", 312, 5);
-            var close = MakeButton("Close", 548, 6);
+            _history = MakeButton("&History...", 412, 6);
+            var close = MakeButton("Close", 548, 7);
             close.DialogResult = DialogResult.Cancel;
+            _history.Click += (_, _) => ShowHistory();
 
             add.Click += (_, _) => AddPair();
             _edit.Click += (_, _) => EditPair();
@@ -93,7 +95,7 @@ namespace ExplorerNative
 
             _list.SelectedIndexChanged += (_, _) => { if (_list.SelectedIndex >= 0) FillDetails(); };
 
-            Controls.AddRange(new Control[] { label, _list, detailsLabel, _details, info, add, _edit, _remove, _sync, close });
+            Controls.AddRange(new Control[] { label, _list, detailsLabel, _details, info, add, _edit, _remove, _sync, _history, close });
             CancelButton = close;
 
             Action refresh = () =>
@@ -131,7 +133,30 @@ namespace ExplorerNative
             bool any = _pairs.Count > 0;
             _edit.Enabled = any;
             _remove.Enabled = any;
+            _history.Enabled = any;
             FillDetails();
+        }
+
+        /// <summary>What the chosen folder did, file by file, newest first. Read on a worker.</summary>
+        private async void ShowHistory()
+        {
+          // An async void handler: nothing may escape it, or the application ends.
+          try
+          {
+            int at = _list.SelectedIndex;
+            if (at < 0 || at >= _pairs.Count) return;
+            var pair = _pairs[at];
+            var entries = await Task.Run(() => SyncHistory.Read(pair.Id));
+            if (IsDisposed) return;
+            var now = DateTime.Now;
+            var lines = entries.Count == 0
+                ? new List<string> { "Nothing has been copied, moved or deleted yet." }
+                : entries.Select(e => SyncHistory.Describe(e, now)).ToList();
+            using var dialog = new SyncHistoryForm($"History of {DriveMonitor.DisplayName(pair)}", lines);
+            dialog.ShowDialog(this);
+            _list.Focus();
+          }
+          catch { }
         }
 
         /// <summary>The status lines of the folder chosen above, changed in place so the arrows keep their line.</summary>
@@ -429,6 +454,43 @@ namespace ExplorerNative
         private static void Say(string text)
         {
             try { Speech.Speak(text, interrupt: true); } catch { }
+        }
+    }
+
+    /// <summary>
+    /// One synced folder's history, newest first, a line a file: "Uploaded
+    /// Album/song.mp3, today at 8:31 PM". Arrows read it; Escape closes.
+    /// </summary>
+    internal sealed class SyncHistoryForm : Form
+    {
+        public SyncHistoryForm(string title, IReadOnlyList<string> lines)
+        {
+            Text = title;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            StartPosition = FormStartPosition.CenterParent;
+            MinimizeBox = false;
+            MaximizeBox = false;
+            ShowInTaskbar = false;
+            ClientSize = new Size(640, 420);
+            Font = SystemFonts.MessageBoxFont;
+
+            var label = new Label { Text = "&What happened, newest first:", AutoSize = true, Location = new Point(12, 12) };
+            var list = new DriveMonitorForm.LineList
+            {
+                Location = new Point(12, 32),
+                Size = new Size(616, 340),
+                AccessibleName = "What happened, newest first",
+                TabIndex = 0,
+            };
+            list.SetLines(lines);
+            list.SelectedIndex = 0;
+            var close = new Button
+            {
+                Text = "Close", DialogResult = DialogResult.Cancel,
+                Location = new Point(548, 382), Size = new Size(80, 28), TabIndex = 1,
+            };
+            Controls.AddRange(new Control[] { label, list, close });
+            CancelButton = close;
         }
     }
 

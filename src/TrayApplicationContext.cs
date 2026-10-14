@@ -87,6 +87,25 @@ namespace ExplorerNative
             menu.Items.Add("&What is playing", null, (_, _) => RunAudioAction(AudioAction.WhatIsPlaying));
             menu.Items.Add(new ToolStripSeparator());
 
+            // Every synced folder at once, without opening the window. Shown
+            // only while there are synced folders; the toggle names what it does.
+            var syncAll = new ToolStripMenuItem("&Sync all Google Drive folders now", null, (_, _) =>
+            {
+                if (_monitor != null) Notify("sync.all", _monitor.SyncAllNow());
+            });
+            var pauseAll = new ToolStripMenuItem("Pa&use all syncing", null, (_, _) =>
+            {
+                if (_monitor != null) Notify("sync.all", _monitor.PauseAll(!_monitor.AllPaused));
+            });
+            var syncSeparator = new ToolStripSeparator();
+            menu.Items.AddRange(new ToolStripItem[] { syncAll, pauseAll, syncSeparator });
+            menu.Opening += (_, _) =>
+            {
+                bool any = _monitor != null && _monitor.Pairs.Count > 0;
+                syncAll.Visible = pauseAll.Visible = syncSeparator.Visible = any;
+                if (any) pauseAll.Text = _monitor!.AllPaused ? "Res&ume all syncing" : "Pa&use all syncing";
+            };
+
             // The web app's link, Copy link, status and pairing code all live on
             // Preferences' Web app page; this is the short way there.
             menu.Items.Add("&Web app…", null, (_, _) =>

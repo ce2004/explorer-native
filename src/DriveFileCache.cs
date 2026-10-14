@@ -96,6 +96,7 @@ namespace ExplorerNative
         /// </summary>
         public void DropFile(string file)
         {
+            long dropped = 0;
             lock (_gate)
             {
                 var node = _order.First;
@@ -107,10 +108,14 @@ namespace ExplorerNative
                         _order.Remove(node);
                         _map.Remove((node.Value.File, node.Value.Chunk));
                         _used -= node.Value.Bytes.Length;
+                        dropped += node.Value.Bytes.Length;
                     }
                     node = next;
                 }
             }
+
+            // Back to Windows, not just back to .NET (see MemoryGiveBack).
+            MemoryGiveBack.Freed(dropped);
         }
     }
 

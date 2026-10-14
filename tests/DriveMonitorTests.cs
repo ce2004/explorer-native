@@ -42,6 +42,8 @@ namespace ExplorerNative
             try
             {
                 TransientTests();
+                await SharedLookTests(sandbox);
+                await FastDownloadTests(sandbox);
                 await ModeTests(sandbox);
                 await AdoptionTests(sandbox);
                 await ConflictTests(sandbox);
@@ -185,6 +187,186 @@ namespace ExplorerNative
             var bytes = new byte[length];
             new Random(seed).NextBytes(bytes);
             return bytes;
+        }
+
+        // ---------------- downloads: many at once, streamed, and the summary's listing ----------------
+
+        private static async Task FastDownloadTests(string sandbox)
+        {
+            // Forty new songs come down at once, each in one request.
+            using (var rig = new Rig(sandbox, SyncMode.DownloadOnly))
+            {
+                var expected = new Dictionary<string, byte[]>(StringComparer.OrdinalIgnoreCase);
+                for (int i = 0; i < 40; i++)
+                {
+                    var data = Noise(50_000 + i * 997, i);
+                    var parent = rig.Drive.Find(rig.FolderId, $"Album {i % 4}") ?? rig.Drive.AddFolder($"Album {i % 4}", rig.FolderId);
+                    rig.Drive.AddFile($"{i:00} song.mp3", data, T0.AddMinutes(i), parent);
+                    expected[$"Album {i % 4}/{i:00} song.mp3"] = data;
+                }
+                // One already on the PC, different: the careful way, its old copy to the Recycle Bin.
+                rig.Write("Album 0/00 song.mp3", "mine", T0.AddDays(-1));
+
+                int reads = rig.Drive.MediaReads;
+                await rig.Pass();
+                var tree = rig.LocalTree();
+                Check("fast downloads: every new song came down whole",
+                    expected.All(kv => tree.TryGetValue(kv.Key, out var got) && got.AsSpan().SequenceEqual(kv.Value)),
+                    $"{tree.Count} files on the PC");
+                Equal("fast downloads: one request a file, not one per 8MB", "40", (rig.Drive.MediaReads - reads).ToString());
+                Check("fast downloads: the PC's own different copy went to the Recycle Bin first, as before",
+                    rig.Recycled.Contains("00 song.mp3"), string.Join(", ", rig.Recycled));
+                Check("fast downloads: no .partial left behind",
+                    !Directory.EnumerateFiles(rig.Local, "*.partial", SearchOption.AllDirectories).Any());
+                Equal("fast downloads: and the history has each one", "40",
+                    SyncHistory.Read(rig.Pair.Id).Count(e => e.What is "Downloaded" or "Updated on the PC").ToString());
+                await rig.Pass();
+                Check("fast downloads: the next pass has nothing to do", rig.Drive.MediaReads - reads == 40);
+            }
+
+            // A big file streamed in one go, the connection dropping half way: picked up from where it stopped.
+            using (var rig = new Rig(sandbox, SyncMode.DownloadOnly))
+            {
+                var data = Noise(20 * 1024 * 1024 + 123, 77);
+                rig.Drive.AddFile("film.mkv", data, T0, rig.FolderId);
+                rig.Drive.DropMediaMidBody = 1;
+                int reads = rig.Drive.MediaReads;
+                await rig.Pass();
+                var tree = rig.LocalTree();
+                Check("streamed download: a 20MB file whose connection dropped half way arrives exactly",
+                    tree.TryGetValue("film.mkv", out var got) && got.AsSpan().SequenceEqual(data), $"{(got?.Length ?? 0):N0} bytes");
+                Equal("streamed download: two requests, the second from where the first stopped", "2",
+                    (rig.Drive.MediaReads - reads).ToString());
+                Check("streamed download: the second asked from the middle, not from the start",
+                    rig.Drive.MediaOffsets.Count >= 2 && rig.Drive.MediaOffsets[^1] > 0, string.Join(", ", rig.Drive.MediaOffsets));
+            }
+
+            // The first sync starts from the summary's listing of Drive.
+            using (var rig = new Rig(sandbox, SyncMode.DownloadOnly))
+            {
+                rig.Put("a.txt", "one", T0);
+                rig.Put("sub/b.txt", "two", T0);
+                await DriveMonitor.PreviewAsync(rig.Client, rig.Pair, default);
+                rig.Drive.AddFile("elsewhere.txt", Encoding.UTF8.GetBytes("x"), T0, FakeDrive.Root);
+                await rig.Pass();
+                // A pair big enough to go in batches (every pair, in the suite's
+                // batched rerun) lists Drive a batch at a time and keeps no listing.
+                bool batched = DriveMonitor.LargePairFiles < 2;
+                Check(batched ? "saved listing: a pair that goes in batches keeps none, and lists as before"
+                              : "saved listing: the first sync used the summary's listing",
+                    rig.Monitor.LastUsedSavedListing == !batched);
+                Check("saved listing: a change elsewhere in Drive does not spoil it, and everything came down",
+                    Names(rig.LocalTree()) == "a.txt,sub/b.txt", Names(rig.LocalTree()));
+                Check("saved listing: used once, then gone",
+                    !Directory.EnumerateFiles(DriveMonitor.StateDirectory, rig.Pair.Id + ".listing").Any());
+            }
+            using (var rig = new Rig(sandbox, SyncMode.DownloadOnly))
+            {
+                rig.Put("a.txt", "one", T0);
+                await DriveMonitor.PreviewAsync(rig.Client, rig.Pair, default);
+                rig.Put("sub/new.txt", "added after the summary", T0);
+                await rig.Pass();
+                Check("saved listing: a change inside the folder since the summary means Drive is listed again",
+                    !rig.Monitor.LastUsedSavedListing);
+                Check("saved listing: so the file added after the summary still comes down",
+                    Names(rig.LocalTree()) == "a.txt,sub/new.txt", Names(rig.LocalTree()));
+            }
+            using (var rig = new Rig(sandbox, SyncMode.DownloadOnly))
+            {
+                rig.Put("a.txt", "one", T0);
+                await DriveMonitor.PreviewAsync(rig.Client, rig.Pair, default);
+                var kept = DriveMonitor.ListingKeptFor;
+                DriveMonitor.ListingKeptFor = TimeSpan.Zero;
+                try { await rig.Pass(); }
+                finally { DriveMonitor.ListingKeptFor = kept; }
+                Check("saved listing: an old one is not used", !rig.Monitor.LastUsedSavedListing && Names(rig.LocalTree()) == "a.txt");
+            }
+        }
+
+        // ---------------- one look at Drive for every quiet pair ----------------
+
+        private static async Task SharedLookTests(string sandbox)
+        {
+            using var rig = new Rig(sandbox, SyncMode.TwoWay);
+            rig.Pair.CheckMinutes = 1;
+            rig.Write("a.txt", "one", T0);
+            var pairs = new List<DriveSyncPair> { rig.Pair };
+            var t = DateTime.UtcNow;
+            Task<List<DriveSyncPair>> Due(int minutes, bool all = false) =>
+                rig.Monitor.DuePairsAsync(rig.Client, pairs, all, t.AddMinutes(minutes), default);
+
+            Check("shared look: a pair asked for runs", (await Due(0, all: true)).Count == 1);
+            await rig.Pass();
+            await rig.Pass();
+            Check("shared look: before there is an unbroken look at the feed, the pair runs", (await Due(2)).Count == 1);
+            await rig.Pass();
+
+            int requests = rig.Drive.Requests;
+            var quiet = await Due(4);
+            Check("shared look: a quiet minute does not run a pair whose last pass was clean", quiet.Count == 0);
+            Equal("shared look: and costs one request", "1", (rig.Drive.Requests - requests).ToString());
+            Check("shared look: nor does the next quiet minute", (await Due(6)).Count == 0);
+
+            rig.Put("b.txt", "two", T0);
+            Check("shared look: a change on Drive runs it", (await Due(8)).Count == 1);
+            await rig.Pass();
+            Check("shared look: and the new Drive file comes down", rig.LocalTree().ContainsKey("b.txt"));
+            await rig.Pass();
+            Check("shared look: quiet again afterwards", (await Due(10)).Count == 0);
+
+            rig.Write("c.txt", "three", T0);
+            rig.Drive.ChangesFail = 410;
+            try { Check("shared look: a look Google refuses runs the pair", (await Due(12)).Count == 1); }
+            finally { rig.Drive.ChangesFail = 0; }
+            Check("shared look: and the look starts again before trusting quiet", (await Due(14)).Count == 1);
+            await rig.Pass();
+            Check("shared look: the PC file went up meanwhile", rig.DriveTree().ContainsKey("c.txt"));
+            await rig.Pass();
+
+            var most = DriveMonitor.QuietMost;
+            DriveMonitor.QuietMost = TimeSpan.Zero;
+            try { Check("shared look: however quiet Drive is, a pair still runs every so often", (await Due(16)).Count == 1); }
+            finally { DriveMonitor.QuietMost = most; }
+
+            rig.Pair.CheckMinutes = 0;
+            Check("shared look: a pair checked only on request is not looked for", (await Due(18)).Count == 0);
+
+            // The history those passes left, newest first.
+            var history = SyncHistory.Read(rig.Pair.Id);
+            var said = history.Select(e => SyncHistory.Describe(e, DateTime.Now)).ToList();
+            Check("history: every file the passes copied is in it, newest first",
+                history.Count == 3 && history[0].What == "Uploaded" && history[0].Path == "c.txt" &&
+                history[1].What == "Downloaded" && history[1].Path == "b.txt" &&
+                history[2].What == "Uploaded" && history[2].Path == "a.txt",
+                string.Join(" | ", said));
+            Check("history: a line reads as a sentence", said.Count > 0 && said[0].StartsWith("Uploaded c.txt, today at "), said.FirstOrDefault());
+
+            const string big = "history-test-pair";
+            for (int i = 0; i < 1500; i++) SyncHistory.Add(big, "Downloaded", $"song {i}.mp3");
+            SyncHistory.Flush(big);
+            var kept = SyncHistory.Read(big);
+            Check("history: a big sync keeps its newest files and says how many more",
+                kept.Count == SyncHistory.Keep && kept[0].Path == "song 1499.mp3" &&
+                kept[^1].What == "And" && kept[^1].Path == "501 more files earlier in the same sync",
+                $"{kept.Count} kept, newest {kept.FirstOrDefault()?.Path}, oldest {kept.LastOrDefault()?.What} {kept.LastOrDefault()?.Path}");
+            DriveMonitor.ForgetRemovedPairs(new[] { rig.Pair });
+            Check("history: a removed folder's history goes with it", !File.Exists(SyncHistory.PathOf(big)));
+
+            // Sync all, Pause all, Resume all.
+            using var all = rig.NewMonitor();
+            Equal("sync all with nothing synced", "No folders are synced with Google Drive", all.SyncAllNow());
+            var two = new List<DriveSyncPair>
+            {
+                new() { Name = "A", LocalFolder = rig.Local, DriveFolderId = "a", CheckMinutes = 0 },
+                new() { Name = "B", LocalFolder = rig.Local, DriveFolderId = "b", CheckMinutes = 0 },
+            };
+            all.SetPairs(two);
+            Equal("sync all says how many", "Syncing all 2 synced folders now", all.SyncAllNow());
+            Equal("pause all says what it did", "Paused all 2 synced folders. Nothing is copied until you resume", all.PauseAll(true));
+            Check("and every pair is paused, and the menu then offers Resume all", all.Pairs.All(p => p.Paused) && all.AllPaused);
+            Equal("sync all while everything is paused says so", "All 2 synced folders are paused. Resume them first", all.SyncAllNow());
+            Equal("resume all", "Resumed all 2 synced folders. Syncing now", all.PauseAll(false));
+            Check("and none is paused afterwards", all.Pairs.All(p => !p.Paused) && !all.AllPaused);
         }
 
         // ---------------- what counts as "not now" ----------------
@@ -452,25 +634,35 @@ namespace ExplorerNative
                 var big = Noise(20 * 1024 * 1024, 7);
                 rig.Drive.AddFile("big.bin", big, T0, rig.FolderId);
 
+                // The download is one streamed request now, so it is cancelled
+                // part way through the stream: once 4MB of it is on disk.
                 using var cancel = new CancellationTokenSource();
-                rig.Drive.OnMedia = (offset, _) =>
+                var partial = Path.Combine(rig.Local, "big.bin.partial");
+                rig.Drive.SlowMediaMs = 1;
+                var watch = Task.Run(async () =>
                 {
-                    if (offset > 0) cancel.Cancel();
-                    return Task.CompletedTask;
-                };
+                    while (!cancel.IsCancellationRequested)
+                    {
+                        try { if (File.Exists(partial) && new FileInfo(partial).Length >= 4 * 1024 * 1024) cancel.Cancel(); }
+                        catch { }
+                        await Task.Delay(2);
+                    }
+                });
                 bool cancelled = false;
                 try { await rig.Pass(cancel.Token); }
                 catch (OperationCanceledException) { cancelled = true; }
-                var partial = Path.Combine(rig.Local, "big.bin.partial");
+                cancel.Cancel();
+                await watch;
+                rig.Drive.SlowMediaMs = 0;
+                long kept = File.Exists(partial) ? new FileInfo(partial).Length : 0;
                 Check("a download cancelled part way stops", cancelled);
-                Check("and leaves its part on disk", File.Exists(partial) && new FileInfo(partial).Length == 8 * 1024 * 1024);
+                Check("and leaves its part on disk", kept >= 4 * 1024 * 1024 && kept < big.Length, $"{kept:N0} bytes");
 
-                rig.Drive.OnMedia = null;
                 rig.Restart();
                 rig.Drive.MediaOffsets.Clear();
                 var problem = await rig.Pass();
                 Check("the next pass carries on from where it stopped",
-                    rig.Drive.MediaOffsets.FirstOrDefault() == 8 * 1024 * 1024, string.Join(",", rig.Drive.MediaOffsets));
+                    rig.Drive.MediaOffsets.FirstOrDefault() == kept, $"{string.Join(",", rig.Drive.MediaOffsets)} against {kept:N0}");
                 Check("and the file arrives whole", File.Exists(Path.Combine(rig.Local, "big.bin")) &&
                                                     File.ReadAllBytes(Path.Combine(rig.Local, "big.bin")).AsSpan().SequenceEqual(big) &&
                                                     !File.Exists(partial));

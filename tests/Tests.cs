@@ -194,6 +194,13 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "drivecache")
+            {
+                await Guard("DriveClientCacheTests", () => DriveClientCacheTests.RunAll(Check, Equal));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "pcchanges")
             {
                 await Guard("PcChangesTests", () => PcChangesTests.RunAll(Check));

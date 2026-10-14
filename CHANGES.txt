@@ -2,6 +2,14 @@
 Changed: the directions for a synced folder are now called mirrors: 2-way mirror, where a change on either side is made on the other; 1-way mirror, PC to Drive, a backup in Drive; and 1-way mirror, Drive to PC, a copy on this PC.
 New: right under Direction there is an Example box that says what your choice does with your own folders, such as: Put notes.txt in Music on this PC, and within a minute it is in music in Google Drive too. It changes as you change the direction, the folders, or the delete box. Press Tab from Direction to read it.
 Changed: the Check Drive every box is gone. Changes on your PC already start a sync within seconds, and every synced folder now checks Google Drive for changes every minute. A check is one small question to Google, however many files the folder has. Folders set to check less often, or only when you press Sync now, now check every minute too.
+New: History, in the Google Drive sync configurator. Choose a synced folder and press History to hear what it did, newest first, one file a line, such as Uploaded Album/song.mp3, today at 8:31 PM. Failures say why. Each folder keeps its last 1,000.
+New: Sync all Google Drive folders now, and Pause all syncing or Resume all syncing, in the tray menu and the File menu. Ctrl+Shift+Y syncs all from the main window.
+Faster: when nothing has changed, all your synced folders together now ask Google one small question a minute, instead of two questions each.
+Faster: the full read of a synced folder that happens once a day reads several folders at once, about three to four times faster on a big library.
+Faster: new files coming down from Google Drive now download many at once instead of one at a time, so a first sync of a music library spends minutes waiting on Google instead of hours. Files already on your PC are still replaced one at a time, the old copy going to the Recycle Bin first.
+Faster: a big file coming down from Google Drive now downloads in one go, checked as it arrives, instead of in 8 megabyte pieces with a wait between each and a second read at the end to check it. If the connection drops, it carries on from where it stopped.
+Faster: when you add a synced folder, the first sync starts from the look it took for the summary, instead of reading the whole Google Drive folder a second time. If anything in that folder changed while you read the summary, it reads it again, to be safe.
+Faster: memory the Google Drive drive letter no longer needs, after you play or copy a big file from it, is given back to Windows within seconds, instead of staying in use until much later.
 
 3.0.3
 Changed: before a new synced folder starts, what it will do now appears in a box in the window itself, right above OK, instead of a pop-up with Yes, No and Cancel. Press Tab to reach it and read it line by line. Press OK to start syncing, or tick Paused and press OK to save it for later.
