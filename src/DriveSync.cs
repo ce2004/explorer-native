@@ -614,6 +614,12 @@ namespace ExplorerNative
 
         public static string Parent(string path) => path.LastIndexOf('/') is var at and > 0 ? path[..at] : "";
 
+        /// <summary>Whether a path is somewhere under a folder ("" holds everything), as the names comparer sees it.</summary>
+        public static bool IsUnder(string path, string folder) =>
+            folder.Length == 0 ||
+            (path.Length > folder.Length && path[folder.Length] == '/' &&
+             SyncNameComparer.Instance.Equals(path[..folder.Length], folder));
+
         /// <summary>
         /// The folder a move really renames: "a/b/c.txt" to "x/b/c.txt" renames
         /// "a" to "x", and "a/c.txt" to "x/y/c.txt" moves "a" to "x/y". Null when

@@ -678,7 +678,8 @@ namespace ExplorerNative
             Check("it said how far it had got while it worked", lines.Count >= 1, lines.Count.ToString());
             var text = DriveMonitor.Describe(p);
             Check("the preview reads as plain sentences with the numbers",
-                text.Contains("110") && text.Contains("105") && text.Contains("To upload: 10") && text.Contains("To download: 5") &&
+                text.Contains("110") && text.Contains("105") && text.Contains("10 files, ") && text.Contains("copied up to Google Drive") &&
+                text.Contains("5 files, ") && text.Contains("copied down to this PC") &&
                 text.IndexOfAny(new[] { '*', '#', '`' }) < 0, text);
 
             var original = new DriveSyncPair();
@@ -756,11 +757,17 @@ namespace ExplorerNative
                 foreach (var batched in modes)
                 {
                     DriveMonitor.LargePairFiles = batched ? 0 : int.MaxValue;
-                    DriveMonitor.BatchFiles = 20_000;
+                    DriveMonitor.BatchFiles = batch;     // what the app uses
                     using var rig = new Rig(sandbox);
+                    // EXPLORERNATIVE_SYNCSCALE_PERFOLDER=10 is a music library: ten tracks
+                    // an album, ten albums an artist, so a folder for every ten files.
+                    int perFolder = int.TryParse(Environment.GetEnvironmentVariable("EXPLORERNATIVE_SYNCSCALE_PERFOLDER"), out var pf) && pf > 0
+                        ? pf : 0;
                     for (int i = 0; i < count; i++)
                     {
-                        var rel = $"Lib/part {i / 10_000:D3}/box {i / 500 % 20:D2}/f{i:D7}.bin";
+                        var rel = perFolder > 0
+                            ? $"Lib/artist {i / perFolder / 10:D6}/album {i / perFolder % 10:D2}/f{i:D7}.bin"
+                            : $"Lib/part {i / 10_000:D3}/box {i / 500 % 20:D2}/f{i:D7}.bin";
                         var data = Bytes(i, 16);
                         rig.WriteLocal(rel, data, T0.AddSeconds(i));
                         rig.PutDrive(rel, data, T0.AddSeconds(i));
@@ -776,24 +783,42 @@ namespace ExplorerNative
                         {
                             // What is alive, not what is waiting to be collected.
                             peak = Math.Max(peak, GC.GetTotalMemory(forceFullCollection: true));
-                            try { await Task.Delay(1000, stop.Token); } catch { }
+                            try { await Task.Delay(250, stop.Token); } catch { }
                         }
                     });
-                    var clock = Stopwatch.StartNew();
-                    var s = await rig.Pass();
-                    var first = clock.Elapsed;
-                    clock.Restart();
-                    var again = await rig.Pass();
-                    var second = clock.Elapsed;
+                    // Each pass on its own: the highest live heap above the start while it ran.
+                    // What the pass itself held at its highest, above what was alive
+                    // when it began (the fake Drive's own tables included in neither).
+                    async Task<(DriveMonitor.PairStatus Status, TimeSpan Took, long PassMb)> Measured()
+                    {
+                        GC.Collect();
+                        long start = GC.GetTotalMemory(true);
+                        peak = start;
+                        var watch = Stopwatch.StartNew();
+                        var status = await rig.Pass();
+                        var took = watch.Elapsed;
+                        peak = Math.Max(peak, GC.GetTotalMemory(true));
+                        return (status, took, (peak - start) / (1024 * 1024));
+                    }
+                    var (s, first, firstMb) = await Measured();
+                    var (again, second, secondMb) = await Measured();
+                    var quietSide = rig.Monitor.LastPcSide;
+                    rig.WriteLocal(perFolder > 0 ? "Lib/artist 000000/album 00/f0000000.bin" : "Lib/part 000/box 00/f0000000.bin",
+                        Bytes(7, 32), T0.AddDays(1));
+                    var (_, third, thirdMb) = await Measured();
                     stop.Cancel();
                     await sampler;
+                    GC.Collect();
+                    using var self = Process.GetCurrentProcess();
                     var mode = batched ? "a batch at a time" : "whole tree";
-                    Console.WriteLine($"    ({count:N0} mirrored files, {mode}: first pass {first.TotalSeconds:F1} s, " +
-                                      $"pass with nothing changed {second.TotalSeconds:F1} s, live managed heap at most " +
-                                      $"{(peak - before) / (1024 * 1024):N0} MB above the start, matched {s.Matched:N0} then {again.Matched:N0}, " +
-                                      $"{rig.Counts()})");
-                    Check($"{count:N0} mirrored files, {mode}: nothing uploaded or downloaded, all matched",
-                        rig.Drive.Uploads == 0 && rig.Drive.MediaReads == 0 && s.Matched == count && again.Matched == count,
+                    Console.WriteLine($"    ({count:N0} mirrored files, {mode}: first pass {first.TotalSeconds:F1} s, {firstMb:N0} MB; " +
+                                      $"nothing changed {second.TotalSeconds:F1} s, {secondMb:N0} MB ({quietSide}); " +
+                                      $"one edit {third.TotalSeconds:F1} s, {thirdMb:N0} MB ({rig.Monitor.LastPcSide}); " +
+                                      $"each the most the pass held above what was alive when it began; whole test process now " +
+                                      $"{self.PrivateMemorySize64 / (1024 * 1024):N0} MB with the fake Drive; " +
+                                      $"matched {s.Matched:N0} then {again.Matched:N0}, {rig.Counts()})");
+                    Check($"{count:N0} mirrored files, {mode}: nothing uploaded or downloaded but the one edit, all matched",
+                        rig.Drive.Uploads <= 1 && rig.Drive.MediaReads == 0 && s.Matched == count && again.Matched == count,
                         $"{rig.Counts()}, matched {s.Matched}, {again.Matched}");
                 }
             }

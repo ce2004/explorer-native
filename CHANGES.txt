@@ -1,3 +1,12 @@
+3.0.3
+Changed: before a new synced folder starts, what it will do now appears in a box in the window itself, right above OK, instead of a pop-up with Yes, No and Cancel. Press Tab to reach it and read it line by line. Press OK to start syncing, or tick Paused and press OK to save it for later.
+Changed: that summary is in plain sentences, such as 9,364 files, 119.8 gigabytes, will be copied down to this PC.
+Changed: each synced folder in the list now says what it is doing first, then what it does, such as Music, paused. Copies My Drive/Music down to C:\Users\Conner\Music.
+New: after you press OK, the window closes, you land on that folder in the list, and you hear whether it has started syncing. The Status list shows how it is going.
+Faster: a synced folder no longer reads every file on your PC each time it checks. Windows keeps a list of what changed on the drive, and the sync now reads only the folders on that list, even for changes made while Explorer Native was closed. A check of a folder with two million files where nothing changed takes a moment instead of minutes. Once a day it still reads everything, to be sure. On USB sticks and network folders, which have no such list, it watches the folder instead.
+Bug fixed: if a synced folder had a hundred thousand files or more spread over many small folders, such as a music library with ten songs an album, a check where nothing had changed could take most of an hour. Now it takes under a second.
+Faster: big syncs use less memory, and give it back to Windows when they finish instead of holding on to it.
+
 3.0.2
 New: the Google Drive sync configurator has a Status list under the folders, with one line for each thing you would want to know about the folder you chose, so you can arrow through it: how many files are on the PC and on Google Drive, how many are already in both folders, which change it is on, how many were uploaded, downloaded, moved, deleted or failed, the upload and download speed, and each file moving right now, such as Uploading Music\Live.flac, 12 megabytes of 40 megabytes. Press Alt+T to go to it. It updates every second while a sync runs.
 

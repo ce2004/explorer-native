@@ -18,8 +18,8 @@ namespace ExplorerNative
     {
         private readonly List<DriveSyncPair> _working;
         private readonly List<DriveSyncPair> _pairs;
-        private readonly ListBox _list;
-        private readonly ListBox _details;
+        private readonly LineList _list;
+        private readonly LineList _details;
         private readonly Button _edit, _remove, _sync;
         private readonly DriveMonitor? _monitor;
 
@@ -40,11 +40,10 @@ namespace ExplorerNative
             Font = SystemFonts.MessageBoxFont;
 
             var label = new Label { Text = "&Monitored folders:", AutoSize = true, Location = new Point(12, 12) };
-            _list = new ListBox
+            _list = new LineList
             {
                 Location = new Point(12, 32),
                 Size = new Size(616, 150),
-                HorizontalScrollbar = true,
                 AccessibleName = "Monitored folders",
                 TabIndex = 0,
             };
@@ -52,11 +51,10 @@ namespace ExplorerNative
             // The chosen folder's sync, one fact a line, so the arrows go
             // through it instead of one sentence too long to follow.
             var detailsLabel = new Label { Text = "S&tatus:", AutoSize = true, Location = new Point(12, 190) };
-            _details = new ListBox
+            _details = new LineList
             {
                 Location = new Point(12, 210),
                 Size = new Size(616, 140),
-                HorizontalScrollbar = true,
                 AccessibleName = "Status",
                 TabIndex = 1,
             };
@@ -93,14 +91,14 @@ namespace ExplorerNative
                 else if (e.KeyCode == Keys.Delete && _pairs.Count > 0) { RemovePair(); e.Handled = e.SuppressKeyPress = true; }
             };
 
-            _list.SelectedIndexChanged += (_, _) => FillDetails();
+            _list.SelectedIndexChanged += (_, _) => { if (_list.SelectedIndex >= 0) FillDetails(); };
 
             Controls.AddRange(new Control[] { label, _list, detailsLabel, _details, info, add, _edit, _remove, _sync, close });
             CancelButton = close;
 
             Action refresh = () =>
             {
-                if (IsHandleCreated && !IsDisposed) BeginInvoke(new Action(Fill));
+                if (IsHandleCreated && !IsDisposed) BeginInvoke(new Action(() => Fill()));
             };
             if (_monitor != null) _monitor.Changed += refresh;
             FormClosed += (_, _) => { if (_monitor != null) _monitor.Changed -= refresh; };
@@ -121,28 +119,14 @@ namespace ExplorerNative
         private Button MakeButton(string text, int x, int tab) =>
             new() { Text = text, Location = new Point(x, 426), Size = new Size(92, 30), TabIndex = tab };
 
-        private void Fill()
+        /// <param name="all">After a folder is added, edited or removed: every line, the one being read too, since the rows have moved.</param>
+        private void Fill(bool all = false)
         {
             var rows = _pairs.Count == 0
                 ? new List<string> { "No folders are monitored yet. Press Add to choose one." }
                 : _pairs.Select(p => Describe(p, _monitor?.StatusIfLoaded(p.Id), DateTime.UtcNow)).ToList();
 
-            // In place when only the words changed (live progress), so the list
-            // is not rebuilt under the screen reader twice a second.
-            if (rows.Count == _list.Items.Count)
-            {
-                for (int i = 0; i < rows.Count; i++)
-                    if (!Equals(_list.Items[i], rows[i])) _list.Items[i] = rows[i];
-            }
-            else
-            {
-                int at = Math.Max(0, _list.SelectedIndex);
-                _list.BeginUpdate();
-                _list.Items.Clear();
-                _list.Items.AddRange(rows.ToArray());
-                _list.EndUpdate();
-                _list.SelectedIndex = Math.Min(at, _list.Items.Count - 1);
-            }
+            _list.SetLines(rows, all);
 
             bool any = _pairs.Count > 0;
             _edit.Enabled = any;
@@ -158,34 +142,71 @@ namespace ExplorerNative
                 ? Details(_pairs[at], _monitor?.StatusIfLoaded(_pairs[at].Id), DateTime.UtcNow, _monitor?.LiveOf(_pairs[at].Id))
                 : new List<string> { "No folder chosen." };
 
-            if (lines.Count == _details.Items.Count)
-            {
-                for (int i = 0; i < lines.Count; i++)
-                    if (!Equals(_details.Items[i], lines[i])) _details.Items[i] = lines[i];
-                return;
-            }
-            int keep = _details.SelectedIndex;
-            _details.BeginUpdate();
-            _details.Items.Clear();
-            _details.Items.AddRange(lines.ToArray());
-            _details.EndUpdate();
-            if (keep >= 0) _details.SelectedIndex = Math.Min(keep, _details.Items.Count - 1);
+            _details.SetLines(lines);
         }
 
         /// <summary>
-        /// One pair as one sentence: "Music: C:\Users\Conner\Music and Drive
-        /// folder My Drive/Music, two-way, deletes not copied, last synced 2
-        /// minutes ago".
+        /// A list of lines whose words can change while it is read. A list box
+        /// cannot change a line: it takes it out and puts it back, which drops
+        /// the selection and which NVDA hears as landing on it again, so a
+        /// sync talked over itself every second and the arrows were thrown
+        /// back to the top. A list view changes a line's words in place. The
+        /// line under the keyboard is still left alone until it is left, so
+        /// sitting on the speed is not read again every second; arrowing to a
+        /// line finds it up to date.
+        /// </summary>
+        internal sealed class LineList : ListView
+        {
+            public LineList()
+            {
+                View = View.Details;
+                HeaderStyle = ColumnHeaderStyle.None;
+                FullRowSelect = true;
+                MultiSelect = false;
+                HideSelection = false;
+                Columns.Add("", 600);
+                Resize += (_, _) => Columns[0].Width = Math.Max(600, ClientSize.Width - 4);
+            }
+
+            public int SelectedIndex
+            {
+                get => SelectedIndices.Count > 0 ? SelectedIndices[0] : -1;
+                set
+                {
+                    if (value < 0 || value >= Items.Count) return;
+                    Items[value].Selected = true;
+                    Items[value].Focused = true;
+                    Items[value].EnsureVisible();
+                }
+            }
+
+            /// <param name="all">Every line, the one being read too: after the rows themselves moved.</param>
+            public void SetLines(IReadOnlyList<string> rows, bool all = false)
+            {
+                int hold = Focused && !all ? SelectedIndex : -1;
+                int common = Math.Min(rows.Count, Items.Count);
+                for (int i = 0; i < common; i++)
+                    if (i != hold && Items[i].Text != rows[i]) Items[i].Text = rows[i];
+                while (Items.Count > rows.Count) Items.RemoveAt(Items.Count - 1);
+                for (int i = Items.Count; i < rows.Count; i++) Items.Add(rows[i]);
+                if (SelectedIndex < 0 && Items.Count > 0) SelectedIndex = Math.Min(Math.Max(hold, 0), Items.Count - 1);
+            }
+        }
+
+        /// <summary>
+        /// One pair, what it is doing first, then what it does in plain words:
+        /// "Music, last synced 2 minutes ago. Keeps C:\Users\Conner\Music and
+        /// My Drive/Music the same."
         /// </summary>
         internal static string Describe(DriveSyncPair pair, DriveMonitor.PairStatus? status, DateTime nowUtc)
         {
-            var mode = pair.Mode switch
+            var does = pair.Mode switch
             {
-                SyncMode.UploadOnly => "upload only, PC to Drive",
-                SyncMode.DownloadOnly => "download only, Drive to PC",
-                _ => "two-way",
+                SyncMode.UploadOnly => $"Copies {pair.LocalFolder} up to {pair.DriveFolderPath}.",
+                SyncMode.DownloadOnly => $"Copies {pair.DriveFolderPath} down to {pair.LocalFolder}.",
+                _ => $"Keeps {pair.LocalFolder} and {pair.DriveFolderPath} the same.",
             };
-            var deletes = pair.CopyDeletes ? "deletes copied" : "deletes not copied";
+            var deletes = pair.CopyDeletes ? " Files you delete are deleted on the other side too." : "";
 
             string state;
             if (pair.Paused) state = "paused";
@@ -222,18 +243,17 @@ namespace ExplorerNative
                     state += ", " + string.Join(", ", did);
                 }
             }
-            else state = "not synced yet";
+            else state = "waiting to sync";
 
             var check = pair.CheckMinutes switch
             {
                 1 => "",
-                <= 0 => ", Drive checked only on Sync now",
-                60 => ", checks Drive every hour",
-                var m => $", checks Drive every {m} minutes",
+                <= 0 => " Checks Drive only when you press Sync now.",
+                60 => " Checks Drive every hour.",
+                var m => $" Checks Drive every {m} minutes.",
             };
 
-            return $"{DriveMonitor.DisplayName(pair)}: {pair.LocalFolder} and Drive folder {pair.DriveFolderPath}, " +
-                   $"{mode}, {deletes}{check}, {state}";
+            return $"{DriveMonitor.DisplayName(pair)}, {state}. {does}{deletes}{check}";
         }
 
         /// <summary>
@@ -275,7 +295,7 @@ namespace ExplorerNative
 
             var lines = new List<string>();
             bool running = status is { Running: true };
-            if (pair.Paused) lines.Add("Paused");
+            if (pair.Paused) lines.Add("Paused. To start it, press Enter on it above and untick Paused");
             else if (status?.Problem is { } waiting && waiting.StartsWith("waiting", StringComparison.Ordinal))
                 lines.Add(Capital(waiting));
             else if (running)
@@ -291,7 +311,7 @@ namespace ExplorerNative
                           problem.StartsWith("offline", StringComparison.Ordinal)
                     ? Capital(problem) : "Problem: " + problem);
             else if (status?.LastSyncedUtc is DateTime when) lines.Add("Last synced " + Ago(nowUtc - when));
-            else lines.Add("Not synced yet");
+            else lines.Add("Waiting to sync");
 
             if (status == null) return lines;
 
@@ -352,8 +372,25 @@ namespace ExplorerNative
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
             _pairs.Add(dialog.Pair);
             Commit();
-            _list.SelectedIndex = _pairs.Count - 1;
-            Say($"Added {DriveMonitor.DisplayName(dialog.Pair)}");
+            ShowSaved(_pairs.Count - 1);
+        }
+
+        /// <summary>
+        /// Back on the list, on the folder just saved, so its status is what is
+        /// read next; then whether it is syncing, after that line, not over it.
+        /// </summary>
+        private void ShowSaved(int at)
+        {
+            _list.SelectedIndex = at;
+            FillDetails();
+            _list.Focus();
+            try
+            {
+                Speech.Speak(_pairs[at].Paused
+                    ? "Saved. It is paused, so nothing is copied until you untick Paused."
+                    : "Saved. Syncing has started. The Status list shows how it is going.");
+            }
+            catch { }
         }
 
         private void EditPair()
@@ -365,7 +402,7 @@ namespace ExplorerNative
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
             _pairs[at] = dialog.Pair;
             Commit();
-            _list.SelectedIndex = at;
+            ShowSaved(at);
         }
 
         private async void RemovePair()
@@ -394,7 +431,7 @@ namespace ExplorerNative
             _working.Clear();
             _working.AddRange(_pairs.Select(p => p.Copy()));
             _monitor?.SetPairs(_pairs);
-            Fill();
+            Fill(all: true);
         }
 
         private static void Say(string text)
@@ -405,9 +442,9 @@ namespace ExplorerNative
 
     /// <summary>
     /// Add or edit one folder pair. OK looks at both folders first: before a
-    /// first sync it says what would happen (how many files on each side, how
+    /// first sync it puts what would happen (how many files on each side, how
     /// many already match, what would be uploaded, downloaded, kept twice or
-    /// deleted) and asks; and for any start it checks there is room (the PC's
+    /// deleted) in a box above OK, and OK again starts it; and for any start it checks there is room (the PC's
     /// disk for what comes down, Drive's quota for what goes up), offering to
     /// save the pair paused when there is not.
     /// </summary>
@@ -416,9 +453,13 @@ namespace ExplorerNative
         private readonly TextBox _name, _local, _drive, _skipTypes;
         private readonly ComboBox _mode, _maxSize, _clash, _every;
         private readonly CheckBox _deletes, _paused, _subfolders;
-        private readonly Label _status;
+        private readonly Label _status, _summaryLabel;
+        private readonly TextBox _summary;
         private readonly Button _ok;
         private bool _checking;
+
+        /// <summary>The settings the summary was made for: OK again with these starts without looking twice.</summary>
+        private string? _previewedKey;
 
         /// <summary>Ends the space check: Cancel, Escape and closing the window all do.</summary>
         private readonly CancellationTokenSource _closing = new();
@@ -554,20 +595,41 @@ namespace ExplorerNative
             _paused = Check("Pa&used", pair.Paused);
             y += 32;
 
+            // Before a first sync, what it will do: a read-only box in the tab
+            // order, so it can be read line by line and gone back to. It used to
+            // be a Yes, No, Cancel message box that vanished once answered.
+            _summaryLabel = new Label { Text = "&What the first sync will do:", AutoSize = true, Location = new Point(12, y), Visible = false };
+            _summary = new TextBox
+            {
+                Multiline = true,
+                ReadOnly = true,
+                ScrollBars = ScrollBars.Vertical,
+                Location = new Point(12, y + 20),
+                Size = new Size(576, 120),
+                AccessibleName = "What the first sync will do",
+                TabIndex = tab++,
+                Visible = false,
+            };
+            Controls.Add(_summaryLabel);
+            Controls.Add(_summary);
+            y += 148;
+
             _status = new Label { AutoSize = false, Location = new Point(12, y), Size = new Size(576, 40) };
             Controls.Add(_status);
+            y += 44;
 
-            _ok = new Button { Text = "OK", Location = new Point(408, 458), Size = new Size(84, 28), TabIndex = tab++ };
+            _ok = new Button { Text = "OK", Location = new Point(408, y), Size = new Size(84, 28), TabIndex = tab++ };
             var cancel = new Button
             {
                 Text = "Cancel",
                 DialogResult = DialogResult.Cancel,
-                Location = new Point(504, 458),
+                Location = new Point(504, y),
                 Size = new Size(84, 28),
                 TabIndex = tab++,
             };
             Controls.Add(_ok);
             Controls.Add(cancel);
+            ClientSize = new Size(600, y + 40);
             AcceptButton = _ok;
             CancelButton = cancel;
 
@@ -662,7 +724,11 @@ namespace ExplorerNative
                 // against the PC's free space, what would go up against Drive's.
                 // And never start a first sync (a new pair, or new folders) before
                 // the person has seen what it would do and said yes.
-                if (!edited.Paused)
+                // The second OK on a summary already read starts it: the look is
+                // not made again (on a big Drive it can take minutes), unless a
+                // setting it depended on was changed since.
+                bool seen = _previewedKey != null && _previewedKey == PlanKey(edited);
+                if (!edited.Paused && !seen)
                 {
                     bool first = IsFirstSync(_original, edited);
                     var (shortage, preview, failure) = await CheckAsync(edited);
@@ -693,13 +759,9 @@ namespace ExplorerNative
                     }
                     else if (first && preview != null)
                     {
-                        var answer = MessageBox.Show(this,
-                            DriveMonitor.Describe(preview) + "\n\n" +
-                            "Start syncing now? Yes starts it. No saves it paused, to start later. Cancel goes back.",
-                            "Before the first sync", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question,
-                            MessageBoxDefaultButton.Button3);
-                        if (answer == DialogResult.Cancel) { _local.Focus(); return; }
-                        if (answer == DialogResult.No) edited.Paused = true;
+                        ShowSummary(preview);
+                        _previewedKey = PlanKey(edited);
+                        return;
                     }
                 }
 
@@ -724,6 +786,24 @@ namespace ExplorerNative
               }
             };
         }
+
+        /// <summary>Puts what the first sync will do in the box above OK, and moves there to read it.</summary>
+        private void ShowSummary(DriveMonitor.SyncPreview preview)
+        {
+            _summary.Text = DriveMonitor.Describe(preview) + Environment.NewLine + Environment.NewLine +
+                            "Nothing has been copied yet. Press OK to start syncing. " +
+                            "To save it without starting, tick Paused, then press OK.";
+            _summaryLabel.Visible = true;
+            _summary.Visible = true;
+            _status.Text = "Read what the first sync will do, then press OK to start it.";
+            _summary.Focus();
+            _summary.Select(0, 0);
+        }
+
+        /// <summary>The settings a summary depends on: change one and OK looks again.</summary>
+        private static string PlanKey(DriveSyncPair p) =>
+            string.Join("|", p.LocalFolder, p.DriveFolderId, p.Mode, p.WhenBothChanged, p.MaxFileMegabytes,
+                p.SkipExtensions, p.IncludeSubfolders, p.CopyDeletes);
 
         /// <summary>
         /// Whether saving <paramref name="edited"/> starts a sync from nothing:

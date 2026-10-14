@@ -194,6 +194,13 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "pcchanges")
+            {
+                await Guard("PcChangesTests", () => PcChangesTests.RunAll(Check));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "syncmemory")
             {
                 await SyncScaleTests.RunMemory(Check);
@@ -207,6 +214,7 @@ namespace ExplorerNative
                 await Guard("SyncScaleTests", () => SyncScaleTests.RunAll(Check));
                 await Guard("SyncDuplicateTests", () => SyncDuplicateTests.RunAll(Check, Equal));
                 await FakeDriveMonitorTests.RunAll(Check, Equal);
+                await Guard("PcChangesTests", () => PcChangesTests.RunAll(Check));
                 await SyncSuitesInBatches();
                 Console.WriteLine($"\n{_passed} passed, {_failed} failed");
                 return _failed == 0 ? 0 : 1;
@@ -321,6 +329,7 @@ namespace ExplorerNative
             await Guard("FakeDriveMonitorTests", () => FakeDriveMonitorTests.RunAll(Check, Equal));
             await Guard("SyncDuplicateTests", () => SyncDuplicateTests.RunAll(Check, Equal));
             await Guard("SyncScaleTests", () => SyncScaleTests.RunAll(Check));
+            await Guard("PcChangesTests", () => PcChangesTests.RunAll(Check));
             await SyncSuitesInBatches();
             await Guard("DriveMountTests", () => DriveMountTests.RunAll(Check, Equal));
             await Guard("DriveMountTimerTests", () => DriveMountTimerTests.RunAll(Check, Equal));
@@ -822,11 +831,11 @@ namespace ExplorerNative
             Check("and while reading Drive, how many it has found so far",
                 DriveMonitorForm.Describe(new DriveSyncPair { Name = "Music" },
                     new DriveMonitor.PairStatus(null, null, true) { Phase = DriveMonitor.PhaseListing, LocalFound = 2_000_000, DriveFound = 1_500_000 }, t0)
-                    .EndsWith("2,000,000 files on the PC, reading Google Drive, 1,500,000 files found so far"));
+                    .Contains("2,000,000 files on the PC, reading Google Drive, 1,500,000 files found so far"));
             Check("and says when it is waiting on Google",
                 DriveMonitorForm.Describe(new DriveSyncPair { Name = "Music" },
                     new DriveMonitor.PairStatus(null, "waiting, Google is limiting requests, trying again in 40 seconds", true), t0)
-                    .EndsWith("waiting, Google is limiting requests, trying again in 40 seconds"));
+                    .Contains("waiting, Google is limiting requests, trying again in 40 seconds"));
         }
 
         /// <summary>
@@ -861,7 +870,8 @@ namespace ExplorerNative
                 SyncSafety.RootProblem(true, true) == null);
             var engine = SourceFile("DriveMonitor.cs") ?? "";
             int guard = engine.IndexOf("SyncSafety.RootProblem(", StringComparison.Ordinal);
-            int scan = engine.IndexOf("var local = ScanLocal(root", StringComparison.Ordinal);
+            int scan = new[] { "ScanLocal(root", "ScanLocalPartly(root" }
+                .Select(s => engine.IndexOf(s, StringComparison.Ordinal)).Where(i => i >= 0).DefaultIfEmpty(-1).Min();
             Check("the engine checks both roots before it lists or plans anything", guard > 0 && scan > guard);
             Check("and asks Drive whether its folder is trashed, not just listable",
                 engine.Contains("client.FolderAlive(pair.DriveFolderId", StringComparison.Ordinal));
@@ -1068,13 +1078,13 @@ namespace ExplorerNative
             var pair = new DriveSyncPair { Name = "Music", LocalFolder = @"C:\Music", DriveFolderPath = "My Drive/Music" };
             Check("the monitor window shows live progress",
                 DriveMonitorForm.Describe(pair, new DriveMonitor.PairStatus(null, null, true, 40 * gb, 214 * gb), t0)
-                    .EndsWith("syncing, 40 gigabytes of 214 gigabytes"));
+                    .Contains("syncing, 40 gigabytes of 214 gigabytes"));
             Check("and says plainly when it is paused for space",
                 DriveMonitorForm.Describe(pair, new DriveMonitor.PairStatus(null, "paused: C: is out of space, needs 30 gigabytes more", false), t0)
-                    .EndsWith("paused: C: is out of space, needs 30 gigabytes more"));
+                    .Contains("paused: C: is out of space, needs 30 gigabytes more"));
             pair.CheckMinutes = 0;
             Check("a pair checked only on request says so",
-                DriveMonitorForm.Describe(pair, null, t0).Contains("Drive checked only on Sync now"));
+                DriveMonitorForm.Describe(pair, null, t0).Contains("Checks Drive only when you press Sync now."));
         }
 
         /// <summary>
@@ -1188,13 +1198,14 @@ namespace ExplorerNative
                 Mode = SyncMode.TwoWay,
             };
             Equal("a pair is one sentence",
-                @"Music: C:\Users\Conner\Music and Drive folder My Drive/Music, two-way, deletes not copied, last synced 2 minutes ago",
+                @"Music, last synced 2 minutes ago. Keeps C:\Users\Conner\Music and My Drive/Music the same.",
                 DriveMonitorForm.Describe(pair, new DriveMonitor.PairStatus(t0, null, false), t0.AddMinutes(2)));
             pair.Mode = SyncMode.UploadOnly;
             pair.CopyDeletes = true;
             pair.Paused = true;
             Check("paused and upload only read as such",
-                DriveMonitorForm.Describe(pair, null, t0).EndsWith("upload only, PC to Drive, deletes copied, paused"));
+                DriveMonitorForm.Describe(pair, null, t0) ==
+                    @"Music, paused. Copies C:\Users\Conner\Music up to My Drive/Music. Files you delete are deleted on the other side too.");
             Equal("the tally counts only what happened", "3 uploaded, 1 deleted", DriveMonitor.Tally(3, 0, 1));
 
             // The monitor never touches the app's own folder, which holds Drive's sync root.

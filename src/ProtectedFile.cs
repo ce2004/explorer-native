@@ -51,6 +51,27 @@ namespace ExplorerNative
 
         public static string ReadAllText(string path) => Decode(File.ReadAllBytes(path));
 
+        /// <summary>
+        /// A file's text as UTF-8 bytes, decrypting when they are ours: for JSON
+        /// read straight from bytes. A large file read as a string held it twice
+        /// over (two bytes a character) on top of the bytes it came from.
+        /// </summary>
+        public static byte[] ReadAllUtf8(string path)
+        {
+            var bytes = File.ReadAllBytes(path);
+            if (IsProtected(bytes)) return Unprotect(bytes.AsSpan(Magic.Length).ToArray());
+            return bytes.AsSpan().StartsWith(new byte[] { 0xEF, 0xBB, 0xBF }) ? bytes[3..] : bytes;
+        }
+
+        /// <summary>UTF-8 text written encrypted, as <see cref="WriteAllText"/> does, without making a string of it first.</summary>
+        public static void WriteAllUtf8(string path, byte[] utf8)
+        {
+            var blob = Protect(utf8);
+            using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
+            file.Write(Magic, 0, Magic.Length);
+            file.Write(blob, 0, blob.Length);
+        }
+
         /// <param name="durable">Flush to the disk itself before returning, for a file about to be renamed over
         /// the real one: otherwise a power cut can leave the rename on disk and the bytes not, an empty file.</param>
         public static void WriteAllText(string path, string text, bool durable = false)
