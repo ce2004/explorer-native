@@ -959,6 +959,10 @@ namespace ExplorerNative
             var tag = NewOperationTag();
             bool maybeDone = false;
 
+            // A refused token: Send has forgotten it but cannot resend a
+            // streamed body, so the fresh token is this loop's to fetch. Once.
+            bool refusedOnce = false;
+
             async Task<DriveUploaded?> AlreadyUploaded()
             {
                 // An update cannot make a second file, so sending it again is
@@ -1071,6 +1075,16 @@ namespace ExplorerNative
                 }
 
                 lastProblem = Explain(status, text);
+
+                // The token was refused (revoked, or let go early). The
+                // request is built again below with a fresh one; it failed the
+                // file outright, though Send leaves streamed bodies to this.
+                if (status == 401 && !refusedOnce)
+                {
+                    refusedOnce = true;
+                    attempt--;
+                    continue;
+                }
 
                 // Out of storage, or done for the day. Neither is going to
                 // change while nine hundred more files ask the same question, so

@@ -553,7 +553,8 @@ namespace ExplorerNative
         {
             var candidate = NameRules.NormaliseLaunchPath(arg);
             if (candidate.Length == 0) return false;
-            return Directory.Exists(candidate) || File.Exists(candidate);
+            var exact = NameRules.ExactPath(candidate);
+            return Directory.Exists(exact) || File.Exists(exact);
         }
 
         /// <summary>

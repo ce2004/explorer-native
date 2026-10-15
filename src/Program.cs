@@ -955,7 +955,13 @@ namespace ExplorerNative
                 {
                     // Made absolute here: the running copy that receives it has a
                     // current directory of its own, and "." there is not "." here.
-                    if (Directory.Exists(candidate) || File.Exists(candidate)) return Path.GetFullPath(candidate);
+                    //
+                    // Exact, and a path that needs it is already absolute and kept
+                    // as given: GetFullPath, like the plain check, turns "Backup."
+                    // into "Backup", and the window opened that folder instead.
+                    var exact = NameRules.ExactPath(candidate);
+                    if (Directory.Exists(exact) || File.Exists(exact))
+                        return exact != candidate ? candidate : Path.GetFullPath(candidate);
                 }
                 catch { }
             }
@@ -1017,7 +1023,7 @@ namespace ExplorerNative
                 var launchPath = FirstPathArgument(args);
                 loaded.InitialFolderOverride =
                     launchPath == null ? null
-                    : Directory.Exists(launchPath) ? launchPath
+                    : Directory.Exists(NameRules.ExactPath(launchPath)) ? launchPath
                     : Path.GetDirectoryName(launchPath);
                 return loaded;
             });

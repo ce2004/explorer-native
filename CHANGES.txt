@@ -1,3 +1,28 @@
+3.0.8
+Bug fixed: if your sound device was set to 44.1 kHz (CD quality), or 22.05 or 24 kHz, songs on your PC played in total silence and the time never moved. Switching sound device during a song could do the same on any device. Now they play.
+Bug fixed: Apple Lossless sound in a .caf file never played, and said it could not divide by zero. Now it plays.
+Bug fixed: if you opened a folder whose name ends in a dot, such as Backup., Explorer Native said after a few seconds that it was no longer available and went up a level. Backspace went to the wrong folder, New folder and New file made the item in the folder next to it, and the folder was not watched for changes. Now all of these use the folder you are in.
+Bug fixed: in a folder whose name ends in a dot, compressing, extracting, opening an archive, folder sizes and the replace question in Compress all used the folder next to it, and opening such a folder from Windows opened the wrong one. Now they use the right folder. Windows cannot make a shortcut to anything in such a folder, so Create shortcut now says so instead of making one to the wrong item.
+Bug fixed: if a big synced folder met a folder Google Drive did not know about, every sync failed with "Sequence contains no matching element" for up to a day. Now it lists Drive again and carries on.
+Bug fixed: if a synced folder had a size limit that is not in the list, such as 250 MB, the Change window showed No limit, and saving any change removed the limit. Now your limit is kept.
+Bug fixed: pressing OK in Add or Change a synced folder froze the window if the PC folder was on a network drive that had gone away. Now it does not.
+Bug fixed: if Google refused your sign-in part way through uploading a small file, the file failed at once. Now it signs in again and tries once more.
+Bug fixed: if a synced download timed out before anything arrived, the whole file failed. Now it is asked for again.
+Bug fixed: if one folder could not be made in Google Drive while uploading a folder, the progress bar never reached the end. Now it does.
+Bug fixed: if you copied a Google Drive file just as Drive was switched off or Explorer Native was quitting, its download could carry on in the background. Now it stops.
+Bug fixed: archives whose names start with ./ (as tar makes them) opened as an empty folder, and xz, 7z, zst and bz2 ones extracted nothing. Now both work.
+Bug fixed: converting a 24-bit TTA, CAF, AU or VOC file, or a 64-bit WAV, to FLAC or WAV same depth came out 16-bit. Saving from the editor did the same. Now the depth is kept.
+Bug fixed: when Windows refused to write tags to a converted file, the summary did not say so. Now it does.
+Bug fixed: if settings.json could not be decrypted while Explorer Native was running, quitting could put every setting back to its default. Now your settings are kept.
+Bug fixed: names like CON .txt were accepted, but Windows treats them as a device. Now they are refused.
+Bug fixed: some buttons in Preferences spoke even with spoken announcements off. Now they are quiet.
+Bug fixed: saving Preferences while on the drive list read the drive aloud over Preferences saved. Now it does not.
+Bug fixed: in the Limiter window, the 1.5 millisecond attack was read as 1 milliseconds. Now it says 1.5.
+Bug fixed: in the web app, the Transfers tab took focus off the Stop button every second. Now it stays where you are.
+Bug fixed: in the web app, focus jumped to the top of the page after Copy, Move or Get size from a row's menu, after an upload finished, or after choosing a track in the queue. Now it goes back where you were.
+Bug fixed: in the web app, sizing a big folder, opening a slow folder or deleting many items could say the PC could not be reached while it was still working. Now the phone waits as long as the PC does.
+Bug fixed: in the web app, the phone's Back gesture from the top of a drive landed on the Drives heading. Now it lands on the drive.
+
 3.0.7
 Bug fixed: if a big synced folder ran out of room part way through a sync, Explorer Native forgot what it knew about the folders it had not reached yet. Next time, files you had deleted could come back and files you had edited could turn into conflict copies. Now it keeps them.
 Bug fixed: if you moved a file out of a synced folder in Google Drive and then deleted it on your PC, the file could be sent to the Drive trash from where you had moved it. Now a file that has moved somewhere else in Drive is left alone.

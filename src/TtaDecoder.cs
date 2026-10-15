@@ -50,6 +50,9 @@ namespace ExplorerNative
         public double Position { get { lock (_gate) return SampleRate > 0 ? _frame / (double)SampleRate : 0; } }
         public string Diagnostic { get; private set; } = "not opened";
 
+        /// <summary>The bits per sample the file stores, so converting keeps the depth.</summary>
+        public int NativeBits => _bits;
+
         /// <summary>One channel's running state, reset at the start of every frame.</summary>
         private sealed class Channel
         {

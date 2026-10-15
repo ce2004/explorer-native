@@ -2331,10 +2331,16 @@ namespace ExplorerNative
             try { driveId = await client.DriveOf(pair.DriveFolderId, token).ConfigureAwait(false); }
             catch (Exception) when (!token.IsCancellationRequested) { }
 
-            bool full = forceFull || !CanListChangesOnly(ViewOf(header), pair, DateTime.UtcNow) ||
-                        recordFolders.Any(f => !header.FolderIds.ContainsKey(f));
-            string why = !CanListChangesOnly(ViewOf(header), pair, DateTime.UtcNow) ? "no feed to go on"
-                : full ? "records in a folder Drive is not known to have: " + recordFolders.First(f => !header.FolderIds.ContainsKey(f))
+            // The retry after FullListingNeededException comes here with the feed
+            // still usable and every recorded folder known: First() then threw
+            // "Sequence contains no matching element", and the pair failed every
+            // pass until the daily full listing.
+            bool canFeed = CanListChangesOnly(ViewOf(header), pair, DateTime.UtcNow);
+            var unknownFolder = recordFolders.FirstOrDefault(f => !header.FolderIds.ContainsKey(f));
+            bool full = forceFull || !canFeed || unknownFolder != null;
+            string why = !canFeed ? "no feed to go on"
+                : unknownFolder != null ? "records in a folder Drive is not known to have: " + unknownFolder
+                : forceFull ? "a batch met records in a folder Drive is not known to have"
                 : "";
             var dirty = new HashSet<string>(comparer);
             string? nextToken = null;

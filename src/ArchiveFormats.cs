@@ -267,7 +267,9 @@ namespace ExplorerNative
 
             try
             {
-                using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                // Exact: inside "Backup." the ordinary path opened "Backup\..." —
+                // a file that is not there, so the archive went unrecognised.
+                using var file = new FileStream(NameRules.ExactPath(path), FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                 Span<byte> head = stackalloc byte[SniffBytes];
                 int got = 0;
                 while (got < head.Length)
@@ -341,7 +343,7 @@ namespace ExplorerNative
                 if (isFolder is { } known) folder = known;
                 else
                 {
-                    try { folder = Directory.Exists(one); }
+                    try { folder = Directory.Exists(NameRules.ExactPath(one)); }
                     catch { folder = false; }
                 }
 

@@ -51,6 +51,18 @@ namespace ExplorerNative
         public double Position { get { lock (_gate) return SampleRate > 0 ? _frame / (double)SampleRate : 0; } }
         public string Diagnostic { get; private set; } = "not opened";
 
+        /// <summary>
+        /// The bits per sample the file stores, as AudioDecoder.NativeBits gives
+        /// it, so converting keeps the depth: PCM and float their own, ALAC the
+        /// cookie's, and zero for the companded and ADPCM kinds.
+        /// </summary>
+        public int NativeBits => _codec switch
+        {
+            Codec.Pcm or Codec.Float => _bits,
+            Codec.Alac => _alac?.BitDepth ?? 0,
+            _ => 0,
+        };
+
         /// <summary>Whether a file begins as one of the containers above.</summary>
         public static bool IsWav(string path, System.Runtime.InteropServices.ComTypes.IStream? stream)
         {
@@ -485,7 +497,9 @@ namespace ExplorerNative
 
             if (_codec != Codec.Alac) _totalFrames = _dataLength / _blockAlign * _samplesPerBlock;
             // A last ADPCM block cut short still decodes: its frames count too.
-            long rest = _dataLength % _blockAlign;
+            // ALAC has no block size (its packets differ), and dividing by it
+            // refused every ALAC .caf with "divide by zero".
+            long rest = _blockAlign > 0 ? _dataLength % _blockAlign : 0;
             if (_codec == Codec.ImaWav && rest > 4 * Channels) _totalFrames += (rest - 4 * Channels) * 2 / Channels + 1;
             if (_codec == Codec.MsAdpcm && rest > 7 * Channels) _totalFrames += (rest - 7 * Channels) * 2 / Channels + 2;
             int perBlock = _codec == Codec.Alac ? Math.Max(_samplesPerBlock, _alac!.FrameLength) : _samplesPerBlock;

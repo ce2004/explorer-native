@@ -93,7 +93,7 @@ namespace ExplorerNative
             {
                 // Catches a change to this folder's own entries. It does not
                 // catch one further down — see CacheSeconds.
-                if (Directory.GetLastWriteTimeUtc(path) != entry.Stamp) return false;
+                if (Directory.GetLastWriteTimeUtc(NameRules.ExactPath(path)) != entry.Stamp) return false;
             }
             catch
             {
@@ -142,7 +142,7 @@ namespace ExplorerNative
             if (TryGetCached(root, out var cached)) return cached;
 
             DateTime stamp;
-            try { stamp = Directory.GetLastWriteTimeUtc(root); }
+            try { stamp = Directory.GetLastWriteTimeUtc(NameRules.ExactPath(root)); }
             catch { return new FolderSizeResult(0, 0, 0, false); }
 
             var walk = new TreeWalk(root, MaxDepth, Skip,
@@ -293,7 +293,9 @@ namespace ExplorerNative
                 IEnumerable<Seen> entries;
                 try
                 {
-                    entries = new System.IO.Enumeration.FileSystemEnumerable<Seen>(current,
+                    // Exact: a folder called "Backup." read plainly is "Backup",
+                    // so it measured the sibling's files, or nothing at all.
+                    entries = new System.IO.Enumeration.FileSystemEnumerable<Seen>(NameRules.ExactPath(current),
                         static (ref System.IO.Enumeration.FileSystemEntry entry) => Look(ref entry), WalkOptions);
                 }
                 catch { _complete = false; return; } // unreadable subtree, keep going
@@ -332,10 +334,13 @@ namespace ExplorerNative
                         if (entry.Folder != null)
                         {
                             folders++;
-                            if (_skip != null && _skip(entry.Folder)) continue;
+                            // Plain again, as the caller's Skip and every other
+                            // path here are; made exact when it is read.
+                            var folder = NameRules.PlainPath(entry.Folder);
+                            if (_skip != null && _skip(folder)) continue;
                             // MaxDepth counts levels actually walked: 1 means the
                             // root's own files only, 2 adds its immediate subfolders.
-                            if (depth + 1 < _maxDepth) found.Add((entry.Folder, depth + 1));
+                            if (depth + 1 < _maxDepth) found.Add((folder, depth + 1));
                             else _complete = false;
                         }
                         else

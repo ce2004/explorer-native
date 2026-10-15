@@ -3409,6 +3409,19 @@ namespace ExplorerNative
                     continue;
                 }
 
+                // Unmounted between the check at the top and the add: Dispose's
+                // ReleaseAllBut may already have been through the table, and a
+                // warmed cache left in it downloads on with nothing to stop it.
+                // Checked after the add, so either this sees the flag or that
+                // sweep sees the cache.
+                if (_disposed)
+                {
+                    _caches.TryRemove(new KeyValuePair<string, DriveFileCache>(fileId, fresh));
+                    fresh.Dispose();
+                    fresh.EndLease();
+                    throw new ObjectDisposedException(nameof(DriveMount));
+                }
+
                 // After the add, so a sweep stopping itself either sees this
                 // cache or is started again here. With idle release off there
                 // is nothing to sweep for; switching it on arms it (IdleRelease).

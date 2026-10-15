@@ -329,7 +329,9 @@ async function openFolder(path, { push = true, focusName = null, quiet = false, 
         kind: d.kind, unlimited: d.unlimited,
       }));
     } else {
-      entries = await api(mediaUrl('/api/list', path).replace(/&code=[^&]*/, ''));
+      // The PC gives a slow folder (Drive, a sleeping disk) 45 seconds before saying it can't be opened;
+      // giving up first called a working PC unreachable.
+      entries = await api(mediaUrl('/api/list', path).replace(/&code=[^&]*/, ''), { timeout: 50000 });
     }
     if (ready) await ready;
     if (stale()) return false;
@@ -394,8 +396,18 @@ function entryMeta(e) {
   return [words(e.size), dateText(e.modified)].filter(Boolean).join(', ');
 }
 
+let filesShownFor;   // the folder the rows on screen are from
 function renderFiles() {
   const list = $('file-list');
+  // Rebuilding takes the focused row away (Copy, Move and Get size from More,
+  // a finished upload's refresh), and focus fell to the top of the page. The
+  // same row's same control gets it back, in the same folder only: a new
+  // folder places focus itself.
+  const active = document.activeElement;
+  const was = active && filesShownFor === state.path && list.contains(active) ? active.closest('li') : null;
+  filesShownFor = state.path;
+  const keep = was ? { name: was.dataset.name,
+    kind: active.matches('input') ? 'input' : active.classList.contains('side') ? '.side' : '.main' } : null;
   const frag = document.createDocumentFragment();
   const entries = state.path == null ? state.entries : sorted(state.entries);
   if (state.path != null) state.entries = entries;
@@ -439,6 +451,11 @@ function renderFiles() {
     frag.append(li);
   });
   list.replaceChildren(frag);
+  if (keep && !list.contains(document.activeElement)) {
+    const row = [...list.children].find((li) => li.dataset.name === keep.name);
+    const target = row && (row.querySelector(keep.kind) || row.querySelector('.main'));
+    if (target) target.focus();
+  }
   $('files-empty').hidden = entries.length > 0;
   setBackLabel();
   for (const id of ['btn-play-folder', 'btn-new-folder', 'btn-upload', 'btn-select'])
@@ -526,7 +543,8 @@ async function remove(paths) {
   const gone = new Set(paths.map(leaf));
   const index = state.entries.findIndex((e) => gone.has(e.name));
   try {
-    const r = await api('/api/delete', { method: 'POST', body: { paths } });
+    // Drive trashes one item at a time, most of a second each: many take longer than the usual wait.
+    const r = await api('/api/delete', { method: 'POST', body: { paths }, timeout: 120000 });
     const failed = (r.failed || []).length;
     announce(failed ? `Deleted ${r.deleted}. ${plural(failed, 'item', 'items')} could not be deleted: ${r.failed[0].error}` : `Deleted ${what}`, failed > 0);
     state.selectMode = false;
@@ -588,7 +606,8 @@ function saveToPhone(full, name) {
 async function folderSize(e, full) {
   announce('Measuring');
   try {
-    const r = await api(mediaUrl('/api/size', full).replace(/&code=[^&]*/, ''));
+    // Longer than the PC's own budget (20 seconds on the PC, a minute on Drive), so its answer is heard.
+    const r = await api(mediaUrl('/api/size', full).replace(/&code=[^&]*/, ''), { timeout: 75000 });
     e.sizeText = `${words(r.bytes)}${r.complete ? '' : ' or more'}, ${plural(r.files, 'file', 'files')}`;
     announce(`${shownName(e.name, true)}: ${e.sizeText}`);
     renderFiles();
@@ -707,33 +726,53 @@ function finishTransfer(t, stateName, message) {
   if (stateName === 'done' && t.folder && t.folder === state.path) openFolder(state.path, { push: false, quiet: true });
 }
 
+// Rows are kept and changed in place, never rebuilt: this runs every second
+// while anything moves, and a rebuilt row took focus off its Stop button, so
+// the button could not be reached to press.
 function renderTransfers() {
   if (currentTab !== 'transfers') return;
   const list = $('transfer-list');
-  const frag = document.createDocumentFragment();
-  for (const t of transfers) {
-    const li = document.createElement('li');
-    const main = document.createElement('div');
-    main.className = 'main';
-    const name = document.createElement('span'); name.className = 'name'; name.textContent = transferText(t);
-    main.append(name);
-    if (t.state === 'running' || t.state === 'waiting') {
-      const bar = document.createElement('progress');
-      bar.className = 'progress'; bar.max = 100; bar.value = percent(t);
-      bar.setAttribute('aria-hidden', 'true');
-      main.append(bar);
+  const held = new Map([...list.children].map((li) => [li.dataset.key, li]));
+  const rows = transfers.map((t) => {
+    let li = held.get(String(t.key));
+    if (!li) {
+      li = document.createElement('li');
+      li.dataset.key = String(t.key);
+      const main = document.createElement('div');
+      main.className = 'main';
+      const name = document.createElement('span'); name.className = 'name';
+      main.append(name);
+      li.append(main);
     }
-    li.append(main);
-    if ((t.state === 'running' || t.state === 'waiting') && t.cancel) {
-      const stop = document.createElement('button');
-      stop.type = 'button'; stop.textContent = 'Stop';
-      stop.setAttribute('aria-label', `Stop ${t.name}`);
-      stop.addEventListener('click', () => t.cancel());
-      li.append(stop);
-    }
-    frag.append(li);
-  }
-  list.replaceChildren(frag);
+    const main = li.querySelector('.main');
+    setText(li.querySelector('.name'), transferText(t));
+    const active = t.state === 'running' || t.state === 'waiting';
+    let bar = main.querySelector('progress');
+    if (active) {
+      if (!bar) {
+        bar = document.createElement('progress');
+        bar.className = 'progress'; bar.max = 100;
+        bar.setAttribute('aria-hidden', 'true');
+        main.append(bar);
+      }
+      if (bar.value !== percent(t)) bar.value = percent(t);
+    } else if (bar) bar.remove();
+    let stop = li.querySelector('button');
+    if (active && t.cancel) {
+      if (!stop) {
+        stop = document.createElement('button');
+        stop.type = 'button'; stop.textContent = 'Stop';
+        stop.setAttribute('aria-label', `Stop ${t.name}`);
+        stop.addEventListener('click', () => { if (t.cancel) t.cancel(); });
+        li.append(stop);
+      }
+    } else if (stop) stop.remove();
+    return li;
+  });
+  // Rows that went first, then each in its place, moving only what is out of place.
+  const keep = new Set(rows);
+  for (const li of [...list.children]) if (!keep.has(li)) li.remove();
+  rows.forEach((li, i) => { if (list.children[i] !== li) list.insertBefore(li, list.children[i] || null); });
   $('transfers-empty').hidden = transfers.length > 0;
 }
 
@@ -1035,6 +1074,9 @@ function renderPlayer() {
 
 function renderQueue() {
   const list = $('np-queue');
+  // Tapping a track rebuilds the list it was tapped in: the same place keeps focus.
+  const active = document.activeElement;
+  const at = active && list.contains(active) ? [...list.children].indexOf(active.closest('li')) : -1;
   const frag = document.createDocumentFragment();
   player.queue.forEach((tr, i) => {
     const li = document.createElement('li');
@@ -1049,6 +1091,7 @@ function renderQueue() {
     frag.append(li);
   });
   list.replaceChildren(frag);
+  if (at >= 0 && list.children.length) list.children[Math.min(at, list.children.length - 1)].querySelector('button').focus();
 }
 
 // The mini player above the tab bar: the title and Play or Pause. No time.
@@ -1671,7 +1714,9 @@ function bindEvents() {
   window.addEventListener('popstate', (e) => {
     if (!e.state || !('path' in e.state)) return;
     const from = state.path;
-    openFolder(e.state.path, { push: false, focusName: from ? leaf(from) || from : null });
+    // Back to the drive list lands on the drive, whose row is named "C:\", as the Back button does.
+    const drive = from && e.state.path == null ? (from.match(/^[A-Za-z]:\\/) || [null])[0] : null;
+    openFolder(e.state.path, { push: false, focusName: drive || (from ? leaf(from) || from : null) });
   });
   window.addEventListener('online', () => {
     pollJobs();

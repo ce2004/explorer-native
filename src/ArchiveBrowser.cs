@@ -147,14 +147,24 @@ namespace ExplorerNative
             {
                 token.ThrowIfCancellationRequested();
 
-                if (ArchiveEngine.SafeTarget(fence, entry.Name, out var reason) == null)
+                // Judged as extraction judges it: cleaned first, so the "./" that
+                // `tar -czf x.tgz .` puts on every name is not taken for a name
+                // pointing outside — every entry of such an archive was hidden
+                // and counted as unsafe, and it opened as an empty folder. A
+                // network path is refused by its raw form, which cleaning loses.
+                var name = ExtractionRules.Normalise(entry.Name);
+                if (entry.Name.Replace('\\', '/').StartsWith("//", StringComparison.Ordinal))
+                {
+                    listing.Unsafe++;
+                    continue;
+                }
+                if (name.Length == 0) continue;
+
+                if (ArchiveEngine.SafeTarget(fence, name, out var reason) == null)
                 {
                     if (reason != null) listing.Unsafe++;
                     continue;
                 }
-
-                var name = ExtractionRules.Normalise(entry.Name);
-                if (name.Length == 0) continue;
 
                 // A name nested thousands deep is no real file: Windows could
                 // never extract it, and every level of it was a string kept per
@@ -333,7 +343,9 @@ namespace ExplorerNative
                 {
                     IReadOnlyList<ArchiveEntryInfo> entries;
                     int files, locked;
-                    try { entries = ZipEngine.List(archivePath, token, out files, out locked); }
+                    // Opened exactly: inside "Backup." the ordinary path is "Backup\...",
+                    // and the archive would not open. Kept plain for the listing's paths.
+                    try { entries = ZipEngine.List(NameRules.ExactPath(archivePath), token, out files, out locked); }
                     catch (InvalidDataException)
                     {
                         throw new InvalidDataException($"{name} is damaged or incomplete, so it cannot be opened.");
@@ -347,7 +359,7 @@ namespace ExplorerNative
 
                 case ArchiveEngineKind.Tar:
                 {
-                    using var file = new FileStream(archivePath, FileMode.Open, FileAccess.Read,
+                    using var file = new FileStream(NameRules.ExactPath(archivePath), FileMode.Open, FileAccess.Read,
                         FileShare.ReadWrite, 1 << 20, FileOptions.SequentialScan);
 
                     // A .tar.gz has no index; reaching the last header is
@@ -570,7 +582,7 @@ namespace ExplorerNative
 
             var reporter = new ArchiveEngine.Reporter(progress);
             var rules = ExtractionRules.Selecting(destination, select);
-            int done = TarEngine.Extract(listing.ArchivePath, listing.Format, rules,
+            int done = TarEngine.Extract(NameRules.ExactPath(listing.ArchivePath), listing.Format, rules,
                 Math.Min(4, ArchiveEngine.RecommendedThreads), reporter, errors, token, estimate: true);
 
             // A chosen member that is a hard link (GNU tar's second name for a
@@ -594,7 +606,7 @@ namespace ExplorerNative
             if (again.Count == 0) return done;
 
             var second = ExtractionRules.Selecting(destination, n => again.TryGetValue(n, out var to) ? to : null);
-            return done + TarEngine.Extract(listing.ArchivePath, listing.Format, second,
+            return done + TarEngine.Extract(NameRules.ExactPath(listing.ArchivePath), listing.Format, second,
                 1, new ArchiveEngine.Reporter(null), errors, token, estimate: false);
         }
 
@@ -607,7 +619,7 @@ namespace ExplorerNative
         private static int ExtractZip(string archivePath, Func<string, string?> select, string destination,
             IProgress<TransferProgress>? progress, List<string> errors, CancellationToken token)
         {
-            using var file = new FileStream(archivePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16);
+            using var file = new FileStream(NameRules.ExactPath(archivePath), FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16);
             using var archive = ZipEngine.Open(file);
 
             var chosen = new List<(ZipArchiveEntry Entry, string Name)>();
@@ -900,7 +912,7 @@ namespace ExplorerNative
             long length = 0, ticks = 0;
             try
             {
-                var info = new FileInfo(archivePath);
+                var info = new FileInfo(NameRules.ExactPath(archivePath));
                 length = info.Length;
                 ticks = info.LastWriteTimeUtc.Ticks;
             }

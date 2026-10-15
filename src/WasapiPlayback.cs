@@ -80,6 +80,17 @@ namespace ExplorerNative
         /// </summary>
         private const int PrebufferFrames = 24000;
 
+        /// <summary>
+        /// The least room the pump will write into. With less than this free
+        /// below the level it waits for the device to take some, so the ring
+        /// settles anywhere up to this much short of its level — which is what
+        /// the floor in <see cref="ReleaseWhenBuffered"/> has to allow for.
+        /// </summary>
+        internal const int SmallestWriteFrames = 1024;
+
+        /// <summary>The most the pump reads through the chain at once.</summary>
+        internal const int PumpBlockFrames = 4096;
+
         private WasapiRenderer _renderer = new();
         private ITrackDecoder? _decoder;
 
@@ -912,7 +923,7 @@ namespace ExplorerNative
             // above produces, and separately for the device's, which is what the
             // ring holds. They are usually the same number and occasionally are
             // not — see _sourceChannels.
-            const int BlockFrames = 4096;
+            const int BlockFrames = PumpBlockFrames;
             var block = new float[BlockFrames * Math.Max(1, _sourceChannels)];
             var forRing = new float[BlockFrames * Math.Max(1, _channels)];
 
@@ -1039,7 +1050,7 @@ namespace ExplorerNative
                     continue;
                 }
 
-                if (room < 1024 || _sourceDone)
+                if (room < SmallestWriteFrames || _sourceDone)
                 {
                     // Woken when the renderer takes frames, so a playing track
                     // reacts immediately and a paused one costs four wakeups a
@@ -1271,12 +1282,33 @@ namespace ExplorerNative
             // Never more than this track is going to be given: a shallow ring
             // that is already at its level is as buffered as it will ever be, and
             // a floor above it would hold the device suspended for ever.
-            int floor = Math.Min(AtDeviceRate(PrebufferFrames), TargetFrames()) * Math.Max(1, _channels);
+            int floor = ReleaseFloor(Math.Min(AtDeviceRate(PrebufferFrames), TargetFrames()), TargetFrames())
+                        * Math.Max(1, _channels);
 
             if (!_sourceDone && stored < floor) return;
 
             _waitingForBuffer = false;
         }
+
+        /// <summary>
+        /// The level the device is released at, in frames, given the level
+        /// wanted and the level the ring is filled to.
+        ///
+        /// The pump stops writing once less than <see cref="SmallestWriteFrames"/>
+        /// of room is left, so a ring "at its level" can be up to that much
+        /// short of it. A floor of the level itself was only reached when the
+        /// level happened to be a whole number of the pump's blocks away: on a
+        /// 44.1kHz device the ring stopped at 8192 frames of 8820 and the device
+        /// was never released, so every local track played in silence; and a
+        /// quick device switch, which holds the device again with the ring near
+        /// its level, did the same mid-track.
+        /// </summary>
+        internal static int ReleaseFloor(int wanted, int target) =>
+            Math.Max(1, Math.Min(wanted, target - (SmallestWriteFrames - 1)));
+
+        /// <summary>The ring's three levels as written, at 48kHz: shallow, deep, and the prebuffer.</summary>
+        internal static (int Shallow, int Deep, int Prebuffer) LevelsAt48k =>
+            (ShallowFrames, RingFrames, PrebufferFrames);
 
         /// <summary>
         /// How many frames the pump keeps in the ring.
@@ -1308,9 +1340,10 @@ namespace ExplorerNative
         /// a twentieth of a second on a 384kHz device and over a second of lag on
         /// a 16kHz headset.
         /// </summary>
-        private int AtDeviceRate(int framesAt48k)
+        private int AtDeviceRate(int framesAt48k) => AtRate(framesAt48k, _renderer.SampleRate);
+
+        internal static int AtRate(int framesAt48k, int rate)
         {
-            int rate = _renderer.SampleRate;
             if (rate <= 0) rate = 48000;
             return (int)Math.Max(1, (long)framesAt48k * rate / 48000);
         }

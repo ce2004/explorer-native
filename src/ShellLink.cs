@@ -157,6 +157,14 @@ namespace ExplorerNative
 
         private static void Create(string targetPath, string linkPath)
         {
+            // The shell cannot store a target under a name ending in a dot or a
+            // space: it refuses the literal path, and from the ordinary one it
+            // drops the dot, so a shortcut to "Backup." opened the sibling
+            // "Backup", or nothing. Said, rather than made pointing elsewhere.
+            if (NameRules.ExactPath(targetPath) != targetPath)
+                throw new NotSupportedException(
+                    "Windows shortcuts cannot point at a name ending in a dot or a space, or at anything inside one.");
+
             var link = NewLink();
             try
             {
@@ -171,7 +179,9 @@ namespace ExplorerNative
                     Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
                 if (!string.IsNullOrEmpty(parent)) link.SetWorkingDirectory(parent);
 
-                ((IPersistFile)link).Save(linkPath, true);
+                // Exact, so a shortcut made inside "Backup." is written there and
+                // not into "Backup" — or refused, when there is no "Backup".
+                ((IPersistFile)link).Save(NameRules.ExactPath(linkPath), true);
             }
             finally
             {
@@ -186,7 +196,7 @@ namespace ExplorerNative
             var link = NewLink();
             try
             {
-                ((IPersistFile)link).Load(linkPath, STGM_READ);
+                ((IPersistFile)link).Load(NameRules.ExactPath(linkPath), STGM_READ);
 
                 var buffer = new StringBuilder(MAX_PATH);
                 link.GetPath(buffer, buffer.Capacity, IntPtr.Zero, 0);

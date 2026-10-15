@@ -160,7 +160,7 @@ namespace ExplorerNative
             {
                 rate = decoder.SampleRate;
                 frames = (long)Math.Round(decoder.Duration * rate);
-                bits = (decoder as AudioDecoder)?.NativeBits ?? 0;
+                bits = AudioConverter.NativeBitsOf(decoder);
             }
 
             int? kbps = null;

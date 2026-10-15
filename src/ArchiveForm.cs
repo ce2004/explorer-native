@@ -269,7 +269,10 @@ namespace ExplorerNative
             // assumption costs somebody's archive.
             var probe = Task.Run(() =>
             {
-                try { return File.Exists(full) || Directory.Exists(full); }
+                // Exact: in "Backup." the ordinary path asked about "Backup",
+                // so an archive already there was replaced without a question.
+                var exact = NameRules.ExactPath(full);
+                try { return File.Exists(exact) || Directory.Exists(exact); }
                 catch { return false; }
             });
 

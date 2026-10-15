@@ -266,6 +266,7 @@ namespace ExplorerNative
         private readonly ITrackDecoder _inner;
         private readonly IDisposable _owned;
         public OwningDecoder(ITrackDecoder inner, IDisposable owned) { _inner = inner; _owned = owned; }
+        public ITrackDecoder Inner => _inner;
         public int SampleRate => _inner.SampleRate;
         public int Channels => _inner.Channels;
         public double Duration => _inner.Duration;

@@ -808,9 +808,17 @@ namespace ExplorerNative
         /// A file was there and nothing usable came out of it, so what came back
         /// is the defaults standing in for it.
         /// </param>
-        public static Settings Load(out bool failed)
+        public static Settings Load(out bool failed) => Load(out failed, out _);
+
+        /// <param name="undecryptable">
+        /// The file was there and would not decrypt. Not <paramref name="failed"/>,
+        /// because the next save is allowed to replace it; but what came back is
+        /// still defaults standing in for a file nobody could read.
+        /// </param>
+        private static Settings Load(out bool failed, out bool undecryptable)
         {
             failed = false;
+            undecryptable = false;
             string? json = null;
             bool present = false;
             bool wasPlain = false;
@@ -843,6 +851,7 @@ namespace ExplorerNative
                 {
                     KeepCopy("undecryptable");
                     present = false;
+                    undecryptable = true;
                     break;
                 }
                 catch (IOException) { System.Threading.Thread.Sleep(20 * (attempt + 1)); }
@@ -870,13 +879,16 @@ namespace ExplorerNative
                 // replaced saves on its way out. Encrypted now, same content.
                 if (wasPlain && loaded != null)
                 {
+                    var temp = $"{SettingsPath}.{Environment.ProcessId}.enc.tmp";
                     try
                     {
-                        var temp = $"{SettingsPath}.{Environment.ProcessId}.enc.tmp";
                         ProtectedFile.WriteAllText(temp, json, durable: true);
                         File.Move(temp, SettingsPath, overwrite: true);
                     }
                     catch { }
+                    // Gone after a successful move; after a failed one (the file
+                    // held at that moment) it stayed in AppData for good.
+                    try { if (File.Exists(temp)) File.Delete(temp); } catch { }
                 }
             }
             catch (Exception)
@@ -1500,8 +1512,12 @@ namespace ExplorerNative
             // as one, every setting that differed from its default was put back
             // to it — the folder takeover included, which the next reconcile then
             // handed back to File Explorer.
-            var fresh = Load(out bool failed);
-            if (failed) return live;
+            // Nor is a file that would not decrypt: Load hands back defaults for
+            // it, and merged against what this process last read, every setting
+            // went back to its default in the running copy, which then saved
+            // them on the way out.
+            var fresh = Load(out bool failed, out bool undecryptable);
+            if (failed || undecryptable) return live;
 
             // Never read here: the live values are defaults standing in for a
             // file that could not be opened, with this session's changes on

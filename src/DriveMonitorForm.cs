@@ -709,6 +709,19 @@ namespace ExplorerNative
             (0, "No limit"), (100, "100 megabytes"), (500, "500 megabytes"), (1024, "1 gigabyte"), (4096, "4 gigabytes"),
         };
 
+        /// <summary>
+        /// The size choices for a pair whose limit is <paramref name="current"/>:
+        /// the usual ones, plus that limit when it is none of them (set in
+        /// settings.json). Without it the list showed "No limit", and saving any
+        /// other change took the limit away.
+        /// </summary>
+        internal static (int Megabytes, string Text)[] SizeChoices(int current) =>
+            current <= 0 || Sizes.Any(s => s.Megabytes == current)
+                ? Sizes
+                : Sizes.Append((Megabytes: current, Text: $"{current:N0} megabytes")).OrderBy(s => s.Megabytes).ToArray();
+
+        private readonly (int Megabytes, string Text)[] _sizes;
+
         private static readonly (ConflictChoice Choice, string Text)[] Clashes =
         {
             (ConflictChoice.KeepBoth, "Keep both copies"),
@@ -846,8 +859,9 @@ namespace ExplorerNative
             // ---- Options ----
             var (options, o) = Group("Options");
             _subfolders = Tick(o, "Include &subfolders", pair.IncludeSubfolders);
-            _maxSize = Choice(o, "Skip files &larger than:", Sizes.Select(s => s.Text),
-                Array.FindIndex(Sizes, s => s.Megabytes == pair.MaxFileMegabytes));
+            _sizes = SizeChoices(pair.MaxFileMegabytes);
+            _maxSize = Choice(o, "Skip files &larger than:", _sizes.Select(s => s.Text),
+                Array.FindIndex(_sizes, s => s.Megabytes == pair.MaxFileMegabytes));
             Skip(o);
             _skipTypes = Field(o, "Skip file &types:", pair.SkipExtensions);
             _skipTypes.AccessibleDescription = "File endings never synced, separated by spaces, such as .iso .tmp";
@@ -949,11 +963,19 @@ namespace ExplorerNative
                 _drive.Focus();
             };
 
-            _ok.Click += (_, _) =>
+            // Refusal looks at the folder on disk (Directory.Exists), which on a
+            // share that has gone away held the window for as long as Windows
+            // took to give up. So it runs on a worker; one press at a time.
+            bool checking = false;
+            _ok.Click += async (_, _) =>
             {
+                if (checking) return;
+                checking = true;
                 try
                 {
-                    var problem = DriveMonitor.Refusal(_local.Text.Trim());
+                    var typed = _local.Text.Trim();
+                    var problem = await Task.Run(() => DriveMonitor.Refusal(typed));
+                    if (IsDisposed) return;
                     if (problem != null)
                     {
                         MessageBox.Show(this, problem, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -969,12 +991,12 @@ namespace ExplorerNative
 
                     var edited = Pair.Copy();
                     // A whole drive stays "D:\" (see FolderPathOf).
-                    edited.LocalFolder = DriveMonitor.FolderPathOf(_local.Text);
+                    edited.LocalFolder = DriveMonitor.FolderPathOf(typed);
                     edited.Name = "";
                     edited.Name = string.IsNullOrWhiteSpace(_name.Text) ? DriveMonitor.DisplayName(edited) : _name.Text.Trim();
                     edited.Mode = Modes[Math.Max(0, _mode.SelectedIndex)].Mode;
                     edited.WhenBothChanged = Clashes[Math.Max(0, _clash.SelectedIndex)].Choice;
-                    edited.MaxFileMegabytes = Sizes[Math.Max(0, _maxSize.SelectedIndex)].Megabytes;
+                    edited.MaxFileMegabytes = _sizes[Math.Max(0, _maxSize.SelectedIndex)].Megabytes;
                     edited.SkipExtensions = _skipTypes.Text.Trim();
                     edited.IncludeSubfolders = _subfolders.Checked;
                     edited.CopyDeletes = _deletes.Checked;
@@ -1007,6 +1029,7 @@ namespace ExplorerNative
                     MessageBox.Show(this, "The folder could not be saved: " + ex.Message, Text,
                         MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 }
+                finally { checking = false; }
             };
         }
 

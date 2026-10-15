@@ -552,7 +552,16 @@ namespace ExplorerNative
             // the folder. Recording it again per file would bury the one line that
             // explains it under five hundred copies of its consequence, and the
             // count of what did land already says how much did not.
-            if (folder == null) return;
+            //
+            // Out of the totals all the same, as every other file that is not
+            // going is, or the bar stopped short of the end.
+            if (folder == null)
+            {
+                Interlocked.Add(ref _totalBytes, -file.Size);
+                Interlocked.Decrement(ref _totalFiles);
+                Report(name);
+                return;
+            }
 
             // Whether something of this name is already in the folder, and what
             // the person asked should happen about that. Only asked under a policy

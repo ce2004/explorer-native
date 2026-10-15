@@ -293,9 +293,19 @@ namespace ExplorerNative
                     $"Two of the chosen items are called {twice.Key}, and a {format.Extension} " +
                     "would hold both under that one name. Zip and .tar.gz keep both.");
 
+            // A chosen item is given to bsdtar by its name, and it cannot be told
+            // one ending in a dot or a space: it read the sibling without it.
+            var dotted = tops.FirstOrDefault(p => NameRules.NeedsLiteralPath(p.Source));
+            if (dotted != null)
+                throw new NotSupportedException(
+                    $"A {format.Extension} cannot be made from {Path.GetFileName(dotted.Source)}, whose name " +
+                    "ends in a dot or a space. Zip and .tar.gz can.");
+
             var aliases = new List<Alias>();
             try
             {
+                // Its folder through a junction when bsdtar cannot reach it as it is.
+                archivePath = ReachableFile(archivePath, aliases);
                 int budget = CommandLineBudget - archivePath.Length - 120;
 
                 // What each top-level item is called on the command line, which is
@@ -834,8 +844,11 @@ namespace ExplorerNative
                 // "already there".
                 start.ArgumentList.Add("-k");
 
+                // Its folder through a junction when bsdtar cannot reach it as it is.
+                var archiveArg = ReachableFile(archivePath, aliases);
+
                 start.ArgumentList.Add("-f");
-                start.ArgumentList.Add(archivePath);
+                start.ArgumentList.Add(archiveArg);
                 start.ArgumentList.Add("-C");
                 start.ArgumentList.Add(Reachable(staging, aliases));
 
@@ -918,7 +931,7 @@ namespace ExplorerNative
 
                 var (done, conflicts, stagedFiles) = Rehome(staging, destination, policy, ask, reporter, errors, token,
                     distrusted.Count > 0 || unfinished ? distrusted : null, unfinished,
-                    staged => Withheld(lines, staged, destination, stripped ? archivePath : null, token));
+                    staged => Withheld(lines, staged, destination, stripped ? archiveArg : null, token));
 
                 // Two entries with one name — or two that differ only in capitals,
                 // which are one name here — are one file in the staging folder.
@@ -994,7 +1007,7 @@ namespace ExplorerNative
                 if (failure != null) continue;
                 var name = raw.TrimEnd('/');
                 if (name.Length == 0 || name.Any(c => c >= 128)) continue;
-                if (ArchiveEngine.SafeTarget(destination, name, out var reason) != null || reason == null) continue;
+                if (ArchiveEngine.SafeTarget(destination, WithoutDotSegments(name), out var reason) != null || reason == null) continue;
 
                 if (name.Contains('?'))
                 {
@@ -1015,7 +1028,7 @@ namespace ExplorerNative
                 {
                     var name = original.TrimEnd('/');
                     if (name.Length == 0 || name.Any(c => c >= 128)) continue;
-                    if (ArchiveEngine.SafeTarget(destination, name, out var reason) != null || reason == null) continue;
+                    if (ArchiveEngine.SafeTarget(destination, WithoutDotSegments(name), out var reason) != null || reason == null) continue;
 
                     var rest = StripRoot(name);
                     if (rest == name) continue;
@@ -1027,7 +1040,24 @@ namespace ExplorerNative
             return withheld;
         }
 
-        /// <summary>What bsdtar does on Windows to a name it cannot store: the forbidden characters become underscores and a trailing dot or space goes.</summary>
+        /// <summary>
+        /// A printed name without its "." segments, which bsdtar writes through
+        /// to the folder they stand for and the zip and tar readers drop
+        /// (ExtractionRules.Normalise). Given to SafeTarget as it was, the "./"
+        /// that `tar -cJf x.tar.xz .` puts on every name was refused as pointing
+        /// outside, and every file of such an archive was withheld. Leading
+        /// slashes are kept, so a network path is still seen as one.
+        /// </summary>
+        internal static string WithoutDotSegments(string name)
+        {
+            var slashed = name.Replace('\\', '/');
+            int lead = 0;
+            while (lead < slashed.Length && slashed[lead] == '/') lead++;
+            var rest = string.Join('/', slashed[lead..].Split('/').Where(s => s != "."));
+            return slashed[..lead] + rest;
+        }
+
+        /// <summary>What bsdtar does on Windows to a name it cannot store:the forbidden characters become underscores and a trailing dot or space goes.</summary>
         internal static string CleanLikeTar(string name) => string.Join('/', name.Replace('\\', '/').Split('/').Select(segment =>
         {
             var chars = segment.Select(c => c < 32 || ":*?\"<>|".IndexOf(c) >= 0 ? '_' : c).ToArray();
@@ -1406,12 +1436,19 @@ namespace ExplorerNative
         private static string LinkRoot => Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ExplorerNative", "tarlinks");
 
-        /// <summary>The folder itself when it is short enough, otherwise a junction to it.</summary>
+        /// <summary>
+        /// The folder itself when it is short enough, otherwise a junction to it.
+        /// A junction too when any part of it ends in a dot or a space: bsdtar
+        /// opens nothing through the literal "\\?\" form, and through the
+        /// ordinary one "Backup." is "Backup" — written into, or "could not chdir".
+        /// </summary>
         private static string Reachable(string folder, List<Alias> aliases)
         {
-            if (folder.Length < LongFolder) return folder;
+            bool literal = NameRules.ExactPath(folder) != folder || folder.StartsWith(@"\\?\", StringComparison.Ordinal);
+            if (folder.Length < LongFolder && !literal) return folder;
 
-            var full = Path.GetFullPath(folder);
+            // Not GetFullPath for a literal one: that strips the dot again.
+            var full = literal ? NameRules.PlainPath(NameRules.ExactPath(folder)) : Path.GetFullPath(folder);
             if (full.StartsWith(@"\\?\", StringComparison.Ordinal)) full = full[4..];
             if (full.StartsWith(@"\\", StringComparison.Ordinal)) return folder;   // a share cannot be a junction's target
 
@@ -1432,6 +1469,13 @@ namespace ExplorerNative
                 RoboCopyEngine.Trace($"bsdtar: no junction for a long folder: {ex.Message}");
                 return folder;
             }
+        }
+
+        /// <summary>A file by way of <see cref="Reachable"/> for its folder.</summary>
+        private static string ReachableFile(string path, List<Alias> aliases)
+        {
+            var folder = Path.GetDirectoryName(path);
+            return string.IsNullOrEmpty(folder) ? path : Path.Combine(Reachable(folder, aliases), Path.GetFileName(path));
         }
 
         /// <summary>Removes junctions a crashed run left, as links and nothing else.</summary>

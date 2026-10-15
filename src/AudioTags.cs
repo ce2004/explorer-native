@@ -352,9 +352,10 @@ namespace ExplorerNative
                 if (SetNumber(store, Year, tags.Year)) written++;
                 if (SetNumber(store, TrackNumber, tags.Track)) written++;
 
+                // Commit is where a handler that opened read-write says no; its
+                // answer was dropped, and the summary never said the tags were lost.
                 if (written == 0) return false;
-                store.Commit();
-                return true;
+                return store.Commit() >= 0;
             }
             catch { return false; }
             finally { if (store != null) Release(store); }
@@ -374,8 +375,7 @@ namespace ExplorerNative
             try
             {
                 if (PSCoerceToCanonicalValue(ref pk, ref value) < 0) return false;
-                store.SetValue(ref pk, ref value);
-                return true;
+                return store.SetValue(ref pk, ref value) >= 0;
             }
             catch { return false; }
             finally { PropVariantClear(ref value); }
@@ -390,8 +390,7 @@ namespace ExplorerNative
             try
             {
                 if (PSCoerceToCanonicalValue(ref pk, ref value) < 0) return false;
-                store.SetValue(ref pk, ref value);
-                return true;
+                return store.SetValue(ref pk, ref value) >= 0;
             }
             catch { return false; }
             finally { PropVariantClear(ref value); }

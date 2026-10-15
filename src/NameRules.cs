@@ -213,6 +213,10 @@ namespace ExplorerNative
             int dot = stem.IndexOf('.');
             if (dot > 0) stem = stem[..dot];
 
+            // Windows drops spaces at the end of the stem before it compares, so
+            // "CON .txt" is the console as surely as "CON.txt" is.
+            stem = stem.TrimEnd(' ');
+
             foreach (var reserved in ReservedDeviceNames)
                 if (string.Equals(stem, reserved, StringComparison.OrdinalIgnoreCase))
                     return $"\"{reserved}\" is a name Windows reserves for a device";

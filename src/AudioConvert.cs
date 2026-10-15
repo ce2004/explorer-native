@@ -340,7 +340,7 @@ namespace ExplorerNative
                               ?? throw new AudioEncodeException("it could not be read: " + why);
                 using (decoder)
                 {
-                    int bits = (decoder as AudioDecoder)?.NativeBits ?? 0;
+                    int bits = NativeBitsOf(decoder);
                     Encode(decoder, choice, temp, bits, tags, fraction, token, notes);
                 }
 
@@ -353,6 +353,21 @@ namespace ExplorerNative
                 throw;
             }
         }
+
+        /// <summary>
+        /// The bits per sample the source stores, whichever decoder opened it;
+        /// zero when it does not say. Asked of Media Foundation's decoder alone,
+        /// a 24-bit file Windows will not open itself (TTA, CAF, AU, 64-bit
+        /// float WAV, FLAC in Ogg) was written as 16-bit FLAC or WAV.
+        /// </summary>
+        internal static int NativeBitsOf(ITrackDecoder decoder) => decoder switch
+        {
+            AudioDecoder media => media.NativeBits,
+            WavDecoder wav => wav.NativeBits,
+            TtaDecoder tta => tta.NativeBits,
+            OwningDecoder owning => NativeBitsOf(owning.Inner),
+            _ => 0,
+        };
 
         /// <summary>A hidden-looking temporary name in the target's folder, keeping the target's extension.</summary>
         internal static string TempPathBeside(string target)

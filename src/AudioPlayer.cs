@@ -176,9 +176,11 @@ namespace ExplorerNative
 
         public static string DescribeAttack(int microseconds)
         {
+            // Not whole milliseconds above one: the ladder has 1500, and integer
+            // division read it out as "1 milliseconds", the same as the rung below.
             string number = microseconds < 1000
                 ? (microseconds / 1000.0).ToString("0.0#") + " milliseconds"
-                : (microseconds / 1000) + (microseconds == 1000 ? " millisecond" : " milliseconds");
+                : (microseconds / 1000.0).ToString("0.##") + (microseconds == 1000 ? " millisecond" : " milliseconds");
 
             return microseconds switch
             {

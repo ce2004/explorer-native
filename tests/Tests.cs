@@ -369,6 +369,16 @@ namespace ExplorerNative
             await Guard("AudioConvertTests", () => AudioConvertTests.RunAll(Check, Equal));
             await Guard("WebArchiveAudioFixTests", () => WebArchiveAudioFixTests.RunAll(Check, Equal));
             await Guard("MainFileOpsFixTests", () => MainFileOpsFixTests.RunAll(Check, Equal));
+            await Guard("Sweep308ClientTests", () => Sweep308ClientTests.RunAll(Check, Equal));
+            await Guard("Sweep308CoreTests", () => { Sweep308CoreTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("Sweep308FilesTests", () => Sweep308FilesTests.RunAll(Check));
+            await Guard("Sweep308DecoderTests", () => { Sweep308DecoderTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("Sweep308WebTests", () => Sweep308WebTests.RunAll(Check, Equal));
+            await Guard("Sweep308PlaybackTests", () => { Sweep308PlaybackTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("Sweep308MountTests", () => Sweep308MountTests.RunAll(Check, Equal));
+            await Guard("Sweep308MainFormTests", () => { Sweep308MainFormTests.RunAll(Check); return Task.CompletedTask; });
+            await Guard("Sweep308SyncTests", () => Sweep308SyncTests.RunAll(Check, Equal));
+            await Guard("Sweep308DotPathTests", () => { Sweep308DotPathTests.RunAll(Check); return Task.CompletedTask; });
 
             Console.WriteLine($"\n{_passed} passed, {_failed} failed");
             return _failed == 0 ? 0 : 1;
@@ -3985,7 +3995,7 @@ namespace ExplorerNative
             // The local calls are on a worker now — the same treatment Rename
             // already had — so what is asserted is that they are still made, not
             // where from.
-            foreach (var local in new[] { "Directory.CreateDirectory(unique)", "File.Move(from, to)" })
+            foreach (var local in new[] { "Directory.CreateDirectory(NameRules.ExactPath(unique))", "File.Move(from, to)" })
                 Check($"the local path still uses {local}",
                     main.Contains(local, StringComparison.Ordinal));
 

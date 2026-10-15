@@ -765,7 +765,7 @@ namespace ExplorerNative
             try
             {
                 var folderCheck = await ProbeDirectoryAsync(target, NavigationProbeMs);
-                if (folderCheck == FolderProbe.Missing && await Bounded(() => File.Exists(target)))
+                if (folderCheck == FolderProbe.Missing && await Bounded(() => File.Exists(NameRules.ExactPath(target))))
                 {
                     select = target;
                     target = Path.GetDirectoryName(target) ?? target;
@@ -2007,7 +2007,7 @@ namespace ExplorerNative
                 // Coming up out of a drive lands on that drive, not on A:; and a
                 // reload of the list itself stays on the drive it was on.
                 LoadDrivesInto(pane, driveToken,
-                    preferPath ?? (cameFrom == DrivesPath ? FocusedPathOf(pane) : SafePathRoot(cameFrom)));
+                    preferPath ?? (cameFrom == DrivesPath ? FocusedPathOf(pane) : SafePathRoot(cameFrom)), quiet);
 
                 return pane.NavigationId == mine;
             }
@@ -2180,9 +2180,11 @@ namespace ExplorerNative
         {
             if (string.IsNullOrEmpty(path)) return FolderProbe.Missing;
 
+            // Exact: a folder called "Backup." asked about plainly is "Backup",
+            // so the idle poll called it gone and moved the pane out of it.
             var probe = Task.Run(() =>
             {
-                try { return Directory.Exists(path); }
+                try { return Directory.Exists(NameRules.ExactPath(path)); }
                 catch { return false; }
             });
 
@@ -2199,13 +2201,15 @@ namespace ExplorerNative
         /// <summary>Walks up until it finds somewhere that still answers.</summary>
         private static async Task<string> NearestExistingAncestorAsync(string path)
         {
+            // By text, not Directory.GetParent: that strips a trailing dot from
+            // every part, so under "Backup." the walk asked about "Backup".
             try
             {
-                var current = Directory.GetParent(path);
-                while (current != null)
+                var current = SafeParent(path);
+                while (!string.IsNullOrEmpty(current))
                 {
-                    if (await DirectoryExistsAsync(current.FullName)) return current.FullName;
-                    current = current.Parent;
+                    if (await DirectoryExistsAsync(current)) return current;
+                    current = SafeParent(current);
                 }
             }
             catch { }
@@ -2309,7 +2313,7 @@ namespace ExplorerNative
             // What is pending is the navigation's business: it forgets only what
             // its listing will have seen.
             if ((pane.Watcher != null &&
-                 string.Equals(pane.Watcher.Path, path, StringComparison.OrdinalIgnoreCase)) ||
+                 string.Equals(NameRules.PlainPath(pane.Watcher.Path), path, StringComparison.OrdinalIgnoreCase)) ||
                 string.Equals(pane.ArmingPath, path, StringComparison.OrdinalIgnoreCase))
                 return;
 
@@ -2373,7 +2377,9 @@ namespace ExplorerNative
             FileSystemWatcher? watcher = null;
             try
             {
-                watcher = new FileSystemWatcher(path)
+                // Exact, so "Backup." is watched and not its sibling "Backup";
+                // the paths it reports are made plain again below.
+                watcher = new FileSystemWatcher(NameRules.ExactPath(path))
                 {
                     NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName |
                                    NotifyFilters.Size | NotifyFilters.LastWrite | NotifyFilters.Attributes,
@@ -2400,7 +2406,7 @@ namespace ExplorerNative
                 watcher.Renamed += Reload;
                 watcher.Changed += (_, e) =>
                 {
-                    if (Current() && pane.Debounce.Changed(e.FullPath, Environment.TickCount64)) WakeWatch();
+                    if (Current() && pane.Debounce.Changed(NameRules.PlainPath(e.FullPath), Environment.TickCount64)) WakeWatch();
                 };
 
                 // An error is usually a lost burst or a share that went away.
@@ -2616,7 +2622,7 @@ namespace ExplorerNative
 
                     const uint FILE_READ_ATTRIBUTES = 0x80, SHARE_ALL = 7, OPEN_EXISTING = 3,
                                FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
-                    var handle = CreateFileW(path, FILE_READ_ATTRIBUTES, SHARE_ALL, IntPtr.Zero,
+                    var handle = CreateFileW(NameRules.ExactPath(path), FILE_READ_ATTRIBUTES, SHARE_ALL, IntPtr.Zero,
                         OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, IntPtr.Zero);
                     if (handle.IsInvalid) { handle.Dispose(); return null; }
 
@@ -3037,11 +3043,15 @@ namespace ExplorerNative
             return string.IsNullOrEmpty(name) ? path : name;
         }
 
-        private void LoadDrivesInto(Pane pane, CancellationToken token, string? preferPath = null)
+        private void LoadDrivesInto(Pane pane, CancellationToken token, string? preferPath = null, bool quiet = false)
         {
             DriveInfo[] drives;
             try { drives = DriveInfo.GetDrives(); }
             catch (Exception ex) { Announce($"Could not list drives: {ex.Message}", isError: true); return; }
+
+            // A quiet re-read of the list already on screen (Preferences saved)
+            // that keeps the cursor on its drive says nothing, as a folder's does.
+            var previousRow = pane.LastLoadedPath == DrivesPath ? FocusedPathOf(pane) : null;
 
             // Letters appear at once; the slow per-drive queries follow.
             var entries = drives
@@ -3059,7 +3069,9 @@ namespace ExplorerNative
             // the drive list from row 0 of a folder is not a focus change to
             // anything watching from outside — the index has not moved — so
             // Backspace out of C:\ produced a keystroke and not one word.
-            FocusListAndRow(pane, readRowAloud: true);
+            bool sameRow = previousRow != null &&
+                           string.Equals(previousRow, FocusedPathOf(pane), StringComparison.OrdinalIgnoreCase);
+            FocusListAndRow(pane, readRowAloud: !(quiet && sameRow));
 
             foreach (var drive in drives)
                 _ = FillDriveDetailsAsync(pane, drive, token);
@@ -4421,15 +4433,14 @@ namespace ExplorerNative
         {
             if (IsDrivesView) { Announce("Already at the top"); return; }
 
-            // GetParent throws on an empty or malformed path rather than
-            // returning null, and this runs on a keystroke, so it has to cope
-            // with the pane being in a state nobody expected.
-            DirectoryInfo? parent;
-            try { parent = Directory.GetParent(Active.CurrentPath); }
-            catch { parent = null; }
+            // By text, and never throwing: this runs on a keystroke and has to
+            // cope with the pane being in a state nobody expected. Not
+            // Directory.GetParent, which strips a trailing dot from every part
+            // of the path, so Backspace in "Backup.\Disc 1" went to "Backup".
+            var parent = SafeParent(Active.CurrentPath);
 
-            if (parent == null) { Navigate(DrivesPath); return; }
-            Navigate(parent.FullName);
+            if (string.IsNullOrEmpty(parent)) { Navigate(DrivesPath); return; }
+            Navigate(parent);
         }
 
         /// <summary>
@@ -4495,7 +4506,7 @@ namespace ExplorerNative
                 {
                     var asTyped = typed;
                     bool literalThere = asTyped.Length > 0 && await Bounded(() =>
-                        Directory.Exists(asTyped) || File.Exists(asTyped));
+                        Directory.Exists(NameRules.ExactPath(asTyped)) || File.Exists(NameRules.ExactPath(asTyped)));
                     if (Superseded()) return;
                     if (!literalThere) typed = NameRules.NormaliseLaunchPath(Anchor(expanded));
                 }
@@ -4550,7 +4561,7 @@ namespace ExplorerNative
                 }
 
                 var parent = Path.GetDirectoryName(typed);
-                bool isFile = parent != null && await Bounded(() => File.Exists(typed));
+                bool isFile = parent != null && await Bounded(() => File.Exists(NameRules.ExactPath(typed)));
                 if (Superseded()) return;
                 if (isFile)
                 {
@@ -7479,7 +7490,7 @@ namespace ExplorerNative
                 // Asked before the dialog is built, on a worker: it decides whether a
                 // bare .gz is offered, and the answer comes from the disk.
                 var single = paths.Length == 1 &&
-                             await Task.Run(() => { try { return File.Exists(paths[0]); } catch { return false; } });
+                             await Task.Run(() => { try { return File.Exists(NameRules.ExactPath(paths[0])); } catch { return false; } });
                 if (IsDisposed) return;
 
                 request = ArchiveForm.Ask(this, destination, paths, startFormat,
@@ -7794,7 +7805,8 @@ namespace ExplorerNative
                     path = await Task.Run(() =>
                     {
                         var unique = FileOperations.UniqueName(Path.Combine(folder, name), folder: true);
-                        Directory.CreateDirectory(unique);
+                        // Exact: inside "Backup." a plain path made the folder in "Backup".
+                        Directory.CreateDirectory(NameRules.ExactPath(unique));
                         return unique;
                     });
                 }
@@ -7888,7 +7900,8 @@ namespace ExplorerNative
                         // between the unique-name check and here belongs to
                         // somebody else, and truncating it would be the worst
                         // possible outcome of asking for a new one.
-                        using (new FileStream(unique, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+                        // Exact, as for New folder: inside "Backup." it went into "Backup".
+                        using (new FileStream(NameRules.ExactPath(unique), FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
                         return unique;
                     });
                 }

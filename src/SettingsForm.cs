@@ -382,7 +382,7 @@ namespace ExplorerNative
             {
                 using var dialog = new SpeechForm(_working, windows: true);
                 dialog.ShowDialog(this);
-                Speech.Speak($"{Count()} turned on", interrupt: true);
+                Say($"{Count()} turned on");
             });
 
             AddButton(panel, "Turn on every Google Drive &sync notification", () =>
@@ -390,14 +390,14 @@ namespace ExplorerNative
                 var on = WindowsToasts.Parse(_working.WindowsNotifications);
                 on.UnionWith(Notifications.All.Where(IsSync).Select(n => n.Id));
                 _working.WindowsNotifications = WindowsToasts.Format(on);
-                Speech.Speak($"Turned on {Notifications.All.Count(IsSync)} sync notifications, such as when a synced " +
-                             "folder finishes, could not sync, or runs out of room", interrupt: true);
+                Say($"Turned on {Notifications.All.Count(IsSync)} sync notifications, such as when a synced " +
+                    "folder finishes, could not sync, or runs out of room");
             });
 
             AddButton(panel, "Turn all o&ff", () =>
             {
                 _working.WindowsNotifications = "";
-                Speech.Speak("All Windows notifications are off", interrupt: true);
+                Say("All Windows notifications are off");
             });
 
             AddInfo(panel,
@@ -1384,14 +1384,14 @@ namespace ExplorerNative
             {
                 if (!isOn || link == null)
                 {
-                    Speech.Speak("Turn on the web app to get a link", interrupt: true);
+                    Say("Turn on the web app to get a link");
                     status.Text = "Turn on the web app to get a link.";
                     return;
                 }
                 try
                 {
                     Clipboard.SetText(link);
-                    Speech.Speak("Link copied", interrupt: true);
+                    Say("Link copied");
                 }
                 catch (Exception ex)
                 {
@@ -1403,7 +1403,7 @@ namespace ExplorerNative
             {
                 if (!isOn || link == null)
                 {
-                    Speech.Speak("Turn on the web app first", interrupt: true);
+                    Say("Turn on the web app first");
                     status.Text = "Turn on the web app first.";
                     return;
                 }

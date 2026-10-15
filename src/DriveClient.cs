@@ -1234,6 +1234,9 @@ namespace ExplorerNative
                         last = new TimeoutException($"Google Drive stopped sending at {offset:N0} of {size:N0} bytes", ex);
                     }
                     catch (RetryableReadException ex) { last = ex; }
+                    // Send's own timeout, or the sign-in's: retried from where
+                    // it got to, as ReadRange does, not the end of the download.
+                    catch (TimeoutException ex) { last = ex; }
                     catch (HttpRequestException ex) { last = ex; }
                     catch (IOException ex) { last = ex; }
 

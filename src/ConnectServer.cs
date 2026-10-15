@@ -2371,6 +2371,7 @@ namespace ExplorerNative
             200 => "OK", 202 => "Accepted", 400 => "Bad Request", 401 => "Unauthorized", 403 => "Forbidden",
             404 => "Not Found", 405 => "Method Not Allowed", 408 => "Request Timeout", 409 => "Conflict", 421 => "Misdirected Request",
             423 => "Locked", 429 => "Too Many Requests", 431 => "Request Header Fields Too Large", 503 => "Service Unavailable",
+            504 => "Gateway Timeout",
             _ => "Internal Server Error",
         };
 

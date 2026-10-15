@@ -538,6 +538,11 @@ namespace ExplorerNative
             if (!format.CanCreate)
                 throw new NotSupportedException($"{format.Name} archives can be opened but not created.");
 
+            // Exact, and from here on every engine is handed this form: into a
+            // folder called "Backup." the ordinary path wrote into "Backup", or
+            // failed when there was none.
+            archivePath = NameRules.ExactPath(archivePath);
+
             var reporter = new Reporter(progress);
             var errors = new List<string>();
 
@@ -733,6 +738,12 @@ namespace ExplorerNative
             IProgress<TransferProgress>? progress,
             CancellationToken token)
         {
+            // Exact, both of them, and every engine and the conflict check are
+            // handed this form: an archive inside "Backup." could not be found,
+            // and extracting into it wrote into "Backup", or failed.
+            archivePath = NameRules.ExactPath(archivePath);
+            destinationDir = NameRules.ExactPath(destinationDir);
+
             var format = Openable(archivePath);
 
             var reporter = new Reporter(progress);
