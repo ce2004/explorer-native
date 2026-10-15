@@ -761,6 +761,14 @@ namespace ExplorerNative
                 await Error(s, 403, "That request came from another site, so it was refused.", false, token);
                 return;
             }
+            // Reads too: another site's page could otherwise point an image or audio tag at the API and be let
+            // in on the owner's Tailscale login. The web app's own requests are same-origin.
+            if (r.Path.StartsWith("/api/", StringComparison.Ordinal) &&
+                r.Headers.GetValueOrDefault("sec-fetch-site") is "cross-site" or "same-site")
+            {
+                await Error(s, 403, "That request came from another site, so it was refused.", head, token);
+                return;
+            }
 
             // The web app's own files: its shell, no data, so no code needed.
             if ((r.Method == "GET" || head) && WebAssets.TryGetAsset(r.Path, out var asset))
@@ -1006,10 +1014,11 @@ namespace ExplorerNative
         /// A share or device path: \\server\share, //server/share, \\?\UNC\..., \\.\... Opening one makes this PC
         /// connect to that server and offer the signed-in user's Windows credentials (NTLM) to it, so a path
         /// typed or crafted on a phone could hand them to any machine. The web app only ever browses drive
-        /// letters, and a mapped network drive is one of those.
+        /// letters, and a mapped network drive is one of those. Anything starting with a slash is refused, so
+        /// \??\UNC\server (which .NET calls fully qualified and Windows passes straight through) is too.
         /// </summary>
         public static bool IsNetworkPath(string? path) =>
-            path != null && path.Length >= 2 && (path[0] is '\\' or '/') && (path[1] is '\\' or '/');
+            path != null && path.Length >= 1 && path[0] is '\\' or '/';
 
         internal const string NetworkPathRefusal =
             "Network paths can't be opened from the web app. Map the share to a drive letter on the PC and open that.";
@@ -1454,7 +1463,13 @@ namespace ExplorerNative
             {
                 await using (var file = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20, useAsync: true))
                     await new StallGuard(r.Body, _uploads.StallAfter).CopyToAsync(file, 1 << 20, token);
-                System.IO.File.Move(partial, target, overwrite: true);
+                // Phones often name every picked photo image.jpg: in one batch each keeps its own file.
+                for (;;)
+                {
+                    var free = Path.Combine(folder, ConnectFiles.UniqueLocalName(name, n => System.IO.File.Exists(Path.Combine(folder, n))));
+                    try { System.IO.File.Move(partial, free); target = free; break; }
+                    catch (IOException) when (System.IO.File.Exists(free)) { }
+                }
             }
             catch (Exception e)
             {

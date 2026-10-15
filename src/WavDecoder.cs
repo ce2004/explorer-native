@@ -56,7 +56,8 @@ namespace ExplorerNative
         {
             try
             {
-                using var source = stream != null ? (Stream)new ComStream(stream) : File.OpenRead(path);
+                using var source = stream != null ? (Stream)new ComStream(stream)
+                    : new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);   // as Open shares it: a file still being recorded
                 if (source.CanSeek) source.Position = 0;
                 var head = new byte[20];
                 int got = source.Read(head, 0, 20);
@@ -249,6 +250,8 @@ namespace ExplorerNative
                         _bits = (int)r.U32B();
                         break;
                     case "kuki":
+                        // The header's word is not trusted with memory: a real cookie is a few dozen bytes.
+                        if (size < 0 || size > 1 << 20 || size > s.Length - body) return "the CAF file's decoder settings are damaged";
                         cookie = new byte[size];
                         ReadFully(s, cookie, (int)size);
                         break;
@@ -257,11 +260,15 @@ namespace ExplorerNative
                         validFrames = r.I64B();
                         r.U32B();
                         r.U32B();
-                        for (long i = 0; i < packets; i++)
+                        // Within the chunk, whatever count the header gives, and no packet
+                        // bigger than a packet can be (one is read whole into memory).
+                        long tableEnd = size < 0 ? s.Length : Math.Min(s.Length, body + size);
+                        for (long i = 0; i < packets && s.Position < tableEnd; i++)
                         {
                             long v = 0;
-                            int b;
-                            do { b = r.U8(); v = v << 7 | (uint)(b & 0x7F); } while ((b & 0x80) != 0);
+                            int b, shifts = 0;
+                            do { b = r.U8(); v = v << 7 | (uint)(b & 0x7F); } while ((b & 0x80) != 0 && ++shifts < 5);
+                            if (v > 1 << 20) return "the CAF file's packet table is damaged";
                             packetSizes.Add(v);
                         }
                         break;
@@ -294,6 +301,8 @@ namespace ExplorerNative
                     if (cookie == null) return "the ALAC sound has no decoder settings (no 'kuki' chunk)";
                     _alac = AlacDecoder.FromCookie(cookie, out var why);
                     if (_alac == null) return "ALAC: " + why;
+                    // The cookie decides how the packets decode; 'desc' disagreeing would size the buffer wrong.
+                    Channels = _alac.Channels;
                     if (packetSizes.Count == 0) return "the ALAC sound has no packet table";
                     _codec = Codec.Alac;
                     _samplesPerBlock = framesPerPacket > 0 ? (int)framesPerPacket : _alac.FrameLength;
@@ -389,7 +398,7 @@ namespace ExplorerNative
             s.Position = 20;
             s.Position = r.U16();
             _segments = new List<(long, long)>();
-            int stereoNext = 0;
+            int stereoNext = 0, channelsNext = 1;
             while (s.Position < s.Length)
             {
                 int type = r.U8();
@@ -402,7 +411,7 @@ namespace ExplorerNative
                     if (codec != 0) return "a VOC file with compressed sound, which this player does not decode";
                     if (SampleRate == 0)
                     {
-                        Channels = stereoNext > 0 ? 2 : 1;
+                        Channels = stereoNext > 0 ? channelsNext : 1;
                         SampleRate = stereoNext > 0 ? stereoNext : 1_000_000 / (256 - rateCode);
                         _codec = Codec.Pcm;
                         _bits = 8;
@@ -414,6 +423,7 @@ namespace ExplorerNative
                 {
                     int constant = r.U16(); r.U8(); int mode = r.U8();
                     int channels = mode + 1;
+                    channelsNext = channels;
                     stereoNext = (int)(256_000_000L / (channels * (65536 - constant)));
                 }
                 else if (type == 9)
@@ -451,6 +461,8 @@ namespace ExplorerNative
                 case Codec.Float when _bits is 32 or 64:
                 case Codec.ALaw or Codec.MuLaw:
                     if (_blockAlign < 1) _blockAlign = _bits / 8 * Channels;
+                    // Smaller than one frame's samples, and decoding reads past each block.
+                    if (_blockAlign < (_bits + 7) / 8 * Channels) return "the file's sound format makes no sense";
                     _samplesPerBlock = 1;
                     break;
                 case Codec.ImaWav when _bits == 4 && _blockAlign > 4 * Channels:
@@ -472,6 +484,10 @@ namespace ExplorerNative
             }
 
             if (_codec != Codec.Alac) _totalFrames = _dataLength / _blockAlign * _samplesPerBlock;
+            // A last ADPCM block cut short still decodes: its frames count too.
+            long rest = _dataLength % _blockAlign;
+            if (_codec == Codec.ImaWav && rest > 4 * Channels) _totalFrames += (rest - 4 * Channels) * 2 / Channels + 1;
+            if (_codec == Codec.MsAdpcm && rest > 7 * Channels) _totalFrames += (rest - 7 * Channels) * 2 / Channels + 2;
             int perBlock = _codec == Codec.Alac ? Math.Max(_samplesPerBlock, _alac!.FrameLength) : _samplesPerBlock;
             _decoded = new float[Math.Max(perBlock, 4096) * Channels];
             _block = new byte[Math.Max(_blockAlign, 4096)];
@@ -571,6 +587,8 @@ namespace ExplorerNative
                 if (_block.Length < length) _block = new byte[length];
                 _source!.Position = _dataStart + start;
                 int got = ReadFully(_source, _block, (int)length);
+                // Cut off: the sound ends where the file does, not in minutes of silence.
+                if (got < length) return false;
                 _packet++;
                 _decodedFrames = _alac!.Decode(_block, got, _decoded);
                 // A damaged packet is a packet's worth of silence, not the end.

@@ -2635,8 +2635,9 @@ namespace ExplorerNative
                         generation, tally, nextDirty, token).ConfigureAwait(false);
 
                 // ---- records of folders neither side has any more ----
-                // (A pass that looked at only some folders left the rest alone on purpose.)
-                foreach (var f in partial ? new List<string>() : shardFolders.ToList())
+                // (A pass that looked at only some folders left the rest alone on purpose,
+                // and one stopped short for space never reached the rest.)
+                foreach (var f in partial || tally.SpaceProblem != null ? new List<string>() : shardFolders.ToList())
                 {
                     if (visited.Contains(f) || allSkips.Covers(f + "/")) continue;
                     if (!pair.IncludeSubfolders && f.Length > 0) continue;
@@ -2672,10 +2673,12 @@ namespace ExplorerNative
                 clashing.AddRange(header.DriveClashing.Where(Unlisted));
             }
 
-            header.ChangesToken = nextToken;
+            // Stopped short for space: the changes read for folders it never
+            // reached are read again next pass, not used up.
+            if (tally.SpaceProblem == null) header.ChangesToken = nextToken;
             header.FolderIds = folders;
             header.DirtyFolders = nextDirty.ToList();
-            if (full)
+            if (full && tally.SpaceProblem == null)
             {
                 header.LastFullListUtc = DateTime.UtcNow;
                 header.ScanSubfolders = pair.IncludeSubfolders;
@@ -3260,6 +3263,13 @@ namespace ExplorerNative
                                     // Trashed only while it still holds what the scan
                                     // saw: an edit made in Drive since is not thrown
                                     // away for a delete made on the PC before it.
+                                    // And the PC file is still gone: one put back
+                                    // since the scan is not a delete.
+                                    if (!LocalStillAsScanned(localPath, null))
+                                    {
+                                        deferred++;
+                                        break;
+                                    }
                                     var now = await client.FileNow(remote[path].Id!, token).ConfigureAwait(false);
                                     if (now == null)
                                     {
@@ -3269,6 +3279,17 @@ namespace ExplorerNative
                                     if (!SameAsScanned(now, remote[path]))
                                     {
                                         deferred++;
+                                        break;
+                                    }
+                                    // Moved out of this folder in Drive since the records
+                                    // (the feed only marks where it went): not this pair's
+                                    // to trash where it lives now.
+                                    var recordedFolder = SyncMoves.Parent(path) is { Length: > 0 } up
+                                        ? folders.TryGetValue(up, out var upId) ? upId : null
+                                        : pair.DriveFolderId;
+                                    if (now.Parent != null && recordedFolder != null && now.Parent != recordedFolder)
+                                    {
+                                        state.Files.Remove(path);
                                         break;
                                     }
                                     await client.Trash(remote[path].Id!, token).ConfigureAwait(false);
@@ -3628,7 +3649,10 @@ namespace ExplorerNative
         /// </summary>
         internal static string FolderPathOf(string folder)
         {
-            var full = Path.GetFullPath(folder.Trim());
+            folder = folder.Trim();
+            // A bare "C:" is the current folder on C, not the drive (see CLAUDE.md).
+            if (folder.Length == 2 && folder[1] == ':' && char.IsAsciiLetter(folder[0])) folder += Path.DirectorySeparatorChar;
+            var full = Path.GetFullPath(folder);
             if (IsDriveRoot(full)) return Path.GetPathRoot(full)!.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
             return full.TrimEnd(Path.DirectorySeparatorChar);
         }
@@ -4630,10 +4654,13 @@ namespace ExplorerNative
             {
                 if (Stopped(pair) || GenerationOf(pair.Id) != generation) return false;
                 SyncBase up;
+                // One-shot uploads finish once started (see Drain), as on the careful loop.
+                using var drainOne = new Drain(ct);
+                var upToken = local[path].Size <= DriveClient.SmallUploadBytes ? drainOne.Token : ct;
                 try
                 {
                     up = await UploadAsync(client, folders, pair, state, path, LocalPathFor(root, path), local[path],
-                        null, null, moved, ct).ConfigureAwait(false);
+                        null, null, moved, upToken).ConfigureAwait(false);
                 }
                 catch (Exception) when (!ct.IsCancellationRequested) { return false; }
                 lock (_fastGate)

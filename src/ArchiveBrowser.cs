@@ -668,6 +668,13 @@ namespace ExplorerNative
                     continue;
                 }
 
+                if (ZipEngine.IsLink(entry))
+                {
+                    errors.Add($"{name}: a symbolic link was not extracted");
+                    reporter.Finished(0);
+                    continue;
+                }
+
                 reporter.Starting(name);
                 try
                 {

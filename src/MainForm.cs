@@ -2016,10 +2016,13 @@ namespace ExplorerNative
             {
                 // Without a trailing separator, except at a root: "C:\Users\" and
                 // "C:\Users" were two different folders to every comparison here.
-                var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+                // GetFullPath strips a trailing dot, so "Backup." would open "Backup"
+                // beside it: a path with such a part is kept as given.
+                var full = Path.TrimEndingDirectorySeparator(
+                    NameRules.ExactPath(path) != path && Path.IsPathFullyQualified(path) ? path : Path.GetFullPath(path));
 
                 pane.Probing = mine;
-                var reachable = await ProbeDirectoryAsync(full, NavigationProbeMs);
+                var reachable = await ProbeDirectoryAsync(NameRules.ExactPath(full), NavigationProbeMs);
                 if (IsDisposed || pane.NavigationId != mine) return false;
 
                 if (reachable != FolderProbe.Present)
@@ -3808,7 +3811,7 @@ namespace ExplorerNative
                 // and drop it; at a hundred thousand files that was a third of
                 // the listing. The facts are the same ones, read from the same
                 // record, and so is every exception the scan can throw.
-                var listing = new System.IO.Enumeration.FileSystemEnumerable<Entry>(path,
+                var listing = new System.IO.Enumeration.FileSystemEnumerable<Entry>(NameRules.ExactPath(path),
                     static (ref System.IO.Enumeration.FileSystemEntry found) => RowFrom(ref found),
                     ListingOptions)
                 {
@@ -3863,7 +3866,7 @@ namespace ExplorerNative
             try { modified = found.LastWriteTimeUtc.UtcDateTime.ToLocalTime(); }
             catch { modified = default; }
 
-            var entry = new Entry(found.ToFullPath(), found.FileName.ToString(), isDir,
+            var entry = new Entry(NameRules.PlainPath(found.ToFullPath()), found.FileName.ToString(), isDir,
                 isDir ? -1 : found.Length, modified);
             entry.PrepareTypeAhead();
             return entry;
@@ -4462,6 +4465,9 @@ namespace ExplorerNative
             string Anchor(string candidate)
             {
                 if (candidate.Length == 0 || IsDrivesView) return candidate;
+                // "D:Music" is the current folder on D plus Music to Windows; typed, it means D:\Music.
+                if (candidate.Length > 2 && candidate[1] == ':' && char.IsAsciiLetter(candidate[0]) && candidate[2] is not ('\\' or '/'))
+                    candidate = candidate[..2] + "\\" + candidate[2..];
                 try
                 {
                     return Path.IsPathFullyQualified(candidate) || candidate.StartsWith(@"\\")
@@ -6045,7 +6051,7 @@ namespace ExplorerNative
                 return false;
             }
 
-            using var cts = new CancellationTokenSource();
+            var cts = new CancellationTokenSource();   // cancelled, never disposed: a worker may still hold its token
             var verb = move ? "Moving to Google Drive" : "Copying to Google Drive";
             // Named a window rather than a dialog, because that is what it is
             // now. Every other `dialog` in this file is modal and should stay
@@ -6244,7 +6250,7 @@ namespace ExplorerNative
                        .Distinct(StringComparer.OrdinalIgnoreCase).ToList()
                 : new List<string>();
 
-            using var cts = new CancellationTokenSource();
+            var cts = new CancellationTokenSource();   // cancelled, never disposed: a worker may still hold its token
             using var window = new ProgressForm(TransferTitle(verb, destination), _settings, cts);
             var clock = System.Diagnostics.Stopwatch.StartNew();
 
@@ -6867,7 +6873,7 @@ namespace ExplorerNative
                 return await UploadToDrive(paths, destination, move, conflicts);
             }
 
-            using var cts = new CancellationTokenSource();
+            var cts = new CancellationTokenSource();   // cancelled, never disposed: a worker may still hold its token
             var verb = move ? "Moving" : "Copying";
             // A window, not a dialog — see UploadToDrive above for why the name
             // is worth the two extra characters.
@@ -7325,7 +7331,7 @@ namespace ExplorerNative
                     ? $"Converting {Path.GetFileName(jobs[0].Source)} to {choice.FormatName}"
                     : $"Converting {NameRules.Items(jobs.Count, "file")} to {choice.FormatName}";
 
-                using var cts = new CancellationTokenSource();
+                var cts = new CancellationTokenSource();   // cancelled, never disposed: a worker may still hold its token
                 using var window = new ProgressForm(title, _settings, cts);
                 var progress = new Progress<TransferProgress>(p => window.Update(p));
 
@@ -7487,7 +7493,7 @@ namespace ExplorerNative
             }
             if (request == null) { RestoreListFocus(); return; }
 
-            using var cts = new CancellationTokenSource();
+            var cts = new CancellationTokenSource();   // cancelled, never disposed: a worker may still hold its token
             using var window = new ProgressForm(
                 TransferTitle("Compressing", destination), _settings, cts);
 
@@ -7618,7 +7624,7 @@ namespace ExplorerNative
                     Path.Combine(here, ArchiveFormats.BaseName(archive)), folder: true))
                 : here;
 
-            using var cts = new CancellationTokenSource();
+            var cts = new CancellationTokenSource();   // cancelled, never disposed: a worker may still hold its token
             using var window = new ProgressForm(
                 TransferTitle("Extracting", destination), _settings, cts);
 
@@ -8009,7 +8015,8 @@ namespace ExplorerNative
                 // screen to say why.
                 bool taken = await Task.Run(() =>
                 {
-                    try { return File.Exists(dest) || Directory.Exists(dest); }
+                    var exact = NameRules.ExactPath(dest);
+                    try { return File.Exists(exact) || Directory.Exists(exact); }
                     catch { return false; }
                 });
 
@@ -8048,11 +8055,13 @@ namespace ExplorerNative
                 // and not a sentence this method made up about it.
                 await Task.Run(() =>
                 {
-                    // From the literal path when the old name ends in a dot or a
-                    // space, or Windows trims it and renames a different file.
-                    var from = NameRules.NeedsLiteralPath(path) ? NameRules.LiteralPath(path) : path;
-                    if (Directory.Exists(from)) Directory.Move(from, dest);
-                    else File.Move(from, dest);
+                    // Exact when any part of either path ends in a dot or a space
+                    // (the name, or a folder it is in), or Windows trims it and
+                    // renames a different file.
+                    var from = NameRules.ExactPath(path);
+                    var to = NameRules.ExactPath(dest);
+                    if (Directory.Exists(from)) Directory.Move(from, to);
+                    else File.Move(from, to);
                 });
 
                 if (IsDisposed) return;
@@ -8165,6 +8174,10 @@ namespace ExplorerNative
                             if (Directory.Exists(pair.LocalFolder) && !ShellDelete.Recycle(pair.LocalFolder, owner))
                                 errors.Add($"{pair.LocalFolder}: kept, because it could only have been deleted permanently");
                         }
+                        // This side was kept (Windows' "delete permanently?" answered No,
+                        // or the delete failed): the other side stays too.
+                        else if (Directory.Exists(pair.LocalFolder))
+                            errors.Add($"{pair.LocalFolder}: still here, so {pair.DriveFolderPath} in Google Drive was kept too");
                         else if (client == null)
                             errors.Add($"{pair.DriveFolderPath}: Google Drive is not connected, so it was not trashed");
                         else

@@ -103,6 +103,7 @@ namespace ExplorerNative
             add.Click += (_, _) => AddPair();
             _edit.Click += (_, _) => EditPair();
             _pause.Click += (_, _) => PauseOrResume();
+            _pause.Leave += (_, _) => BeginInvoke(ShowButtons);
             _remove.Click += (_, _) => RemovePair();
             _history.Click += (_, _) => ShowHistory();
             _sync.Click += (_, _) =>
@@ -149,7 +150,9 @@ namespace ExplorerNative
             bool any = at >= 0 && at < _pairs.Count;
             _edit.Enabled = _remove.Enabled = _history.Enabled = _pause.Enabled = any;
             var text = any && _pairs[at].Paused ? "Res&ume" : "&Pause";
-            if (_pause.Text != text) _pause.Text = text;
+            // Never rename the focused control: NVDA talks over the message. It is
+            // renamed when focus leaves (see the Leave handler).
+            if (_pause.Text != text && !_pause.Focused) _pause.Text = text;
         }
 
         /// <summary>Pause or Resume for the chosen folder, saved at once.</summary>
@@ -429,8 +432,13 @@ namespace ExplorerNative
 
         private static string Plural(int n, string word) => n == 1 ? $"1 {word}" : $"{n} {word}s";
 
+        private bool _adding;
+
         private async void AddPair()
         {
+          // Everything waits on Google; a second Add meanwhile would make every pair twice.
+          if (_adding) return;
+          _adding = true;
           // An async void handler: nothing may escape it, or the application ends.
           try
           {
@@ -453,6 +461,7 @@ namespace ExplorerNative
             ShowSaved(_pairs.Count - 1);
           }
           catch (Exception ex) { Say("The folder could not be added: " + ex.Message); }
+          finally { _adding = false; }
         }
 
         /// <summary>
@@ -483,8 +492,16 @@ namespace ExplorerNative
                 return made;
             }
             var pairs = new List<DriveSyncPair> { Make(root, "My Drive", "My Drive", "My Drive") };
+            // Google lets two shared drives share a name, and Windows folds case
+            // and swaps characters, so the second "Team" becomes "Team (2)" on
+            // both sides rather than the two overlapping and nothing being added.
+            var taken = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var drive in shared.OrderBy(d => d.Name, StringComparer.CurrentCultureIgnoreCase))
-                pairs.Add(Make(drive.Id, "Shared drives/" + drive.Name, Path.Combine("Shared drives", WindowsName(drive.Name)), drive.Name));
+            {
+                string name = drive.Name, folder = WindowsName(name);
+                for (int n = 2; !taken.Add(folder); n++) { name = $"{drive.Name} ({n})"; folder = WindowsName(name); }
+                pairs.Add(Make(drive.Id, "Shared drives/" + name, Path.Combine("Shared drives", folder), name));
+            }
 
             var others = _pairs.ToList();
             foreach (var p in pairs)
@@ -953,6 +970,7 @@ namespace ExplorerNative
                     var edited = Pair.Copy();
                     // A whole drive stays "D:\" (see FolderPathOf).
                     edited.LocalFolder = DriveMonitor.FolderPathOf(_local.Text);
+                    edited.Name = "";
                     edited.Name = string.IsNullOrWhiteSpace(_name.Text) ? DriveMonitor.DisplayName(edited) : _name.Text.Trim();
                     edited.Mode = Modes[Math.Max(0, _mode.SelectedIndex)].Mode;
                     edited.WhenBothChanged = Clashes[Math.Max(0, _clash.SelectedIndex)].Choice;

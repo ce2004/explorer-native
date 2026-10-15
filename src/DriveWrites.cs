@@ -483,7 +483,7 @@ namespace ExplorerNative
         internal async Task<DriveEntry?> FileNow(string fileId, CancellationToken token)
         {
             using var request = await Request(HttpMethod.Get,
-                $"{Files}/{Uri.EscapeDataString(fileId)}?fields=id,name,mimeType,size,md5Checksum,modifiedTime,trashed", token);
+                $"{Files}/{Uri.EscapeDataString(fileId)}?fields=id,name,mimeType,size,md5Checksum,modifiedTime,trashed,parents", token);
             using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token, _slowMetadata);
             var body = await response.Content.ReadAsStringAsync(token);
             if ((int)response.StatusCode == 404) return null;
@@ -498,7 +498,9 @@ namespace ExplorerNative
             return new DriveEntry(file.Id,
                 root.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
                 root.TryGetProperty("mimeType", out var m) ? m.GetString() ?? "" : "",
-                file.Size ?? 0, file.ModifiedUtc ?? DateTime.MinValue, null, file.Md5);
+                file.Size ?? 0, file.ModifiedUtc ?? DateTime.MinValue, null, file.Md5,
+                root.TryGetProperty("parents", out var ps) && ps.ValueKind == JsonValueKind.Array && ps.GetArrayLength() > 0
+                    ? ps[0].GetString() : null);
         }
 
         /// <summary>

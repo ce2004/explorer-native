@@ -416,6 +416,13 @@ namespace ExplorerNative
                 {
                     gapSkipped.Add(name);
                 }
+                else if (collides && conflictPolicy == PasteConflictPolicy.Overwrite && !isFolder)
+                {
+                    // Robocopy writes over the old file in place, so a cancel or a
+                    // dropped share left neither the old file nor the new one. The
+                    // managed engine writes beside it and swaps (CopyFileAsync).
+                    literalFolders.Add(source);
+                }
                 else
                 {
                     // Robocopy overwrites without saying so, and that silence is

@@ -1040,6 +1040,9 @@ namespace ExplorerNative
         /// <summary>One entry that needs a password, in a zip where others do not.</summary>
         private const string ProtectedEntry = "it is password-protected, which Explorer Native can't open";
 
+        /// <summary>A Unix symbolic link (zips made on a Mac or Linux): S_IFLNK in the high half of the attributes.</summary>
+        internal static bool IsLink(ZipArchiveEntry entry) => ((entry.ExternalAttributes >> 16) & 0xF000) == 0xA000;
+
         public static IReadOnlyList<ArchiveEntryInfo> List(string archivePath, CancellationToken token) =>
             List(archivePath, token, out _, out _);
 
@@ -1235,6 +1238,17 @@ namespace ExplorerNative
                         if (entry.IsEncrypted)
                         {
                             lock (errors) errors.Add($"{entry.FullName}: {ProtectedEntry}");
+                            rules.Withdraw(target);
+                            Volatile.Write(ref settled[at], 1);
+                            reporter.Finished(Math.Max(0, entry.Length));
+                            continue;
+                        }
+
+                        // A link written as a file holding its target's name is
+                        // worse than saying it was left out (as tar does).
+                        if (IsLink(entry))
+                        {
+                            lock (errors) errors.Add($"{entry.FullName}: a symbolic link was not extracted");
                             rules.Withdraw(target);
                             Volatile.Write(ref settled[at], 1);
                             reporter.Finished(Math.Max(0, entry.Length));

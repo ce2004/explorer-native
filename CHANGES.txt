@@ -1,3 +1,29 @@
+3.0.7
+Bug fixed: if a big synced folder ran out of room part way through a sync, Explorer Native forgot what it knew about the folders it had not reached yet. Next time, files you had deleted could come back and files you had edited could turn into conflict copies. Now it keeps them.
+Bug fixed: if you moved a file out of a synced folder in Google Drive and then deleted it on your PC, the file could be sent to the Drive trash from where you had moved it. Now a file that has moved somewhere else in Drive is left alone.
+Bug fixed: if a deleted file came back on your PC (from the Recycle Bin, say) while a sync was running, the sync could still send the Google Drive copy to the trash. Now it checks the PC again first.
+Bug fixed: if you changed a synced folder while a song-sized file was going up, the file could end up in Google Drive twice. Now an upload already on its way finishes first.
+Bug fixed: if you pasted with Replace and cancelled part way, or the network dropped, you could lose both the old file and the new one. Now the old file is only replaced once the new one has fully arrived.
+Bug fixed: if you pressed Enter on a folder whose name ends in a dot, such as Backup., Explorer Native opened the folder next to it called Backup instead. Renaming a file inside such a folder had the same problem. Now both use the folder you chose.
+Bug fixed: if you deleted a synced folder with Delete anyway and then said No to deleting it permanently, the Google Drive side was still sent to the trash. Now it is kept along with the PC side.
+Bug fixed: typing D:Music in Go to path went to the wrong place. Now it goes to the Music folder on D.
+Bug fixed: typing just C: as the folder on this PC for a synced folder picked whatever folder Explorer Native was running in, instead of being refused as the drive Windows is on. Now it means the whole drive, and the Windows drive is refused.
+Bug fixed: Everything, in Google Drive sync, added nothing at all if two of your shared drives had the same name. Now the second one gets a (2) after its name.
+Bug fixed: pressing Add a folder again while Everything was still finding your shared drives could set up every drive twice. Now the second press waits.
+Bug fixed: clearing the name of a synced folder while changing it kept the old name. Now it takes the folder's name, as when adding one.
+Bug fixed: pressing Pause or Resume in the Google Drive sync window renamed the button you were on, so NVDA talked over the message. Now the button changes its name when you move off it.
+Bug fixed: player messages, such as a track ending, never showed as Windows notifications even when turned on. Now they do. The Explorer Native is ready notification also showed only sometimes; now it always does when turned on.
+Bug fixed: searching Google Drive while the connection was down could sit on searching for minutes. Now it gives up quickly and says why.
+Bug fixed: the last bit of some files on the Google Drive letter could fail to read. Now the end of a file reads properly.
+Bug fixed: if Google refused a sign-in that had just gone stale, a delete, move or rename on Google Drive failed once with a 401 error. Now it signs in again and carries on.
+Bug fixed: a ZIP made on a Mac or Linux with symbolic links in it was extracted with small text files in place of the links, and said nothing. Now the links are left out and the summary says so.
+Bug fixed: holding skip forward to the very end of a track stopped it instead of starting it over. Now it starts over.
+Bug fixed: in the web app, the Details page never showed a file's size. Now it does.
+Bug fixed: sending several photos with the same name from a phone to the PC clipboard kept only the last one. Now each is kept, numbered.
+Bug fixed: the web app turned away network paths written as two slashes, but not ones written another way, so a crafted link could make this PC connect to another computer. Now every network path is refused, and other websites can no longer reach the web app through your browser.
+Bug fixed: some damaged CAF, WAV and VOC files could use a huge amount of memory or stop part way. Now they are refused or play properly. Mono VOC files with high sample rates played too fast and too high; they now play right. Cut-off Apple Lossless files no longer play minutes of silence at the end, and ADPCM WAVs no longer lose their last moment of sound.
+Bug fixed: FLV videos with HE-AAC sound would not play. Now they do. A WAV or TTA file still being recorded is now played by Explorer Native instead of being refused.
+
 3.0.6
 New: a whole drive can be a synced folder, such as all of D, for an external drive. Only the drive Windows is on cannot be synced whole.
 New: when choosing the Google Drive side, the list now starts with My Drive, each of your shared drives, and Everything. Pick My Drive or a shared drive to sync all of it. Everything syncs My Drive into a My Drive folder and each shared drive into Shared drives, each as its own synced folder.

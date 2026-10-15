@@ -3985,7 +3985,7 @@ namespace ExplorerNative
             // The local calls are on a worker now — the same treatment Rename
             // already had — so what is asserted is that they are still made, not
             // where from.
-            foreach (var local in new[] { "Directory.CreateDirectory(unique)", "File.Move(from, dest)" })
+            foreach (var local in new[] { "Directory.CreateDirectory(unique)", "File.Move(from, to)" })
                 Check($"the local path still uses {local}",
                     main.Contains(local, StringComparison.Ordinal));
 

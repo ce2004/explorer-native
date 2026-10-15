@@ -77,8 +77,11 @@ namespace ExplorerNative
         /// </summary>
         private static Stream? OggFlacToFlac(Stream source)
         {
+            // Held whole, so sized once (the FLAC is about as long as the Ogg),
+            // and a file too big to hold is refused rather than taking the PC's memory.
+            if (source.Length > MostHeld) return null;
             source.Position = 0;
-            var output = new MemoryStream();
+            var output = new MemoryStream((int)source.Length);
             var packet = new MemoryStream();
             int serial = -1;
             bool first = true;
@@ -128,6 +131,16 @@ namespace ExplorerNative
         /// tag carries. Video tags are passed over. Held in memory: the sound
         /// alone, a few megabytes an hour.
         /// </summary>
+        /// <summary>The most of a file rewrapped in memory: 512MB.</summary>
+        internal const long MostHeld = 512L * 1024 * 1024;
+
+        /// <summary>
+        /// The ADTS profile for an object type. HE-AAC (5) and HE-AAC v2 (29) are
+        /// AAC LC with SBR signalled implicitly, so they go as LC (2): "Main",
+        /// which the plain arithmetic gave them, Windows' decoder refuses.
+        /// </summary>
+        internal static int Profile(int objectType) => objectType is 5 or 29 ? 2 : objectType;
+
         private static Stream? FlvAudio(Stream source)
         {
             source.Position = 0;
@@ -153,18 +166,18 @@ namespace ExplorerNative
                     output.Write(data, 1, size - 1);
                 else if (format == 10 && size > 2)
                 {
-                    if (data[1] == 0)
+                    if (data[1] == 0 && size > 3)
                     {
                         objectType = data[2] >> 3;
                         frequency = (data[2] & 7) << 1 | data[3] >> 7;
                         channels = data[3] >> 3 & 15;
                     }
-                    else if (objectType > 0)
+                    else if (objectType > 0 && data[1] != 0)
                     {
                         int length = size - 2 + 7;
                         output.WriteByte(0xFF);
                         output.WriteByte(0xF1);
-                        output.WriteByte((byte)(((objectType - 1) & 3) << 6 | (frequency & 15) << 2 | (channels >> 2 & 1)));
+                        output.WriteByte((byte)(((Profile(objectType) - 1) & 3) << 6 | (frequency & 15) << 2 | (channels >> 2 & 1)));
                         output.WriteByte((byte)((channels & 3) << 6 | length >> 11 & 3));
                         output.WriteByte((byte)(length >> 3 & 0xFF));
                         output.WriteByte((byte)((length & 7) << 5 | 0x1F));

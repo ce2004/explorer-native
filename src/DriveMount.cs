@@ -2921,9 +2921,13 @@ namespace ExplorerNative
                 // the file. An unaligned chunk fails the whole read with an error
                 // that says nothing about alignment.
                 long start = offset / ChunkAlignment * ChunkAlignment;
+                // Clamped to the file every time: a read rounded up to a whole page
+                // past the end is aligned already, and was answered short and failed.
                 long end = offset + length;
-                if (end % ChunkAlignment != 0)
-                    end = Math.Min(cache.Size, (end / ChunkAlignment + 1) * ChunkAlignment);
+                if (end % ChunkAlignment != 0) end = (end / ChunkAlignment + 1) * ChunkAlignment;
+                end = Math.Min(cache.Size, end);
+                // Wholly past the end (a cache whose size disagrees): a named failure, never a zero-length answer.
+                if (end <= start) { Fail(ref info, offset, length); return; }
 
                 // Windows times the callback, and a read it decides has taken too
                 // long fails with 0x8007018D — "the cloud operation was not
@@ -3397,11 +3401,11 @@ namespace ExplorerNative
 
                 if (!ReferenceEquals(kept, fresh))
                 {
-                    // Somebody else got there first. Ours is already downloading;
-                    // it is stopped without dropping the chunks, which belong to
-                    // the file and so to the cache that was kept.
-                    fresh.EndLease();
+                    // Somebody else got there first. Ours is stopped before its
+                    // lease ends, or ending it would start a download (EndLease
+                    // warms a cache nobody has read) only to cancel it.
                     fresh.Abandon();
+                    fresh.EndLease();
                     continue;
                 }
 

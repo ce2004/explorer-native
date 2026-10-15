@@ -2098,6 +2098,9 @@ namespace ExplorerNative
                 ConnectServer.IsNetworkPath(@"\\host\share\x") && ConnectServer.IsNetworkPath(@"\\?\UNC\host\share\x") &&
                 ConnectServer.IsNetworkPath("//host/share") && ConnectServer.IsNetworkPath(@"\\.\pipe\x"));
             Check("a drive letter is not, mapped or not", !ConnectServer.IsNetworkPath(@"Z:\music") && !ConnectServer.IsNetworkPath(@"C:\"));
+            Check("an NT path to a share is a network path too",
+                ConnectServer.IsNetworkPath(@"\??\UNC\host\share\x") && ConnectServer.IsNetworkPath(@"\??\C:\x"));
+            Check("FLV HE-AAC goes as AAC LC", Rewrap.Profile(5) == 2 && Rewrap.Profile(29) == 2 && Rewrap.Profile(2) == 2);
 
             // 5. Room for the number.
             var nearLimit = new string('n', 250) + ".flac";

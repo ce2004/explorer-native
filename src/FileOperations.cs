@@ -1031,6 +1031,14 @@ namespace ExplorerNative
             try { File.Move(from, to, overwrite: true); }
             catch (UnauthorizedAccessException)
             {
+                // Windows says "access denied" for a file another program has open;
+                // that is "in use", which says what to do about it.
+                try { using var probe = new FileStream(to, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete); }
+                catch (IOException held) when ((held.HResult & 0xFFFF) is 32 or 33)
+                {
+                    throw new IOException("it is in use by another program. Close it there, then try again.", held.HResult);
+                }
+                catch { }
                 var attributes = File.GetAttributes(to);
                 if ((attributes & FileAttributes.ReadOnly) == 0 || (attributes & FileAttributes.Directory) != 0) throw;
                 File.SetAttributes(to, attributes & ~FileAttributes.ReadOnly);

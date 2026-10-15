@@ -133,7 +133,13 @@ namespace ExplorerNative
             // the tray icon, which Windows shows as an ordinary notification.
             WindowsToasts.Show = (title, text) => PostUi(() =>
             {
-                try { if (_tray.Visible) _tray.ShowBalloonTip(6000, title, text, ToolTipIcon.Info); } catch { }
+                try
+                {
+                    // Before the icon is up ("is ready" comes first) it waits for it.
+                    if (_tray.Visible) _tray.ShowBalloonTip(6000, title, text, ToolTipIcon.Info);
+                    else _toastWaiting = (title, text);
+                }
+                catch { }
             });
 
             // Put in the notification area once the message loop first has
@@ -307,8 +313,17 @@ namespace ExplorerNative
         private void ShowTrayIcon(object? sender, EventArgs e)
         {
             Application.Idle -= ShowTrayIcon;
-            if (!_quitting) _tray.Visible = true;
+            if (_quitting) return;
+            _tray.Visible = true;
+            if (_toastWaiting is var (title, text))
+            {
+                _toastWaiting = null;
+                try { _tray.ShowBalloonTip(6000, title, text, ToolTipIcon.Info); } catch { }
+            }
         }
+
+        /// <summary>A Windows notification raised before the tray icon was there to show it.</summary>
+        private (string Title, string Text)? _toastWaiting;
 
         private void OnShellRegistrationChanged(string id, string message) => Notify(id, message);
 
@@ -1458,6 +1473,9 @@ namespace ExplorerNative
                 // The catalogue is the one switch for each message.
                 speak = speak &&
                     Notifications.ChannelsFor(notificationId, _settings) == NotificationChannel.Speech;
+
+                // The player's messages can be Windows notifications too, like every other.
+                WindowsToasts.Raise(notificationId, message, _settings);
             }
 
             if (_form is { IsDisposed: false, Visible: true })

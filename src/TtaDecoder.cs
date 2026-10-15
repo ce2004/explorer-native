@@ -63,7 +63,8 @@ namespace ExplorerNative
         {
             try
             {
-                using var source = stream != null ? (Stream)new ComStream(stream) : File.OpenRead(path);
+                using var source = stream != null ? (Stream)new ComStream(stream)
+                    : new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);   // as Open shares it: a file still being recorded
                 return FindHeader(source) >= 0;
             }
             catch { return false; }

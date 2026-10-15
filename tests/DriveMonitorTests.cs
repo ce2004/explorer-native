@@ -272,6 +272,9 @@ namespace ExplorerNative
         {
             // A drive's own top folder stays "D:\": "D:" alone is the current folder on D.
             Equal("whole drive: D:\\ is kept as D:\\", @"D:\", DriveMonitor.FolderPathOf(@"D:\"));
+            Equal("whole drive: a bare D: is the drive, not D's current folder", @"D:\", DriveMonitor.FolderPathOf("D:"));
+            Check("the Windows drive typed bare is refused whole",
+                DriveMonitor.Refusal(Path.GetPathRoot(Environment.SystemDirectory)!.TrimEnd('\\'))?.Contains("drive Windows is on") == true);
             Equal("whole drive: D:\\. is the top of D too", @"D:\", DriveMonitor.FolderPathOf(@"D:\."));
             Equal("whole drive: an ordinary folder loses its last separator", @"D:\Music", DriveMonitor.FolderPathOf(@"D:\Music\"));
             Check("whole drive: the drive Windows is on is refused whole",

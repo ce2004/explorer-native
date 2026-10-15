@@ -1727,7 +1727,7 @@ namespace ExplorerNative
                     // beginning. From there the next press steps forward
                     // normally, so holding the key sweeps round and round.
                     if (!double.IsNaN(duration) && !double.IsInfinity(duration) && duration > 0 &&
-                        target > duration && deltaSeconds > 0)
+                        target >= duration - 0.25 && deltaSeconds > 0)
                     {
                         target = 0;
                         wrapped = true;

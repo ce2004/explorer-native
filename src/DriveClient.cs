@@ -22,7 +22,7 @@ namespace ExplorerNative
 
     internal sealed record DriveEntry(
         string Id, string Name, string MimeType, long Size, DateTime Modified, string? DriveId = null,
-        string? Md5 = null)
+        string? Md5 = null, string? Parent = null)
     {
         public bool IsFolder => MimeType == "application/vnd.google-apps.folder";
 
@@ -456,17 +456,18 @@ namespace ExplorerNative
 
                 // Refused a token that looked good — revoked, or let go early.
                 // Forgotten, so the next request refreshes; and a request with no
-                // body is simply sent again, once, with the new one. One that
-                // carries a body cannot be (its stream has been read), and its
-                // caller's own retry builds a fresh request with a fresh token.
+                // body, or a body held in memory (a trash, a move, a rename), is
+                // simply sent again, once, with the new one. One that streams a
+                // body cannot be (its stream has been read), and its caller's own
+                // retry builds a fresh request with a fresh token.
                 if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized &&
                     request.Headers.Authorization?.Parameter is { } refused)
                 {
                     _auth?.Invalidate(refused);
 
-                    if (request.Content == null && !request.Options.TryGetValue(Retried, out _))
+                    if (request.Content is null or ByteArrayContent && !request.Options.TryGetValue(Retried, out _))
                     {
-                        using var again = new HttpRequestMessage(request.Method, request.RequestUri);
+                        using var again = new HttpRequestMessage(request.Method, request.RequestUri) { Content = request.Content };
                         foreach (var header in request.Headers)
                             if (!header.Key.Equals("Authorization", StringComparison.OrdinalIgnoreCase))
                                 again.Headers.TryAddWithoutValidation(header.Key, header.Value);
@@ -847,7 +848,7 @@ namespace ExplorerNative
         /// </summary>
         public Task<List<DriveFound>> FindByName(string term, CancellationToken token, int max = 10_000,
             string? driveId = null) =>
-            Query($"name contains '{EscapeQuery(term)}' and trashed = false", token, max, driveId);
+            Query($"name contains '{EscapeQuery(term)}' and trashed = false", token, max, driveId, interactive: true);
 
         /// <summary>
         /// Every folder in the account.
@@ -860,7 +861,7 @@ namespace ExplorerNative
         /// </summary>
         public Task<List<DriveFound>> AllFolders(CancellationToken token, int max = 50_000,
             string? driveId = null) =>
-            Query("mimeType = 'application/vnd.google-apps.folder' and trashed = false", token, max, driveId);
+            Query("mimeType = 'application/vnd.google-apps.folder' and trashed = false", token, max, driveId, interactive: true);
 
         /// <summary>
         /// A term as Drive's query language will take it.
@@ -1034,8 +1035,9 @@ namespace ExplorerNative
         /// Drive's own. Scoped to the drive being searched, it costs what that
         /// drive holds.
         /// </summary>
+        /// <param name="interactive">Search: the quick client, two tries, no outage wait (see Populate).</param>
         private async Task<List<DriveFound>> Query(string query, CancellationToken token, int max,
-            string? driveId = null)
+            string? driveId = null, bool interactive = false)
         {
             string scope = string.IsNullOrEmpty(driveId)
                 ? ""
@@ -1054,7 +1056,7 @@ namespace ExplorerNative
 
                 using var response = await SendWithRetry(
                     () => Request(HttpMethod.Get, url, token),
-                    HttpCompletionOption.ResponseContentRead, token);
+                    HttpCompletionOption.ResponseContentRead, token, interactive: interactive);
 
                 var body = await response.Content.ReadAsStringAsync(token);
                 if (!response.IsSuccessStatusCode)

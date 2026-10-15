@@ -618,7 +618,7 @@ async function details(full) {
   };
   const f = r.file || r;
   section('File', (dl) => {
-    add(dl, 'Name', f.name); add(dl, 'Type', f.kind); add(dl, 'Size', f.folder ? null : words(f.size));
+    add(dl, 'Name', f.name); add(dl, 'Type', f.kind); add(dl, 'Size', r.folder || f.mime == null ? null : words(f.size));
     add(dl, 'Size on disk', f.sizeOnDisk != null ? words(f.sizeOnDisk) : null);
     add(dl, 'Modified', f.modified ? new Date(f.modified).toLocaleString() : null);
     add(dl, 'Created', f.created ? new Date(f.created).toLocaleString() : null);
