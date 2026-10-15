@@ -4,6 +4,7 @@ Changed: adding a synced folder no longer stops to show a summary first. Press S
 Changed: the Google Drive sync window is laid out again: your folders on the left, and beside them Add a folder, Change, Pause, Remove, Sync now and History. On the File menu it is now called Google Drive sync.
 Changed: the window for adding or changing a synced folder is in three groups, Folders, How it syncs and Options, and the explanation under Direction is in plain sentences, such as: Add or change a file in the Music folder on this PC, and within a minute the same change is made in the music folder in Google Drive.
 New: Pause and Resume for one synced folder, right in the Google Drive sync window.
+Changed: while a folder syncs, Status names only the file that started most recently, then how many more are moving, instead of a line for each of ten files.
 
 3.0.4
 Changed: the directions for a synced folder are now called mirrors: 2-way mirror, where a change on either side is made on the other; 1-way mirror, PC to Drive, a backup in Drive; and 1-way mirror, Drive to PC, a copy on this PC.

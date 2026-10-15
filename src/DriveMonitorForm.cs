@@ -401,7 +401,9 @@ namespace ExplorerNative
             {
                 if (live.UpPerSecond > 0) lines.Add($"Upload speed: {DriveMonitor.Words(live.UpPerSecond)} a second");
                 if (live.DownPerSecond > 0) lines.Add($"Download speed: {DriveMonitor.Words(live.DownPerSecond)} a second");
-                foreach (var f in live.Files.Take(MovingShown))
+                // Only the file that started most recently (the list is oldest
+                // first), at Conner's request: ten lines of files was clutter.
+                foreach (var f in live.Files.Skip(Math.Max(0, live.Files.Count - MovingShown)))
                     // How far along only for a file big enough to take a while.
                     lines.Add($"{(f.Up ? "Uploading" : "Downloading")} {f.Path.Replace('/', '\\')}" +
                               (f.Size >= 1024 * 1024 ? $", {DriveMonitor.Words(f.Done)} of {DriveMonitor.Words(f.Size)}" : ""));
@@ -411,8 +413,8 @@ namespace ExplorerNative
             return lines;
         }
 
-        /// <summary>Files named one a line in Status; the rest are counted.</summary>
-        internal const int MovingShown = 10;
+        /// <summary>Files named in Status (the newest); the rest are counted.</summary>
+        internal const int MovingShown = 1;
 
         /// <summary>Whether File shows "Google Drive sync configurator": only while Drive is switched on.</summary>
         internal static bool OnFileMenu(Settings settings) => settings.GoogleDriveEnabled;

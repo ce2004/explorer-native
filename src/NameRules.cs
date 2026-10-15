@@ -467,9 +467,10 @@ namespace ExplorerNative
             if (string.IsNullOrEmpty(path)) return path;
             string root;
             try { root = Path.GetPathRoot(path) ?? ""; } catch { root = ""; }
-            var parts = path.Substring(root.Length)
-                .Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries)
-                .Reverse().ToList();
+            // Enumerable.Reverse by name: newer compilers take .Reverse() on an
+            // array as the span one, which reverses in place and returns nothing.
+            var parts = Enumerable.Reverse(path.Substring(root.Length)
+                .Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries)).ToList();
             var drive = root.TrimEnd('\\', '/');
             if (drive.Length == 2 && drive[1] == ':') drive = drive[..1].ToUpperInvariant();
             if (parts.Count == 0) return drive.Length > 0 ? drive : path;
