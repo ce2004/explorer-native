@@ -913,8 +913,6 @@ namespace ExplorerNative
                         // Reached however the pass ended, short of the process
                         // dying: anything it sent has been answered (see Drain).
                         try { File.Delete(RunningMarker(pair.Id)); } catch { }
-                        // The summary's listing is for the first pass only.
-                        try { File.Delete(ListingPath(pair.Id)); } catch { }
                         SyncHistory.Flush(pair.Id);
                         GiveMemoryBack(GC.GetTotalAllocatedBytes() - allocatedBefore);
                     }
@@ -1500,30 +1498,6 @@ namespace ExplorerNative
                 unusable.Clear();
                 clashing.Clear();
                 shadowed.Clear();
-            }
-
-            // A first sync just after its summary: the summary's listing, if
-            // nothing in it has changed since (TakeSavedListingAsync).
-            LastUsedSavedListing = false;
-            if (state.Files.Count == 0)
-            {
-                try
-                {
-                    if (await TakeSavedListingAsync(client, pair, token).ConfigureAwait(false) is { } saved)
-                    {
-                        unusable.Clear();
-                        clashing.Clear();
-                        shadowed.Clear();
-                        unusable.AddRange(saved.Listing.Unusable);
-                        clashing.AddRange(saved.Listing.Clashing);
-                        foreach (var (path, list) in saved.Listing.Shadowed) shadowed[path] = list;
-                        LastUsedSavedListing = true;
-                        Report(pair.Id, s => s with { DriveFound = saved.Listing.Files.Count });
-                        return (saved.Listing.Files, saved.Listing.Folders, saved.Next, true,
-                            SyncSkips.Import(saved.Listing.SkipFiles, saved.Listing.SkipFolders));
-                    }
-                }
-                catch (Exception) when (!token.IsCancellationRequested) { }
             }
 
             // Taken before the listing, so a change made while it runs is in
@@ -3650,83 +3624,6 @@ namespace ExplorerNative
             }
         }
 
-        /// <summary>
-        /// The Drive side as the first-sync summary listed it, kept on disk
-        /// (encrypted, drive-monitor\&lt;id&gt;.listing) so the first sync can
-        /// start from it rather than list a big Drive folder a second time,
-        /// minutes later. Used only if it is less than <see cref="ListingKeptFor"/>
-        /// old, for the same Drive folder and subfolder setting, and only if
-        /// Google's change list since <see cref="Token"/> touches nothing in it;
-        /// otherwise Drive is listed again as before. Used once, then deleted.
-        /// </summary>
-        internal sealed class SavedListing
-        {
-            public string DriveFolderId { get; set; } = "";
-            public bool Subfolders { get; set; }
-            public DateTime TakenUtc { get; set; }
-            public string Token { get; set; } = "";
-            public string? DriveId { get; set; }
-            public Dictionary<string, SyncFile> Files { get; set; } = new();
-            public Dictionary<string, string> Folders { get; set; } = new();
-            public List<string> Unusable { get; set; } = new();
-            public Dictionary<string, List<SyncFile>> Shadowed { get; set; } = new();
-            public List<string> Clashing { get; set; } = new();
-            public List<string> SkipFiles { get; set; } = new();
-            public List<string> SkipFolders { get; set; } = new();
-        }
-
-        /// <summary>How long after the summary its listing may stand in for the first sync's.</summary>
-        internal static TimeSpan ListingKeptFor { get; set; } = TimeSpan.FromMinutes(30);
-
-        private static string ListingPath(string pairId) => Path.Combine(StateDirectory, pairId + ".listing");
-
-        private static void SaveListing(string pairId, SavedListing listing)
-        {
-            try
-            {
-                Directory.CreateDirectory(StateDirectory);
-                ProtectedFile.WriteAllUtf8(ListingPath(pairId), JsonSerializer.SerializeToUtf8Bytes(listing));
-            }
-            catch { }
-        }
-
-        /// <summary>
-        /// The saved listing for a first sync, if it can still be trusted, and
-        /// the feed's newer place to carry on from. Null means list Drive again.
-        /// Deleted either way: one use.
-        /// </summary>
-        private async Task<(SavedListing Listing, string Next)?> TakeSavedListingAsync(DriveClient client, DriveSyncPair pair,
-            CancellationToken token)
-        {
-            var path = ListingPath(pair.Id);
-            if (!File.Exists(path)) return null;
-            SavedListing? listing;
-            try { listing = JsonSerializer.Deserialize<SavedListing>(ProtectedFile.ReadAllUtf8(path)); }
-            catch { listing = null; }
-            finally { try { File.Delete(path); } catch { } }
-
-            if (listing == null || listing.DriveFolderId != pair.DriveFolderId || listing.Subfolders != pair.IncludeSubfolders ||
-                DateTime.UtcNow - listing.TakenUtc > ListingKeptFor || DateTime.UtcNow < listing.TakenUtc) return null;
-
-            // Anything in the listing changed, moved, deleted, or added to one of
-            // its folders since it was made: not trusted, listed again.
-            var (changes, next) = await client.SyncChangesSince(listing.Token, listing.DriveId, token).ConfigureAwait(false);
-            var folderIds = new HashSet<string>(listing.Folders.Values, StringComparer.Ordinal);
-            var ids = new HashSet<string>(folderIds, StringComparer.Ordinal);
-            foreach (var file in listing.Files.Values) if (file.Id != null) ids.Add(file.Id);
-            foreach (var list in listing.Shadowed.Values) foreach (var file in list) if (file.Id != null) ids.Add(file.Id);
-            foreach (var c in changes)
-                if (ids.Contains(c.Id) || (c.Parent != null && folderIds.Contains(c.Parent))) return null;
-
-            listing.Files = new Dictionary<string, SyncFile>(listing.Files, SyncNameComparer.Instance);
-            listing.Folders = new Dictionary<string, string>(listing.Folders, SyncNameComparer.Instance);
-            listing.Shadowed = new Dictionary<string, List<SyncFile>>(listing.Shadowed, SyncNameComparer.Instance);
-            return (listing, next);
-        }
-
-        /// <summary>Whether the last first sync started from the summary's listing. For tests.</summary>
-        internal bool LastUsedSavedListing { get; private set; }
-
         /// <summary>What a pair would do if it started now: see <see cref="PreviewAsync"/>.</summary>
         internal sealed record SyncPreview(
             int OnPc, int OnDrive, int Same, int ToCompare, int Uploads, int Downloads, int BothKept,
@@ -3751,38 +3648,9 @@ namespace ExplorerNative
                 : new Dictionary<string, SyncFile>(SyncNameComparer.Instance);
             progress?.Invoke($"{local.Count:N0} files on the PC. Reading Google Drive");
 
-            // Where Google's change list stands before the listing, so the first
-            // sync can start from this listing instead of making it again
-            // (SavedListing): whatever changes after this is in the feed.
-            string? start = null, driveId = null;
-            try
-            {
-                driveId = await client.DriveOf(pair.DriveFolderId, token).ConfigureAwait(false);
-                start = await client.ChangesStartToken(driveId, token).ConfigureAwait(false);
-            }
-            catch (Exception) when (!token.IsCancellationRequested) { start = null; }
-
-            var unusable = new List<string>();
-            var shadowed = new Dictionary<string, List<SyncFile>>(SyncNameComparer.Instance);
-            var clashing = new List<string>();
-            var remoteSkips = new SyncSkips();
-            var (remote, folders) = await ScanRemoteAsync(client, pair.DriveFolderId, pair.IncludeSubfolders, token,
-                unusable, shadowed, clashing, remoteSkips,
-                found: n => progress?.Invoke($"{local.Count:N0} files on the PC, {n:N0} in Google Drive so far"))
+            var (remote, _) = await ScanRemoteAsync(client, pair.DriveFolderId, pair.IncludeSubfolders, token,
+                skipped: skips, found: n => progress?.Invoke($"{local.Count:N0} files on the PC, {n:N0} in Google Drive so far"))
                 .ConfigureAwait(false);
-            skips.Include(remoteSkips);
-            // A pair big enough to go in batches lists Drive a batch at a time
-            // and never reads a saved listing, so none is kept for it.
-            if (start != null && local.Count <= LargePairFiles && remote.Count <= LargePairFiles)
-            {
-                var (skipFiles, skipFolders) = remoteSkips.Export();
-                SaveListing(pair.Id, new SavedListing
-                {
-                    DriveFolderId = pair.DriveFolderId, Subfolders = pair.IncludeSubfolders, TakenUtc = DateTime.UtcNow,
-                    Token = start, DriveId = driveId, Files = remote, Folders = folders, Unusable = unusable,
-                    Shadowed = shadowed, Clashing = clashing, SkipFiles = skipFiles, SkipFolders = skipFolders,
-                });
-            }
 
             var rules = SyncRules.For(pair);
             var none = new Dictionary<string, SyncBase>(SyncNameComparer.Instance);
@@ -3834,12 +3702,6 @@ namespace ExplorerNative
                 lines.Add($"{Files(p.LeftOut)} will be skipped, because {(p.LeftOut == 1 ? "it is" : "they are")} hidden, " +
                           "system files, or named in a way Windows cannot use.");
             return string.Join(Environment.NewLine, lines);
-        }
-
-        internal static async Task<(long Down, long Up)> NeedsAsync(DriveClient client, DriveSyncPair pair, CancellationToken token)
-        {
-            var preview = await PreviewAsync(client, pair, token).ConfigureAwait(false);
-            return (preview.DownBytes, preview.UpBytes);
         }
 
         // ---------------- scanning ----------------

@@ -316,7 +316,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Downloads many at once against one at a time, a big file streamed,
-        /// the first sync starting from the summary's listing, and a quiet minute
+        /// and a quiet minute
         /// costing one shared look, all on the real account. The files are made
         /// here and sent up by the monitor itself into zz-livesync-new-*, which
         /// goes to the Drive trash at the end (recoverable for 30 days).
@@ -394,15 +394,12 @@ namespace ExplorerNative
                 var fastFolder = Path.Combine(work, "down-at-once");
                 Directory.CreateDirectory(fastFolder);
                 var pair = Down(fastFolder);
-                var look = Stopwatch.StartNew();
-                await DriveMonitor.PreviewAsync(client, pair, token);
-                Console.WriteLine($"\n3. the summary took {look.Elapsed.TotalSeconds:F1}s");
+                Console.WriteLine("\n3. downloading many at once");
                 var monitor = NewMonitor();
                 var clock = Stopwatch.StartNew();
                 await monitor.SyncOneAsync(client, pair, token);
                 var fast = clock.Elapsed;
                 Console.WriteLine($"  {fast.TotalSeconds:F1}s: {DriveMonitorForm.Describe(pair, monitor.StatusOf(pair.Id), DateTime.UtcNow)}");
-                Check("the first sync started from the summary's listing", monitor.LastUsedSavedListing);
                 Check("many at once: every file arrived exactly, the 40MB one too", Same(fastFolder));
                 Console.WriteLine($"    one at a time {slow.TotalSeconds:F1}s, many at once {fast.TotalSeconds:F1}s " +
                                   $"({slow.TotalSeconds / Math.Max(0.1, fast.TotalSeconds):F1} times as fast)");

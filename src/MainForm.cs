@@ -447,6 +447,7 @@ namespace ExplorerNative
                     _activeIndex = 1;
                     ShowActivePane();
                     _pathLabel.Text = PathLabelFor(Active);
+                    UpdateTitle();
                     UpdateStatus();
                 }
 
@@ -896,7 +897,7 @@ namespace ExplorerNative
 
             // Only while Google Drive is switched on (Connect and Disconnect
             // switch it), decided as the menu opens and after Preferences.
-            _syncConfiguratorItem = Item("Google Drive &sync configurator...", Keys.None, OpenSyncConfigurator);
+            _syncConfiguratorItem = Item("Google Drive &sync...", Keys.None, OpenSyncConfigurator);
             _syncConfiguratorItem.Visible = DriveMonitorForm.OnFileMenu(_settings);
             file.DropDownItems.Add(_syncConfiguratorItem);
             file.DropDownOpening += (_, _) => _syncConfiguratorItem.Visible = DriveMonitorForm.OnFileMenu(_settings);
@@ -1807,6 +1808,9 @@ namespace ExplorerNative
                 // Named before focus arrives, so what gets read is this pane's
                 // folder and not whatever it was called last time.
                 UpdatePaneName(Active);
+
+                // The tab you are in leads the title.
+                UpdateTitle();
             }
             finally { ResumeLayout(performLayout: false); }
 
@@ -4845,18 +4849,28 @@ namespace ExplorerNative
             : pane.CurrentPath == DrivesPath ? "Drives"
             : pane.CurrentPath;
 
+        /// <summary>A tab's place for the title: its path backwards (NameRules.Backwards).</summary>
+        private string TitleLabelFor(Pane pane) =>
+            pane.SearchTerm is { } term ? $"Results for \"{term}\" in {NameRules.Backwards(pane.CurrentPath)}"
+            : pane.CurrentPath == DrivesPath ? "Drives"
+            : NameRules.Backwards(pane.CurrentPath);
+
         /// <summary>
-        /// "Explorer Native: Tab 1: D:\Music: Tab 2: C:\Users\Conner\Downloads",
-        /// so Alt+Tab and NVDA+T say where both tabs are. A tab nothing was
-        /// opened in is left out. The list has focus, not the window, so a
-        /// change here is not read out on every folder.
+        /// At Conner's request: "Explorer Native: Tate McRae, Artists, Music at
+        /// D: Tab 2: Downloads, Conner, Users at C". The tab you are in first,
+        /// its folder before its parents, so Alt+Tab and NVDA+T say where you
+        /// are straight after the name; the other tab after, if anything was
+        /// opened in it. The list has focus, not the window, so a change here
+        /// is not read out on every folder.
         /// </summary>
         private void UpdateTitle()
         {
-            var tabs = string.Join(": ", Enumerable.Range(0, _panes.Length)
-                .Where(i => _panes[i] != null && !string.IsNullOrEmpty(_panes[i].CurrentPath))
-                .Select(i => $"Tab {i + 1}: {PathLabelFor(_panes[i])}"));
-            var title = tabs.Length == 0 ? _settings.DisplayTitle : $"{_settings.DisplayTitle}: {tabs}";
+            static bool Open(Pane? p) => p != null && !string.IsNullOrEmpty(p.CurrentPath);
+            int other = 1 - _activeIndex;
+            var title = NameRules.WindowTitle(_settings.DisplayTitle,
+                Open(Active) ? TitleLabelFor(Active) : null,
+                other >= 0 && other < _panes.Length && Open(_panes[other]) ? TitleLabelFor(_panes[other]) : null,
+                other + 1);
             if (Text != title) Text = title;
         }
 

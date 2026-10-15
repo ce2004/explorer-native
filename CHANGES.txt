@@ -1,3 +1,10 @@
+3.0.5
+Changed: the window title now says where you are first, the folder before the folders it is in, such as Explorer Native: Tate McRae, Artists, Music at D. The other tab comes after it.
+Changed: adding a synced folder no longer stops to show a summary first. Press Start syncing, the window closes, you land on the new folder, and its Status shows the first sync as it goes. If your PC or Google Drive runs out of room, it pauses and says so.
+Changed: the Google Drive sync window is laid out again: your folders on the left, and beside them Add a folder, Change, Pause, Remove, Sync now and History. On the File menu it is now called Google Drive sync.
+Changed: the window for adding or changing a synced folder is in three groups, Folders, How it syncs and Options, and the explanation under Direction is in plain sentences, such as: Add or change a file in the Music folder on this PC, and within a minute the same change is made in the music folder in Google Drive.
+New: Pause and Resume for one synced folder, right in the Google Drive sync window.
+
 3.0.4
 Changed: the directions for a synced folder are now called mirrors: 2-way mirror, where a change on either side is made on the other; 1-way mirror, PC to Drive, a backup in Drive; and 1-way mirror, Drive to PC, a copy on this PC.
 New: right under Direction there is an Example box that says what your choice does with your own folders, such as: Put notes.txt in Music on this PC, and within a minute it is in music in Google Drive too. It changes as you change the direction, the folders, or the delete box. Press Tab from Direction to read it.

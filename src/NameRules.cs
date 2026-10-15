@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 
 namespace ExplorerNative
@@ -453,5 +454,39 @@ namespace ExplorerNative
             System.Net.Http.HttpRequestException => "GitHub could not be reached: " + GoogleNet.Reason(ex),
             _ => ex.Message,
         };
+
+        /// <summary>
+        /// A path read from the folder you are in back to the drive, for the
+        /// window title, at Conner's request: "D:\Music\Artists\Tate McRae" is
+        /// "Tate McRae, Artists, Music at D". The folder you are in is heard
+        /// first. Commas, because a screen reader says "backslash" aloud. A
+        /// drive's own top folder is just "D"; a share keeps its name.
+        /// </summary>
+        public static string Backwards(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return path;
+            string root;
+            try { root = Path.GetPathRoot(path) ?? ""; } catch { root = ""; }
+            var parts = path.Substring(root.Length)
+                .Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries)
+                .Reverse().ToList();
+            var drive = root.TrimEnd('\\', '/');
+            if (drive.Length == 2 && drive[1] == ':') drive = drive[..1].ToUpperInvariant();
+            if (parts.Count == 0) return drive.Length > 0 ? drive : path;
+            return drive.Length > 0 ? $"{string.Join(", ", parts)} at {drive}" : string.Join(", ", parts);
+        }
+
+        /// <summary>
+        /// The window title: the program's name, then the tab you are in, then
+        /// the other tab if anything was opened in it. "Explorer Native: Tate
+        /// McRae, Artists, Music at D: Tab 2: Downloads, Conner, Users at C".
+        /// </summary>
+        public static string WindowTitle(string program, string? active, string? other, int otherTab) =>
+            string.Join(": ", new[]
+            {
+                program,
+                string.IsNullOrEmpty(active) ? null : active,
+                string.IsNullOrEmpty(other) ? null : $"Tab {otherTab}: {other}",
+            }.Where(s => s != null));
     }
 }

@@ -682,17 +682,6 @@ namespace ExplorerNative
                 text.Contains("5 files, ") && text.Contains("copied down to this PC") &&
                 text.IndexOfAny(new[] { '*', '#', '`' }) < 0, text);
 
-            var original = new DriveSyncPair();
-            Check("a new pair is a first sync", DrivePairForm.IsFirstSync(original, rig.Pair));
-            var same = rig.Pair.Copy();
-            same.Mode = SyncMode.UploadOnly;
-            Check("changing a pair's options is not", !DrivePairForm.IsFirstSync(rig.Pair, same));
-            var moved = rig.Pair.Copy();
-            moved.LocalFolder = rig.Pair.LocalFolder + "2";
-            Check("changing its PC folder is", DrivePairForm.IsFirstSync(rig.Pair, moved));
-            var other = rig.Pair.Copy();
-            other.DriveFolderId = "another";
-            Check("and so is changing its Drive folder", DrivePairForm.IsFirstSync(rig.Pair, other));
         }
 
         // ---------------- large pairs ----------------

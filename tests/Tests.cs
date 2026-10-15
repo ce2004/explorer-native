@@ -817,7 +817,7 @@ namespace ExplorerNative
             Check("and not while it is off", !DriveMonitorForm.OnFileMenu(new Settings { GoogleDriveEnabled = false }));
             var main = SourceFile("MainForm.cs") ?? "";
             Check("it is on File, rechecked as the menu opens and after Preferences",
-                main.Contains("\"Google Drive &sync configurator...\"") &&
+                main.Contains("\"Google Drive &sync...\"") &&
                 main.Contains("file.DropDownOpening += (_, _) => _syncConfiguratorItem.Visible = DriveMonitorForm.OnFileMenu(_settings);") &&
                 main.Contains("_syncConfiguratorItem.Visible = DriveMonitorForm.OnFileMenu(settings);"));
             Check("and no longer in Preferences",
@@ -1101,16 +1101,29 @@ namespace ExplorerNative
 
             // The direction's example, with the person's own folders.
             var two = DrivePairForm.Example(SyncMode.TwoWay, @"C:\Users\Conner\Music", "My Drive/music", deletes: false);
-            Check("the 2-way example names both folders", two.Contains("Music on this PC") && two.Contains("music in Google Drive"));
-            Check("and says a delete comes back when deletes are not copied", two.Contains("comes back from the other"));
-            Check("and that it goes to the bin when they are",
-                DrivePairForm.Example(SyncMode.TwoWay, @"C:\Music", "My Drive/music", deletes: true).Contains("Recycle Bin or the Drive trash"));
+            Check("the 2-way example names both folders",
+                two.StartsWith("Add or change a file in the Music folder on this PC, and within a minute the same change is made in the music folder in Google Drive."), two);
+            Check("and says a deleted file is copied back when deletes are not copied", two.Contains("it is copied back from the other"));
+            Check("and that it can be had back from the bin when they are",
+                DrivePairForm.Example(SyncMode.TwoWay, @"C:\Music", "My Drive/music", deletes: true).Contains("Recycle Bin or the Google Drive trash"));
             Check("the backup example says nothing comes down",
-                DrivePairForm.Example(SyncMode.UploadOnly, @"C:\Music", "My Drive/music", false).Contains("ever comes down to this PC"));
+                DrivePairForm.Example(SyncMode.UploadOnly, @"C:\Music", "My Drive/music", false).Contains("Nothing is ever copied from Google Drive to this PC"));
             Check("the download example says nothing goes up",
-                DrivePairForm.Example(SyncMode.DownloadOnly, @"C:\Music", "My Drive/music", false).Contains("ever goes up to Drive"));
+                DrivePairForm.Example(SyncMode.DownloadOnly, @"C:\Music", "My Drive/music", false).Contains("Nothing is ever copied from this PC to Google Drive"));
             Check("an example with no folders chosen yet still reads",
-                DrivePairForm.Example(SyncMode.TwoWay, "", "", false).Contains("your folder on this PC"));
+                DrivePairForm.Example(SyncMode.TwoWay, "", "", false).Contains("the folder on this PC"));
+
+            // The window title reads the path backwards, the folder you are in first.
+            Equal("title: a path backwards, ending at the drive",
+                "Tate McRae, Artists, Music at D", NameRules.Backwards(@"D:\Music\Artists\Tate McRae"));
+            Equal("title: a drive's top folder is the letter", "C", NameRules.Backwards(@"C:\"));
+            Equal("title: a share keeps its name", @"Music at \\server\share", NameRules.Backwards(@"\\server\share\Music"));
+            Equal("title: both tabs, the one you are in first",
+                "Explorer Native: Tate McRae, Artists, Music at D: Tab 2: Downloads, Conner, Users at C",
+                NameRules.WindowTitle("Explorer Native", NameRules.Backwards(@"D:\Music\Artists\Tate McRae"),
+                    NameRules.Backwards(@"C:\Users\Conner\Downloads"), 2));
+            Equal("title: one tab only", "Explorer Native: Music at D",
+                NameRules.WindowTitle("Explorer Native", NameRules.Backwards(@"D:\Music"), null, 2));
         }
 
         /// <summary>

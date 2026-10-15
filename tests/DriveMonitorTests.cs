@@ -263,47 +263,6 @@ namespace ExplorerNative
                 Check("streamed download: the second asked from the middle, not from the start",
                     rig.Drive.MediaOffsets.Count >= 2 && rig.Drive.MediaOffsets[^1] > 0, string.Join(", ", rig.Drive.MediaOffsets));
             }
-
-            // The first sync starts from the summary's listing of Drive.
-            using (var rig = new Rig(sandbox, SyncMode.DownloadOnly))
-            {
-                rig.Put("a.txt", "one", T0);
-                rig.Put("sub/b.txt", "two", T0);
-                await DriveMonitor.PreviewAsync(rig.Client, rig.Pair, default);
-                rig.Drive.AddFile("elsewhere.txt", Encoding.UTF8.GetBytes("x"), T0, FakeDrive.Root);
-                await rig.Pass();
-                // A pair big enough to go in batches (every pair, in the suite's
-                // batched rerun) lists Drive a batch at a time and keeps no listing.
-                bool batched = DriveMonitor.LargePairFiles < 2;
-                Check(batched ? "saved listing: a pair that goes in batches keeps none, and lists as before"
-                              : "saved listing: the first sync used the summary's listing",
-                    rig.Monitor.LastUsedSavedListing == !batched);
-                Check("saved listing: a change elsewhere in Drive does not spoil it, and everything came down",
-                    Names(rig.LocalTree()) == "a.txt,sub/b.txt", Names(rig.LocalTree()));
-                Check("saved listing: used once, then gone",
-                    !Directory.EnumerateFiles(DriveMonitor.StateDirectory, rig.Pair.Id + ".listing").Any());
-            }
-            using (var rig = new Rig(sandbox, SyncMode.DownloadOnly))
-            {
-                rig.Put("a.txt", "one", T0);
-                await DriveMonitor.PreviewAsync(rig.Client, rig.Pair, default);
-                rig.Put("sub/new.txt", "added after the summary", T0);
-                await rig.Pass();
-                Check("saved listing: a change inside the folder since the summary means Drive is listed again",
-                    !rig.Monitor.LastUsedSavedListing);
-                Check("saved listing: so the file added after the summary still comes down",
-                    Names(rig.LocalTree()) == "a.txt,sub/new.txt", Names(rig.LocalTree()));
-            }
-            using (var rig = new Rig(sandbox, SyncMode.DownloadOnly))
-            {
-                rig.Put("a.txt", "one", T0);
-                await DriveMonitor.PreviewAsync(rig.Client, rig.Pair, default);
-                var kept = DriveMonitor.ListingKeptFor;
-                DriveMonitor.ListingKeptFor = TimeSpan.Zero;
-                try { await rig.Pass(); }
-                finally { DriveMonitor.ListingKeptFor = kept; }
-                Check("saved listing: an old one is not used", !rig.Monitor.LastUsedSavedListing && Names(rig.LocalTree()) == "a.txt");
-            }
         }
 
         // ---------------- one look at Drive for every quiet pair ----------------
@@ -1302,8 +1261,8 @@ namespace ExplorerNative
             var form = Tests_Source("DriveMonitorForm.cs") ?? "";
             Check("the configurator never reads a pair's state file on the UI thread",
                 form.Contains("StatusIfLoaded(", StringComparison.Ordinal) && !form.Contains(".StatusOf(", StringComparison.Ordinal));
-            Check("the space check walks the PC folder on a worker, and closing the window ends it",
-                form.Contains("await Task.Run(", StringComparison.Ordinal) && form.Contains("_closing.Cancel()", StringComparison.Ordinal));
+            Check("adding a folder saves and closes at once: the window reads neither folder (the first pass does, on its own thread)",
+                !form.Contains("PreviewAsync", StringComparison.Ordinal) && !form.Contains("ScanLocal", StringComparison.Ordinal));
         }
 
         // ---------------- fix 5: a file changed while it went up ----------------

@@ -10,8 +10,9 @@ using System.Windows.Forms;
 namespace ExplorerNative
 {
     /// <summary>
-    /// File, Google Drive sync configurator (while Drive is on): the folder
-    /// pairs, one sentence each, and Add, Edit, Remove, Sync now and Close.
+    /// File, Google Drive sync (while Drive is on): the synced folders, one
+    /// sentence each, the buttons for the chosen one beside them (Add a folder,
+    /// Change, Pause or Resume, Remove, Sync now, History), its Status below.
     /// Changes are saved the moment they are made.
     /// </summary>
     internal sealed class DriveMonitorForm : Form
@@ -20,7 +21,7 @@ namespace ExplorerNative
         private readonly List<DriveSyncPair> _pairs;
         private readonly LineList _list;
         private readonly LineList _details;
-        private readonly Button _edit, _remove, _sync, _history;
+        private readonly Button _edit, _remove, _sync, _history, _pause;
         private readonly DriveMonitor? _monitor;
 
         /// <param name="working">Preferences' own copy of the pairs, kept in step.</param>
@@ -30,61 +31,84 @@ namespace ExplorerNative
             _pairs = working.Select(p => p.Copy()).ToList();
             _monitor = DriveMonitor.Current;
 
-            Text = "Google Drive sync configurator";
+            Text = "Google Drive sync";
             FormBorderStyle = FormBorderStyle.FixedDialog;
             StartPosition = FormStartPosition.CenterParent;
             MinimizeBox = false;
             MaximizeBox = false;
             ShowInTaskbar = false;
-            ClientSize = new Size(640, 470);
+            ClientSize = new Size(720, 500);
             Font = SystemFonts.MessageBoxFont;
 
-            var label = new Label { Text = "&Monitored folders:", AutoSize = true, Location = new Point(12, 12) };
+            var label = new Label { Text = "&Synced folders:", AutoSize = true, Location = new Point(12, 12) };
             _list = new LineList
             {
-                Location = new Point(12, 32),
-                Size = new Size(616, 150),
-                AccessibleName = "Monitored folders",
-                TabIndex = 0,
+                Location = new Point(12, 34),
+                Size = new Size(540, 196),
+                AccessibleName = "Synced folders",
+                TabIndex = 1,
             };
+
+            // What can be done with the folder chosen, one button under another
+            // beside the list; Tab from the list goes through them in this order.
+            var side = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                Location = new Point(566, 34),
+                Size = new Size(142, 236),
+                TabIndex = 2,
+            };
+            Button Side(string text, int gapAbove = 0)
+            {
+                var button = new Button
+                {
+                    Text = text, Size = new Size(142, 32), Margin = new Padding(0, gapAbove, 0, 6),
+                    TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(8, 0, 0, 0),
+                };
+                side.Controls.Add(button);
+                return button;
+            }
+            var add = Side("&Add a folder...");
+            add.Font = new Font(Font, FontStyle.Bold);
+            _edit = Side("&Change...");
+            _pause = Side("&Pause");
+            _remove = Side("&Remove");
+            _sync = Side("Sync &now", gapAbove: 8);
+            _history = Side("&History...");
 
             // The chosen folder's sync, one fact a line, so the arrows go
             // through it instead of one sentence too long to follow.
-            var detailsLabel = new Label { Text = "S&tatus:", AutoSize = true, Location = new Point(12, 190) };
+            var detailsLabel = new Label { Text = "S&tatus:", AutoSize = true, Location = new Point(12, 240) };
             _details = new LineList
             {
-                Location = new Point(12, 210),
-                Size = new Size(616, 140),
+                Location = new Point(12, 262),
+                Size = new Size(540, 180),
                 AccessibleName = "Status",
-                TabIndex = 1,
+                TabIndex = 3,
             };
 
             var info = new Label
             {
-                Text = "Changes here are saved straight away. Folders sync while Explorer Native is running " +
-                       "and Google Drive is connected. Enter edits a folder, Delete removes it; removing " +
-                       "never deletes any files.",
-                Location = new Point(12, 358),
-                Size = new Size(616, 48),
+                Text = "Changes are saved straight away. Removing a folder never deletes any files.",
+                AutoSize = true,
+                Location = new Point(12, 458),
             };
-
-            var add = MakeButton("&Add...", 12, 2);
-            _edit = MakeButton("&Edit...", 112, 3);
-            _remove = MakeButton("&Remove", 212, 4);
-            _sync = MakeButton("&Sync now", 312, 5);
-            _history = MakeButton("&History...", 412, 6);
-            var close = MakeButton("Close", 548, 7);
-            close.DialogResult = DialogResult.Cancel;
-            _history.Click += (_, _) => ShowHistory();
+            var close = new Button
+            {
+                Text = "Close", DialogResult = DialogResult.Cancel,
+                Location = new Point(608, 452), Size = new Size(100, 32), TabIndex = 4,
+            };
 
             add.Click += (_, _) => AddPair();
             _edit.Click += (_, _) => EditPair();
+            _pause.Click += (_, _) => PauseOrResume();
             _remove.Click += (_, _) => RemovePair();
+            _history.Click += (_, _) => ShowHistory();
             _sync.Click += (_, _) =>
             {
-                if (_monitor == null) { Say("The monitor is not running"); return; }
-                _monitor.SyncNow();
-                Say(_pairs.Count == 0 ? "No folders to sync" : "Syncing");
+                if (_monitor == null) { Say("Google Drive sync is not running"); return; }
+                Say(_monitor.SyncAllNow());
             };
 
             _list.KeyDown += (_, e) =>
@@ -93,9 +117,9 @@ namespace ExplorerNative
                 else if (e.KeyCode == Keys.Delete && _pairs.Count > 0) { RemovePair(); e.Handled = e.SuppressKeyPress = true; }
             };
 
-            _list.SelectedIndexChanged += (_, _) => { if (_list.SelectedIndex >= 0) FillDetails(); };
+            _list.SelectedIndexChanged += (_, _) => { if (_list.SelectedIndex >= 0) { FillDetails(); ShowButtons(); } };
 
-            Controls.AddRange(new Control[] { label, _list, detailsLabel, _details, info, add, _edit, _remove, _sync, _history, close });
+            Controls.AddRange(new Control[] { label, _list, side, detailsLabel, _details, info, close });
             CancelButton = close;
 
             Action refresh = () =>
@@ -118,23 +142,44 @@ namespace ExplorerNative
             Fill();
         }
 
-        private Button MakeButton(string text, int x, int tab) =>
-            new() { Text = text, Location = new Point(x, 426), Size = new Size(92, 30), TabIndex = tab };
+        /// <summary>The buttons that need a folder, and Pause or Resume as the chosen folder is.</summary>
+        private void ShowButtons()
+        {
+            int at = _list.SelectedIndex;
+            bool any = at >= 0 && at < _pairs.Count;
+            _edit.Enabled = _remove.Enabled = _history.Enabled = _pause.Enabled = any;
+            var text = any && _pairs[at].Paused ? "Res&ume" : "&Pause";
+            if (_pause.Text != text) _pause.Text = text;
+        }
+
+        /// <summary>Pause or Resume for the chosen folder, saved at once.</summary>
+        private void PauseOrResume()
+        {
+            int at = _list.SelectedIndex;
+            if (at < 0 || at >= _pairs.Count) return;
+            var pair = _pairs[at];
+            pair.Paused = !pair.Paused;
+            Commit();
+            _list.SelectedIndex = at;
+            FillDetails();
+            ShowButtons();
+            Say(pair.Paused
+                ? $"Paused {DriveMonitor.DisplayName(pair)}. Nothing is copied until you resume it."
+                : $"Resumed {DriveMonitor.DisplayName(pair)}. Syncing now.");
+        }
+
 
         /// <param name="all">After a folder is added, edited or removed: every line, the one being read too, since the rows have moved.</param>
         private void Fill(bool all = false)
         {
             var rows = _pairs.Count == 0
-                ? new List<string> { "No folders are monitored yet. Press Add to choose one." }
+                ? new List<string> { "No folders are synced yet. Press Add a folder to choose one." }
                 : _pairs.Select(p => Describe(p, _monitor?.StatusIfLoaded(p.Id), DateTime.UtcNow)).ToList();
 
             _list.SetLines(rows, all);
 
-            bool any = _pairs.Count > 0;
-            _edit.Enabled = any;
-            _remove.Enabled = any;
-            _history.Enabled = any;
             FillDetails();
+            ShowButtons();
         }
 
         /// <summary>What the chosen folder did, file by file, newest first. Read on a worker.</summary>
@@ -312,7 +357,7 @@ namespace ExplorerNative
 
             var lines = new List<string>();
             bool running = status is { Running: true };
-            if (pair.Paused) lines.Add("Paused. To start it, press Enter on it above and untick Paused");
+            if (pair.Paused) lines.Add("Paused. To start it again, press Resume");
             else if (status?.Problem is { } waiting && waiting.StartsWith("waiting", StringComparison.Ordinal))
                 lines.Add(Capital(waiting));
             else if (running)
@@ -385,7 +430,7 @@ namespace ExplorerNative
         private void AddPair()
         {
             var pair = new DriveSyncPair();
-            using var dialog = new DrivePairForm(pair, "Add a monitored folder") { Others = _pairs.ToList() };
+            using var dialog = new DrivePairForm(pair, "Add a synced folder") { Others = _pairs.ToList() };
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
             _pairs.Add(dialog.Pair);
             Commit();
@@ -403,9 +448,10 @@ namespace ExplorerNative
             _list.Focus();
             try
             {
+                var name = DriveMonitor.DisplayName(_pairs[at]);
                 Speech.Speak(_pairs[at].Paused
-                    ? "Saved. It is paused, so nothing is copied until you untick Paused."
-                    : "Saved. Syncing has started. The Status list shows how it is going.");
+                    ? $"Saved {name}, paused. Press Resume to start it."
+                    : $"Saved {name}. Syncing has started; Status shows how it is going.");
             }
             catch { }
         }
@@ -414,7 +460,7 @@ namespace ExplorerNative
         {
             int at = _list.SelectedIndex;
             if (at < 0 || at >= _pairs.Count) return;
-            using var dialog = new DrivePairForm(_pairs[at].Copy(), "Edit a monitored folder")
+            using var dialog = new DrivePairForm(_pairs[at].Copy(), "Change a synced folder")
                 { Others = _pairs.Where((_, i) => i != at).ToList() };
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
             _pairs[at] = dialog.Pair;
@@ -495,75 +541,69 @@ namespace ExplorerNative
     }
 
     /// <summary>
-    /// Add or edit one folder pair. OK looks at both folders first: before a
-    /// first sync it puts what would happen (how many files on each side, how
-    /// many already match, what would be uploaded, downloaded, kept twice or
-    /// deleted) in a box above OK, and OK again starts it; and for any start it checks there is room (the PC's
-    /// disk for what comes down, Drive's quota for what goes up), offering to
-    /// save the pair paused when there is not.
+    /// Add or change one synced folder, in three groups NVDA names as Tab
+    /// enters them: Folders, How it syncs, Options. The main button says what
+    /// it will do: Start syncing for a new folder, Save otherwise. It saves
+    /// and closes at once; the sync window then lands on the folder and its
+    /// Status list shows the first sync as it goes. Running out of room is not
+    /// asked about here: every pass checks before each file and pauses itself,
+    /// saying so in Status.
     /// </summary>
     internal sealed class DrivePairForm : Form
     {
-        private readonly TextBox _name, _local, _drive, _skipTypes;
+        private readonly TextBox _name, _local, _drive, _skipTypes, _example;
         private readonly ComboBox _mode, _maxSize, _clash;
-        private readonly TextBox _example;
         private readonly CheckBox _deletes, _paused, _subfolders;
-        private readonly Label _status, _summaryLabel;
-        private readonly TextBox _summary;
         private readonly Button _ok;
-        private bool _checking;
-
-        /// <summary>The settings the summary was made for: OK again with these starts without looking twice.</summary>
-        private string? _previewedKey;
-
-        /// <summary>Ends the space check: Cancel, Escape and closing the window all do.</summary>
-        private readonly CancellationTokenSource _closing = new();
 
         public DriveSyncPair Pair { get; }
 
         private static readonly (SyncMode Mode, string Text)[] Modes =
         {
-            (SyncMode.TwoWay, "2-way mirror: a change on either side is made on the other"),
-            (SyncMode.UploadOnly, "1-way mirror, PC to Drive: a backup in Drive"),
-            (SyncMode.DownloadOnly, "1-way mirror, Drive to PC: a copy on this PC"),
+            (SyncMode.TwoWay, "2-way mirror: both folders stay the same"),
+            (SyncMode.UploadOnly, "1-way mirror: this PC to Google Drive, a backup"),
+            (SyncMode.DownloadOnly, "1-way mirror: Google Drive to this PC"),
         };
 
         /// <summary>
-        /// What the chosen direction does, as one example with the person's own
-        /// folders: "Put notes.txt in Music on this PC, and within a
-        /// minute it is in music in Google Drive too..." Shown under Direction and
-        /// rewritten whenever the direction, either folder or the delete box changes.
+        /// What the chosen direction means, in plain sentences with the
+        /// person's own folders: "Add or change a file in the Music folder on
+        /// this PC, and within a minute the same change is made in the music
+        /// folder in Google Drive." Rewritten whenever the direction, either
+        /// folder or the delete box changes.
         /// </summary>
         internal static string Example(SyncMode mode, string localFolder, string drivePath, bool deletes)
         {
             var leaf = Path.GetFileName(localFolder.Trim().TrimEnd('\\', '/'));
-            var pc = string.IsNullOrEmpty(leaf) ? "your folder on this PC" : leaf + " on this PC";
+            var pc = string.IsNullOrEmpty(leaf) ? "the folder on this PC" : $"the {leaf} folder on this PC";
             var driveLeaf = drivePath.Trim().TrimEnd('/');
             driveLeaf = driveLeaf[(driveLeaf.LastIndexOf('/') + 1)..];
-            var drive = string.IsNullOrEmpty(driveLeaf) ? "your folder in Google Drive" : driveLeaf + " in Google Drive";
+            var drive = string.IsNullOrEmpty(driveLeaf) ? "the folder in Google Drive" : $"the {driveLeaf} folder in Google Drive";
 
             return mode switch
             {
                 SyncMode.UploadOnly =>
-                    $"Put notes.txt in {pc}, and within a minute it is in {drive} too. " +
-                    "Edit it on the PC, and Drive gets the new version. " +
+                    $"Add or change a file in {pc}, and within a minute it is copied to {drive}. " +
+                    "Nothing is ever copied from Google Drive to this PC. " +
                     (deletes
-                        ? "Delete it on the PC, and Drive's copy goes to the Drive trash. "
-                        : "Delete it on the PC, and Drive keeps its copy, as a backup. ") +
-                    "Nothing added or changed in Drive ever comes down to this PC, and a file deleted in Drive is put back from the PC.",
+                        ? "Delete a file on this PC, and it is moved to the Google Drive trash too. "
+                        : "Delete a file on this PC, and Google Drive keeps its copy. ") +
+                    "If a file is deleted in Google Drive, it is copied back from this PC.",
                 SyncMode.DownloadOnly =>
-                    $"Add notes.txt to {drive}, and within a minute it is in {pc} too. " +
-                    "Edit it in Drive, and the PC gets the new version. " +
+                    $"Add or change a file in {drive}, and within a minute it is copied to {pc}. " +
+                    "Nothing is ever copied from this PC to Google Drive. " +
                     (deletes
-                        ? "Delete it in Drive, and the PC's copy goes to the Recycle Bin. "
-                        : "Delete it in Drive, and the PC keeps its copy. ") +
-                    "Nothing added or changed on this PC ever goes up to Drive, and a file deleted on the PC comes back from Drive.",
+                        ? "Delete a file in Google Drive, and it is moved to the Recycle Bin on this PC too. "
+                        : "Delete a file in Google Drive, and this PC keeps its copy. ") +
+                    "If you delete a file on this PC, it is copied back from Google Drive.",
                 _ =>
-                    $"Put notes.txt in {pc}, and within a minute it is in {drive} too. " +
-                    $"Edit it in Drive, and the change comes down to the PC. " +
+                    $"Add or change a file in {pc}, and within a minute the same change is made in {drive}. " +
+                    "It works the other way too. " +
                     (deletes
-                        ? "Delete it on either side, and the other side's copy goes to the Recycle Bin or the Drive trash."
-                        : "Delete it on one side, and it comes back from the other. To have deletes copied too, tick Also delete on the other side."),
+                        ? "Delete a file on either side, and it is deleted on the other side too. " +
+                          "You can get it back from the Recycle Bin or the Google Drive trash."
+                        : "If you delete a file on one side, it is copied back from the other. " +
+                          "To delete files on both sides, tick Delete on both sides."),
             };
         }
 
@@ -575,20 +615,20 @@ namespace ExplorerNative
         private static readonly (ConflictChoice Choice, string Text)[] Clashes =
         {
             (ConflictChoice.KeepBoth, "Keep both copies"),
-            (ConflictChoice.PcWins, "This PC's copy wins"),
-            (ConflictChoice.DriveWins, "Google Drive's copy wins"),
+            (ConflictChoice.PcWins, "Keep this PC's copy"),
+            (ConflictChoice.DriveWins, "Keep Google Drive's copy"),
         };
 
-        /// <summary>The other monitored folders, which this one may not overlap.</summary>
+        /// <summary>The other synced folders, which this one may not overlap.</summary>
         public List<DriveSyncPair> Others { get; init; } = new();
 
-        /// <summary>The pair as it was when the dialog opened, to tell an edit from a new start.</summary>
-        private readonly DriveSyncPair _original;
+        /// <summary>Whether this is a folder being added, for the main button's words.</summary>
+        private readonly bool _adding;
 
         public DrivePairForm(DriveSyncPair pair, string title)
         {
             Pair = pair;
-            _original = pair.Copy();
+            _adding = string.IsNullOrEmpty(pair.LocalFolder) && string.IsNullOrEmpty(pair.DriveFolderId);
 
             Text = title;
             FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -596,168 +636,176 @@ namespace ExplorerNative
             MinimizeBox = false;
             MaximizeBox = false;
             ShowInTaskbar = false;
-            ClientSize = new Size(600, 500);
             Font = SystemFonts.MessageBoxFont;
+            AutoSize = true;
+            AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            // The page sits 12 in from the top left; this is the same on the right and below.
+            Padding = new Padding(0, 0, 12, 12);
 
-            int y = 12, tab = 0;
-            void Caption(string text) =>
-                Controls.Add(new Label { Text = text, AutoSize = true, Location = new Point(12, y + 4) });
-
-            TextBox Field(string label, string value, int width, bool readOnly = false)
+            // Each group is a table: a label, its field, and a button where there is one.
+            int groupTab = 0;
+            (GroupBox Box, TableLayoutPanel Grid) Group(string text)
             {
-                Caption(label);
+                var grid = new TableLayoutPanel
+                {
+                    ColumnCount = 3,
+                    AutoSize = true,
+                    AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                    Dock = DockStyle.Fill,
+                    Padding = new Padding(6, 4, 6, 6),
+                };
+                grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+                grid.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 380));
+                grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+                var box = new GroupBox
+                {
+                    Text = text,
+                    AutoSize = true,
+                    AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                    Dock = DockStyle.Fill,
+                    TabIndex = groupTab++,
+                    Padding = new Padding(8),
+                    Margin = new Padding(0, 0, 0, 10),
+                };
+                box.Controls.Add(grid);
+                return (box, grid);
+            }
+
+            Label Caption(string text) => new()
+            {
+                Text = text, AutoSize = true, Anchor = AnchorStyles.Left, Margin = new Padding(3, 7, 12, 3),
+            };
+
+            TextBox Field(TableLayoutPanel grid, string label, string value, bool readOnly = false)
+            {
                 var box = new TextBox
                 {
-                    Text = value,
-                    Location = new Point(220, y),
-                    Width = width,
-                    ReadOnly = readOnly,
+                    Text = value, ReadOnly = readOnly, Dock = DockStyle.Fill, Margin = new Padding(3, 4, 3, 4),
                     AccessibleName = label.Replace("&", "").TrimEnd(':'),
-                    TabIndex = tab++,
                 };
-                Controls.Add(box);
+                grid.Controls.Add(Caption(label));
+                grid.Controls.Add(box);
                 return box;
             }
 
-            ComboBox Choice(string label, IEnumerable<string> items, int selected)
+            ComboBox Choice(TableLayoutPanel grid, string label, IEnumerable<string> items, int selected)
             {
-                Caption(label);
                 var combo = new ComboBox
                 {
-                    DropDownStyle = ComboBoxStyle.DropDownList,
-                    Location = new Point(220, y),
-                    Width = 260,
+                    DropDownStyle = ComboBoxStyle.DropDownList, Dock = DockStyle.Fill, Margin = new Padding(3, 4, 3, 4),
                     AccessibleName = label.Replace("&", "").TrimEnd(':'),
-                    TabIndex = tab++,
                 };
                 foreach (var item in items) combo.Items.Add(item);
                 combo.SelectedIndex = Math.Max(0, selected);
-                Controls.Add(combo);
+                grid.Controls.Add(Caption(label));
+                grid.Controls.Add(combo);
                 return combo;
             }
 
-            CheckBox Check(string text, bool value)
+            Button Side(TableLayoutPanel grid, string text)
             {
-                var box = new CheckBox
-                {
-                    Text = text,
-                    Checked = value,
-                    AutoSize = true,
-                    Location = new Point(12, y),
-                    TabIndex = tab++,
-                };
+                var button = new Button { Text = text, AutoSize = true, MinimumSize = new Size(110, 28), Margin = new Padding(6, 3, 3, 3) };
+                grid.Controls.Add(button);
+                return button;
+            }
+
+            void Skip(TableLayoutPanel grid) => grid.Controls.Add(new Label { AutoSize = true });
+
+            CheckBox Tick(TableLayoutPanel grid, string text, bool value)
+            {
+                var box = new CheckBox { Text = text, Checked = value, AutoSize = true, Margin = new Padding(3, 6, 3, 3) };
                 box.AccessibleName = text.Replace("&", "");
-                Controls.Add(box);
+                grid.Controls.Add(box);
+                grid.SetColumnSpan(box, 3);
                 return box;
             }
 
-            _name = Field("&Name:", pair.Name, 260);
-            y += 34;
-            _local = Field("Folder on this &PC:", pair.LocalFolder, 250);
-            var browseLocal = new Button { Text = "&Browse...", Location = new Point(480, y - 1), Size = new Size(108, 27), TabIndex = tab++ };
-            Controls.Add(browseLocal);
-            y += 34;
-            _drive = Field("Folder in &Google Drive:", pair.DriveFolderPath, 250, readOnly: true);
-            var browseDrive = new Button { Text = "C&hoose...", Location = new Point(480, y - 1), Size = new Size(108, 27), TabIndex = tab++ };
-            Controls.Add(browseDrive);
-            y += 34;
+            // ---- Folders ----
+            var (folders, f) = Group("Folders");
+            _name = Field(f, "&Name:", pair.Name);
+            Skip(f);
+            _local = Field(f, "Folder on this &PC:", pair.LocalFolder);
+            var browseLocal = Side(f, "&Browse...");
+            _drive = Field(f, "Folder in &Google Drive:", pair.DriveFolderPath, readOnly: true);
+            var browseDrive = Side(f, "C&hoose...");
 
-            _mode = Choice("&Direction:", Modes.Select(m => m.Text), Array.FindIndex(Modes, m => m.Mode == pair.Mode));
-            _mode.Width = 368;
-            y += 34;
-
-            // What the direction does, with the person's own folders, next in
-            // the tab order: arrow through Direction, Tab, and read the example.
-            Controls.Add(new Label { Text = "E&xample:", AutoSize = true, Location = new Point(12, y) });
+            // ---- How it syncs ----
+            var (how, h) = Group("How it syncs");
+            _mode = Choice(h, "&Direction:", Modes.Select(m => m.Text), Array.FindIndex(Modes, m => m.Mode == pair.Mode));
+            Skip(h);
+            h.Controls.Add(Caption("&What this means:"));
             _example = new TextBox
             {
-                Multiline = true,
-                ReadOnly = true,
-                ScrollBars = ScrollBars.Vertical,
-                Location = new Point(12, y + 22),
-                Size = new Size(576, 84),
-                AccessibleName = "Example",
-                TabIndex = tab++,
+                Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, Height = 96,
+                Dock = DockStyle.Fill, Margin = new Padding(3, 4, 3, 4), AccessibleName = "What this means",
             };
-            Controls.Add(_example);
-            y += 116;
-            _clash = Choice("Wh&en a file changed in both places:", Clashes.Select(c => c.Text),
+            h.Controls.Add(_example);
+            h.SetColumnSpan(_example, 2);
+            _deletes = Tick(h, "Delete on b&oth sides: a file I delete is deleted on the other side too", pair.CopyDeletes);
+            _clash = Choice(h, "If a file &changed in both places:", Clashes.Select(c => c.Text),
                 Array.FindIndex(Clashes, c => c.Choice == pair.WhenBothChanged));
-            y += 34;
-            _maxSize = Choice("Skip files &larger than:", Sizes.Select(s => s.Text),
-                Array.FindIndex(Sizes, s => s.Megabytes == pair.MaxFileMegabytes));
-            y += 34;
-            _skipTypes = Field("Skip file &types:", pair.SkipExtensions, 260);
-            _skipTypes.AccessibleDescription = "File extensions never synced, separated by spaces, such as .iso .tmp";
-            y += 36;
+            Skip(h);
 
-            _subfolders = Check("Include &subfolders", pair.IncludeSubfolders);
-            y += 28;
-            _deletes = Check("Als&o delete on the other side (to the Recycle Bin or the Drive trash)", pair.CopyDeletes);
-            y += 28;
-            _paused = Check("Pa&used", pair.Paused);
-            y += 32;
+            // ---- Options ----
+            var (options, o) = Group("Options");
+            _subfolders = Tick(o, "Include &subfolders", pair.IncludeSubfolders);
+            _maxSize = Choice(o, "Skip files &larger than:", Sizes.Select(s => s.Text),
+                Array.FindIndex(Sizes, s => s.Megabytes == pair.MaxFileMegabytes));
+            Skip(o);
+            _skipTypes = Field(o, "Skip file &types:", pair.SkipExtensions);
+            _skipTypes.AccessibleDescription = "File endings never synced, separated by spaces, such as .iso .tmp";
+            Skip(o);
+            _paused = Tick(o, "Pa&use this folder for now", pair.Paused);
+
+            // ---- the buttons ----
+            _ok = new Button { AutoSize = true, MinimumSize = new Size(120, 32), Margin = new Padding(6, 2, 0, 0) };
+            var cancel = new Button
+            {
+                Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true, MinimumSize = new Size(96, 32),
+                Margin = new Padding(6, 2, 0, 0),
+            };
+            var buttons = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.RightToLeft, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Anchor = AnchorStyles.Right, Margin = new Padding(0),
+            };
+            // Laid out right to left, so Cancel sits at the far right; Tab goes
+            // to the main button first all the same.
+            buttons.Controls.Add(cancel);
+            buttons.Controls.Add(_ok);
+            _ok.TabIndex = 0;
+            cancel.TabIndex = 1;
+
+            // One column: the three groups, then the buttons at the right.
+            var page = new TableLayoutPanel
+            {
+                ColumnCount = 1, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Location = new Point(12, 12), Margin = new Padding(0),
+            };
+            page.Controls.Add(folders);
+            page.Controls.Add(how);
+            page.Controls.Add(options);
+            page.Controls.Add(buttons);
+            Controls.Add(page);
+            AcceptButton = _ok;
+            CancelButton = cancel;
 
             void ShowExample() => _example.Text =
                 Example(Modes[Math.Max(0, _mode.SelectedIndex)].Mode, _local.Text, _drive.Text, _deletes.Checked);
+            void ShowOk() => _ok.Text = _adding && !_paused.Checked ? "&Start syncing" : "&Save";
             ShowExample();
+            ShowOk();
             _mode.SelectedIndexChanged += (_, _) => ShowExample();
             _deletes.CheckedChanged += (_, _) => ShowExample();
             _local.TextChanged += (_, _) => ShowExample();
             _drive.TextChanged += (_, _) => ShowExample();
-
-            // Before a first sync, what it will do: a read-only box in the tab
-            // order, so it can be read line by line and gone back to. It used to
-            // be a Yes, No, Cancel message box that vanished once answered.
-            _summaryLabel = new Label { Text = "&What the first sync will do:", AutoSize = true, Location = new Point(12, y), Visible = false };
-            _summary = new TextBox
-            {
-                Multiline = true,
-                ReadOnly = true,
-                ScrollBars = ScrollBars.Vertical,
-                Location = new Point(12, y + 20),
-                Size = new Size(576, 120),
-                AccessibleName = "What the first sync will do",
-                TabIndex = tab++,
-                Visible = false,
-            };
-            Controls.Add(_summaryLabel);
-            Controls.Add(_summary);
-            y += 148;
-
-            _status = new Label { AutoSize = false, Location = new Point(12, y), Size = new Size(576, 40) };
-            Controls.Add(_status);
-            y += 44;
-
-            _ok = new Button { Text = "OK", Location = new Point(408, y), Size = new Size(84, 28), TabIndex = tab++ };
-            var cancel = new Button
-            {
-                Text = "Cancel",
-                DialogResult = DialogResult.Cancel,
-                Location = new Point(504, y),
-                Size = new Size(84, 28),
-                TabIndex = tab++,
-            };
-            Controls.Add(_ok);
-            Controls.Add(cancel);
-            ClientSize = new Size(600, y + 40);
-            AcceptButton = _ok;
-            CancelButton = cancel;
-
-            // Closing while Drive is being totalled up ends the check, and
-            // nothing is saved: OK's handler sees the window closing and stops.
-            // It used to refuse to close until a listing of a big Drive folder
-            // finished, which could be minutes.
-            FormClosing += (_, _) =>
-            {
-                if (DialogResult != DialogResult.OK) _closing.Cancel();
-            };
+            _paused.CheckedChanged += (_, _) => ShowOk();
 
             browseLocal.Click += (_, _) =>
             {
                 using var dialog = new FolderBrowserDialog
                 {
-                    Description = "Folder on this PC to monitor",
+                    Description = "Folder on this PC to sync",
                     UseDescriptionForTitle = true,
                     SelectedPath = Directory.Exists(_local.Text) ? _local.Text : "",
                 };
@@ -789,218 +837,62 @@ namespace ExplorerNative
                 _drive.Focus();
             };
 
-            _ok.Click += async (_, _) =>
+            _ok.Click += (_, _) =>
             {
-              // An async void handler: nothing may escape it, or the application ends.
-              try
-              {
-                if (_checking) return;
-
-                var problem = DriveMonitor.Refusal(_local.Text.Trim());
-                if (problem != null)
+                try
                 {
-                    MessageBox.Show(this, problem, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    _local.Focus();
-                    return;
-                }
-                if (string.IsNullOrEmpty(Pair.DriveFolderId))
-                {
-                    MessageBox.Show(this, "Choose a folder in Google Drive.", Text,
-                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    browseDrive.Focus();
-                    return;
-                }
-
-                var edited = Pair.Copy();
-                edited.LocalFolder = Path.GetFullPath(_local.Text.Trim()).TrimEnd(Path.DirectorySeparatorChar);
-                edited.Name = string.IsNullOrWhiteSpace(_name.Text) ? Path.GetFileName(edited.LocalFolder) : _name.Text.Trim();
-                edited.Mode = Modes[Math.Max(0, _mode.SelectedIndex)].Mode;
-                edited.WhenBothChanged = Clashes[Math.Max(0, _clash.SelectedIndex)].Choice;
-                edited.MaxFileMegabytes = Sizes[Math.Max(0, _maxSize.SelectedIndex)].Megabytes;
-                edited.SkipExtensions = _skipTypes.Text.Trim();
-                edited.IncludeSubfolders = _subfolders.Checked;
-                edited.CopyDeletes = _deletes.Checked;
-                edited.Paused = _paused.Checked;
-
-                // Two pairs over the same files would each upload them.
-                if (DriveMonitor.Overlap(edited, Others) is { } overlap)
-                {
-                    MessageBox.Show(this, overlap, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-                    _local.Focus();
-                    return;
-                }
-
-                // Never start a sync that cannot finish: what would come down
-                // against the PC's free space, what would go up against Drive's.
-                // And never start a first sync (a new pair, or new folders) before
-                // the person has seen what it would do and said yes.
-                // The second OK on a summary already read starts it: the look is
-                // not made again (on a big Drive it can take minutes), unless a
-                // setting it depended on was changed since.
-                bool seen = _previewedKey != null && _previewedKey == PlanKey(edited);
-                if (!edited.Paused && !seen)
-                {
-                    bool first = IsFirstSync(_original, edited);
-                    var (shortage, preview, failure) = await CheckAsync(edited);
-                    if (IsDisposed || _closing.IsCancellationRequested) return;
-
-                    if (first && preview == null)
+                    var problem = DriveMonitor.Refusal(_local.Text.Trim());
+                    if (problem != null)
                     {
-                        var answer = MessageBox.Show(this,
-                            "Explorer Native could not look at both folders first" +
-                            (failure != null ? ": " + failure : ".") + "\n\n" +
-                            "A first sync never starts without that look. Save this folder paused, and sync it later?",
-                            Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-                        if (answer != DialogResult.Yes) { _local.Focus(); return; }
-                        edited.Paused = true;
-                    }
-                    else if (shortage != null)
-                    {
-                        var answer = MessageBox.Show(this,
-                            shortage + "\n\nSave this folder paused, and sync it later when there is room?",
-                            Text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
-                        if (answer != DialogResult.Yes)
-                        {
-                            _status.Text = shortage;
-                            _local.Focus();
-                            return;
-                        }
-                        edited.Paused = true;
-                    }
-                    else if (first && preview != null)
-                    {
-                        ShowSummary(preview);
-                        _previewedKey = PlanKey(edited);
+                        MessageBox.Show(this, problem, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        _local.Focus();
                         return;
                     }
-                }
+                    if (string.IsNullOrEmpty(Pair.DriveFolderId))
+                    {
+                        MessageBox.Show(this, "Choose a folder in Google Drive.", Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        browseDrive.Focus();
+                        return;
+                    }
 
-                Pair.LocalFolder = edited.LocalFolder;
-                Pair.Name = edited.Name;
-                Pair.Mode = edited.Mode;
-                Pair.WhenBothChanged = edited.WhenBothChanged;
-                Pair.MaxFileMegabytes = edited.MaxFileMegabytes;
-                Pair.SkipExtensions = edited.SkipExtensions;
-                Pair.IncludeSubfolders = edited.IncludeSubfolders;
-                Pair.CopyDeletes = edited.CopyDeletes;
-                Pair.Paused = edited.Paused;
-                DialogResult = DialogResult.OK;
-                Close();
-              }
-              catch (Exception ex)
-              {
-                if (IsDisposed) return;
-                _status.Text = "The folder pair could not be saved: " + ex.Message;
-                MessageBox.Show(this, _status.Text, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
-              }
+                    var edited = Pair.Copy();
+                    edited.LocalFolder = Path.GetFullPath(_local.Text.Trim()).TrimEnd(Path.DirectorySeparatorChar);
+                    edited.Name = string.IsNullOrWhiteSpace(_name.Text) ? Path.GetFileName(edited.LocalFolder) : _name.Text.Trim();
+                    edited.Mode = Modes[Math.Max(0, _mode.SelectedIndex)].Mode;
+                    edited.WhenBothChanged = Clashes[Math.Max(0, _clash.SelectedIndex)].Choice;
+                    edited.MaxFileMegabytes = Sizes[Math.Max(0, _maxSize.SelectedIndex)].Megabytes;
+                    edited.SkipExtensions = _skipTypes.Text.Trim();
+                    edited.IncludeSubfolders = _subfolders.Checked;
+                    edited.CopyDeletes = _deletes.Checked;
+                    edited.Paused = _paused.Checked;
+
+                    // Two synced folders over the same files would each upload them.
+                    if (DriveMonitor.Overlap(edited, Others) is { } overlap)
+                    {
+                        MessageBox.Show(this, overlap, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        _local.Focus();
+                        return;
+                    }
+
+                    Pair.LocalFolder = edited.LocalFolder;
+                    Pair.Name = edited.Name;
+                    Pair.Mode = edited.Mode;
+                    Pair.WhenBothChanged = edited.WhenBothChanged;
+                    Pair.MaxFileMegabytes = edited.MaxFileMegabytes;
+                    Pair.SkipExtensions = edited.SkipExtensions;
+                    Pair.IncludeSubfolders = edited.IncludeSubfolders;
+                    Pair.CopyDeletes = edited.CopyDeletes;
+                    Pair.Paused = edited.Paused;
+                    DialogResult = DialogResult.OK;
+                    Close();
+                }
+                catch (Exception ex)
+                {
+                    if (IsDisposed) return;
+                    MessageBox.Show(this, "The folder could not be saved: " + ex.Message, Text,
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
             };
-        }
-
-        /// <summary>Puts what the first sync will do in the box above OK, and moves there to read it.</summary>
-        private void ShowSummary(DriveMonitor.SyncPreview preview)
-        {
-            _summary.Text = DriveMonitor.Describe(preview) + Environment.NewLine + Environment.NewLine +
-                            "Nothing has been copied yet. Press OK to start syncing. " +
-                            "To save it without starting, tick Paused, then press OK.";
-            _summaryLabel.Visible = true;
-            _summary.Visible = true;
-            _status.Text = "Read what the first sync will do, then press OK to start it.";
-            _summary.Focus();
-            _summary.Select(0, 0);
-        }
-
-        /// <summary>The settings a summary depends on: change one and OK looks again.</summary>
-        private static string PlanKey(DriveSyncPair p) =>
-            string.Join("|", p.LocalFolder, p.DriveFolderId, p.Mode, p.WhenBothChanged, p.MaxFileMegabytes,
-                p.SkipExtensions, p.IncludeSubfolders, p.CopyDeletes);
-
-        /// <summary>
-        /// Whether saving <paramref name="edited"/> starts a sync from nothing:
-        /// a new pair, or an edit that changes either folder, which throws the
-        /// records away (see DriveMonitor.StateFits).
-        /// </summary>
-        internal static bool IsFirstSync(DriveSyncPair original, DriveSyncPair edited) =>
-            string.IsNullOrEmpty(original.LocalFolder) || string.IsNullOrEmpty(original.DriveFolderId) ||
-            !string.Equals(original.LocalFolder.TrimEnd('\\'), edited.LocalFolder.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(original.DriveFolderId, edited.DriveFolderId, StringComparison.Ordinal);
-
-        /// <summary>
-        /// Lists both sides through the API and plans the pair, reading and
-        /// writing nothing else: what it would do (the preview), and, plainly,
-        /// whether what it would copy does not fit. The preview is null when
-        /// it could not be made, with the reason.
-        /// </summary>
-        private async Task<(string? Shortage, DriveMonitor.SyncPreview? Preview, string? Failure)> CheckAsync(DriveSyncPair pair)
-        {
-            var client = DriveMonitorClient();
-            if (client == null) return (null, null, "Google Drive is not connected");
-
-            _checking = true;
-            _ok.Enabled = false;
-            UseWaitCursor = true;
-            _status.Text = "Looking at both folders before anything is copied…";
-            Say(_status.Text);
-            var progress = new Progress<string>(line => { if (!IsDisposed) _status.Text = line; });
-            try
-            {
-                // On a worker: the PC folder walk and the free-space question
-                // are file system calls, and the PC folder can be a big library
-                // or a share that has gone away.
-                var token = _closing.Token;
-                var (preview, free, total, letter) = await Task.Run(async () =>
-                {
-                    var p = await DriveMonitor.PreviewAsync(client, pair, token, ((IProgress<string>)progress).Report)
-                        .ConfigureAwait(false);
-                    var (f, t, l) = p.DownBytes > 0 ? DriveMonitor.DiskOf(pair.LocalFolder) : (0L, 0L, "");
-                    return (p, f, t, l);
-                }, token);
-                if (IsDisposed || token.IsCancellationRequested) return (null, null, null);
-
-                // The same numbers, in one line under the fields.
-                _status.Text = DriveMonitor.Describe(preview).Replace(Environment.NewLine, " ");
-
-                if (preview.DownBytes > 0 && total > 0 && !SyncSpace.Fits(preview.DownBytes, free, total))
-                    return ($"This needs {DriveMonitor.Words(preview.DownBytes)} and {letter} has " +
-                            $"{DriveMonitor.Words(free)} free, keeping {DriveMonitor.Words(SyncSpace.Margin(total))} spare.",
-                        preview, null);
-
-                var drive = DriveMonitor.Current?.Drive;
-                if (preview.UpBytes > 0 && drive is { QuotaLimit: > 0 })
-                {
-                    long room = drive.QuotaLimit - drive.QuotaUsed;
-                    if (preview.UpBytes > room)
-                        return ($"This needs {DriveMonitor.Words(preview.UpBytes)} in Google Drive, which has " +
-                                $"{DriveMonitor.Words(Math.Max(0, room))} free.", preview, null);
-                }
-                return (null, preview, null);
-            }
-            catch (OperationCanceledException) when (_closing.IsCancellationRequested)
-            {
-                return (null, null, null);
-            }
-            catch (Exception ex)
-            {
-                // Not knowing the space is not a reason to refuse an edit: every
-                // pass checks again before each file and pauses itself if it runs
-                // out of room. A first sync is another matter: see the caller.
-                var reason = GoogleNet.Reason(ex);
-                if (!IsDisposed) _status.Text = "Could not look at both folders: " + reason;
-                return (null, null, reason);
-            }
-            finally
-            {
-                _checking = false;
-                if (!IsDisposed)
-                {
-                    _ok.Enabled = true;
-                    UseWaitCursor = false;
-                }
-            }
-        }
-
-        private static void Say(string text)
-        {
-            try { Speech.Speak(text, interrupt: true); } catch { }
         }
 
         /// <summary>The live Drive client, through the tray's drive. Null when Drive is not connected.</summary>

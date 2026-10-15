@@ -214,18 +214,6 @@ namespace ExplorerNative
         /// <summary>How many files and folders are left out.</summary>
         public int Count => _files.Count + _folders.Count;
 
-        /// <summary>What is left out, as saved with a listing kept for later (see DriveMonitor.SavedListing).</summary>
-        internal (List<string> Files, List<string> Folders) Export() => (_files.ToList(), _folders.ToList());
-
-        /// <summary>The other half of <see cref="Export"/>: the entries exactly as they were.</summary>
-        internal static SyncSkips Import(IEnumerable<string> files, IEnumerable<string> folders)
-        {
-            var skips = new SyncSkips();
-            skips._files.UnionWith(files);
-            skips._folders.AddRange(folders);
-            return skips;
-        }
-
         /// <summary>Everything the other side's scan left out as well.</summary>
         public void Include(SyncSkips other)
         {
