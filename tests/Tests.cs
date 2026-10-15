@@ -125,7 +125,7 @@ namespace ExplorerNative
             Console.WriteLine("Explorer Native self-test\n");
 
             // The live sync run is hours of real uploads, with no checks between.
-            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") is not ("livesync" or "syncmemory")) StartWatchdog();
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") is not ("livesync" or "syncmemory" or "playprobe")) StartWatchdog();
 
             // Just the window timings, for measuring one change at a time.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "speed")
@@ -193,6 +193,15 @@ namespace ExplorerNative
                 Console.WriteLine($"\n{_passed} passed, {_failed} failed");
                 return _failed == 0 ? 0 : 1;
             }
+
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "playprobe")
+                return PlayProbe.Run();
+
+            // The ALAC and TTA decoders against ffmpeg's output (see CodecProbe).
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "alacprobe")
+                return CodecProbe.RunAlac();
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "ttaprobe")
+                return CodecProbe.RunTta();
 
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "drivecache")
             {
@@ -1112,6 +1121,45 @@ namespace ExplorerNative
                 DrivePairForm.Example(SyncMode.DownloadOnly, @"C:\Music", "My Drive/music", false).Contains("Nothing is ever copied from this PC to Google Drive"));
             Check("an example with no folders chosen yet still reads",
                 DrivePairForm.Example(SyncMode.TwoWay, "", "", false).Contains("the folder on this PC"));
+
+            // WAVs Windows will not decode, decoded by WavDecoder: written here,
+            // a 440Hz tone, and read back sample for sample.
+            foreach (var (bits, tag) in new[] { (64, 3), (24, 1) })
+            {
+                var wavPath = Path.Combine(Path.GetTempPath(), $"en-wav-{bits}-{Guid.NewGuid():N}.wav");
+                try
+                {
+                    const int rate = 48000, count = rate;
+                    int bytesPer = bits / 8;
+                    using (var w = new BinaryWriter(File.Create(wavPath)))
+                    {
+                        w.Write("RIFF"u8); w.Write(36 + count * bytesPer); w.Write("WAVE"u8);
+                        w.Write("fmt "u8); w.Write(16); w.Write((short)tag); w.Write((short)1); w.Write(rate);
+                        w.Write(rate * bytesPer); w.Write((short)bytesPer); w.Write((short)bits);
+                        w.Write("data"u8); w.Write(count * bytesPer);
+                        for (int i = 0; i < count; i++)
+                        {
+                            double v = 0.5 * Math.Sin(2 * Math.PI * 440 * i / rate);
+                            if (bits == 64) w.Write(v);
+                            else { int s = (int)(v * 8388607); w.Write((byte)s); w.Write((byte)(s >> 8)); w.Write((byte)(s >> 16)); }
+                        }
+                    }
+                    using var decoder = new WavDecoder();
+                    var buffer = new float[count];
+                    bool opened = decoder.Open(wavPath, null);
+                    int got = opened ? decoder.Read(buffer, count) : 0;
+                    double worst = 0;
+                    for (int i = 0; i < got; i++) worst = Math.Max(worst, Math.Abs(buffer[i] - 0.5 * Math.Sin(2 * Math.PI * 440 * i / rate)));
+                    Check($"a {bits}-bit WAV Windows will not take is decoded here, sample for sample (worst error {worst:G2})",
+                        opened && got == count && worst < 1e-5, decoder.Diagnostic);
+                    decoder.SeekTo(0.5);
+                    var after = new float[1];
+                    decoder.Read(after, 1);
+                    Check($"and a {bits}-bit WAV seeks to the sample",
+                        Math.Abs(after[0] - 0.5 * Math.Sin(2 * Math.PI * 440 * (rate / 2) / rate)) < 1e-5);
+                }
+                finally { try { File.Delete(wavPath); } catch { } }
+            }
 
             // The window title reads the path backwards, the folder you are in first.
             Equal("title: a path backwards, ending at the drive",
@@ -2905,8 +2953,11 @@ namespace ExplorerNative
             // nothing, and a missing Speech page is the setting nobody can find.
             Check("there is a Speech category", categoryNames.Contains("Speech"),
                 string.Join(", ", categoryNames));
-            Check("and no Notifications category any more",
-                !categoryNames.Any(n => n.Contains("Notification", StringComparison.OrdinalIgnoreCase)),
+            // The old "Notifications" page became Speech; "Windows notifications"
+            // (3.0.6) is a different thing, the pop-ups, and says so in its name.
+            Check("and no plain Notifications category any more, only Windows notifications",
+                !categoryNames.Any(n => n.Equals("Notifications", StringComparison.OrdinalIgnoreCase)) &&
+                categoryNames.Contains("Windows notifications"),
                 string.Join(", ", categoryNames));
             Check($"every category has a page ({categories})", categories >= 7);
 

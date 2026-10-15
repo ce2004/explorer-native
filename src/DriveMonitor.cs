@@ -324,7 +324,7 @@ namespace ExplorerNative
             };
             _drive.ConnectionChanged += _onConnection;
 
-            _ = Task.Run(LoopAsync);
+            _loop = Task.Run(LoopAsync);
         }
 
         private int GenerationOf(string pairId)
@@ -3579,7 +3579,11 @@ namespace ExplorerNative
         public static string DisplayName(DriveSyncPair pair) =>
             !string.IsNullOrWhiteSpace(pair.Name) ? pair.Name.Trim()
             : Path.GetFileName(pair.LocalFolder.TrimEnd(Path.DirectorySeparatorChar)) is { Length: > 0 } leaf ? leaf
-            : pair.LocalFolder;
+            : RootName(pair.LocalFolder);
+
+        /// <summary>A whole drive's name, as a synced folder is called by default: "D drive".</summary>
+        internal static string RootName(string folder) =>
+            folder.Length >= 2 && folder[1] == ':' ? $"{char.ToUpperInvariant(folder[0])} drive" : folder;
 
         /// <summary>
         /// Why a PC folder cannot be monitored, or null when it can. The Drive
@@ -3591,10 +3595,18 @@ namespace ExplorerNative
             if (string.IsNullOrWhiteSpace(folder)) return "No folder on this PC was chosen.";
 
             string full;
-            try { full = Path.GetFullPath(folder).TrimEnd(Path.DirectorySeparatorChar); }
+            try { full = FolderPathOf(folder); }
             catch { return "That is not a folder path."; }
 
             if (!Directory.Exists(full)) return $"{full} does not exist.";
+
+            // A whole drive may be synced (an external drive, all of D), but not
+            // the one Windows is on: Program Files, Windows and every user's
+            // settings would go up to Google Drive.
+            if (IsDriveRoot(full) && string.Equals(Path.GetPathRoot(Environment.SystemDirectory), full,
+                    StringComparison.OrdinalIgnoreCase))
+                return $"{full} is the drive Windows is on, so all of it cannot be synced. Choose a folder on it, or another drive.";
+            full = full.TrimEnd(Path.DirectorySeparatorChar);
 
             var appData = Path.GetFullPath(Settings.AppDataDir).TrimEnd(Path.DirectorySeparatorChar);
             if (full.Equals(appData, StringComparison.OrdinalIgnoreCase) ||
@@ -3607,6 +3619,26 @@ namespace ExplorerNative
                 return "That folder is on the Google Drive letter. Choose a folder on this PC.";
 
             return null;
+        }
+
+        /// <summary>
+        /// A PC folder as a synced folder keeps it: the full path with no
+        /// separator at the end, except a whole drive, which keeps its own
+        /// ("D:\"). Trimmed, "D:" means the current folder on D, not its top.
+        /// </summary>
+        internal static string FolderPathOf(string folder)
+        {
+            var full = Path.GetFullPath(folder.Trim());
+            if (IsDriveRoot(full)) return Path.GetPathRoot(full)!.TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return full.TrimEnd(Path.DirectorySeparatorChar);
+        }
+
+        /// <summary>Whether a full path is a drive's (or a share's) own top folder.</summary>
+        internal static bool IsDriveRoot(string full)
+        {
+            var root = Path.GetPathRoot(full);
+            return !string.IsNullOrEmpty(root) &&
+                   full.TrimEnd(Path.DirectorySeparatorChar).Length <= root.TrimEnd(Path.DirectorySeparatorChar).Length;
         }
 
         /// <summary>Free and total bytes of the volume a folder is on, and its letter, such as "C:".</summary>
@@ -5356,9 +5388,21 @@ namespace ExplorerNative
             catch { }
         }
 
+        /// <summary>The loop that runs the passes, waited for (briefly) on the way out.</summary>
+        private readonly Task _loop;
+
+        /// <summary>
+        /// How long closing (Quit, or an update standing this copy down) waits
+        /// for a pass under way to stop at its next file and save where it got
+        /// to. Not waited for, the process could end between saves: the next
+        /// start then took it for a crash and waited 30 seconds before going on.
+        /// </summary>
+        internal static TimeSpan StopWait { get; set; } = TimeSpan.FromSeconds(5);
+
         public void Dispose()
         {
             try { _stop.Cancel(); } catch { }
+            CutWait();
             try { _drive.ConnectionChanged -= _onConnection; } catch { }
             lock (_gate)
             {
@@ -5367,6 +5411,7 @@ namespace ExplorerNative
                 _debounce?.Dispose();
                 _debounce = null;
             }
+            try { _loop.Wait(StopWait); } catch { }
             if (Current == this) Current = null;
         }
     }

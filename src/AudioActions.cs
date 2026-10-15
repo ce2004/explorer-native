@@ -531,8 +531,10 @@ namespace ExplorerNative
             // being asked.
             if (OggDecoder.Handles(extension)) return "";
 
-            // The same for AIFF, which is read here as the WAV it amounts to.
+            // The same for AIFF, which is read here as the WAV it amounts to,
+            // and for everything else this player decodes or rewraps itself.
             if (AudioDecoder.IsAiffName(extension)) return "";
+            if (Array.IndexOf(AlwaysPlayed.Split(';'), extension.ToLowerInvariant()) >= 0) return "";
 
             if (WindowsHasHandlerFor(extension)) return "";
 
@@ -541,10 +543,21 @@ namespace ExplorerNative
                    "in whichever application does handle it.";
         }
 
+        /// <summary>
+        /// Kinds of file the player decodes or rewraps itself (WavDecoder,
+        /// TtaDecoder, Rewrap), played whatever the extension list in
+        /// Preferences says. That list is a saved setting, and an update never
+        /// changes a setting, so adding them to its default would have reached
+        /// nobody who already had it.
+        /// </summary>
+        public const string AlwaysPlayed = ".caf;.au;.snd;.voc;.w64;.tta;.aifc;.flv;.oga";
+
         public static bool IsAudio(string path, string? configured)
         {
             var extension = Path.GetExtension(path);
             if (string.IsNullOrEmpty(extension)) return false;
+            foreach (var always in AlwaysPlayed.Split(';'))
+                if (string.Equals(always, extension, StringComparison.OrdinalIgnoreCase)) return true;
 
             // Empty means the defaults, not "nothing is audio" — Settings puts the
             // default list back when the box is cleared, and a caller that has not

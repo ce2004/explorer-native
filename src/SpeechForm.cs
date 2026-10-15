@@ -26,6 +26,10 @@ namespace ExplorerNative
     /// off: a setting whose effect cannot be heard until the thing happens is a
     /// setting nobody trusts, and half of these only happen when something has
     /// gone wrong.
+    ///
+    /// The same window chooses Windows notifications (Preferences,
+    /// Notifications): ticked means a notification shows as well. Every one
+    /// starts off, and Preview shows one.
     /// </summary>
     public sealed class SpeechForm : Form
     {
@@ -37,11 +41,15 @@ namespace ExplorerNative
         private readonly List<NotificationInfo> _shown = new();
         private bool _filling;
 
-        public SpeechForm(Settings working)
+        /// <summary>Choosing Windows notifications rather than speech.</summary>
+        private readonly bool _windows;
+
+        public SpeechForm(Settings working, bool windows = false)
         {
             _working = working;
+            _windows = windows;
 
-            Text = "What is spoken";
+            Text = windows ? "Windows notifications" : "What is spoken";
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.SizableToolWindow;
             MinimizeBox = false;
@@ -50,9 +58,19 @@ namespace ExplorerNative
             Height = 560;
             DoubleBuffered = true;
 
-            var saved = Notifications.ParseOverrides(_working.SpeechOverrides);
-            foreach (var info in Notifications.All)
-                _values[info.Id] = saved.TryGetValue(info.Id, out var c) ? c : info.Default;
+            if (windows)
+            {
+                // On or off is all a notification is; Speech stands for on here.
+                var on = WindowsToasts.Parse(_working.WindowsNotifications);
+                foreach (var info in Notifications.All)
+                    _values[info.Id] = on.Contains(info.Id) ? NotificationChannel.Speech : NotificationChannel.None;
+            }
+            else
+            {
+                var saved = Notifications.ParseOverrides(_working.SpeechOverrides);
+                foreach (var info in Notifications.All)
+                    _values[info.Id] = saved.TryGetValue(info.Id, out var c) ? c : info.Default;
+            }
 
             SuspendLayout();
 
@@ -72,7 +90,7 @@ namespace ExplorerNative
                 Dock = DockStyle.Fill,
                 IntegralHeight = false,
                 CheckOnClick = false,
-                AccessibleName = "Messages. Checked ones are spoken",
+                AccessibleName = windows ? "Messages. Checked ones show a Windows notification" : "Messages. Checked ones are spoken",
                 TabIndex = 1,
             };
 
@@ -102,9 +120,9 @@ namespace ExplorerNative
             var ok = new Button { Text = "&OK", DialogResult = DialogResult.OK, AutoSize = true };
             var cancel = new Button { Text = "&Cancel", DialogResult = DialogResult.Cancel, AutoSize = true };
             var preview = new Button { Text = "&Preview", AutoSize = true };
-            var allOn = new Button { Text = "Speak &all in this category", AutoSize = true };
-            var allOff = new Button { Text = "&Silence all in this category", AutoSize = true };
-            var defaults = new Button { Text = "Category &defaults", AutoSize = true };
+            var allOn = new Button { Text = windows ? "Turn &all on in this category" : "Speak &all in this category", AutoSize = true };
+            var allOff = new Button { Text = windows ? "Turn all o&ff in this category" : "&Silence all in this category", AutoSize = true };
+            var defaults = new Button { Text = "Category &defaults", AutoSize = true, Visible = !windows };
 
             preview.Click += (_, _) => Preview();
             allOn.Click += (_, _) => SetCategory(_ => NotificationChannel.Speech);
@@ -148,6 +166,16 @@ namespace ExplorerNative
         /// </summary>
         internal void Apply()
         {
+            if (_windows)
+            {
+                // Ids this build does not know are kept, for a newer build.
+                var catalogued = new HashSet<string>(Notifications.All.Select(n => n.Id), StringComparer.OrdinalIgnoreCase);
+                var keep = WindowsToasts.Parse(_working.WindowsNotifications).Where(id => !catalogued.Contains(id));
+                var now = WindowsToasts.Format(_values.Where(kv => kv.Value == NotificationChannel.Speech).Select(kv => kv.Key).Concat(keep));
+                if (now != WindowsToasts.Format(WindowsToasts.Parse(_working.WindowsNotifications))) _working.WindowsNotifications = now;
+                return;
+            }
+
             var opened = Notifications.ParseOverrides(_working.SpeechOverrides);
             bool changed = false;
             foreach (var info in Notifications.All)
@@ -224,9 +252,11 @@ namespace ExplorerNative
             int i = _messages.SelectedIndex;
             if (i < 0 || i >= _shown.Count) return;
 
-            // Spoken even when the message is switched off: a preview button that
-            // refuses to demonstrate the thing being configured is a broken button.
-            if (_working.SpeakEnabled) Speech.Speak(_shown[i].Preview(), interrupt: true);
+            // Shown or spoken even when the message is switched off: a preview
+            // button that refuses to demonstrate the thing being configured is a
+            // broken button.
+            if (_windows && WindowsToasts.Show is { } show) show(_shown[i].Name, _shown[i].Preview());
+            else if (_working.SpeakEnabled) Speech.Speak(_shown[i].Preview(), interrupt: true);
         }
 
         private void SetCategory(Func<NotificationInfo, NotificationChannel> choose)

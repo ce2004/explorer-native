@@ -429,14 +429,83 @@ namespace ExplorerNative
 
         private static string Plural(int n, string word) => n == 1 ? $"1 {word}" : $"{n} {word}s";
 
-        private void AddPair()
+        private async void AddPair()
         {
+          // An async void handler: nothing may escape it, or the application ends.
+          try
+          {
             var pair = new DriveSyncPair();
             using var dialog = new DrivePairForm(pair, "Add a synced folder") { Others = _pairs.ToList() };
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
+
+            if (dialog.Pair.DriveFolderId == DriveFolderPicker.EverythingId)
+            {
+                var made = await EverythingAsync(dialog.Pair);
+                if (made == null || IsDisposed) return;
+                _pairs.AddRange(made);
+                Commit();
+                ShowSaved(_pairs.Count - made.Count);
+                return;
+            }
+
             _pairs.Add(dialog.Pair);
             Commit();
             ShowSaved(_pairs.Count - 1);
+          }
+          catch (Exception ex) { Say("The folder could not be added: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// Everything: My Drive into "My Drive" in the chosen PC folder, and
+        /// each shared drive into "Shared drives\name", each its own synced
+        /// folder with the settings chosen. One synced folder per drive, because
+        /// each drive has its own list of changes in Google. A shared drive
+        /// added later is added the same way, with Add a folder.
+        /// </summary>
+        private async Task<List<DriveSyncPair>?> EverythingAsync(DriveSyncPair chosen)
+        {
+            var client = DrivePairForm.DriveMonitorClient();
+            if (client == null) { Say("Google Drive is not connected, so nothing was added."); return null; }
+            Say("Finding your shared drives");
+            using var quick = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+            var root = await client.RootId(quick.Token);
+            var shared = await client.ListSharedDrives(quick.Token, interactive: true);
+
+            var baseName = DriveMonitor.DisplayName(chosen);
+            DriveSyncPair Make(string id, string drivePath, string under, string name)
+            {
+                var made = chosen.Copy();
+                made.Id = Guid.NewGuid().ToString("N");
+                made.DriveFolderId = id;
+                made.DriveFolderPath = drivePath;
+                made.LocalFolder = Path.Combine(chosen.LocalFolder, under);
+                made.Name = $"{baseName}: {name}";
+                return made;
+            }
+            var pairs = new List<DriveSyncPair> { Make(root, "My Drive", "My Drive", "My Drive") };
+            foreach (var drive in shared.OrderBy(d => d.Name, StringComparer.CurrentCultureIgnoreCase))
+                pairs.Add(Make(drive.Id, "Shared drives/" + drive.Name, Path.Combine("Shared drives", WindowsName(drive.Name)), drive.Name));
+
+            var others = _pairs.ToList();
+            foreach (var p in pairs)
+            {
+                if (DriveMonitor.Overlap(p, others) is { } overlap)
+                {
+                    MessageBox.Show(this, overlap, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return null;
+                }
+                others.Add(p);
+            }
+            await Task.Run(() => { foreach (var p in pairs) Directory.CreateDirectory(p.LocalFolder); });
+            return pairs;
+        }
+
+        /// <summary>A shared drive's name as a folder on the PC: what Windows refuses in a name becomes "_".</summary>
+        internal static string WindowsName(string name)
+        {
+            var bad = Path.GetInvalidFileNameChars();
+            var safe = new string(name.Select(c => Array.IndexOf(bad, c) >= 0 ? '_' : c).ToArray()).Trim().TrimEnd('.');
+            return safe.Length == 0 ? "Shared drive" : safe;
         }
 
         /// <summary>
@@ -576,11 +645,17 @@ namespace ExplorerNative
         /// </summary>
         internal static string Example(SyncMode mode, string localFolder, string drivePath, bool deletes)
         {
-            var leaf = Path.GetFileName(localFolder.Trim().TrimEnd('\\', '/'));
-            var pc = string.IsNullOrEmpty(leaf) ? "the folder on this PC" : $"the {leaf} folder on this PC";
+            var trimmed = localFolder.Trim();
+            var leaf = Path.GetFileName(trimmed.TrimEnd('\\', '/'));
+            var pc = !string.IsNullOrEmpty(leaf) ? $"the {leaf} folder on this PC"
+                : trimmed.Length >= 2 && trimmed[1] == ':' ? $"the {char.ToUpperInvariant(trimmed[0])} drive"
+                : "the folder on this PC";
             var driveLeaf = drivePath.Trim().TrimEnd('/');
             driveLeaf = driveLeaf[(driveLeaf.LastIndexOf('/') + 1)..];
-            var drive = string.IsNullOrEmpty(driveLeaf) ? "the folder in Google Drive" : $"the {driveLeaf} folder in Google Drive";
+            var drive = drivePath == EverythingText ? "Google Drive"
+                : driveLeaf == "My Drive" ? "My Drive in Google Drive"
+                : string.IsNullOrEmpty(driveLeaf) ? "the folder in Google Drive"
+                : $"the {driveLeaf} folder in Google Drive";
 
             return mode switch
             {
@@ -608,6 +683,9 @@ namespace ExplorerNative
                           "To delete files on both sides, tick Delete on both sides."),
             };
         }
+
+        /// <summary>What the Google Drive field says when Everything was chosen.</summary>
+        internal const string EverythingText = "Everything: My Drive and every shared drive";
 
         private static readonly (int Megabytes, string Text)[] Sizes =
         {
@@ -832,9 +910,24 @@ namespace ExplorerNative
                 using var picker = new DriveFolderPicker(client);
                 if (picker.ShowDialog(this) == DialogResult.OK)
                 {
-                    Pair.DriveFolderId = picker.FolderId;
-                    Pair.DriveFolderPath = picker.FolderPath;
-                    _drive.Text = picker.FolderPath;
+                    if (picker.Everything && !_adding)
+                    {
+                        MessageBox.Show(this, "Everything can be chosen when adding a synced folder, not when changing one.",
+                            Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    else if (picker.Everything)
+                    {
+                        // Made into one synced folder per drive when it is saved (DriveMonitorForm.AddPair).
+                        Pair.DriveFolderId = DriveFolderPicker.EverythingId;
+                        Pair.DriveFolderPath = EverythingText;
+                        _drive.Text = EverythingText;
+                    }
+                    else
+                    {
+                        Pair.DriveFolderId = picker.FolderId;
+                        Pair.DriveFolderPath = picker.FolderPath;
+                        _drive.Text = picker.FolderPath;
+                    }
                 }
                 _drive.Focus();
             };
@@ -858,8 +951,9 @@ namespace ExplorerNative
                     }
 
                     var edited = Pair.Copy();
-                    edited.LocalFolder = Path.GetFullPath(_local.Text.Trim()).TrimEnd(Path.DirectorySeparatorChar);
-                    edited.Name = string.IsNullOrWhiteSpace(_name.Text) ? Path.GetFileName(edited.LocalFolder) : _name.Text.Trim();
+                    // A whole drive stays "D:\" (see FolderPathOf).
+                    edited.LocalFolder = DriveMonitor.FolderPathOf(_local.Text);
+                    edited.Name = string.IsNullOrWhiteSpace(_name.Text) ? DriveMonitor.DisplayName(edited) : _name.Text.Trim();
                     edited.Mode = Modes[Math.Max(0, _mode.SelectedIndex)].Mode;
                     edited.WhenBothChanged = Clashes[Math.Max(0, _clash.SelectedIndex)].Choice;
                     edited.MaxFileMegabytes = Sizes[Math.Max(0, _maxSize.SelectedIndex)].Megabytes;
@@ -869,7 +963,8 @@ namespace ExplorerNative
                     edited.Paused = _paused.Checked;
 
                     // Two synced folders over the same files would each upload them.
-                    if (DriveMonitor.Overlap(edited, Others) is { } overlap)
+                    // (Everything is checked once it is made into its folders, in AddPair.)
+                    if (edited.DriveFolderId != DriveFolderPicker.EverythingId && DriveMonitor.Overlap(edited, Others) is { } overlap)
                     {
                         MessageBox.Show(this, overlap, Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                         _local.Focus();
@@ -902,9 +997,11 @@ namespace ExplorerNative
     }
 
     /// <summary>
-    /// Chooses a folder in Google Drive, through the API. Enter opens the
+    /// Chooses a folder in Google Drive, through the API. It opens on Google
+    /// Drive itself: My Drive, each shared drive, and Everything (My Drive and
+    /// every shared drive, each its own synced folder). Enter opens the
     /// selected folder, Backspace goes up, Use this folder picks the one you
-    /// are in, and New folder makes one there.
+    /// are in (at the top, the one selected), and New folder makes one there.
     /// </summary>
     internal sealed class DriveFolderPicker : Form
     {
@@ -915,8 +1012,21 @@ namespace ExplorerNative
         private readonly CancellationTokenSource _cancel = new();
         private List<DriveEntry> _folders = new();
 
+        /// <summary>Stands for My Drive and every shared drive at once (see DriveMonitorForm.AddPair).</summary>
+        public const string EverythingId = "*everything*";
+
+        private const string FolderMime = "application/vnd.google-apps.folder";
+
+        /// <summary>Whether Everything was chosen rather than one folder.</summary>
+        public bool Everything { get; private set; }
+
+        /// <summary>At the top, Google Drive itself, which is not a folder.</summary>
+        private bool AtTop => _path.Count > 0 && _path.Peek().Id.Length == 0;
+
         public string FolderId => _path.Peek().Id;
-        public string FolderPath => string.Join("/", _path.Reverse().Select(p => p.Name));
+
+        /// <summary>"My Drive/Music" or "Shared drives/Team/Music": the top is not part of it.</summary>
+        public string FolderPath => string.Join("/", _path.Reverse().Where(p => p.Id.Length > 0).Select(p => p.Name));
 
         public DriveFolderPicker(DriveClient client)
         {
@@ -960,7 +1070,8 @@ namespace ExplorerNative
                 {
                     e.Handled = e.SuppressKeyPress = true;
                     int at = _list.SelectedIndex;
-                    if (at >= 0 && at < _folders.Count)
+                    if (at >= 0 && at < _folders.Count && _folders[at].Id == EverythingId) Choose(at);
+                    else if (at >= 0 && at < _folders.Count)
                     {
                         _path.Push((_folders[at].Id, _folders[at].Name));
                         await LoadAsync();
@@ -985,6 +1096,7 @@ namespace ExplorerNative
             use.Click += (_, _) =>
             {
                 if (_path.Count == 0) return;
+                if (AtTop) { Choose(_list.SelectedIndex); return; }
                 DialogResult = DialogResult.OK;
                 Close();
             };
@@ -992,6 +1104,7 @@ namespace ExplorerNative
             make.Click += async (_, _) =>
             {
                 if (_path.Count == 0) return;
+                if (AtTop) { Say("Open My Drive or a shared drive first, then make the folder in it."); return; }
                 var name = PromptForm.Ask(this, "New folder", "Name of the new folder in Google Drive:");
                 if (name == null) return;
                 try
@@ -1012,8 +1125,7 @@ namespace ExplorerNative
             {
                 try
                 {
-                    var root = await _client.RootId(_cancel.Token);
-                    _path.Push((root, "My Drive"));
+                    _path.Push(("", "Google Drive"));
                     await LoadAsync();
                 }
                 catch (Exception ex)
@@ -1035,9 +1147,26 @@ namespace ExplorerNative
             _list.Items.Clear();
             try
             {
-                var entries = await _client.ListChildren(FolderId, _cancel.Token);
-                if (IsDisposed) return;
-                _folders = entries.Where(e => e.IsFolder).OrderBy(e => e.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+                if (AtTop)
+                {
+                    // My Drive, the shared drives, and all of them at once.
+                    var root = await _client.RootId(_cancel.Token);
+                    List<DriveEntry> shared;
+                    try { shared = await _client.ListSharedDrives(_cancel.Token, interactive: true); }
+                    catch (Exception) when (!_cancel.IsCancellationRequested) { shared = new List<DriveEntry>(); }
+                    if (IsDisposed) return;
+                    _folders = new List<DriveEntry> { new(root, "My Drive", FolderMime, 0, default) };
+                    _folders.AddRange(shared.OrderBy(d => d.Name, StringComparer.CurrentCultureIgnoreCase)
+                        .Select(d => new DriveEntry(d.Id, "Shared drives/" + d.Name, FolderMime, 0, default, d.Id)));
+                    _folders.Add(new DriveEntry(EverythingId,
+                        shared.Count == 0 ? "Everything: My Drive" : "Everything: My Drive and every shared drive", FolderMime, 0, default));
+                }
+                else
+                {
+                    var entries = await _client.ListChildren(FolderId, _cancel.Token);
+                    if (IsDisposed) return;
+                    _folders = entries.Where(e => e.IsFolder).OrderBy(e => e.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+                }
             }
             catch (Exception ex)
             {
@@ -1047,19 +1176,33 @@ namespace ExplorerNative
                 return;
             }
 
-            _where.Text = FolderPath;
-            _list.AccessibleName = FolderPath;
+            var here = AtTop ? "Google Drive" : FolderPath;
+            _where.Text = here;
+            _list.AccessibleName = here;
             if (_folders.Count == 0)
             {
                 _list.Items.Add("No folders in here. Use this folder, or make a new one.");
             }
             else
             {
-                foreach (var folder in _folders) _list.Items.Add(folder.Name);
+                foreach (var folder in _folders)
+                    _list.Items.Add(AtTop && folder.Name.StartsWith("Shared drives/", StringComparison.Ordinal)
+                        ? "Shared drive: " + folder.Name["Shared drives/".Length..]
+                        : folder.Name);
             }
             _list.SelectedIndex = 0;
             _list.Focus();
-            Say(_folders.Count == 0 ? $"{FolderPath}, no folders" : $"{FolderPath}, {Plural(_folders.Count)}");
+            Say(_folders.Count == 0 ? $"{here}, no folders" : $"{here}, {Plural(_folders.Count)}");
+        }
+
+        /// <summary>At the top: the drive selected (its whole self), or Everything.</summary>
+        private void Choose(int at)
+        {
+            if (at < 0 || at >= _folders.Count) return;
+            if (_folders[at].Id == EverythingId) Everything = true;
+            else _path.Push((_folders[at].Id, _folders[at].Name));
+            DialogResult = DialogResult.OK;
+            Close();
         }
 
         private static string Plural(int n) => n == 1 ? "1 folder" : $"{n} folders";

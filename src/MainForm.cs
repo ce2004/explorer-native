@@ -8998,6 +8998,7 @@ namespace ExplorerNative
         private void AnnounceOperation(string notificationId, string message)
         {
             ShowStatus(message);
+            WindowsToasts.Raise(notificationId, message, _settings);
             if (!_settings.SpeakEnabled) return;
             if (Notifications.ById(notificationId) != null &&
                 Notifications.ChannelsFor(notificationId, _settings) != NotificationChannel.Speech) return;

@@ -181,6 +181,7 @@ namespace ExplorerNative
             var categories = new (string Name, Func<Control> Build)[]
             {
                 ("Speech", BuildSpeechTab),
+                ("Windows notifications", BuildNotificationsTab),
                 ("Display", BuildDisplayTab),
                 ("Behaviour", BuildBehaviourTab),
                 ("Folder sizes", BuildFolderSizeTab),
@@ -361,6 +362,49 @@ namespace ExplorerNative
         }
 
         // ---------- Tab builders ----------
+
+        /// <summary>
+        /// Windows notifications: any message in the catalogue can also pop up
+        /// in the corner of the screen. Every one is off until turned on.
+        /// </summary>
+        private FlowLayoutPanel BuildNotificationsTab()
+        {
+            var panel = NewPage();
+            int Count() => WindowsToasts.Parse(_working.WindowsNotifications).Count(id => Notifications.ById(id) != null);
+            static bool IsSync(NotificationInfo n) => n.Id.StartsWith("sync.", StringComparison.Ordinal);
+
+            AddInfo(panel,
+                "Windows notifications pop up in the corner of the screen and stay in the notification centre " +
+                "(Windows+N), where NVDA can read them later. Any message Explorer Native gives can show one, " +
+                $"in {Notifications.Categories.Count} categories. Every one is off until you turn it on.");
+
+            AddButton(panel, "Choose &Windows notifications...", () =>
+            {
+                using var dialog = new SpeechForm(_working, windows: true);
+                dialog.ShowDialog(this);
+                Speech.Speak($"{Count()} turned on", interrupt: true);
+            });
+
+            AddButton(panel, "Turn on every Google Drive &sync notification", () =>
+            {
+                var on = WindowsToasts.Parse(_working.WindowsNotifications);
+                on.UnionWith(Notifications.All.Where(IsSync).Select(n => n.Id));
+                _working.WindowsNotifications = WindowsToasts.Format(on);
+                Speech.Speak($"Turned on {Notifications.All.Count(IsSync)} sync notifications, such as when a synced " +
+                             "folder finishes, could not sync, or runs out of room", interrupt: true);
+            });
+
+            AddButton(panel, "Turn all o&ff", () =>
+            {
+                _working.WindowsNotifications = "";
+                Speech.Speak("All Windows notifications are off", interrupt: true);
+            });
+
+            AddInfo(panel,
+                "Messages are still written to the status bar and spoken as chosen on the Speech page; a " +
+                "notification is as well, not instead. Windows can hold notifications back while Do not disturb is on.");
+            return panel;
+        }
 
         private FlowLayoutPanel BuildSpeechTab()
         {

@@ -83,6 +83,9 @@ namespace ExplorerNative
                 var ogg = new OggDecoder();
                 if (ogg.Open(path, stream, sampleRate, channels)) { why = ogg.Diagnostic; return ogg; }
 
+                var flac = Rewrapped(path, stream, sampleRate, channels, out _);
+                if (flac != null) { ogg.Dispose(); why = "ready"; return flac; }
+
                 why = ogg.Diagnostic;
                 ogg.Dispose();
                 return null;
@@ -107,12 +110,58 @@ namespace ExplorerNative
                 var ogg = new OggDecoder();
                 if (ogg.Open(path, stream, sampleRate, channels)) { why = ogg.Diagnostic; return ogg; }
 
+                // FLAC inside Ogg: neither Vorbis nor Opus, but plain FLAC once
+                // the Ogg pages are taken off (Rewrap).
+                var flac = Rewrapped(path, stream, sampleRate, channels, out var rewrapSaid);
+                if (flac != null) { ogg.Dispose(); why = "ready"; return flac; }
+
                 why = mediaSaid + "; " + ogg.Diagnostic;
                 ogg.Dispose();
                 return null;
             }
 
-            why = mediaSaid;
+            // WAV, Wave64, CAF, AU, VOC and AIFF-C sound Windows will not decode
+            // (ADPCM, 64-bit float, ALAC in CAF and the like), decoded here
+            // instead of being handed to another application.
+            if (WavDecoder.IsWav(path, stream))
+            {
+                var wav = new WavDecoder();
+                if (wav.Open(path, stream)) { why = wav.Diagnostic; return wav; }
+                why = mediaSaid + "; " + wav.Diagnostic;
+                wav.Dispose();
+                return null;
+            }
+
+            if (TtaDecoder.IsTta(path, stream))
+            {
+                var tta = new TtaDecoder();
+                if (tta.Open(path, stream)) { why = tta.Diagnostic; return tta; }
+                why = mediaSaid + "; " + tta.Diagnostic;
+                tta.Dispose();
+                return null;
+            }
+
+            // FLV: sound Windows decodes, in a container it does not open.
+            var rewrapped = Rewrapped(path, stream, sampleRate, channels, out var said);
+            if (rewrapped != null) { why = "ready"; return rewrapped; }
+
+            why = said.Length > 0 ? mediaSaid + "; " + said : mediaSaid;
+            return null;
+        }
+
+        /// <summary>The file rewrapped as a container Windows opens (see Rewrap), and decoded there.</summary>
+        private static ITrackDecoder? Rewrapped(string path,
+            System.Runtime.InteropServices.ComTypes.IStream? stream, int sampleRate, int channels, out string why)
+        {
+            why = "";
+            var inner = Rewrap.TryRewrap(path, stream, out var kind);
+            if (inner == null) return null;
+            var com = new ManagedIStream(inner);
+            var media = new AudioDecoder();
+            if (media.Open(path, com, sampleRate, channels)) return new OwningDecoder(media, com);
+            why = $"{kind}: {media.Diagnostic}";
+            media.Dispose();
+            com.Dispose();
             return null;
         }
 

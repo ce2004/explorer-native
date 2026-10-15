@@ -129,6 +129,13 @@ namespace ExplorerNative
             };
             _tray.DoubleClick += (_, _) => ShowWindow();
 
+            // Windows notifications (Preferences, Notifications) go out through
+            // the tray icon, which Windows shows as an ordinary notification.
+            WindowsToasts.Show = (title, text) => PostUi(() =>
+            {
+                try { if (_tray.Visible) _tray.ShowBalloonTip(6000, title, text, ToolTipIcon.Info); } catch { }
+            });
+
             // Put in the notification area once the message loop first has
             // nothing to do, which is after the window has painted. Adding an
             // icon is a call into Explorer that waits for its answer, five to ten
@@ -430,6 +437,9 @@ namespace ExplorerNative
 
             if (_form is { IsDisposed: false, Visible: true }) _form.AnnounceAudio(message, speak);
             else if (speak && _settings.SpeakEnabled) Speech.Speak(message, _settings.InterruptSpeech);
+
+            // And a Windows notification, if that message is turned on for one.
+            WindowsToasts.Raise(id, message, _settings);
         }
 
         /// <summary>

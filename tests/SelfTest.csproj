@@ -75,6 +75,13 @@
     <Compile Include="..\src\DriveFileCache.cs" />
     <Compile Include="..\src\MemoryGiveBack.cs" />
     <Compile Include="..\src\SyncHistory.cs" />
+    <Compile Include="..\src\WindowsToasts.cs" />
+    <Compile Include="PlayProbe.cs" />
+    <Compile Include="..\src\Rewrap.cs" />
+    <Compile Include="..\src\WavDecoder.cs" />
+    <Compile Include="..\src\AlacDecoder.cs" />
+    <Compile Include="..\src\TtaDecoder.cs" />
+    <Compile Include="CodecProbe.cs" />
     <Compile Include="..\src\DriveMount.cs" />
     <Compile Include="..\src\GoogleSignInRequiredException.cs" />
     <Compile Include="..\src\DriveQuotaException.cs" />

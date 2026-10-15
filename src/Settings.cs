@@ -541,6 +541,13 @@ namespace ExplorerNative
         /// </summary>
         public string SpeechOverrides { get; set; } = "";
 
+        /// <summary>
+        /// The messages that also show a Windows notification, by id, separated
+        /// by ";" (Preferences, Notifications). Empty by default: every one is off
+        /// until it is turned on. See WindowsToasts.
+        /// </summary>
+        public string WindowsNotifications { get; set; } = "";
+
         // ---- What it says ----
         //
         // Whether the player speaks is decided per message in "Choose what is

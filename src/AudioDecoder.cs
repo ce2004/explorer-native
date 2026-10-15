@@ -540,9 +540,13 @@ namespace ExplorerNative
             if (hr != 0) hr = TryType(reader, _askedRate, 0);
             if (hr != 0) hr = TryType(reader, 0, 0);
 
+            // Refused outright: Windows has no decoder for this sound at all
+            // (ADPCM or 64-bit WAV, Dolby Digital on a Windows without it). Asking
+            // for 16-bit instead was tried and changed nothing; WavDecoder takes
+            // the WAV ones (TrackDecoder).
             if (hr != 0)
             {
-                why = $"the decoder will not produce float (0x{hr:X8})";
+                why = $"Windows has no decoder for the sound in this file (0x{hr:X8})";
                 Release(reader);
                 return null;
             }

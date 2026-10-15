@@ -99,6 +99,8 @@ $p.WaitForExit(120000)
 | DriveClient / DriveWrites / DriveUpload / DriveHealth / DriveQuotaException | Drive v3 / upload, move, trash / tree upload / online state / lasting refusal |
 | DriveSync / DriveMonitor / DriveMonitorForm | Folder sync planner / engine / configurator |
 | PcChanges | Which PC folders changed: NTFS change journal, watcher fallback |
+| WavDecoder / WindowsToasts | WAV, Wave64, CAF, AU, VOC, AIFF-C ima4 sound Media Foundation refuses (ADPCM, 64-bit, IMA4, ALAC in CAF) / Windows notifications per message |
+| AlacDecoder / TtaDecoder / Rewrap | Apple Lossless packets / TTA files / FLAC-in-Ogg and FLV audio rewrapped for Media Foundation |
 | SyncHistory / MemoryGiveBack | Per-pair history of what a sync did / handing freed memory back to Windows |
 | Connect{Server,Files,Uploads,Audio,Clipboard,Details} / WebAssets / TailscaleWeb | Web app API / embedded web\ / Tailscale Serve |
 
@@ -159,6 +161,7 @@ There is no window: Enter, the Audio menu, Preferences pages and global hotkeys.
 - Errors name the real cause (`Diagnostic`), not "cannot decode". The audio page shows what was granted, and failures are appended, not replacing the state.
 
 Pipeline: decoder -> SilenceReduction -> TimeStretch -> Resampler -> ring -> renderer (gain, limiter, EQ, meter)
+- After Media Foundation refuses a file, `TrackDecoder` tries in turn: `OggDecoder`, `WavDecoder` (by content: RIFF/RF64/Wave64/caff/.snd/AIFC/VOC), `TtaDecoder`, then `Rewrap` (FLAC in Ogg as native FLAC, FLV audio as ADTS/MP3) back into Media Foundation through `ManagedIStream`. `AudioFiles.AlwaysPlayed` extensions play whatever the saved extension list says. Verify formats with `EXPLORERNATIVE_SELFTEST_ONLY=playprobe` (`_PLAYPROBE_DIR`, `_ALL=1`, `_ROUNDS`); test files come from ffmpeg (winget Gyan.FFmpeg.Essentials, on this PC only). Not decodable here: AC3/E-AC3/DTS (no Dolby/DTS decoder on Windows Server), Vorbis in Matroska, WavPack, MXF, MP3 inside WAV.
 - Media Foundation `IMFSourceReader` first. `OggDecoder` covers Ogg/Opus, because Web Media Extensions are invisible to unpackaged apps. The media engine and gain MFT are deleted: the MFT took every sample and output none. Never retry that.
 - TimeStretch (WSOLA): 1024 hop, 50% overlap, raised-cosine fade, ±640 search on a mono sum, fractional remainder carried, end residue emitted proportionally. Test pitch (Goertzel) and purity (≥0.98).
 - Pitch: resample by P and stretch by S/P, both set in `ApplyRates`. The resampler comes after the stretcher. Catmull-Rom, anti-alias only when pitching up, fraction carried.
@@ -180,7 +183,8 @@ Pipeline: decoder -> SilenceReduction -> TimeStretch -> Resampler -> ring -> ren
 
 ## What is spoken
 
-- `Notifications.All` lists every message. Each has one choice: speak or not. The status bar always shows it. No tray balloons.
+- `Notifications.All` lists every message. Each has one choice: speak or not. The status bar always shows it.
+- Windows notifications (Conner's request, 3.0.6): any catalogued message can also show one, chosen per message in Preferences, Windows notifications (`Settings.WindowsNotifications`, ids separated by ";", empty = all off, the default). `WindowsToasts.Raise` is called from Tray `Notify` and MainForm `AnnounceOperation`; shown with the tray icon's `ShowBalloonTip`, which Windows turns into a toast. The chooser is `SpeechForm` with `windows: true`.
 - `SpeechOverrides` stores only differences from default. Defaults say less, but anything requested or any failure is on (tested for fail/denied/refused).
 - Every example must render. Preview plays even when the message is off. `WiredNotificationIds` must match `Raised` both ways. Never invent events.
 - Routing comes from the catalogue and wording from the code. A finer id replaces the generic one. Unknown ids go to the status bar only.
@@ -234,6 +238,8 @@ Our own provider over `cldapi.dll`, so the app's ordinary file code works on the
 - Every file a pass uploads, downloads, deletes, moves, keeps twice or fails is added to `SyncHistory` (`<id>.history`, last 1000, written when the pass ends); the configurator's History button lists it.
 - Whole PC walks go parallel after 32 folders (`ScanWorkers`, 2 to 8); the files table is filled under a lock per folder, skips and clashes per worker then merged.
 - Downloads stream (`DriveClient.DownloadTo`: one request from the .partial's length to the end, MD5 hashed as it arrives, resumed from the byte it got to). New Drive files up to 64MB with nothing at that PC path come down `FastLanes` at a time (`DownloadNewSmallAsync`, 8 or more); anything already on the PC stays on the careful loop. Every touch of `state.Partials` and every SaveSoon from a download is under `_fastGate`. New PC files over 4MB and up to 64MB go up the same way (`UploadNewMediumAsync`, folders made first, SendOnceAsync per file, `state.Uploads` under `_fastGate`); replacements stay on the careful loop.
+- A whole drive may be a pair's PC folder; it is kept as "D:\" (`FolderPathOf`), never "D:" (the current folder on D). The Windows drive is refused whole. The Drive picker starts at Google Drive itself: My Drive, shared drives ("Shared drives/Name" paths), and Everything (`DriveFolderPicker.EverythingId`), which `DriveMonitorForm.EverythingAsync` turns into one pair per drive under `<PC folder>\My Drive` and `<PC folder>\Shared drives\<name>`.
+- `DriveMonitor.Dispose` waits up to `StopWait` (5s) for a running pass to stop and save, so an update (install stands the old copy down with `<exit>`) carries straight on; measured live: a 3,041-file upload cut by an install finished with each file once.
 - Adding or changing a folder saves and closes at once (Conner's request): no first-sync summary, no space question. The first pass reads Drive once, says what it is doing in Status, and pauses itself if it runs out of room. `PreviewAsync`/`Describe(SyncPreview)` remain for the tests and the live probe.
 - Big arrays let go (Drive cache files, a released streamed track) are reported to `MemoryGiveBack`, which runs one compacting collection 2s after 64MB has been freed.
 - Events only make a pass due. State is saved every 2s, or 20 times the last save's cost when bigger (`SaveGap`), and the planner is idempotent.

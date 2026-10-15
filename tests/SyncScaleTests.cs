@@ -854,10 +854,11 @@ namespace ExplorerNative
                 string.Join("|", lines.Take(6)));
             Check("the speeds have lines of their own",
                 lines.Contains("Upload speed: 6 megabytes a second") && lines.Contains("Download speed: 1 kilobyte a second"), all);
-            Check("each moving file has a line, with how far a big one has got",
-                lines.Any(l => l.StartsWith(@"Uploading Music\Live.flac, 12")) && lines.Contains(@"Downloading Photos\a.jpg"), all);
+            Check("only the newest moving file is named, then how many more (Conner: ten was clutter)",
+                lines.Contains(@"Downloading Photos\a.jpg") && !lines.Any(l => l.StartsWith(@"Uploading Music\Live.flac")) &&
+                lines.Last() == "And 1 more file moving", all);
             for (int i = 0; i < 12; i++) live.Begin($"f{i}", up: true, 10, 2100 + i);
-            Equal("past ten it counts the rest", "And 4 more files moving", Lines(2200).Last());
+            Equal("the rest are counted", "And 13 more files moving", Lines(2200).Last());
             live.End("Music/Live.flac", 2300);
             live.End("Photos/a.jpg", 2300);
             for (int i = 0; i < 12; i++) live.End($"f{i}", 2300);

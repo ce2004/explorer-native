@@ -44,6 +44,7 @@ namespace ExplorerNative
                 TransientTests();
                 await SharedLookTests(sandbox);
                 await FastDownloadTests(sandbox);
+                await WholeDriveTests(sandbox);
                 await ModeTests(sandbox);
                 await AdoptionTests(sandbox);
                 await ConflictTests(sandbox);
@@ -263,6 +264,71 @@ namespace ExplorerNative
                 Check("streamed download: the second asked from the middle, not from the start",
                     rig.Drive.MediaOffsets.Count >= 2 && rig.Drive.MediaOffsets[^1] > 0, string.Join(", ", rig.Drive.MediaOffsets));
             }
+        }
+
+        // ---------------- a whole drive, and Windows notifications ----------------
+
+        private static async Task WholeDriveTests(string sandbox)
+        {
+            // A drive's own top folder stays "D:\": "D:" alone is the current folder on D.
+            Equal("whole drive: D:\\ is kept as D:\\", @"D:\", DriveMonitor.FolderPathOf(@"D:\"));
+            Equal("whole drive: D:\\. is the top of D too", @"D:\", DriveMonitor.FolderPathOf(@"D:\."));
+            Equal("whole drive: an ordinary folder loses its last separator", @"D:\Music", DriveMonitor.FolderPathOf(@"D:\Music\"));
+            Check("whole drive: the drive Windows is on is refused whole",
+                DriveMonitor.Refusal(Path.GetPathRoot(Environment.SystemDirectory)!) is { } no && no.Contains("Windows is on"));
+            Equal("whole drive: a whole drive is called D drive", "D drive",
+                DriveMonitor.DisplayName(new DriveSyncPair { LocalFolder = @"D:\" }));
+            var example = DrivePairForm.Example(SyncMode.TwoWay, @"D:\", "My Drive", false);
+            Check("whole drive: the example says the D drive and My Drive",
+                example.Contains("the D drive") && example.Contains("My Drive in Google Drive"), example);
+            Equal("whole drive: a shared drive's name made safe for Windows", "Team_ A_", DriveMonitorForm.WindowsName("Team: A?"));
+
+            // A real drive root, synced both ways: a spare letter put on a scratch folder.
+            using var rig = new Rig(sandbox, SyncMode.TwoWay);
+            var letter = "PQRSTUVWXYZ".Select(c => c + ":").FirstOrDefault(l => !Directory.Exists(l + "\\"));
+            if (letter == null) { Check("whole drive: a spare drive letter to test with", false); return; }
+            static bool Subst(string args)
+            {
+                using var p = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("subst", args)
+                    { CreateNoWindow = true, UseShellExecute = false })!;
+                p.WaitForExit(10000);
+                return p.ExitCode == 0;
+            }
+            if (!Subst($"{letter} \"{rig.Local}\"")) { Check("whole drive: subst made a drive letter", false); return; }
+            try
+            {
+                rig.Pair.LocalFolder = DriveMonitor.FolderPathOf(letter + "\\");
+                rig.Write("song.mp3", "on the PC", T0);
+                rig.Write("Album/track.mp3", "in a folder", T0);
+                rig.Put("from drive.txt", "from Google", T0);
+                await rig.Pass();
+                var drive = rig.DriveTree();
+                Check("whole drive: a drive's top folder syncs both ways",
+                    drive.ContainsKey("song.mp3") && drive.ContainsKey("Album/track.mp3") &&
+                    File.Exists(Path.Combine(rig.Local, "from drive.txt")),
+                    $"Drive: {Names(drive)}; PC: {Names(rig.LocalTree())}");
+                Check("whole drive: and nothing was put anywhere but the drive itself",
+                    !File.Exists(Path.Combine(Directory.GetCurrentDirectory(), "from drive.txt")));
+            }
+            finally { Subst($"{letter} /d"); }
+
+            // Windows notifications: all off until turned on.
+            var settings = new Settings();
+            var shown = new List<string>();
+            var before = WindowsToasts.Show;
+            WindowsToasts.Show = (title, text) => shown.Add(title + ": " + text);
+            try
+            {
+                Equal("notifications: none are on by default", "", settings.WindowsNotifications);
+                WindowsToasts.Raise("sync.done", "Music synced: 3 uploaded", settings);
+                Check("notifications: an event with its notification off shows nothing", shown.Count == 0);
+                settings.WindowsNotifications = WindowsToasts.Format(new[] { "sync.done", "sync.space" });
+                WindowsToasts.Raise("sync.done", "Music synced: 3 uploaded", settings);
+                WindowsToasts.Raise("sync.error", "Music could not sync", settings);
+                Check("notifications: one turned on shows, titled with its name, and others still do not",
+                    shown.Count == 1 && shown[0] == "Synced folder finished: Music synced: 3 uploaded", string.Join(" | ", shown));
+            }
+            finally { WindowsToasts.Show = before; }
         }
 
         // ---------------- one look at Drive for every quiet pair ----------------

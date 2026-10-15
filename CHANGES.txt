@@ -1,3 +1,12 @@
+3.0.6
+New: a whole drive can be a synced folder, such as all of D, for an external drive. Only the drive Windows is on cannot be synced whole.
+New: when choosing the Google Drive side, the list now starts with My Drive, each of your shared drives, and Everything. Pick My Drive or a shared drive to sync all of it. Everything syncs My Drive into a My Drive folder and each shared drive into Shared drives, each as its own synced folder.
+New: Windows notifications. In Preferences, the new Windows notifications page lets any message Explorer Native gives also pop up as a Windows notification, one by one or every Google Drive sync one at once. Every one is off until you turn it on.
+Bug fixed: if you updated Explorer Native while a folder was syncing, the sync could lose its last few seconds of progress and wait 30 seconds before carrying on. Now it saves where it got to as it closes, and carries straight on after the update.
+Bug fixed: some WAV files would not play and opened in another app instead, such as ADPCM recordings from voice recorders and phones, and 64-bit WAVs. Explorer Native now plays them itself.
+New: Explorer Native now plays CAF files (Apple's audio files, including Apple Lossless and IMA4), AU and SND, VOC, Wave64, TTA, AIFF-C with IMA4, FLAC inside Ogg, and the sound of FLV videos. They play when you press Enter whatever is in the audio file list in Preferences.
+Changed: when a file cannot be played, the reason says Windows has no decoder for the sound in it, instead of something about float.
+
 3.0.5
 Changed: the window title now says where you are first, the folder before the folders it is in, such as Explorer Native: Tate McRae, Artists, Music at D. The other tab comes after it.
 Changed: adding a synced folder no longer stops to show a summary first. Press Start syncing, the window closes, you land on the new folder, and its Status shows the first sync as it goes. If your PC or Google Drive runs out of room, it pauses and says so.

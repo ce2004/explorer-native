@@ -121,6 +121,48 @@ namespace ExplorerNative
                 Console.WriteLine("reload sent: " + SingleInstance.SendToRunningInstance(SingleInstance.ReloadSettingsCommand));
                 return 0;
             }
+            // EXPLORERNATIVE_LIVESYNC_ROOTS=1: My Drive itself and every shared
+            // drive as a synced folder's Drive side, read only (the summary step,
+            // into an empty folder): what each holds and how long it took.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_LIVESYNC_ROOTS") == "1")
+            {
+                using var quick = new CancellationTokenSource(TimeSpan.FromMinutes(30));
+                var empty = Path.Combine(Path.GetTempPath(), "en-roots-" + Guid.NewGuid().ToString("N")[..8]);
+                Directory.CreateDirectory(empty);
+                try
+                {
+                    var roots = new List<(string Id, string Name)> { (await client.RootId(quick.Token), "My Drive") };
+                    foreach (var d in await client.ListSharedDrives(quick.Token)) roots.Add((d.Id, "Shared drive " + d.Name));
+                    foreach (var (id, name) in roots)
+                    {
+                        var clock = Stopwatch.StartNew();
+                        try
+                        {
+                            var p = await DriveMonitor.PreviewAsync(client, new DriveSyncPair
+                            {
+                                LocalFolder = empty, DriveFolderId = id, DriveFolderPath = name, Mode = SyncMode.DownloadOnly,
+                                IncludeSubfolders = true,
+                            }, quick.Token);
+                            Console.WriteLine($"{name}: {p.OnDrive:N0} files, {DriveMonitor.Words(p.DownBytes)} would come down ({clock.Elapsed.TotalSeconds:F1}s)");
+                        }
+                        catch (Exception ex) { Console.WriteLine($"{name}: FAILED {ex.Message}"); _failed++; }
+                    }
+                }
+                finally { try { Directory.Delete(empty, true); } catch { } }
+                return _failed == 0 ? 0 : 1;
+            }
+
+            // EXPLORERNATIVE_LIVESYNC_CHECKPAIR=1: that pair's files counted on both
+            // sides, and any name Drive holds twice: "pc N drive N twice N".
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_LIVESYNC_CHECKPAIR") == "1")
+            {
+                using var quick = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+                var pair = Settings.Load().DriveSyncPairs.FirstOrDefault(p => p.Name == watchName);
+                if (pair == null) { Console.WriteLine("no watch pair"); return 1; }
+                var (onDrive, twice, _) = await CountDrive(client, pair.DriveFolderId, quick.Token);
+                Console.WriteLine($"pc {CountLocal(pair.LocalFolder)} drive {onDrive} twice {twice}");
+                return 0;
+            }
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_LIVESYNC_REMOVEPAIR") == "1")
             {
                 using var quick = new CancellationTokenSource(TimeSpan.FromMinutes(5));
