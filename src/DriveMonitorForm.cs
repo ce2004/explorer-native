@@ -863,8 +863,10 @@ namespace ExplorerNative
             _maxSize = Choice(o, "Skip files &larger than:", _sizes.Select(s => s.Text),
                 Array.FindIndex(_sizes, s => s.Megabytes == pair.MaxFileMegabytes));
             Skip(o);
-            _skipTypes = Field(o, "Skip file &types:", pair.SkipExtensions);
-            _skipTypes.AccessibleDescription = "File endings never synced, separated by spaces, such as .iso .tmp";
+            _skipTypes = Field(o, "Skip file and folder &types:", pair.SkipExtensions);
+            _skipTypes.AccessibleDescription =
+                "Endings or names never synced, separated by spaces, such as .mp3 .sync. Each one skips files and folders " +
+                "with that ending or name, and everything inside a skipped folder";
             Skip(o);
             _paused = Tick(o, "Pa&use this folder for now", pair.Paused);
 

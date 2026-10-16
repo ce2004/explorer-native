@@ -100,14 +100,36 @@ namespace ExplorerNative
 
         private HashSet<string>? _skipped;
 
-        /// <summary>The skipped file types, written with or without the dot, separated by ; , or spaces.</summary>
+        private HashSet<string>? _skippedNames;
+
+        /// <summary>
+        /// The skip list, written with or without the dot, separated by ; , or
+        /// spaces. Each entry is checked against the file and every folder above
+        /// it, by ending or by whole name, with no guessing which is meant:
+        /// ".mp3" skips song.mp3 (and a folder called Old.mp3), ".sync" skips a
+        /// folder called .sync or Photos.sync and everything in it, and "temp"
+        /// skips a folder or file called temp as well as anything ending .temp.
+        /// </summary>
         public bool SkipsType(string path)
         {
-            _skipped ??= new HashSet<string>(
-                SkipExtensions.Split(new[] { ';', ',', ' ' }, StringSplitOptions.RemoveEmptyEntries)
-                    .Select(e => e.Trim().StartsWith('.') ? e.Trim() : "." + e.Trim()),
-                StringComparer.OrdinalIgnoreCase);
-            return _skipped.Count > 0 && _skipped.Contains(Path.GetExtension(path));
+            if (_skipped == null)
+            {
+                var entries = SkipExtensions.Split(new[] { ';', ',', ' ' }, StringSplitOptions.RemoveEmptyEntries)
+                    .Select(e => e.Trim()).Where(e => e.Length > 0 && e != ".").ToList();
+                _skippedNames = new HashSet<string>(entries, StringComparer.OrdinalIgnoreCase);
+                _skipped = new HashSet<string>(entries.Select(e => e.StartsWith('.') ? e : "." + e),
+                    StringComparer.OrdinalIgnoreCase);
+            }
+            if (_skipped.Count == 0) return false;
+
+            foreach (var part in path.Split('/', '\\'))
+            {
+                if (part.Length == 0) continue;
+                if (_skippedNames!.Contains(part)) return true;
+                var dot = part.LastIndexOf('.');
+                if (dot >= 0 && _skipped.Contains(part[dot..])) return true;
+            }
+            return false;
         }
     }
 

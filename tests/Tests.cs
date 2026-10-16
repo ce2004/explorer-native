@@ -166,6 +166,14 @@ namespace ExplorerNative
             }
 
             // Just the Drive folder monitor against the fake Drive.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "planner")
+            {
+                DriveMonitorResilienceTests();
+                await FakeDriveMonitorTests.RunAll(Check, Equal);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "monitor")
             {
                 await FakeDriveMonitorTests.RunAll(Check, Equal);
@@ -1047,6 +1055,17 @@ namespace ExplorerNative
                 "Upload:keep.txt", Plan(new SyncRules(SyncMode.TwoWay, false, SkipExtensions: "iso, .MKV"),
                     Files(("keep.txt", new SyncFile(1, t0)), ("disc.iso", new SyncFile(1, t0)), ("film.mkv", new SyncFile(1, t0))),
                     Files(), Base()));
+            Equal("a skipped ending or name also skips folders, and everything in them, on both sides",
+                "Upload:Music/keep.flac", Plan(new SyncRules(SyncMode.TwoWay, true, SkipExtensions: ".mp3 .sync temp"),
+                    Files(("Music/keep.flac", new SyncFile(1, t0)), ("Music/song.mp3", new SyncFile(1, t0)),
+                          ("Music/.sync/state.db", new SyncFile(1, t0)), ("Photos.sync/a.jpg", new SyncFile(1, t0)),
+                          ("temp/x.txt", new SyncFile(1, t0)), ("Old.MP3/cover.jpg", new SyncFile(1, t0))),
+                    Files(("Backup.sync/deep/b.jpg", new SyncFile(1, t0, "R"))),
+                    Base(("Music/.sync/gone.db", B(1, t0, "G")))));
+            var folderRules = new SyncRules(SyncMode.TwoWay, false, SkipExtensions: ".sync");
+            Check("a skipped ending only matches whole endings or names, not part of one",
+                !folderRules.SkipsType("Music/async/a.txt") && !folderRules.SkipsType("Music/a.syncing") &&
+                folderRules.SkipsType("a.sync") && folderRules.SkipsType(".sync/a.txt"));
             const long mb = 1024 * 1024;
             Equal("files larger than the limit are left alone",
                 "Upload:small.txt", Plan(new SyncRules(SyncMode.TwoWay, false, MaxBytes: 100 * mb),

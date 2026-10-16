@@ -1,3 +1,6 @@
+3.0.10
+New feature: the skip box in a synced folder's settings, now called Skip file and folder types, skips folders too. Type .mp3 .sync and every file or folder ending in .mp3 or .sync is left out, along with everything inside a skipped folder. A plain name such as temp skips anything called temp as well.
+
 3.0.9
 Better: Windows notifications no longer start with the setting's name, such as Sync all, pause all, resume all. You just hear what happened.
 Better: messages read like a person wrote them. Syncing 1 synced folder now is now Syncing Music now, Deleted 1 item is just Deleted, a folder size says Music is 14 GB, 3,120 files in 12 folders, and copies, moves, uploads, deletes and syncs that partly fail say so in one plain sentence.
