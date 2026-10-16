@@ -641,7 +641,7 @@ namespace ExplorerNative
     {
         private readonly TextBox _name, _local, _drive, _skipTypes, _example;
         private readonly ComboBox _mode, _maxSize, _clash;
-        private readonly CheckBox _deletes, _paused, _subfolders;
+        private readonly CheckBox _deletes, _freeUp, _paused, _subfolders;
         private readonly Button _ok;
 
         public DriveSyncPair Pair { get; }
@@ -852,6 +852,10 @@ namespace ExplorerNative
             h.Controls.Add(_example);
             h.SetColumnSpan(_example, 2);
             _deletes = Tick(h, "Delete on b&oth sides: a file I delete is deleted on the other side too", pair.CopyDeletes);
+            _freeUp = Tick(h, "&Free up space: delete each file from this PC once it is safely in Google Drive", pair.DeleteAfterUpload);
+            _freeUp.AccessibleDescription =
+                "Only for PC to Google Drive only. A file is deleted once Google Drive has all of it, checked against " +
+                "Drive's own copy, and only when nothing is still writing it";
             _clash = Choice(h, "If a file &changed in both places:", Clashes.Select(c => c.Text),
                 Array.FindIndex(Clashes, c => c.Choice == pair.WhenBothChanged));
             Skip(h);
@@ -903,13 +907,26 @@ namespace ExplorerNative
             AcceptButton = _ok;
             CancelButton = cancel;
 
+            // Free up space only goes with PC to Drive only, and never with
+            // deletes copied: deleting the PC's copy would then trash Drive's.
+            void ShowFreeUp()
+            {
+                bool upOnly = Modes[Math.Max(0, _mode.SelectedIndex)].Mode == SyncMode.UploadOnly;
+                _freeUp.Enabled = upOnly;
+                if (!upOnly) _freeUp.Checked = false;
+                if (_freeUp.Checked) _deletes.Checked = false;
+                _deletes.Enabled = !_freeUp.Checked;
+            }
             void ShowExample() => _example.Text =
-                Example(Modes[Math.Max(0, _mode.SelectedIndex)].Mode, _local.Text, _drive.Text, _deletes.Checked);
+                Example(Modes[Math.Max(0, _mode.SelectedIndex)].Mode, _local.Text, _drive.Text, _deletes.Checked) +
+                (_freeUp.Checked ? " Each file is then deleted from this PC, once Google Drive has all of it." : "");
             void ShowOk() => _ok.Text = _adding && !_paused.Checked ? "&Start syncing" : "&Save";
+            ShowFreeUp();
             ShowExample();
             ShowOk();
-            _mode.SelectedIndexChanged += (_, _) => ShowExample();
+            _mode.SelectedIndexChanged += (_, _) => { ShowFreeUp(); ShowExample(); };
             _deletes.CheckedChanged += (_, _) => ShowExample();
+            _freeUp.CheckedChanged += (_, _) => { ShowFreeUp(); ShowExample(); };
             _local.TextChanged += (_, _) => ShowExample();
             _drive.TextChanged += (_, _) => ShowExample();
             _paused.CheckedChanged += (_, _) => ShowOk();
@@ -1016,6 +1033,7 @@ namespace ExplorerNative
                     edited.SkipExtensions = _skipTypes.Text.Trim();
                     edited.IncludeSubfolders = _subfolders.Checked;
                     edited.CopyDeletes = _deletes.Checked;
+                    edited.DeleteAfterUpload = _freeUp.Checked && edited.Mode == SyncMode.UploadOnly && !edited.CopyDeletes;
                     edited.Paused = _paused.Checked;
 
                     // Two synced folders over the same files would each upload them.
@@ -1035,6 +1053,7 @@ namespace ExplorerNative
                     Pair.SkipExtensions = edited.SkipExtensions;
                     Pair.IncludeSubfolders = edited.IncludeSubfolders;
                     Pair.CopyDeletes = edited.CopyDeletes;
+                    Pair.DeleteAfterUpload = edited.DeleteAfterUpload;
                     Pair.Paused = edited.Paused;
                     DialogResult = DialogResult.OK;
                     Close();

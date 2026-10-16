@@ -54,6 +54,17 @@ namespace ExplorerNative
         /// <summary>Off by default: a delete on one side is not copied to the other.</summary>
         public bool CopyDeletes { get; set; }
 
+        /// <summary>
+        /// Free up space: each PC file is deleted once its copy in Drive is
+        /// checked to be whole (see DriveMonitor.FreeUpAsync). Only ever acted
+        /// on in upload only with deletes not copied (<see cref="FreesUpSpace"/>).
+        /// </summary>
+        public bool DeleteAfterUpload { get; set; }
+
+        /// <summary>Whether this pair deletes PC files once they are in Drive: asked for, and safe in its mode.</summary>
+        [JsonIgnore]
+        public bool FreesUpSpace => DeleteAfterUpload && Mode == SyncMode.UploadOnly && !CopyDeletes;
+
         public bool Paused { get; set; }
 
         /// <summary>Folders inside the folder are synced too. On by default.</summary>
@@ -366,6 +377,8 @@ namespace ExplorerNative
             if (name.StartsWith("~$", StringComparison.Ordinal)) return true;
             if (name.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)) return true;
             if (name.EndsWith(".partial", StringComparison.OrdinalIgnoreCase)) return true;
+            // Resilio Sync's download in progress, renamed to the real name when done.
+            if (name.EndsWith(".!sync", StringComparison.OrdinalIgnoreCase)) return true;
             // The small link files Google Drive for desktop leaves for Docs,
             // Sheets and the rest. The documents themselves are not files (the
             // Drive scan leaves them out), so these would go up as junk copies.

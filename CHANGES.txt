@@ -1,3 +1,10 @@
+3.0.11
+New feature: Free up space, in a synced folder's settings. With PC to Google Drive only, each file is deleted from this PC once Google Drive has all of it, so you can send up a folder bigger than your disk as it fills. A file is only deleted after its copy in Drive is checked to match it exactly, and never while anything is still writing it. Temporary files, half downloads and anything you skip are never touched.
+New feature: empty folders sync to Google Drive. Make a folder in a synced folder and it shows up in Drive straight away, even with nothing in it yet. Folders you already had are added the next time Explorer Native syncs.
+Bug fixed: a file you had just saved in a synced folder could take over a minute to reach Google Drive. Now it goes up about ten seconds after you stop changing it.
+Better: a first sync of a folder with thousands of subfolders starts sending files much sooner. The folders are made in Google Drive several at a time instead of one by one, which could hold everything up for many minutes.
+Bug fixed: files Resilio Sync was still downloading, the ones ending in .!sync, could be uploaded half finished. They are now left alone until Resilio is done with them.
+
 3.0.10
 New feature: the skip box in a synced folder's settings, now called Skip file and folder types, skips folders too. Type .mp3 .sync and every file or folder ending in .mp3 or .sync is left out, along with everything inside a skipped folder. A plain name such as temp skips anything called temp as well.
 

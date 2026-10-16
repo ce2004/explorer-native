@@ -61,6 +61,9 @@ namespace ExplorerNative
                 await SecondReviewTests(sandbox);
                 await ThirdRoundTests(sandbox);
                 await FourthRoundTests(sandbox);
+                await EmptyFolderTests(sandbox);
+                await SettleWakeTests(sandbox);
+                await FreeUpTests(sandbox);
                 NoDialogTests();
                 await CheckClientCancelTests();
             }
@@ -188,6 +191,138 @@ namespace ExplorerNative
             var bytes = new byte[length];
             new Random(seed).NextBytes(bytes);
             return bytes;
+        }
+
+        // ---------------- empty folders, and files held back while they settle ----------------
+
+        private static async Task EmptyFolderTests(string sandbox)
+        {
+            using (var rig = new Rig(sandbox, SyncMode.UploadOnly))
+            {
+                rig.Pair.SkipExtensions = ".sync";
+                Directory.CreateDirectory(Path.Combine(rig.Local, "Canada"));
+                Directory.CreateDirectory(Path.Combine(rig.Local, "US", "New York"));
+                rig.Write(".sync/ID", "resilio", T0);
+                rig.Write("US/book.mp3.!sync", "half", T0);
+                var hidden = Directory.CreateDirectory(Path.Combine(rig.Local, "Hidden"));
+                hidden.Attributes |= FileAttributes.Hidden;
+                rig.Write("a.txt", "", T0);
+
+                Equal("empty folders: the first pass has no problem", "", await rig.Pass() ?? "");
+                Check("an empty folder is made in Drive", rig.Drive.Find(rig.FolderId, "Canada") != null);
+                Check("and an empty folder inside an empty folder", rig.Drive.Find(rig.FolderId, "US/New York") != null);
+                Check("a folder the skip list names is not", rig.Drive.Find(rig.FolderId, ".sync") == null);
+                Check("nor a hidden folder", rig.Drive.Find(rig.FolderId, "Hidden") == null);
+                Equal("and Resilio's download in progress is not uploaded", "a.txt", Names(rig.DriveTree()));
+
+                int creates = rig.Drive.Creates;
+                await rig.Pass();
+                Equal("a second pass makes no folder twice", creates.ToString(), rig.Drive.Creates.ToString());
+
+                Directory.CreateDirectory(Path.Combine(rig.Local, "Later"));
+                await rig.Pass();
+                Check("a folder made after the first pass is made in Drive too", rig.Drive.Find(rig.FolderId, "Later") != null);
+            }
+
+            using (var rig = new Rig(sandbox, SyncMode.DownloadOnly))
+            {
+                Directory.CreateDirectory(Path.Combine(rig.Local, "Canada"));
+                await rig.Pass();
+                Check("download only never makes a folder in Drive", rig.Drive.Find(rig.FolderId, "Canada") == null);
+            }
+
+            using (var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true))
+            {
+                Directory.CreateDirectory(Path.Combine(rig.Local, "Kept"));
+                await rig.Pass();
+                var id = rig.Drive.Find(rig.FolderId, "Kept");
+                Check("two-way makes an empty folder too", id != null);
+                rig.Drive.Trash(id!);
+                await rig.Pass();
+                Check("but with deletes on, one deleted in Drive is not made again", rig.Drive.Find(rig.FolderId, "Kept") == null);
+            }
+        }
+
+        private static async Task SettleWakeTests(string sandbox)
+        {
+            using var rig = new Rig(sandbox, SyncMode.UploadOnly);
+            rig.Monitor.SettleTime = TimeSpan.FromSeconds(3);
+            rig.Write("new.txt", "just saved", DateTime.UtcNow.AddSeconds(-1));
+            await rig.Pass();
+            Equal("a file saved a moment ago waits to settle", "", Names(rig.DriveTree()));
+            var wake = rig.Monitor.LastSettleWake;
+            Check("and the pair asks to run again once it has, not on the minute",
+                wake is { } w && w > TimeSpan.Zero && w <= TimeSpan.FromSeconds(3) + DriveMonitor.SettleMargin, wake?.ToString());
+            await Task.Delay(wake ?? TimeSpan.Zero);
+            await rig.Pass();
+            Equal("and that pass sends it", "new.txt", Names(rig.DriveTree()));
+        }
+
+        // ---------------- free up space: PC files deleted once safely in Drive ----------------
+
+        private static async Task FreeUpTests(string sandbox)
+        {
+            using (var rig = new Rig(sandbox, SyncMode.UploadOnly))
+            {
+                rig.Pair.DeleteAfterUpload = true;
+                rig.Pair.SkipExtensions = ".iso .sync";
+                rig.Monitor.SettleTime = TimeSpan.FromSeconds(5);
+                rig.Write("a.txt", "alpha", T0);
+                rig.Write("Book/01.mp3", Noise(300_000, 1), T0);
+                rig.Write("disc.iso", "skipped by the list", T0);
+                rig.Write(".sync/ID", "resilio's own", T0);
+                rig.Write("Book/02.mp3.!sync", "resilio still downloading", T0);
+                rig.Write("old.tmp", "temp", T0);
+                rig.Write("song.partial", "half a download", T0);
+                rig.Write("~$report.docx", "office lock", T0);
+                rig.Write("hidden.txt", "hidden", T0);
+                File.SetAttributes(Path.Combine(rig.Local, "hidden.txt"), FileAttributes.Hidden);
+                rig.Write("fresh.txt", "saved a moment ago", DateTime.UtcNow);
+                rig.Write("open.txt", "still being written", T0);
+                using (var writer = new FileStream(Path.Combine(rig.Local, "open.txt"), FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite))
+                    Equal("free up: the pass has no problem", "", await rig.Pass() ?? "");
+
+                var onPc = rig.LocalTree();
+                Check("a file safely in Drive is deleted from the PC", !onPc.ContainsKey("a.txt") && !onPc.ContainsKey("Book/01.mp3"),
+                    Names(onPc));
+                Check("and Drive keeps it, whole", Text(rig.DriveTree(), "a.txt") == "alpha" &&
+                    rig.DriveTree().TryGetValue("Book/01.mp3", out var song) && song.AsSpan().SequenceEqual(Noise(300_000, 1)));
+                foreach (var kept in new[] { "disc.iso", ".sync/ID", "Book/02.mp3.!sync", "old.tmp", "song.partial", "~$report.docx",
+                                             "hidden.txt", "fresh.txt", "open.txt" })
+                    Check($"free up never deletes {kept}", File.Exists(Path.Combine(rig.Local, kept.Replace('/', '\\'))));
+                Check("nothing it left on the PC that never went up is in Drive",
+                    !rig.DriveTree().Keys.Any(k => k.EndsWith(".!sync") || k.EndsWith(".tmp") || k.EndsWith(".partial") || k.StartsWith(".sync")));
+
+                await rig.Pass();
+                Check("the next pass leaves Drive's copies alone", rig.Drive.Trashes == 0 && rig.DriveTree().ContainsKey("a.txt"));
+
+                // The same book turning up in another folder is a new file, not a move.
+                rig.Write("Canada/01.mp3", Noise(300_000, 1), T0);
+                await rig.Pass();
+                var drive = rig.DriveTree();
+                Check("an identical file elsewhere goes up beside it, never moving Drive's copy",
+                    drive.ContainsKey("Book/01.mp3") && drive.ContainsKey("Canada/01.mp3"), Names(drive));
+                Check("and is cleared off the PC in turn", !File.Exists(Path.Combine(rig.Local, "Canada", "01.mp3")));
+                Check("the pass says what it cleared, apart from deletes",
+                    rig.Said.Any(s => s.Contains("cleared off this PC")) && !rig.Said.Any(s => s.Contains(" deleted")), string.Join(" | ", rig.Said));
+            }
+
+            using (var rig = new Rig(sandbox, SyncMode.TwoWay))
+            {
+                rig.Pair.DeleteAfterUpload = true;
+                rig.Write("a.txt", "alpha", T0);
+                await rig.Pass();
+                Check("free up is ignored in two-way", File.Exists(Path.Combine(rig.Local, "a.txt")));
+            }
+
+            using (var rig = new Rig(sandbox, SyncMode.UploadOnly, deletes: true))
+            {
+                rig.Pair.DeleteAfterUpload = true;
+                rig.Write("a.txt", "alpha", T0);
+                await rig.Pass();
+                Check("and with deletes copied, where it would delete Drive's copy too",
+                    File.Exists(Path.Combine(rig.Local, "a.txt")) && rig.DriveTree().ContainsKey("a.txt"));
+            }
         }
 
         // ---------------- downloads: many at once, streamed, and the summary's listing ----------------
