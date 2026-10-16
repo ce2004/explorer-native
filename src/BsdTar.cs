@@ -866,7 +866,9 @@ namespace ExplorerNative
                 using (var process = Start(start, (line, failed, reason) =>
                        {
                            if (!line.StartsWith("x ", StringComparison.Ordinal)) return;
-                           lock (printed) printed.Add((line[2..].Trim(), failed ? reason ?? "" : null));
+                           // Kept whole: where the name ends is settled below,
+                           // once it is known what landed in staging.
+                           lock (printed) printed.Add((failed ? line[2..] + ": " + reason : line[2..], null));
                            reporter.Finished(0);
                        }))
                 {
@@ -893,6 +895,21 @@ namespace ExplorerNative
 
                 List<(string Name, string? Failure)> lines;
                 lock (printed) lines = new List<(string, string?)>(printed);
+
+                // "x name" or "x name: what went wrong". A member's own name can
+                // hold ": " ("Notes: draft.txt", from Linux), and split at the
+                // first one it was taken for a failure of "Notes" — so the file
+                // bsdtar had quietly renamed was moved into place under that
+                // new name, and anything really called "Notes" was held back.
+                // A clean exit has no failures at all; otherwise the name is
+                // the longest part of the line that is in the staging folder.
+                if (outcome is { ExitCode: 0 })
+                    lines = lines.Select(l => (l.Name.Trim(), (string?)null)).ToList();
+                else
+                {
+                    var stagedNames = StagedNames(staging);
+                    lines = lines.Select(l => SplitLine(l.Name, stagedNames.Contains)).ToList();
+                }
 
                 bool damaged = false;
                 if (outcome is { ExitCode: not 0 })
@@ -1055,6 +1072,57 @@ namespace ExplorerNative
             while (lead < slashed.Length && slashed[lead] == '/') lead++;
             var rest = string.Join('/', slashed[lead..].Split('/').Where(s => s != "."));
             return slashed[..lead] + rest;
+        }
+
+        /// <summary>
+        /// One "x" line (without the "x ") as the entry's name and bsdtar's
+        /// complaint about it, if any. Every ": " in it could be where the name
+        /// ends. The whole line is a name when that name landed in staging;
+        /// otherwise the longest part before a ": " that landed is (a file
+        /// half written and then complained about); otherwise the first ": "
+        /// ends it, as libarchive's messages never start with one.
+        /// </summary>
+        /// <param name="staged">Whether a name, cleaned as the rules clean it, is in the staging folder.</param>
+        internal static (string Name, string? Failure) SplitLine(string raw, Func<string, bool> staged)
+        {
+            var splits = new List<int>();
+            if (raw.Length < 3) return (raw.Trim(), null);
+            for (int at = raw.IndexOf(": ", 1, StringComparison.Ordinal); at > 0;
+                 at = at + 2 < raw.Length ? raw.IndexOf(": ", at + 2, StringComparison.Ordinal) : -1)
+                splits.Add(at);
+
+            if (splits.Count == 0) return (raw.Trim(), null);
+
+            bool Landed(string name) => staged(ExtractionRules.Normalise(CleanLikeTar(name.Trim())));
+
+            if (Landed(raw)) return (raw.Trim(), null);
+            for (int i = splits.Count - 1; i >= 0; i--)
+                if (Landed(raw[..splits[i]])) return (raw[..splits[i]].Trim(), raw[(splits[i] + 2)..]);
+
+            return (raw[..splits[0]].Trim(), raw[(splits[0] + 2)..]);
+        }
+
+        /// <summary>Every name in the staging folder, files and folders, as the rules clean names.</summary>
+        private static HashSet<string> StagedNames(string staging)
+        {
+            var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                var root = Verbatim(staging);
+                var pending = new Stack<DirectoryInfo>();
+                pending.Push(new DirectoryInfo(root));
+                while (pending.Count > 0)
+                {
+                    foreach (var item in pending.Pop().EnumerateFileSystemInfos())
+                    {
+                        names.Add(ExtractionRules.Normalise(Relative(root, item.FullName)));
+                        if (item is DirectoryInfo sub && (item.Attributes & FileAttributes.ReparsePoint) == 0)
+                            pending.Push(sub);
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            return names;
         }
 
         /// <summary>What bsdtar does on Windows to a name it cannot store:the forbidden characters become underscores and a trailing dot or space goes.</summary>
@@ -1357,6 +1425,8 @@ namespace ExplorerNative
                     try { File.Move(from, target, overwrite: true); }
                     catch (UnauthorizedAccessException)
                     {
+                        // Never a folder's read-only flag: see WriteCommitted.
+                        if (Directory.Exists(target)) throw new IOException(ArchiveEngine.FolderInTheWay);
                         ArchiveEngine.ClearReadOnly(target);
                         File.Move(from, target, overwrite: true);
                     }

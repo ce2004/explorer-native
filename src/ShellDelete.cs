@@ -50,8 +50,23 @@ namespace ExplorerNative
         /// Recycles <paramref name="path"/>. False when somebody answered No to
         /// deleting it permanently; throws when it could not be done.
         /// </summary>
+        /// <summary>
+        /// Whether a path has a part ending in a dot or a space, which the shell
+        /// can only reach by the plain name, and the plain name is another file.
+        /// </summary>
+        internal static bool UnreachableByShell(string path) =>
+            !path.StartsWith(@"\\?\", StringComparison.Ordinal) &&
+            !string.Equals(NameRules.ExactPath(path), path, StringComparison.Ordinal);
+
+        internal const string DottedRefusal =
+            "Windows cannot put a name ending in a dot or a space in the Recycle Bin, so it was kept";
+
         public static bool Recycle(string path, IntPtr owner)
         {
+            // The shell reads "Backup." as "Backup", and would recycle that.
+            // Every caller checks; this is the last line, so it never can.
+            if (UnreachableByShell(path)) throw new IOException(DottedRefusal);
+
             var operation = new SHFILEOPSTRUCT
             {
                 hwnd = owner,
@@ -251,6 +266,10 @@ namespace ExplorerNative
         /// </summary>
         public static string? RecycleWithoutUi(string path)
         {
+            // Through the plain path a name ending in a dot or a space is a
+            // different file: the shell would have recycled its sibling.
+            if (UnreachableByShell(path)) return DottedRefusal;
+
             if (!ConnectFiles.HasRecycleBin(path))
                 return "that drive has no Recycle Bin, so it would have been deleted for good";
 

@@ -211,6 +211,25 @@ namespace ExplorerNative
         /// </summary>
         private readonly ConcurrentDictionary<string, (string Folder, string Name)> _whereIs = new(StringComparer.Ordinal);
 
+        /// <summary>
+        /// What Drive calls the item at a path on this mount, from its folder's
+        /// listing however old, or null when no listing says. The name on disk
+        /// is Sanitise's and Unique's ("AC_DC.flac", "song (2).flac"), and is
+        /// not the name to describe the file to Drive by.
+        /// </summary>
+        public string? DriveNameAt(string? fullPath)
+        {
+            var key = KeyFor(fullPath);
+            if (string.IsNullOrEmpty(key)) return null;
+            int cut = key.LastIndexOf('\\');
+            string parent = cut < 0 ? "" : key[..cut];
+            string leaf = cut < 0 ? key : key[(cut + 1)..];
+            if (!_listings.TryGetValue(parent, out var placed)) return null;
+            foreach (var item in placed)
+                if (item.Name.Equals(leaf, StringComparison.OrdinalIgnoreCase)) return item.DriveName;
+            return null;
+        }
+
         /// <summary>The Drive folder id for a directory on this mount, or null.</summary>
         public string? FolderIdFor(string? fullPath)
         {
@@ -324,12 +343,12 @@ namespace ExplorerNative
 
                     var clash = names[0];
                     var oldRow = listedBefore?.FirstOrDefault(p => p.Name.Equals(clash, StringComparison.OrdinalIgnoreCase));
-                    if (_listings.TryGetValue(relative, out var listedNow))
+                    EditListing(relative, listedNow =>
                     {
                         var rows = listedNow.Where(p => !p.Name.Equals(clash, StringComparison.OrdinalIgnoreCase)).ToList();
                         if (oldRow != null) rows.Add(oldRow);
-                        _listings[relative] = rows.ToArray();
-                    }
+                        return rows.ToArray();
+                    });
                     // used already holds the clashing name, so the next build moves on.
                 }
 
@@ -379,7 +398,9 @@ namespace ExplorerNative
             try
             {
                 var key = KeyFor(fullPath);
-                if (key == null) return false;
+                // Never the root: what follows deletes the path from disk, and
+                // the root is the sync root itself.
+                if (key == null || key.Length == 0) return false;
 
                 // Everything underneath as well, not just this key.
                 //
@@ -389,23 +410,31 @@ namespace ExplorerNative
                 // or MoveOrRename. CLAUDE.md is explicit that the path-to-id half
                 // is where a mistake deletes the wrong thing, and this was that
                 // mistake waiting for a folder to be deleted.
-                var prefix = key.Length == 0 ? "" : key + "\\";
+                var prefix = key + "\\";
+                bool Under(string entry) =>
+                    entry == key || entry.StartsWith(prefix, StringComparison.OrdinalIgnoreCase);
 
-                foreach (var map in new[] { _ids, _folders })
+                foreach (var map in new[] { _ids, _folders, _driveIds })
                     foreach (var entry in map.Keys)
-                        if (entry == key || (prefix.Length > 0 &&
-                            entry.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
-                            map.TryRemove(entry, out _);
+                        if (Under(entry)) map.TryRemove(entry, out _);
 
                 foreach (var entry in _populated.Keys)
-                    if (entry == key || (prefix.Length > 0 &&
-                        entry.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
-                        _populated.TryRemove(entry, out _);
+                    if (Under(entry)) _populated.TryRemove(entry, out _);
+
+                foreach (var entry in _answeredOffline.Keys)
+                    if (Under(entry)) _answeredOffline.TryRemove(entry, out _);
 
                 foreach (var entry in _listings.Keys)
-                    if (entry == key || (prefix.Length > 0 &&
-                        entry.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)))
-                        _listings.TryRemove(entry, out _);
+                    if (Under(entry)) _listings.TryRemove(entry, out _);
+
+                // The rest of what is kept per folder. A stale stamp or mark
+                // outlived the folder: a later folder of the same name was taken
+                // as freshly listed, and the hand-back timer kept ticking for a
+                // directory that is gone.
+                foreach (var entry in _listedAt.Keys)
+                    if (Under(entry)) _listedAt.TryRemove(entry, out _);
+                foreach (var entry in _markedFull.Keys)
+                    if (Under(entry)) _markedFull.TryRemove(entry, out _);
 
                 // And out of the parent's listing, which is what the pane is
                 // built from. Dropping the maps for the thing itself is not
@@ -416,14 +445,17 @@ namespace ExplorerNative
                 string parent = cut < 0 ? "" : key[..cut];
                 string leaf = cut < 0 ? key : key[(cut + 1)..];
 
-                if (_listings.TryGetValue(parent, out var siblings))
-                {
-                    var kept = siblings
-                        .Where(s => !string.Equals(s.Name, leaf, StringComparison.OrdinalIgnoreCase))
-                        .ToArray();
+                // Where each id under it was placed, by the folder and name.
+                foreach (var (id, where) in _whereIs.ToArray())
+                    if (Under(where.Folder) ||
+                        (where.Folder == parent && where.Name.Equals(leaf, StringComparison.OrdinalIgnoreCase)))
+                        _whereIs.TryRemove(new KeyValuePair<string, (string, string)>(id, where));
 
-                    if (kept.Length != siblings.Length) _listings[parent] = kept;
-                }
+                // Atomically: an upload placing a row in the same folder at the
+                // same moment (a replace among parallel uploads) lost its row.
+                EditListing(parent, siblings => siblings
+                    .Where(s => !string.Equals(s.Name, leaf, StringComparison.OrdinalIgnoreCase))
+                    .ToArray());
 
                 if (Directory.Exists(fullPath)) Directory.Delete(fullPath, true);
                 else if (File.Exists(fullPath)) File.Delete(fullPath);
@@ -501,12 +533,12 @@ namespace ExplorerNative
 
                 // Its row, from the listing it leaves, to the one it joins.
                 DrivePlaced? row = null;
-                if (_listings.TryGetValue(fromParent, out var leaving))
+                EditListing(fromParent, leaving =>
                 {
                     row = leaving.FirstOrDefault(p => p.Name.Equals(fromLeaf, StringComparison.OrdinalIgnoreCase));
-                    _listings[fromParent] = leaving
+                    return leaving
                         .Where(p => !p.Name.Equals(fromLeaf, StringComparison.OrdinalIgnoreCase)).ToArray();
-                }
+                });
 
                 if (toKey != fromKey) RekeyTree(fromKey, toKey);
                 _whereIs[id] = (toParent, name);
@@ -516,10 +548,10 @@ namespace ExplorerNative
                         File.GetLastWriteTime(target), driveName)
                     : row with { Name = name, DriveName = driveName };
 
-                if (_listings.TryGetValue(toParent, out var joining))
-                    _listings[toParent] = joining
-                        .Where(p => !p.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
-                        .Append(row).ToArray();
+                var joiningRow = row;
+                EditListing(toParent, joining => joining
+                    .Where(p => !p.Name.Equals(name, StringComparison.OrdinalIgnoreCase))
+                    .Append(joiningRow).ToArray());
 
                 return name;
             }
@@ -527,6 +559,24 @@ namespace ExplorerNative
             {
                 _log($"  could not move {Path.GetFileName(fromFullPath)} in place: {ex.Message}");
                 return null;
+            }
+        }
+
+        /// <summary>
+        /// Rewrites one folder's listing as a single step against whatever it
+        /// holds at that moment. A read, an edit and a plain store lost any row
+        /// another thread added in between: an upload's PlaceOne landing while a
+        /// replace removed the old copy left the new file off the pane.
+        /// </summary>
+        private void EditListing(string key, Func<DrivePlaced[], DrivePlaced[]> edit)
+        {
+            // Until it lands: a losing attempt means another writer's landed, so
+            // this always ends, and giving up after a bound dropped the edit.
+            while (true)
+            {
+                if (!_listings.TryGetValue(key, out var now)) return;
+                var next = edit(now);
+                if (ReferenceEquals(next, now) || _listings.TryUpdate(key, next, now)) return;
             }
         }
 
@@ -3062,7 +3112,10 @@ namespace ExplorerNative
             }
             finally
             {
-                leased?.EndLease();
+                // Never as a warm. A read that got as far as the cache has
+                // marked it read already; one that failed before that is a
+                // failure, and must not start the whole file downloading.
+                leased?.EndLease(warm: false);
                 if (reader != null)
                 {
                     lock (_readersGate)

@@ -274,10 +274,21 @@ namespace ExplorerNative
         }
 
         /// <summary>The path Windows has for an open file, without the "\\?\" in front.</summary>
+        /// <remarks>
+        /// A path longer than the buffer is answered with the size it needs,
+        /// and asked again. Taken as no path, a change in a folder more than
+        /// 1,023 characters deep read as one outside the pair, and was not
+        /// synced until the daily walk.
+        /// </remarks>
         private static string? FinalPath(SafeFileHandle handle)
         {
             var text = new char[1024];
             int n = GetFinalPathNameByHandleW(handle, text, text.Length, 0);
+            if (n >= text.Length && n <= 32_768)
+            {
+                text = new char[n + 1];
+                n = GetFinalPathNameByHandleW(handle, text, text.Length, 0);
+            }
             if (n <= 0 || n >= text.Length) return null;
             var path = new string(text, 0, n);
             if (path.StartsWith(@"\\?\UNC\", StringComparison.Ordinal)) return @"\\" + path[8..];

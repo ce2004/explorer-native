@@ -31,6 +31,13 @@ namespace ExplorerNative
         long TotalBytes)
     {
         public bool IsEmpty => Files.Count == 0 && Folders.Count == 0;
+
+        /// <summary>
+        /// The name each of <see cref="SourceFolders"/> goes up as, in the same
+        /// order: its own, or a free one when an earlier source folder in the same
+        /// upload already has that name. Null means each goes as its own name.
+        /// </summary>
+        public IReadOnlyList<string>? SourceNames { get; init; }
     }
 
     /// <summary>
@@ -226,7 +233,13 @@ namespace ExplorerNative
             var files = new List<UploadFile>();
             var folders = new List<string>();
             var roots = new List<string>();
+            var rootNames = new List<string>();
             long total = 0;
+
+            // Two source folders of one name — Music from two drives — were one
+            // relative path, so they went up as one folder with both trees mixed
+            // inside it. The second gets a free name, as a paste gives it.
+            var topNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var source in sources)
             {
@@ -244,8 +257,11 @@ namespace ExplorerNative
                     // and "upload D: into Drive" is not a thing anybody asked for.
                     if (name.Length == 0 || name.EndsWith(":", StringComparison.Ordinal)) continue;
 
+                    var sentAs = NameRules.UniqueAmong(name, topNames.Contains, folder: true);
+                    topNames.Add(sentAs);
                     roots.Add(source);
-                    Walk(source, name, files, folders, ref total);
+                    rootNames.Add(sentAs);
+                    Walk(source, sentAs, files, folders, ref total);
                     continue;
                 }
 
@@ -262,7 +278,7 @@ namespace ExplorerNative
                 total += size;
             }
 
-            return new UploadWork(files, folders, roots, total);
+            return new UploadWork(files, folders, roots, total) { SourceNames = rootNames };
         }
 
         /// <summary>
@@ -465,6 +481,19 @@ namespace ExplorerNative
                 }
             }
 
+            // A source folder Survey had to give a free name (a second Music),
+            // said as the rename it is, unless the setting renamed it again or
+            // it is not going at all.
+            var sentAs = work.SourceNames;
+            if (sentAs != null)
+                for (int i = 0; i < sentAs.Count && i < work.SourceFolders.Count; i++)
+                {
+                    var own = Path.GetFileName(work.SourceFolders[i].TrimEnd('\\', '/'));
+                    if (!string.Equals(own, sentAs[i], StringComparison.Ordinal) &&
+                        !dropped.Contains(sentAs[i]) && !_topRenames.ContainsKey(sentAs[i]))
+                        lock (_log) _log.Renamed(sentAs[i]);
+                }
+
             if (dropped.Count == 0) return work;
 
             static string Top(string relative)
@@ -477,15 +506,20 @@ namespace ExplorerNative
             var folders = work.Folders.Where(f => !dropped.Contains(Top(f))).ToList();
             // And out of the folders a move tidies away afterwards: a tree that was
             // not sent had its empty subfolders deleted all the same.
-            var sources = work.SourceFolders
-                .Where(r => !dropped.Contains(Path.GetFileName(Path.TrimEndingDirectorySeparator(r))))
+            // By the name each one went up as, which for a second folder of the
+            // same name is not its own.
+            var kept = Enumerable.Range(0, work.SourceFolders.Count)
+                .Where(i => !dropped.Contains(sentAs != null && i < sentAs.Count
+                    ? sentAs[i]
+                    : Path.GetFileName(Path.TrimEndingDirectorySeparator(work.SourceFolders[i]))))
                 .ToList();
 
             return work with
             {
                 Files = files,
                 Folders = folders,
-                SourceFolders = sources,
+                SourceFolders = kept.Select(i => work.SourceFolders[i]).ToList(),
+                SourceNames = sentAs == null ? null : kept.Where(i => i < sentAs.Count).Select(i => sentAs[i]).ToList(),
                 TotalBytes = files.Sum(f => f.Size),
             };
         }
@@ -652,7 +686,9 @@ namespace ExplorerNative
                 {
                     if (reserved) Release(folder, name);
                     Unsend(counted);
+                    NotGoing(file);
                     Fail(name, "Google Drive would not take it");
+                    Report(name);
                     return;
                 }
 
@@ -734,12 +770,25 @@ namespace ExplorerNative
                 // here is the whole transfer rather than one file.
                 if (reserved) Release(folder, name);
                 Unsend(counted);
+                NotGoing(file);
                 Fail(name, ex.Message);
+                Report(name);
             }
             finally
             {
                 if (big) _bigLanes.Release();
             }
+        }
+
+        /// <summary>
+        /// A file that failed comes out of the totals, as a skipped one does:
+        /// its bytes were taken back, so measured against the survey's total the
+        /// bar stopped short of the end after any failure.
+        /// </summary>
+        private void NotGoing(UploadFile file)
+        {
+            Interlocked.Add(ref _totalBytes, -file.Size);
+            Interlocked.Decrement(ref _totalFiles);
         }
 
         /// <summary>A source file's size and modified time, or Exists false when it cannot be read.</summary>

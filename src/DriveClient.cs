@@ -562,7 +562,7 @@ namespace ExplorerNative
             var wait = response.Headers.RetryAfter?.Delta;
             Say("drive.ratelimited", wait == null
                 ? "Google asked Explorer Native to slow down"
-                : $"Google asked Explorer Native to slow down; trying again in {(int)wait.Value.TotalSeconds} seconds");
+                : $"Google asked Explorer Native to slow down. Trying again in {NameRules.Items(Math.Max(1, (int)wait.Value.TotalSeconds), "second")}");
         }
 
         /// <summary>
@@ -1206,9 +1206,7 @@ namespace ExplorerNative
                         if (response.StatusCode != HttpStatusCode.PartialContent && response.StatusCode != HttpStatusCode.OK)
                         {
                             var body = await response.Content.ReadAsStringAsync(attempt.Token);
-                            var message = $"range read failed {(int)response.StatusCode}: {body}";
-                            if (!WorthRetrying((int)response.StatusCode, body)) throw new InvalidOperationException(message);
-                            throw new RetryableReadException(message);
+                            throw ReadRefused((int)response.StatusCode, body);
                         }
                         // The whole file sent from byte zero, when the middle was asked for.
                         if (response.StatusCode == HttpStatusCode.OK && offset > 0)
@@ -1280,6 +1278,21 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// A read Google refused, as a sentence and with its status and reason
+        /// kept. The body went into the message raw: a 502 put Google's whole
+        /// HTML error page into a failed copy's line, and the status travelled
+        /// only as text, so a deleted file (404) could not be told from the rest.
+        /// </summary>
+        private static Exception ReadRefused(int status, string body)
+        {
+            var refusal = new DriveStatusException(status, body,
+                $"range read failed {status}: " + Explain(status, body));
+            return WorthRetrying(status, body)
+                ? new RetryableReadException(refusal.Message, refusal)
+                : refusal;
+        }
+
+        /// <summary>
         /// How long one attempt may go without a byte arriving.
         ///
         /// The client's own timeout stops at the headers when the body is
@@ -1324,11 +1337,7 @@ namespace ExplorerNative
                 response.StatusCode != HttpStatusCode.OK)
             {
                 var body = await response.Content.ReadAsStringAsync(token);
-                var message = $"range read failed {(int)response.StatusCode}: {body}";
-
-                throw WorthRetrying((int)response.StatusCode, body)
-                    ? new RetryableReadException(message)
-                    : new InvalidOperationException(message);
+                throw ReadRefused((int)response.StatusCode, body);
             }
 
             // A 200 rather than a 206 means the server ignored the range and is

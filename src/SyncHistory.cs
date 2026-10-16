@@ -77,6 +77,20 @@ namespace ExplorerNative
             catch { }
         }
 
+        /// <summary>
+        /// Lets go of a pass's lines unwritten: its pair was removed while it ran.
+        /// Flushed, they wrote the history file back after Remove had deleted it,
+        /// a list of file names kept for a sync that no longer exists.
+        /// </summary>
+        public static void Discard(string pairId)
+        {
+            lock (Gate)
+            {
+                Pending.Remove(pairId);
+                Dropped.Remove(pairId);
+            }
+        }
+
         private static List<string> ReadFile(string pairId)
         {
             try

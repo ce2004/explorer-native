@@ -245,7 +245,7 @@ namespace ExplorerNative
 
             if (!Health.IsOffline)
             {
-                Say("drive.offline.back", "Back online; carrying on");
+                Say("drive.offline.back", "Back online, carrying on");
                 return true;
             }
 
@@ -998,30 +998,36 @@ namespace ExplorerNative
                 // the failure it is retrying.
                 using var source = OpenRead(localPath);
 
-                using var request = replaceId == null
-                    ? await Request(HttpMethod.Post,
-                        $"{UploadEndpoint}?uploadType=multipart&fields={UploadedFields}", token)
-                    : await Request(HttpMethod.Patch,
-                        $"{UploadEndpoint}/{Uri.EscapeDataString(replaceId)}?uploadType=multipart&fields={UploadedFields}", token);
-
-                var metadata = new StringContent(
-                    replaceId == null
-                        ? MetadataJson(name, parentId, tag, UploadStamp(localPath))
-                        : UpdateMetadataJson(UploadStamp(localPath)),
-                    Encoding.UTF8, "application/json");
-
-                var counter = new ProgressStream(source, 0, total, progress);
-                var body = new StreamContent(counter, UploadBufferBytes);
-                body.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-                body.Headers.ContentLength = total;
-
-                var multipart = new MultipartContent("related") { metadata, body };
-                request.Content = multipart;
+                // Worked out before the try: a folder nothing can be put in is
+                // a refusal, not a moment, and is not worth six attempts.
+                var metadataJson = replaceId == null
+                    ? MetadataJson(name, parentId, tag, UploadStamp(localPath))
+                    : UpdateMetadataJson(UploadStamp(localPath));
 
                 int status;
                 string text;
                 try
                 {
+                    // Inside the try. Asking for the request is asking for a
+                    // token, which once an hour is a request to Google of its
+                    // own; one that met a dropped connection failed the file at
+                    // once, with no retry and no wait for the network.
+                    using var request = replaceId == null
+                        ? await Request(HttpMethod.Post,
+                            $"{UploadEndpoint}?uploadType=multipart&fields={UploadedFields}", token)
+                        : await Request(HttpMethod.Patch,
+                            $"{UploadEndpoint}/{Uri.EscapeDataString(replaceId)}?uploadType=multipart&fields={UploadedFields}", token);
+
+                    var metadata = new StringContent(metadataJson, Encoding.UTF8, "application/json");
+
+                    var counter = new ProgressStream(source, 0, total, progress);
+                    var body = new StreamContent(counter, UploadBufferBytes);
+                    body.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+                    body.Headers.ContentLength = total;
+
+                    var multipart = new MultipartContent("related") { metadata, body };
+                    request.Content = multipart;
+
                     using var response = await SendWatched(request, counter, token);
                     status = (int)response.StatusCode;
                     text = await response.Content.ReadAsStringAsync(token);
@@ -1043,10 +1049,27 @@ namespace ExplorerNative
                 {
                     throw;
                 }
+                catch (GoogleSignInRequiredException)
+                {
+                    // About the account, not the moment: six tries cannot sign in.
+                    throw;
+                }
                 catch (Exception ex)
                 {
                     asked = null;
                     lastProblem = ex.Message;
+
+                    // The file grew or shrank under the request, which then
+                    // broke on its length. Every further try would break the same
+                    // way, two minutes of them, so it stops here and says why.
+                    // A body cut short is no file, so only an earlier attempt can
+                    // have landed (AlreadyUploaded asks only then).
+                    if (Resized(source, total) is { } changed)
+                    {
+                        if (await AlreadyUploaded() is { } landedBefore) return landedBefore;
+                        throw changed;
+                    }
+
                     maybeDone = true;
 
                     // The network went away. Waited out rather than charged to
@@ -1189,6 +1212,10 @@ namespace ExplorerNative
                     }
                     catch (UploadRefusedException refused) when (!refused.Retryable)
                     {
+                        // A full account or a spent day stops the whole transfer,
+                        // as it does from every other path; rethrown as a plain
+                        // refusal it failed this file and the next nine hundred.
+                        if (DriveQuotaException.From(refused.Status, refused.Body) is { } stop) throw stop;
                         throw;
                     }
                     catch (Exception ex)
@@ -1228,6 +1255,7 @@ namespace ExplorerNative
                     }
                     catch (UploadRefusedException refused) when (!refused.Retryable)
                     {
+                        if (DriveQuotaException.From(refused.Status, refused.Body) is { } stop) throw stop;
                         throw;
                     }
                     catch (Exception ex)
@@ -1249,6 +1277,13 @@ namespace ExplorerNative
                 // successful upload — silent, and only on a connection that drops
                 // mid-request, which is the one case this path exists for.
                 if (source.Position != sent) source.Position = sent;
+
+                // The session was opened for the size the file had then, and a
+                // file that has grown or shrunk since breaks every request on its
+                // length — five resumes of the same failure. Stopped at once,
+                // unless Google already holds the whole of what was declared.
+                if (Resized(source, total) is { } resizedBefore)
+                    return await HeldWhole(session, total, progress, token) ?? throw resizedBefore;
 
                 long before = sent;
                 try
@@ -1294,6 +1329,10 @@ namespace ExplorerNative
                 {
                     lastProblem = ex.Message; lastFailure = ex;
 
+                    // Broken by the file changing size under it: see above.
+                    if (Resized(source, total) is { } resizedDuring)
+                        return await HeldWhole(session, total, progress, token) ?? throw resizedDuring;
+
                     // How much of it actually arrived, asked of the only party
                     // that knows — on the next pass, after the pause, so that a
                     // connection that is down for a moment does not fail the
@@ -1336,6 +1375,52 @@ namespace ExplorerNative
         {
             if (confirmed < 0) return sentBefore;
             return confirmed > total ? total : confirmed;
+        }
+
+        /// <summary>
+        /// The refusal for a file that is no longer the size it was measured at
+        /// when its upload began, or null while it still is (or cannot be asked).
+        /// The handle is shared for writing, so its length is the file's now.
+        /// </summary>
+        private ChangedWhileSendingException? Resized(FileStream source, long total)
+        {
+            long now;
+            try { now = source.Length; }
+            catch { return null; }
+            if (now == total) return null;
+            return new ChangedWhileSendingException(
+                $"it changed size while it was being sent ({SizeFormatter.Format(total, Units)} when it started, " +
+                $"{SizeFormatter.Format(now, Units)} now), so it was stopped rather than sent half old and half new. " +
+                "Send it again once it has finished changing.");
+        }
+
+        /// <summary>
+        /// What a session finished as, when it holds every byte it was opened
+        /// for; null when it does not, or will not say. A request that broke on
+        /// the file growing can break only after the last declared byte went.
+        /// </summary>
+        private async Task<DriveUploaded?> HeldWhole(
+            string session, long total, Action<UploadProgress>? progress, CancellationToken token)
+        {
+            try
+            {
+                var (done, id, _) = await QuerySession(session, total, token);
+                if (!done) return null;
+                progress?.Invoke(new UploadProgress(total, total));
+                return id;
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// A file that grew or shrank while it was going up. Not a moment and
+        /// not the network: sending it again now breaks the same way, so it is
+        /// failed at once with this sentence, and goes up once it is still.
+        /// </summary>
+        internal sealed class ChangedWhileSendingException : IOException
+        {
+            public ChangedWhileSendingException(string message) : base(message) { }
         }
 
         /// <summary>
@@ -1552,12 +1637,23 @@ namespace ExplorerNative
         {
             using var stall = CancellationTokenSource.CreateLinkedTokenSource(token);
 
+            // Two clocks. While the file is being read, a quiet minute is a dead
+            // connection. Once the last byte has been read it is not: what was
+            // read is still draining out of the socket's buffers, and then
+            // Google puts the file together before it answers — which for a big
+            // file on a slow line ran past the minute and failed an upload that
+            // had arrived whole.
+            var quiet = UploadStallLimit;
+            var answer = UploadAnswerLimit;
+            long period = Math.Clamp((long)quiet.TotalMilliseconds / 4, 25, 5000);
+
             counter.Touch();
             using var watchdog = new Timer(_ =>
             {
-                if (Environment.TickCount64 - counter.LastActivity < UploadStallSeconds * 1000L) return;
+                var limit = counter.Drained ? answer : quiet;
+                if (Environment.TickCount64 - counter.LastActivity < (long)limit.TotalMilliseconds) return;
                 try { stall.Cancel(); } catch { }
-            }, null, 5000, 5000);
+            }, null, period, period);
 
             try
             {
@@ -1568,10 +1664,21 @@ namespace ExplorerNative
                 // Ours, not theirs. Reported as what it is, because "canceled" on
                 // a screen belonging to somebody who cancelled nothing is the
                 // least useful sentence available.
-                throw new IOException(
-                    $"the connection sent nothing for {UploadStallSeconds} seconds");
+                throw new IOException(counter.Drained
+                    ? $"Google Drive did not answer within {(int)answer.TotalSeconds} seconds of the last byte"
+                    : $"the connection sent nothing for {(int)quiet.TotalSeconds} seconds");
             }
         }
+
+        /// <summary>How long an upload may read nothing off the disk before its connection is called dead.</summary>
+        internal TimeSpan UploadStallLimit { get; set; } = TimeSpan.FromSeconds(UploadStallSeconds);
+
+        /// <summary>
+        /// How long Google has to answer once every byte has been read: the
+        /// socket's buffers draining on a slow line, then Google assembling the
+        /// file. Five minutes, so a dead connection still ends.
+        /// </summary>
+        internal TimeSpan UploadAnswerLimit { get; set; } = TimeSpan.FromMinutes(5);
 
         private static string? FirstOf(IEnumerable<string> values)
         {
@@ -1613,11 +1720,24 @@ namespace ExplorerNative
 
             public void Touch() => LastActivity = Environment.TickCount64;
 
+            /// <summary>
+            /// Every byte has been read off the disk, so nothing more will move
+            /// here however healthy the request is; the watchdog then waits for
+            /// the answer on its longer clock.
+            /// </summary>
+            public volatile bool Drained;
+
             private void Advance(int n)
             {
-                if (n <= 0) return;
+                if (n <= 0)
+                {
+                    // The end of the file: the answer's clock starts now.
+                    if (!Drained) { LastActivity = Environment.TickCount64; Drained = true; }
+                    return;
+                }
                 _read += n;
                 LastActivity = Environment.TickCount64;
+                if (_base + _read >= _total) Drained = true;
                 _progress?.Invoke(new UploadProgress(_base + _read, _total));
             }
 

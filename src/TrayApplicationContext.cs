@@ -646,8 +646,8 @@ namespace ExplorerNative
         /// </summary>
         private static string TrayTooltip(Settings settings)
         {
-            var title = settings.DisplayTitle;
-            return title.Length <= 63 ? title : title[..63];
+            // Cut between whole characters: a plain [..63] could split an emoji.
+            return Settings.CutAtCharacter(settings.DisplayTitle, 63);
         }
 
         /// <summary>
@@ -701,6 +701,12 @@ namespace ExplorerNative
             // refusal has to exist here too.
             var reserved = new List<string>();
 
+            // Text in the file that names no key at all ("Ctrl+Alt+KeyCode", a
+            // mouse button, a modifier on its own, a typo). Parse gives None for
+            // it, which used to be skipped as "not set", so the shortcut the
+            // person typed simply never worked and nothing said why.
+            var unreadable = new List<string>();
+
             HotkeyTrace($"RegisterHotkeys: player={_settings.AudioPlayerEnabled} " +
                         $"window={_settings.GlobalHotkeyEnabled}");
 
@@ -711,7 +717,9 @@ namespace ExplorerNative
                 var window = new Shortcut(_settings.HotkeyModifiers, _settings.HotkeyKey);
                 if (window.IsAssigned) claimedBy[window.ToString()] = "show the window";
 
-                if (window.IsAssigned && ReservedShortcuts.OwnerOf(window) is { } windowOwner)
+                if (!Shortcut.IsUsable((Keys)window.Key))
+                    unreadable.Add($"{window} (show the window)");
+                else if (window.IsAssigned && ReservedShortcuts.OwnerOf(window) is { } windowOwner)
                     reserved.Add($"{window} (show the window) is {windowOwner}");
                 else if (window.IsAssigned && !window.CanRegister)
                     unusable.Add($"{window} (show the window)");
@@ -724,13 +732,18 @@ namespace ExplorerNative
             {
                 foreach (var action in AudioActions.All)
                 {
-                    var shortcut = Shortcut.Parse(action.Get(_settings));
+                    var text = action.Get(_settings);
+                    var shortcut = Shortcut.Parse(text);
+                    var label = action.Label.ToLowerInvariant();
 
                     // Not set at all is a choice, not a failure. Only something
                     // the user asked for and did not get is worth reporting.
-                    if (!shortcut.IsAssigned) continue;
+                    if (!shortcut.IsAssigned)
+                    {
+                        if (!string.IsNullOrWhiteSpace(text)) unreadable.Add($"\"{text.Trim()}\" ({label})");
+                        continue;
+                    }
 
-                    var label = action.Label.ToLowerInvariant();
                     var keys = shortcut.ToString();
 
                     // Compared as text because that is how they are stored and
@@ -786,6 +799,12 @@ namespace ExplorerNative
                 Notify("hotkey.duplicate",
                     string.Join(" ", duplicates) + " Pick different keys in Preferences.");
 
+            if (unreadable.Count > 0)
+                Notify("hotkey.failed",
+                    string.Join(", ", unreadable) +
+                    " in the settings file is not a key combination, so it was left unregistered. " +
+                    "Pick keys in Preferences.");
+
             // One dialog for all three, never one each. Two of these posted
             // together arrive about ten milliseconds apart, and the second opens
             // *inside the first one's modal loop* — so they stack, and a screen
@@ -794,8 +813,8 @@ namespace ExplorerNative
             // button, and the first was never announced as a dialog at all. It
             // was still there underneath, waiting to be found by somebody who had
             // no way of knowing it existed.
-            if (dialog && (reserved.Count > 0 || duplicates.Count > 0 || unusable.Count > 0))
-                ShowShortcutDialog(reserved, duplicates, unusable);
+            if (dialog && (reserved.Count > 0 || duplicates.Count > 0 || unusable.Count > 0 || unreadable.Count > 0))
+                ShowShortcutDialog(reserved, duplicates, unusable, unreadable);
 
             if (taken.Count > 0)
                 Notify("hotkey.failed",
@@ -807,7 +826,7 @@ namespace ExplorerNative
 
             HotkeyTrace($"RegisterHotkeys done: registered={registered.Count} " +
                         $"reserved={reserved.Count} unusable={unusable.Count} " +
-                        $"duplicate={duplicates.Count} taken={taken.Count}");
+                        $"duplicate={duplicates.Count} unreadable={unreadable.Count} taken={taken.Count}");
         }
 
         /// <summary>
@@ -875,7 +894,7 @@ namespace ExplorerNative
         /// start, in answer to a shortcut being wrong.
         /// </summary>
         private void ShowShortcutDialog(
-            List<string> reserved, List<string> duplicates, List<string> unusable)
+            List<string> reserved, List<string> duplicates, List<string> unusable, List<string> unreadable)
         {
             const string Title = "Some shortcuts were not set";
 
@@ -884,6 +903,8 @@ namespace ExplorerNative
             lines.AddRange(duplicates);
             foreach (var one in unusable)
                 lines.Add($"{one} has no Control, Alt or Windows key.");
+            foreach (var one in unreadable)
+                lines.Add($"{one} is not a key combination.");
 
             // Only the reasons that apply. A paragraph about keys being used
             // twice, in a dialog raised because a key was a function key, is one
@@ -906,6 +927,10 @@ namespace ExplorerNative
                 why.Add("A global shortcut needs Control, Alt or the Windows key, or else a media key. " +
                         "On its own, a letter would stop typing that letter everywhere else.");
 
+            if (unreadable.Count > 0)
+                why.Add("A shortcut is written as modifiers and one key, such as Ctrl+Alt+P. " +
+                        "What the settings file has there names no key this application can register.");
+
             var body =
                 (lines.Count == 1
                     ? "This shortcut was not registered:"
@@ -919,7 +944,8 @@ namespace ExplorerNative
                 "keys, open Preferences and go to Shortcuts.";
 
             HotkeyTrace($"dialog queued: {lines.Count} lines " +
-                        $"(reserved={reserved.Count} duplicate={duplicates.Count} unusable={unusable.Count})");
+                        $"(reserved={reserved.Count} duplicate={duplicates.Count} unusable={unusable.Count} " +
+                        $"unreadable={unreadable.Count})");
 
             PostUi(() =>
             {
@@ -1978,7 +2004,13 @@ namespace ExplorerNative
                                 ? placed.Select(e => new ConnectEntry(e.Name, e.IsFolder, e.Size, e.Modified)).ToList()
                                 : null;
                         },
-                        path => (_drive.Owns(path) ? leased.Lease(path) : null) ?? new FileRangeSource(path),
+                        // A Drive file is read from Google or not at all: with no lease
+                        // (not mounted, not in the listing) the fallback read the
+                        // placeholder, from this process, which CLAUDE.md forbids.
+                        path => _drive.Owns(path)
+                            ? leased.Lease(path) ?? throw new ConnectException(503,
+                                "That Google Drive file can't be read right now.")
+                            : new FileRangeSource(path),
                         () => _settings.ConnectCode,
                         isDrive: root => _drive.Owns(root),
                         files: new ConnectFiles(_drive, () => _settings), // the live settings, not a snapshot

@@ -167,7 +167,7 @@ namespace ExplorerNative
             FillDetails();
             ShowButtons();
             Say(pair.Paused
-                ? $"Paused {DriveMonitor.DisplayName(pair)}. Nothing is copied until you resume it."
+                ? $"Paused {DriveMonitor.DisplayName(pair)}. Nothing syncs until you resume it."
                 : $"Resumed {DriveMonitor.DisplayName(pair)}. Syncing now.");
         }
 
@@ -539,7 +539,7 @@ namespace ExplorerNative
                 var name = DriveMonitor.DisplayName(_pairs[at]);
                 Speech.Speak(_pairs[at].Paused
                     ? $"Saved {name}, paused. Press Resume to start it."
-                    : $"Saved {name}. Syncing has started; Status shows how it is going.");
+                    : $"Saved {name}. Syncing has started, and Status shows how it is going.");
             }
             catch { }
         }
@@ -912,20 +912,34 @@ namespace ExplorerNative
             _drive.TextChanged += (_, _) => ShowExample();
             _paused.CheckedChanged += (_, _) => ShowOk();
 
-            browseLocal.Click += (_, _) =>
+            // The folder typed so far is looked at on a worker, for three seconds
+            // at most: Directory.Exists on a share that had gone away held the
+            // window until Windows gave up. One press at a time.
+            bool browsing = false;
+            browseLocal.Click += async (_, _) =>
             {
-                using var dialog = new FolderBrowserDialog
+                if (browsing) return;
+                browsing = true;
+                try
                 {
-                    Description = "Folder on this PC to sync",
-                    UseDescriptionForTitle = true,
-                    SelectedPath = Directory.Exists(_local.Text) ? _local.Text : "",
-                };
-                if (dialog.ShowDialog(this) == DialogResult.OK)
-                {
-                    _local.Text = dialog.SelectedPath;
-                    if (string.IsNullOrWhiteSpace(_name.Text)) _name.Text = Path.GetFileName(dialog.SelectedPath);
+                    var typed = _local.Text;
+                    var start = await FolderIfThereAsync(typed);
+                    if (IsDisposed) return;
+                    using var dialog = new FolderBrowserDialog
+                    {
+                        Description = "Folder on this PC to sync",
+                        UseDescriptionForTitle = true,
+                        SelectedPath = start,
+                    };
+                    if (dialog.ShowDialog(this) == DialogResult.OK)
+                    {
+                        _local.Text = dialog.SelectedPath;
+                        if (string.IsNullOrWhiteSpace(_name.Text)) _name.Text = Path.GetFileName(dialog.SelectedPath);
+                    }
+                    _local.Focus();
                 }
-                _local.Focus();
+                catch { }
+                finally { browsing = false; }
             };
 
             browseDrive.Click += (_, _) =>
@@ -1035,6 +1049,24 @@ namespace ExplorerNative
 
         /// <summary>The live Drive client, through the tray's drive. Null when Drive is not connected.</summary>
         internal static Func<DriveClient?> DriveMonitorClient = () => null;
+
+        /// <summary>
+        /// <paramref name="folder"/> when it is there, otherwise "": asked on a
+        /// worker, and given up on after <paramref name="timeoutMs"/> (a share
+        /// that does not answer counts as not there). The worker is never
+        /// waited on after that.
+        /// </summary>
+        internal static async Task<string> FolderIfThereAsync(string folder, int timeoutMs = 3000)
+        {
+            if (string.IsNullOrWhiteSpace(folder)) return "";
+            var probe = Task.Run(() =>
+            {
+                try { return Directory.Exists(folder); }
+                catch { return false; }
+            });
+            var finished = await Task.WhenAny(probe, Task.Delay(timeoutMs));
+            return finished == probe && probe.Result ? folder : "";
+        }
     }
 
     /// <summary>
@@ -1107,6 +1139,15 @@ namespace ExplorerNative
             {
               try
               {
+                // While a folder is loading, the list and the path disagree: a
+                // second Backspace or Enter then started another load, and the
+                // one that finished last filled the list, so the folder chosen
+                // could be another than the one read out. One load at a time.
+                if (_loading && e.KeyCode is Keys.Enter or Keys.Back)
+                {
+                    e.Handled = e.SuppressKeyPress = true;
+                    return;
+                }
                 if (e.KeyCode == Keys.Enter)
                 {
                     e.Handled = e.SuppressKeyPress = true;
@@ -1136,7 +1177,7 @@ namespace ExplorerNative
 
             use.Click += (_, _) =>
             {
-                if (_path.Count == 0) return;
+                if (_path.Count == 0 || _loading) return;
                 if (AtTop) { Choose(_list.SelectedIndex); return; }
                 DialogResult = DialogResult.OK;
                 Close();
@@ -1144,13 +1185,19 @@ namespace ExplorerNative
 
             make.Click += async (_, _) =>
             {
-                if (_path.Count == 0) return;
+                if (_path.Count == 0 || _loading) return;
                 if (AtTop) { Say("Open My Drive or a shared drive first, then make the folder in it."); return; }
                 var name = PromptForm.Ask(this, "New folder", "Name of the new folder in Google Drive:");
                 if (name == null) return;
                 try
                 {
-                    var id = await _client.CreateFolder(name.Trim(), FolderId, _cancel.Token);
+                    // Held like a load: Backspace meanwhile put the new folder
+                    // under the wrong parent in the path.
+                    string id;
+                    _loading = true;
+                    try { id = await _client.CreateFolder(name.Trim(), FolderId, _cancel.Token); }
+                    finally { _loading = false; }
+                    if (IsDisposed) return;
                     _path.Push((id, name.Trim()));
                     await LoadAsync();
                 }
@@ -1175,17 +1222,27 @@ namespace ExplorerNative
                     Say(_where.Text);
                 }
             };
-            FormClosed += (_, _) =>
-            {
-                _cancel.Cancel();
-                _cancel.Dispose();
-            };
+            // Cancelled, never disposed (CLAUDE.md): a load still awaiting asks
+            // for its token after this, and a disposed source threw there.
+            FormClosed += (_, _) => _cancel.Cancel();
         }
+
+        /// <summary>A folder is being read: Enter, Backspace, Use and New wait for it.</summary>
+        private bool _loading;
 
         private async Task LoadAsync()
         {
+            _loading = true;
+            try { await LoadCoreAsync(); }
+            finally { _loading = false; }
+        }
+
+        private async Task LoadCoreAsync()
+        {
             _where.Text = "Loading " + FolderPath + "…";
             _list.Items.Clear();
+            // The list being read is of no folder until the new one is in.
+            _folders = new List<DriveEntry>();
             try
             {
                 if (AtTop)

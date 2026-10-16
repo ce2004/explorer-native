@@ -924,13 +924,15 @@ namespace ExplorerNative
                 bool? confirmed;
                 try
                 {
-                    bool isFolder = await Task.Run(() => Directory.Exists(path), token);
+                    bool isFolder = await Task.Run(() => Directory.Exists(Io(path)), token);
+                    // The copy by its literal path: in a folder whose name ends in a dot or a space the plain one
+                    // is the namesake's, which is not there, so every original was kept as "could not be shown".
                     confirmed = isFolder
-                        ? await drive.VerifyCopied(path, arrivedAt, token)
+                        ? await drive.VerifyCopied(path, Io(arrivedAt), token)
                         : await Task.Run(() =>
                         {
-                            var copy = new FileInfo(arrivedAt);
-                            return copy.Exists && copy.Length == new FileInfo(path).Length;
+                            var copy = new FileInfo(Io(arrivedAt));
+                            return copy.Exists && copy.Length == new FileInfo(Io(path)).Length;
                         }, token);
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }

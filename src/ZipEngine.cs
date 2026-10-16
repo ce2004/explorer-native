@@ -575,6 +575,13 @@ namespace ExplorerNative
             var name = item.IsDirectory ? item.Name + "/" : item.Name;
             var nameBytes = Encoding.UTF8.GetBytes(name);
 
+            // A zip holds a name's length in two bytes. Written anyway, the
+            // length was cut to its low sixteen bits and the record that followed
+            // was read from the middle of the name: a corrupt archive. Refused
+            // before anything goes down, so the entry is left out and named.
+            if (nameBytes.Length > MaxNameBytes)
+                throw new SkippedEntry(NameTooLong(item.Name));
+
             var (dosTime, dosDate) = DosStamp(item.Modified);
 
             uint attributes = (uint)item.Attributes & 0xFF;
@@ -585,7 +592,10 @@ namespace ExplorerNative
                 // Everything is known: header, then bytes, and nothing to patch.
                 long uncompressed = Math.Max(0, prepared.Uncompressed);
                 long compressed = prepared.Length;
-                bool zip64 = uncompressed >= uint.MaxValue || compressed >= uint.MaxValue || offset >= uint.MaxValue;
+
+                // Sizes only: a local header carries no offset, so an entry past
+                // the 4GB mark needs no zip64 here (the directory says where it is).
+                bool zip64 = uncompressed >= uint.MaxValue || compressed >= uint.MaxValue;
 
                 WriteLocalHeader(output, nameBytes, prepared.Method, dosTime, dosDate,
                     prepared.Crc, compressed, uncompressed, zip64);
@@ -599,7 +609,7 @@ namespace ExplorerNative
                 reporter.Finished(0);
 
                 return CentralRecord(nameBytes, prepared.Method, dosTime, dosDate, prepared.Crc,
-                    compressed, uncompressed, offset, attributes);
+                    compressed, uncompressed, offset, attributes, wideSizes: zip64);
             }
 
             // Streamed. The header goes down with the sizes it cannot know yet and
@@ -608,7 +618,7 @@ namespace ExplorerNative
             // the data, flagged in the header — is read correctly by everything
             // modern and confuses enough older tools that patching is worth the
             // two seeks.
-            bool wideNeeded = item.Size >= Zip64Threshold || offset >= uint.MaxValue;
+            bool wideNeeded = item.Size >= Zip64Threshold;
 
             WriteLocalHeader(output, nameBytes, prepared.Method, dosTime, dosDate, 0, 0, 0, wideNeeded);
 
@@ -648,9 +658,21 @@ namespace ExplorerNative
             PatchLocalHeader(output, offset, nameBytes.Length, crc, compressedSize, read, wideNeeded);
             output.Position = end;
 
+            // A file planned at 3.75GB or more had its local header written
+            // zip64 before anyone knew it would deflate to a few megabytes. The
+            // directory used to decide afresh from the real sizes and say plain
+            // 32-bit, so the two records of one entry disagreed, which strict
+            // readers refuse. The directory now says zip64 whenever the local
+            // header had to.
             return CentralRecord(nameBytes, prepared.Method, dosTime, dosDate, crc,
-                compressedSize, read, offset, attributes);
+                compressedSize, read, offset, attributes, wideSizes: wideNeeded);
         }
+
+        /// <summary>The longest name, in UTF-8 bytes, a zip record can carry.</summary>
+        internal const int MaxNameBytes = ushort.MaxValue;
+
+        internal static string NameTooLong(string name) =>
+            $"{name}: its name is too long to go in a zip (over {MaxNameBytes:N0} bytes), so it was left out";
 
         /// <summary>
         /// One file left out of the archive because it could not be read, and
@@ -774,7 +796,7 @@ namespace ExplorerNative
             return (crc, read);
         }
 
-        private static void WriteLocalHeader(Stream output, byte[] name, ushort method,
+        internal static void WriteLocalHeader(Stream output, byte[] name, ushort method,
             ushort dosTime, ushort dosDate, uint crc, long compressed, long uncompressed, bool zip64)
         {
             int extraLength = zip64 ? 20 : 0;
@@ -834,11 +856,15 @@ namespace ExplorerNative
             output.Write(wide);
         }
 
-        private static byte[] CentralRecord(byte[] name, ushort method, ushort dosTime, ushort dosDate,
-            uint crc, long compressed, long uncompressed, long offset, uint attributes)
+        /// <param name="wideSizes">
+        /// The local header was written zip64, so both sizes go in the zip64
+        /// field here too, whatever they turned out to be.
+        /// </param>
+        internal static byte[] CentralRecord(byte[] name, ushort method, ushort dosTime, ushort dosDate,
+            uint crc, long compressed, long uncompressed, long offset, uint attributes, bool wideSizes = false)
         {
-            bool wideUncompressed = uncompressed >= uint.MaxValue;
-            bool wideCompressed = compressed >= uint.MaxValue;
+            bool wideUncompressed = wideSizes || uncompressed >= uint.MaxValue;
+            bool wideCompressed = wideSizes || compressed >= uint.MaxValue;
             bool wideOffset = offset >= uint.MaxValue;
             bool zip64 = wideUncompressed || wideCompressed || wideOffset;
 
@@ -897,7 +923,7 @@ namespace ExplorerNative
         /// eleven-file archive ends up rejected by whatever the recipient happens
         /// to unpack it with.
         /// </summary>
-        private static void WriteDirectory(Stream output, List<byte[]> central, long entryCount)
+        internal static void WriteDirectory(Stream output, List<byte[]> central, long entryCount)
         {
             long start = output.Position;
             foreach (var record in central) output.Write(record, 0, record.Length);

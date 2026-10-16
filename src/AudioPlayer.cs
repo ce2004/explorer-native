@@ -884,7 +884,7 @@ namespace ExplorerNative
             // to start it even when there is no file to practise on.
             EnsureStarted();
 
-            if (string.IsNullOrEmpty(preloadPath) || !File.Exists(preloadPath)) return;
+            if (string.IsNullOrEmpty(preloadPath) || !File.Exists(NameRules.ExactPath(preloadPath))) return;
 
             try
             {
@@ -925,6 +925,11 @@ namespace ExplorerNative
         /// </summary>
         public void SeekTo(double seconds)
         {
+            // Not a number is no jump at all, and changes nothing. It used to
+            // become the skip target — NaN, which reads as "no target" — so the
+            // next skip counted from the clock instead of from the last press.
+            if (double.IsNaN(seconds)) return;
+
             double target = Math.Max(0, seconds);
             lock (_gate) { _seekTarget = target; _seekTargetAt = Environment.TickCount64; }
             _direct?.SeekTo(target);
@@ -1456,7 +1461,7 @@ namespace ExplorerNative
         /// </summary>
         private static bool FileIsThere(string path)
         {
-            try { return File.Exists(path); }
+            try { return File.Exists(NameRules.ExactPath(path)); }
             catch { return true; }
         }
 
@@ -1626,7 +1631,7 @@ namespace ExplorerNative
             // every step above it: from here the samples themselves are being
             // multiplied and the file has no more to give.
             if (before <= 100 && _volumePercent > 100)
-                Raise("volume.gain", $"Volume {_volumePercent} percent, {GainFor(_volumePercent):0.0} times gain");
+                Raise("volume.gain", $"Volume {_volumePercent} percent, boosted {GainFor(_volumePercent):0.0} times");
 
             if (_volumePercent == top && deltaPercent > 0)
             {
@@ -2181,8 +2186,8 @@ namespace ExplorerNative
                 // the track. A skip outside the window is network speed.
                 if (source.Cacheable < source.Length)
                     Raise("audiofile.cache.full",
-                        $"This track is bigger than {SizeFormatter.Format(CacheBytes, SizeUnitStyle.FullWords)}; " +
-                        "that much of it is kept downloaded around where it is playing");
+                        $"This track is bigger than {SizeFormatter.Format(CacheBytes, SizeUnitStyle.FullWords)}, " +
+                        "so only that much around where it is playing is kept downloaded");
 
                 return source;
             }

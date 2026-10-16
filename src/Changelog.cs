@@ -41,10 +41,25 @@ namespace ExplorerNative
                 var line = raw.Trim();
                 if (line.Length == 0) continue;
                 lines.Add(IsVersion(line)
-                    ? HeadingPrefix + line + (line == current ? ", this one" : "")
+                    ? HeadingPrefix + line + (SameVersion(line, current) ? ", this one" : "")
                     : line);
             }
             return lines;
+        }
+
+        /// <summary>
+        /// Whether two version numbers name one release, as numbers: "3.1" in
+        /// CHANGES.txt is the running "3.1.0". Compared as text, the running
+        /// version was never marked whenever the file left the zero off.
+        /// </summary>
+        internal static bool SameVersion(string a, string b)
+        {
+            static Version? Parse(string text) =>
+                Version.TryParse(text.Trim().TrimStart('v', 'V'), out var v)
+                    ? new Version(v.Major, v.Minor, Math.Max(v.Build, 0), Math.Max(v.Revision, 0))
+                    : null;
+            var x = Parse(a);
+            return x != null && x == Parse(b);
         }
 
         /// <summary>

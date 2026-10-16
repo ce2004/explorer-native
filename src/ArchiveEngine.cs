@@ -931,6 +931,11 @@ namespace ExplorerNative
                 try { File.Move(temporary, target, overwrite: true); }
                 catch (UnauthorizedAccessException)
                 {
+                    // A folder of that name is not a file to replace. Taken
+                    // for a read-only file, the folder's own read-only flag (the
+                    // one that keeps its custom icon) was cleared before the
+                    // move failed anyway.
+                    if (Directory.Exists(target)) throw new IOException(FolderInTheWay);
                     ClearReadOnly(target);
                     File.Move(temporary, target, overwrite: true);
                 }
@@ -941,6 +946,9 @@ namespace ExplorerNative
                 throw;
             }
         }
+
+        /// <summary>Why a file was not written over a folder of the same name.</summary>
+        internal const string FolderInTheWay = "a folder of the same name is already there, so it was not replaced";
 
         internal static void ClearReadOnly(string path)
         {

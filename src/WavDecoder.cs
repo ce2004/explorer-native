@@ -63,13 +63,20 @@ namespace ExplorerNative
             _ => 0,
         };
 
+        /// <summary>
+        /// True when a RIFF WAV over 4GB had its 32-bit data size wrapped and the
+        /// sound's length was taken from the file's instead. Windows reads such
+        /// a file only as far as the wrapped size, so TrackDecoder gives it here.
+        /// </summary>
+        public bool LengthFromFile { get; private set; }
+
         /// <summary>Whether a file begins as one of the containers above.</summary>
         public static bool IsWav(string path, System.Runtime.InteropServices.ComTypes.IStream? stream)
         {
             try
             {
                 using var source = stream != null ? (Stream)new ComStream(stream)
-                    : new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);   // as Open shares it: a file still being recorded
+                    : new FileStream(NameRules.ExactPath(path), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);   // as Open shares it: a file still being recorded
                 if (source.CanSeek) source.Position = 0;
                 var head = new byte[20];
                 int got = source.Read(head, 0, 20);
@@ -98,7 +105,7 @@ namespace ExplorerNative
             {
                 _source = stream != null
                     ? new ComStream(stream)
-                    : new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 64 * 1024);
+                    : new FileStream(NameRules.ExactPath(path), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 64 * 1024);
                 var head = new byte[20];
                 _source.Position = 0;
                 int got = ReadFully(_source, head, 20);
@@ -168,7 +175,23 @@ namespace ExplorerNative
                 {
                     _dataStart = body;
                     _dataLength = rf64 && size == 0xFFFFFFFF && rf64Data >= 0 ? rf64Data : size;
+                    // Over 4GB in a plain RIFF, the 32-bit size wraps (or is
+                    // pinned at its largest), and the sound was cut to whatever
+                    // was left of it: a 5GB recording played its last gigabyte's
+                    // worth and stopped. When the file runs on past the size by
+                    // whole multiples of 4GB (give or take the pad byte), the
+                    // data chunk is the last one and the file's length is the truth.
+                    if (!(rf64 && rf64Data >= 0))
+                    {
+                        long there = s.Length - body;
+                        if (there > uint.MaxValue && (size == 0xFFFFFFFF || (there - size) % (1L << 32) <= 1))
+                        {
+                            _dataLength = there;
+                            LengthFromFile = true;
+                        }
+                    }
                     if (haveFormat) break;
+                    size = _dataLength;
                 }
                 s.Position = body + size + (size & 1);
             }
@@ -190,7 +213,7 @@ namespace ExplorerNative
                 if (id == "fmt ") { var why = ReadWaveFormat(r, size - 24); if (why != null) return why; haveFormat = true; }
                 else if (id == "data") { _dataStart = body; _dataLength = size - 24; if (haveFormat) break; }
                 // The size counts the chunk's own 24-byte header; chunks are padded to 8 bytes.
-                if (size < 24) break;
+                if (size < 24 || size > s.Length) break;
                 s.Position = body - 24 + ((size + 7) & ~7L);
             }
             return haveFormat ? null : "the Wave64 file has no format chunk";
@@ -289,7 +312,9 @@ namespace ExplorerNative
                         _dataLength = size < 0 ? s.Length - _dataStart : size - 4;
                         break;
                 }
-                if (size < 0) break;
+                // Past the end (a cut-off file, or a damaged size that would
+                // overflow the position): nothing after it can be read anyway.
+                if (size < 0 || size > s.Length - body) break;
                 s.Position = body + size;
             }
             if (_dataStart == 0) return "the CAF file has no sound in it";
@@ -317,10 +342,16 @@ namespace ExplorerNative
                     Channels = _alac.Channels;
                     if (packetSizes.Count == 0) return "the ALAC sound has no packet table";
                     _codec = Codec.Alac;
+                    // A packet holds at most the cookie's frame length. A damaged
+                    // 'desc' said up to four billion, and the buffer sized from it
+                    // ran the PC out of memory before a sound was heard.
+                    if (framesPerPacket > _alac.FrameLength) return "the CAF file's packet size is damaged";
                     _samplesPerBlock = framesPerPacket > 0 ? (int)framesPerPacket : _alac.FrameLength;
                     _packetStarts = new long[packetSizes.Count + 1];
                     for (int i = 0; i < packetSizes.Count; i++) _packetStarts[i + 1] = _packetStarts[i] + packetSizes[i];
-                    _totalFrames = validFrames >= 0 ? validFrames : (long)packetSizes.Count * _samplesPerBlock;
+                    // No more frames than the packets hold, whatever 'pakt' claims.
+                    long most = (long)packetSizes.Count * _samplesPerBlock;
+                    _totalFrames = validFrames >= 0 ? Math.Min(validFrames, most) : most;
                     return null;
                 default:
                     return $"CAF holding '{format.Trim()}' sound, which this player does not decode";
@@ -428,7 +459,7 @@ namespace ExplorerNative
                         _codec = Codec.Pcm;
                         _bits = 8;
                     }
-                    _segments.Add((body + 2, size - 2));
+                    _segments.Add((body + 2, Math.Max(0, size - 2)));
                 }
                 else if (type == 2) _segments.Add((body, size));
                 else if (type == 8)
@@ -448,7 +479,7 @@ namespace ExplorerNative
                         (_codec, _bits) = codec switch { 0 => (Codec.Pcm, 8), 4 => (Codec.Pcm, 16), 6 => (Codec.ALaw, 8), 7 => (Codec.MuLaw, 8), _ => (Codec.Pcm, 0) };
                         if (_bits == 0) return "a VOC file with compressed sound, which this player does not decode";
                     }
-                    _segments.Add((body + 12, size - 12));
+                    _segments.Add((body + 12, Math.Max(0, size - 12)));
                 }
                 s.Position = body + size;
             }
@@ -475,19 +506,31 @@ namespace ExplorerNative
                     if (_blockAlign < 1) _blockAlign = _bits / 8 * Channels;
                     // Smaller than one frame's samples, and decoding reads past each block.
                     if (_blockAlign < (_bits + 7) / 8 * Channels) return "the file's sound format makes no sense";
+                    // Wider than any frame can be (eight bytes a sample): a damaged
+                    // header's block size of 64KB made every read ask for 268MB.
+                    if (_blockAlign > 8 * Channels) return "the file's sound format makes no sense";
                     _samplesPerBlock = 1;
                     break;
+                // The header's samples per block, but never more than the block
+                // holds: a damaged one counted frames that were not there (and
+                // sized the buffer for them).
                 case Codec.ImaWav when _bits == 4 && _blockAlign > 4 * Channels:
-                    if (_samplesPerBlock <= 0) _samplesPerBlock = (_blockAlign - 4 * Channels) * 2 / Channels + 1;
+                {
+                    int fits = (_blockAlign - 4 * Channels) * 2 / Channels + 1;
+                    if (_samplesPerBlock <= 0 || _samplesPerBlock > fits) _samplesPerBlock = fits;
                     break;
+                }
                 case Codec.MsAdpcm when _bits == 4 && _blockAlign > 7 * Channels:
-                    if (_samplesPerBlock <= 0) _samplesPerBlock = (_blockAlign - 7 * Channels) * 2 / Channels + 2;
+                {
+                    int fits = (_blockAlign - 7 * Channels) * 2 / Channels + 2;
+                    if (_samplesPerBlock <= 0 || _samplesPerBlock > fits) _samplesPerBlock = fits;
                     if (_coef1.Length == 0)
                     {
                         _coef1 = new short[] { 256, 512, 0, 192, 240, 460, 392 };
                         _coef2 = new short[] { 0, -256, 0, 64, 0, -208, -232 };
                     }
                     break;
+                }
                 case Codec.Ima4:
                 case Codec.Alac:
                     break;

@@ -2135,6 +2135,13 @@ namespace ExplorerNative
                         pane.ReloadQuietly = true;
                         if (pane == Active) ScheduleWatchCheck();
                     }
+
+                    // Nothing was on screen to stay on: the drive list is put
+                    // there, on the drive that would not open. Only the path was
+                    // set before, so a startup folder that refused to be read
+                    // left a tab called Drives with nothing in it.
+                    if (string.IsNullOrEmpty(cameFrom) && pane.NavigationId == mine)
+                        await NavigateAsync(DrivesPath, preferPath: SafePathRoot(full), onPane: pane, quiet: quiet);
                     return false;
                 }
 
@@ -3330,7 +3337,7 @@ namespace ExplorerNative
                 if (_settings.FolderSizes == FolderSizeMode.Automatic)
                     _ = CalculateAllFolderSizesAsync(pane, token);
                 PrewarmAssociations(entries);
-                if (entries.Count == 0 && pane == Active) AnnounceOperation("nav.empty", "No items");
+                if (entries.Count == 0 && pane == Active) AnnounceOperation("nav.empty", "This folder is empty");
                 return true;
             }
 
@@ -3391,7 +3398,7 @@ namespace ExplorerNative
             // Not repeated when a folder that was already empty is merely
             // re-read, which happens on every refresh and every watcher tick.
             if (entries.Count == 0 && pane == Active && (!sameFolder || previousCount > 0))
-                AnnounceOperation("nav.empty", "No items");
+                AnnounceOperation("nav.empty", "This folder is empty");
 
             if (_settings.FolderSizes == FolderSizeMode.Automatic)
                 _ = CalculateAllFolderSizesAsync(pane, token);
@@ -4011,7 +4018,13 @@ namespace ExplorerNative
                 // Moved on, reloaded or changed while sorting: that listing is
                 // already in whatever order is current.
                 if (IsDisposed || pane.Entries != shown || pane.CurrentPath != folder) return;
+
+                // The selection moves with its rows. SetEntries keeps only the
+                // focused one, so sorting a twelve-file selection left one.
+                var selected = SelectedPathsOf(pane);
                 SetEntries(pane, sorted, focused);
+                if (selected.Count > 1 && focused != null && pane.IndexByPath.TryGetValue(focused, out var at))
+                    Reselect(pane, at, selected);
             }
             catch (Exception ex)
             {
@@ -4237,18 +4250,44 @@ namespace ExplorerNative
             int navigation = ++pane.NavigationId;
             var name = Path.GetFileName(archivePath);
 
-            var (done, listing) = await RunArchiveWork($"Opening {name}",
-                (progress, token) => ArchiveBrowser.Open(archivePath, progress, token),
-                "archive.open.cancelled", "Opening cancelled",
-                "archive.open.failed", $"Could not open {name}");
+            // Marked as a navigation in progress, as Go to path is: a big
+            // archive takes seconds to read, and the folder's watcher reloading
+            // it meanwhile was a navigation that silently threw the archive away.
+            pane.Probing = navigation;
+            bool done;
+            ArchiveListing? listing;
+            try
+            {
+                (done, listing) = await RunArchiveWork($"Opening {name}",
+                    (progress, token) => ArchiveBrowser.Open(archivePath, progress, token),
+                    "archive.open.cancelled", "Opening cancelled",
+                    "archive.open.failed", $"Could not open {name}");
+            }
+            finally
+            {
+                if (pane.Probing == navigation) pane.Probing = 0;
+            }
 
             if (IsDisposed) return;
             if (!done || listing == null) { RestoreListFocus(); return; }
             if (pane.NavigationId != navigation) return;
 
+            var before = pane.Archive;
             pane.Archive = listing;
             bool landed = await NavigateAsync(ArchiveBrowser.VirtualPath(archivePath, inner),
                 preferPath, onPane: pane, keepFocus: keepFocus);
+
+            // Overtaken before it was shown: the pane is still on what it showed
+            // before, and left marked as inside this archive, a real folder
+            // refused every command as read-only and went unwatched.
+            if (!landed && ReferenceEquals(pane.Archive, listing) &&
+                ArchiveBrowser.InnerPathOf(listing.ArchivePath, pane.CurrentPath) == null)
+            {
+                pane.Archive = before != null && ArchiveBrowser.InnerPathOf(before.ArchivePath, pane.CurrentPath) != null
+                    ? before
+                    : null;
+                if (NeedsWatcher(pane) && pane == Active && Visible) ArmWatcher(pane, pane.CurrentPath);
+            }
 
             // After the first row, never instead of it: queued behind it.
             if (landed && listing.Warning is { } warning) AnnounceOperation("archive.warning", warning);
@@ -4291,24 +4330,23 @@ namespace ExplorerNative
 
             var token = BeginPaneWork(pane);
             pane.Searching = false;
-            DisarmWatcher(pane);
-            pane.NeedsRefresh = false;
-            pane.ReloadQuietly = false;
-            pane.Debounce.Clear();
 
             bool sameFolder = string.Equals(pane.LastLoadedPath, full, StringComparison.OrdinalIgnoreCase);
             var previousRow = sameFolder ? FocusedPathOf(pane) : null;
             if (keepFocus && sameFolder) preferPath = previousRow ?? preferPath;
             preferPath ??= PreferredRowFor(pane, full, cameFrom);
 
-            pane.CurrentPath = full;
-            if (pane == Active) _pathLabel.Text = full;
-            UpdateTitle();
-
             bool sizes = _settings.FolderSizes == FolderSizeMode.Automatic;
             var units = _settings.SizeUnits;
             var nodes = archive.Children(inner);
 
+            // The pane is moved only once the rows are in and this is still its
+            // navigation. Moved first, a navigation that overtook it without
+            // cancelling (Go to path, a folder from outside) and then went
+            // nowhere left the path on the archive over the old folder's rows.
+            // Marked as in progress meanwhile, so the old folder's watcher
+            // waits rather than reloading over it.
+            pane.Probing = mine;
             List<Entry> entries;
             try
             {
@@ -4333,17 +4371,34 @@ namespace ExplorerNative
                 }, token);
             }
             catch (OperationCanceledException) { return false; }
+            finally
+            {
+                if (pane.Probing == mine) pane.Probing = 0;
+            }
 
             if (token.IsCancellationRequested || IsDisposed || pane.NavigationId != mine) return false;
 
+            DisarmWatcher(pane);
+            pane.CurrentPath = full;
+            if (pane == Active) _pathLabel.Text = full;
+            UpdateTitle();
+
+            // A quiet reload (Preferences saved) keeps a selection of several,
+            // as a folder's does.
+            var selectedNow = keepFocus && sameFolder ? SelectedPathsOf(pane) : null;
+
             SetEntries(pane, entries, preferPath);
             pane.LastLoadedPath = full;
+
+            if (selectedNow is { Count: > 1 } && FocusedPathOf(pane) is { } focusedNow &&
+                pane.IndexByPath.TryGetValue(focusedNow, out var keptAt))
+                Reselect(pane, keptAt, selectedNow);
 
             bool sameRow = sameFolder && previousRow != null &&
                            string.Equals(previousRow, FocusedPathOf(pane), StringComparison.OrdinalIgnoreCase);
             FocusListAndRow(pane, readRowAloud: !(quiet && sameRow));
 
-            if (entries.Count == 0 && pane == Active) AnnounceOperation("nav.empty", "No items");
+            if (entries.Count == 0 && pane == Active) AnnounceOperation("nav.empty", "This folder is empty");
             return true;
         }
 
@@ -5450,8 +5505,12 @@ namespace ExplorerNative
             bool isIn = pane.List.SelectedIndices.Contains(index);
             var name = DisplayNameOf(pane.Entries[index]);
 
+            // The count only when it adds something: "song.flac selected, 1
+            // selected" said the same thing twice.
             AnnounceOperation("select.count",
-                $"{name} {(isIn ? "selected" : "not selected")}, {selected} selected");
+                isIn && selected == 1 ? $"{name} selected"
+                : selected == 0 ? $"{name} not selected"
+                : $"{name} {(isIn ? "selected" : "not selected")}, {selected:N0} selected in all");
         }
 
         private void List_ColumnClick(object? sender, ColumnClickEventArgs e)
@@ -5635,6 +5694,36 @@ namespace ExplorerNative
             if (pane == Active) SchedulePrefetch();
         }
 
+        private const int LVM_GETSELECTEDCOUNT = LVM_FIRST + 50;
+
+        /// <summary>How many rows are selected, as one message.</summary>
+        private static int SelectedCountOf(ListView list) =>
+            list.IsHandleCreated ? (int)SendMessage(list.Handle, LVM_GETSELECTEDCOUNT, IntPtr.Zero, IntPtr.Zero) : 0;
+
+        /// <summary>
+        /// Moves the focus to one row and leaves the selection alone: the
+        /// focus taken off every row, then put on this one, which is the
+        /// change a screen reader hears.
+        /// </summary>
+        private void RefocusIndex(Pane pane, int index)
+        {
+            if (index < 0 || index >= pane.Entries.Count || !pane.List.IsHandleCreated) return;
+            var list = pane.List;
+
+            _suppressStatus++;
+            try
+            {
+                var clear = new LVITEM { mask = LVIF_STATE, state = 0, stateMask = LVIS_FOCUSED };
+                SendMessage(list.Handle, LVM_SETITEMSTATE, new IntPtr(-1), ref clear);
+                var set = new LVITEM { mask = LVIF_STATE, state = LVIS_FOCUSED, stateMask = LVIS_FOCUSED };
+                SendMessage(list.Handle, LVM_SETITEMSTATE, new IntPtr(index), ref set);
+                try { list.EnsureVisible(index); } catch (ArgumentOutOfRangeException) { }
+            }
+            finally { _suppressStatus--; }
+
+            ScheduleStatusUpdate();
+        }
+
         /// <summary>
         /// Names the pane after the folder it is showing.
         ///
@@ -5720,7 +5809,15 @@ namespace ExplorerNative
             int index = FocusedIndex(list);
             if (index < 0) return;
 
-            if (!alreadyFocused) SelectIndex(pane, index);
+            // Re-applied for the event that names the row. With several rows
+            // selected only the focus is re-applied: SelectIndex clears the
+            // rest, so a transfer finishing while the keyboard was in its
+            // window cut a twelve-file selection down to the focused row.
+            if (!alreadyFocused)
+            {
+                if (SelectedCountOf(list) > 1) RefocusIndex(pane, index);
+                else SelectIndex(pane, index);
+            }
 
             // Tell the accessibility layer where the focus is, every time.
             //
@@ -5933,7 +6030,7 @@ namespace ExplorerNative
                 Announce("Could not take the clipboard, another application is holding it", isError: true);
                 return;
             }
-            AnnounceOperation("clip.path", "Copied file path");
+            AnnounceOperation("clip.path", "Copied the path");
         }
 
         private void CopyToClipboard(bool cut)
@@ -5997,7 +6094,7 @@ namespace ExplorerNative
 
             if (!ClipboardInterop.TryGetFiles(out var paths, out bool isCut))
             {
-                AnnounceOperation("clip.empty", "Clipboard has no files");
+                AnnounceOperation("clip.empty", "There are no files on the clipboard");
                 return;
             }
             bool moved;
@@ -6170,6 +6267,9 @@ namespace ExplorerNative
 
             int done = upload.FilesUploaded;
             var errors = upload.Errors;
+            int total = work.Files.Count;
+            // "3 of 12 files", never "1 of 1".
+            string soFar = $"{done:N0} of {total:N0} {(total == 1 ? "file" : "files")}";
 
             // A cancelled upload is not a failed one, for the same reason a
             // cancelled copy is not: silencing a deliberate Escape must not mean
@@ -6177,7 +6277,7 @@ namespace ExplorerNative
             if (cancelled)
             {
                 AnnounceOperation(move ? "move.cancelled" : "copy.cancelled",
-                    $"Cancelled after {done} of {work.Files.Count}");
+                    total <= 1 ? "Upload cancelled" : $"Upload cancelled after {soFar}");
                 return false;
             }
 
@@ -6188,7 +6288,7 @@ namespace ExplorerNative
             if (failure != null)
             {
                 AnnounceOperation("drive.upload.failed",
-                    $"Upload stopped after {done} of {work.Files.Count}: {failure}");
+                    total <= 1 ? $"Could not upload: {failure}" : $"Upload stopped after {soFar}: {failure}");
                 ShowErrors(errors.Count > 0 ? errors : new List<string> { failure });
                 AnnounceConflicts(upload.Collisions);
                 return false;
@@ -6197,16 +6297,20 @@ namespace ExplorerNative
             if (errors.Count > 0)
             {
                 AnnounceOperation("drive.upload.failed",
-                    $"Uploaded {done} of {work.Files.Count}. First problem: {errors[0]}");
+                    total <= 1 ? $"Could not upload: {errors[0]}"
+                    : errors.Count == 1 ? $"Uploaded {soFar}. One could not be uploaded: {errors[0]}"
+                    : $"Uploaded {soFar}. The first problem: {errors[0]}");
                 ShowErrors(errors);
                 AnnounceConflicts(upload.Collisions);
                 return false;
             }
 
+            // One file is just the verb, as everywhere (NameRules.SayCount).
             AnnounceOperation("drive.upload.done", work.Folders.Count > 0
-                ? $"Uploaded {done} {(done == 1 ? "file" : "files")} in " +
-                  $"{work.Folders.Count} {(work.Folders.Count == 1 ? "folder" : "folders")} to Google Drive"
-                : $"Uploaded {done} {(done == 1 ? "file" : "files")} to Google Drive");
+                ? $"Uploaded {NameRules.Items(done, "file")} in " +
+                  $"{(work.Folders.Count == 1 ? "one folder" : $"{work.Folders.Count:N0} folders")} to Google Drive"
+                : done == 1 ? "Uploaded to Google Drive"
+                : $"Uploaded {done:N0} files to Google Drive");
 
             // Last, and after the outcome, for the same reason the local path says
             // it last: "Uploaded 12 files" is not much use to somebody about to go
@@ -6351,7 +6455,7 @@ namespace ExplorerNative
             var outcomes = log.Snapshot();
             if (cancelled)
             {
-                AnnounceOperation(move ? "move.cancelled" : "copy.cancelled", "Cancelled");
+                AnnounceOperation(move ? "move.cancelled" : "copy.cancelled", move ? "Move cancelled" : "Copy cancelled");
                 AnnounceConflicts(outcomes);
                 return false;
             }
@@ -6359,7 +6463,8 @@ namespace ExplorerNative
             if (errors.Count > 0)
             {
                 AnnounceOperation(move ? "move.failed" : "copy.failed",
-                    $"{(move ? "Moved" : "Copied")} {done}. {errors[0]}");
+                    done == 0 ? $"Could not {(move ? "move" : "copy")}: {errors[0]}"
+                    : $"{(move ? "Moved" : "Copied")} {NameRules.Items(done)}, but not everything: {errors[0]}");
                 ShowErrors(errors);
                 AnnounceConflicts(outcomes);
                 return false;
@@ -7009,7 +7114,7 @@ namespace ExplorerNative
                 catch (Exception ex)
                 {
                     window.Finish();
-                    AnnounceOperation(move ? "move.failed" : "copy.failed", $"{verb} failed: {ex.Message}");
+                    AnnounceOperation(move ? "move.failed" : "copy.failed", $"Could not {(move ? "move" : "copy")}: {ex.Message}");
 
                     // Something may still have been written before it failed, so the
                     // list is re-read even on the way out.
@@ -7044,7 +7149,7 @@ namespace ExplorerNative
                 // A cancelled move is not a failed one. Reporting it as
                 // "move.failed" meant the only way to silence a deliberate Escape
                 // was to silence genuine failures with it.
-                if (result.Cancelled) AnnounceOperation(move ? "move.cancelled" : "copy.cancelled", "Cancelled");
+                if (result.Cancelled) AnnounceOperation(move ? "move.cancelled" : "copy.cancelled", move ? "Move cancelled" : "Copy cancelled");
                 else if (result.Failed > 0)
                 {
                     // Copied counts files; Failed counts the items that could not
@@ -7054,24 +7159,27 @@ namespace ExplorerNative
                     // same event as a copy that half succeeded, and the sentence
                     // already says which it was.
                     AnnounceOperation("copy.partial",
-                        $"{result.Copied} file{(result.Copied == 1 ? "" : "s")} transferred, " +
-                        $"{result.Failed} item{(result.Failed == 1 ? "" : "s")} failed");
+                        result.Copied == 0
+                            ? $"Nothing was {(move ? "moved" : "copied")}: {NameRules.Items(result.Failed)} failed"
+                            : $"{(move ? "Moved" : "Copied")} {NameRules.Items(result.Copied, "file")}, but " +
+                              $"{NameRules.Items(result.Failed)} could not be {(move ? "moved" : "copied")}");
                     ShowErrors(result.Errors);
                 }
                 // Not "Move complete" over the warnings that some originals stayed.
                 else if (keptInDrive > 0)
-                    AnnounceOperation("move.done", $"Copied; {NameRules.Items(keptInDrive)} kept in Google Drive");
+                    AnnounceOperation("move.done",
+                        $"Copied, but {NameRules.Items(keptInDrive)} {(keptInDrive == 1 ? "was" : "were")} kept in Google Drive");
 
                 // Files a merge found already there and left alone. Not "Move
                 // complete" over originals that are still in the source: a Fill
                 // gaps move said exactly that.
                 else if (result.AlreadyThere > 0 && move && !fromDrive)
                     AnnounceOperation("move.done",
-                        $"Moved; {NameRules.Items(result.AlreadyThere, "file")} already there " +
+                        $"Moved. {NameRules.Items(result.AlreadyThere, "file")} already there " +
                         $"{(result.AlreadyThere == 1 ? "was" : "were")} left in the source folder");
                 else if (result.AlreadyThere > 0)
                     AnnounceOperation(move ? "move.done" : "copy.done",
-                        $"{(move ? "Copied" : "Copy complete")}; {NameRules.Items(result.AlreadyThere, "file")} " +
+                        $"Copied. {NameRules.Items(result.AlreadyThere, "file")} " +
                         $"{(result.AlreadyThere == 1 ? "was" : "were")} already there");
                 else AnnounceOperation(move ? "move.done" : "copy.done", move ? "Move complete" : "Copy complete");
 
@@ -7148,7 +7256,10 @@ namespace ExplorerNative
                         ? await Drive.VerifyCopied(path, arrivedAt, token)
                         : await Task.Run(() =>
                         {
-                            var copy = new FileInfo(arrivedAt);
+                            // Exact: moved into "Backup." the plain path asked
+                            // about "Backup\x", found nothing, and kept every
+                            // original in Drive as unconfirmed.
+                            var copy = new FileInfo(NameRules.ExactPath(arrivedAt));
                             return copy.Exists && copy.Length == new FileInfo(path).Length;
                         }, token);
                 }
@@ -7169,31 +7280,35 @@ namespace ExplorerNative
                 if (!trashed) kept++;
             }
 
+            static string Was(int n) => n == 1 ? "was" : "were";
+
             if (kept > 0)
-                Announce(NameRules.SayCount("Copied, but could not remove from Google Drive", kept) +
-                         ". The originals are still there.", isError: true);
+                Announce(kept == 1
+                    ? "Copied, but the original could not be removed from Google Drive, so it is still there."
+                    : $"Copied, but {kept:N0} originals could not be removed from Google Drive, so they are still there.",
+                    isError: true);
 
             if (renamedKept > 0)
-                Announce($"{NameRules.Items(renamedKept)} kept in Google Drive, because the copy was saved " +
+                Announce($"{NameRules.Items(renamedKept)} {Was(renamedKept)} kept in Google Drive, because the copy was saved " +
                          "under another name and could not be checked.", isError: true);
 
             if (tooBig > 0)
-                Announce($"{NameRules.Items(tooBig, "folder")} kept in Google Drive, because there is too much " +
-                         "in them to check the copy.", isError: true);
+                Announce($"{NameRules.Items(tooBig, "folder")} {Was(tooBig)} kept in Google Drive, because there is too much " +
+                         $"in {(tooBig == 1 ? "it" : "them")} to check the copy.", isError: true);
 
             if (unconfirmed > 0)
-                Announce($"{NameRules.Items(unconfirmed)} kept in Google Drive, because the copy could not be " +
-                         "shown to hold everything — Google documents, or something changed on the web.",
+                Announce($"{NameRules.Items(unconfirmed)} {Was(unconfirmed)} kept in Google Drive, because the copy could not be " +
+                         "shown to hold everything. It may hold Google documents, or something changed on the web.",
                          isError: true);
 
             if (mergedKept > 0)
-                Announce($"{NameRules.Items(mergedKept, "folder")} merged into folders already there and kept " +
+                Announce($"{NameRules.Items(mergedKept, "folder")} {Was(mergedKept)} merged into folders already there and kept " +
                          "in Google Drive, because not everything in them was copied.", isError: true);
 
             int notLooked = paths.Length - looked;
             if (stopped)
-                Announce($"Checking was stopped; {NameRules.Items(notLooked)} not yet checked " +
-                         "are still in Google Drive.", isError: true);
+                Announce($"Checking was stopped, so {NameRules.Items(notLooked)} not yet checked " +
+                         $"{(notLooked == 1 ? "is" : "are")} still in Google Drive.", isError: true);
 
             return kept + mergedKept + unconfirmed + renamedKept + tooBig + skippedKept + notLooked;
         }
@@ -7269,7 +7384,7 @@ namespace ExplorerNative
                     .ToArray();
                 if (selected.Length == 0)
                 {
-                    AnnounceOperation("convert.nothing", "Nothing selected is audio");
+                    AnnounceOperation("convert.nothing", "None of what is selected is audio");
                     return;
                 }
 
@@ -7550,8 +7665,7 @@ namespace ExplorerNative
                 else if (result.Failed > 0)
                 {
                     AnnounceOperation("archive.partial",
-                        $"Created {name}; {result.Failed} item{(result.Failed == 1 ? "" : "s")} " +
-                        "could not be read");
+                        $"Created {name}, but {NameRules.Items(result.Failed)} could not be read");
                     ShowErrors(result.Errors);
                 }
                 else
@@ -7565,7 +7679,8 @@ namespace ExplorerNative
                         : "";
 
                     AnnounceOperation("archive.done", result.LeftOut > 0
-                        ? $"Created {name}{saved}; {NameRules.Items(result.LeftOut, "link")} left out"
+                        ? $"Created {name}{saved}. {NameRules.Items(result.LeftOut, "link")} " +
+                          $"{(result.LeftOut == 1 ? "was" : "were")} left out"
                         : $"Created {name}{saved}");
 
                     // Which ones, since a link left out is something somebody may
@@ -7621,7 +7736,7 @@ namespace ExplorerNative
             if (format == null || !format.CanExtract)
             {
                 AnnounceOperation("archive.unknown",
-                    $"{Path.GetFileName(archive)} is not an archive this can open");
+                    $"{Path.GetFileName(archive)} is not an archive Explorer Native can open");
                 RestoreListFocus();
                 return;
             }
@@ -7688,15 +7803,15 @@ namespace ExplorerNative
                 else if (result.Failed > 0)
                 {
                     AnnounceOperation("extract.partial",
-                        $"Extracted {result.Items} item{(result.Items == 1 ? "" : "s")}; " +
-                        $"{result.Failed} failed");
+                        $"Extracted {NameRules.Items(result.Items)}, but {result.Failed:N0} failed");
                     ShowErrors(result.Errors);
                 }
                 else
                 {
                     AnnounceOperation("extract.done",
-                        $"Extracted {result.Items} item{(result.Items == 1 ? "" : "s")} " +
-                        $"to {FolderDisplayName(destination)}");
+                        result.Items == 1
+                            ? $"Extracted to {FolderDisplayName(destination)}"
+                            : $"Extracted {result.Items:N0} items to {FolderDisplayName(destination)}");
                 }
 
                 // Not after a cancel: "Extracting cancelled" is the whole story,
@@ -8182,14 +8297,22 @@ namespace ExplorerNative
                 {
                     try
                     {
+                        // Exact: a PC folder "Backup." asked about plainly is
+                        // "Backup", so one the Recycle Bin had refused read as
+                        // gone and its Drive folder was trashed anyway.
+                        var local = NameRules.ExactPath(pair.LocalFolder);
                         if (driveSide)
                         {
-                            if (Directory.Exists(pair.LocalFolder) && !ShellDelete.Recycle(pair.LocalFolder, owner))
+                            if (!Directory.Exists(local)) { }
+                            // The shell would read it as "Backup" and recycle that.
+                            else if (!string.Equals(local, pair.LocalFolder, StringComparison.Ordinal))
+                                errors.Add($"{pair.LocalFolder}: kept, because Windows cannot put a name ending in a dot or a space in the Recycle Bin");
+                            else if (!ShellDelete.Recycle(pair.LocalFolder, owner))
                                 errors.Add($"{pair.LocalFolder}: kept, because it could only have been deleted permanently");
                         }
                         // This side was kept (Windows' "delete permanently?" answered No,
                         // or the delete failed): the other side stays too.
-                        else if (Directory.Exists(pair.LocalFolder))
+                        else if (Directory.Exists(local))
                             errors.Add($"{pair.LocalFolder}: still here, so {pair.DriveFolderPath} in Google Drive was kept too");
                         else if (client == null)
                             errors.Add($"{pair.DriveFolderPath}: Google Drive is not connected, so it was not trashed");
@@ -8434,12 +8557,18 @@ namespace ExplorerNative
 
             if (outcome.Errors.Count > 0)
             {
-                AnnounceOperation("delete.failed", $"Deleted {outcome.Done}, {outcome.Errors.Count} failed");
+                int failedCount = outcome.Errors.Count;
+                AnnounceOperation("delete.failed",
+                    outcome.Done > 0
+                        ? $"Deleted {NameRules.Items(outcome.Done)}, but {failedCount:N0} could not be deleted"
+                        : failedCount == 1 ? $"Could not delete: {outcome.Errors[0]}"
+                        : $"Could not delete {failedCount:N0} items");
                 ShowErrors(outcome.Errors);
             }
             else
             {
-                var said = $"Deleted {outcome.Done} item{(outcome.Done == 1 ? "" : "s")}";
+                // One is just the verb (NameRules.SayCount).
+                var said = NameRules.SayCount("Deleted", outcome.Done);
 
                 // Where they went is the only difference between these, and this
                 // is the one place that knows it: the Drive trash, gone for good,
@@ -8655,7 +8784,7 @@ namespace ExplorerNative
                 var (bytes, files, folders) = archive.Measure(inner);
                 var measured = SizeFormatter.Format(bytes, _settings.SizeUnits);
                 SetSizeOverride(pane, path, measured);
-                AnnounceOperation("size.done", $"{Path.GetFileName(path)}: {measured}, {files} files in {folders} folders");
+                AnnounceOperation("size.done", SizeSentence(Path.GetFileName(path), measured, files, folders, true));
                 return;
             }
 
@@ -8703,14 +8832,26 @@ namespace ExplorerNative
 
                 // One id for both endings. A walk that ran out of time still answers
                 // the question that was asked, and the sentence says it is partial.
-                AnnounceOperation("size.done", result.Complete
-                    ? $"{Path.GetFileName(path)}: {size}, {result.Files} files in {result.Folders} folders"
-                    : $"{Path.GetFileName(path)}: {size} so far, incomplete");
+                AnnounceOperation("size.done",
+                    SizeSentence(Path.GetFileName(path), size, result.Files, result.Folders, result.Complete));
             }
             catch (Exception ex)
             {
                 if (!IsDisposed) Announce($"Could not measure {Path.GetFileName(path)}: {ex.Message}", isError: true);
             }
+        }
+
+        /// <summary>
+        /// "Music is 14.2 GB, 3,120 files in 12 folders" — counts that agree
+        /// with their nouns, and no "in 0 folders". A walk that ran out of time
+        /// says it is a lower bound.
+        /// </summary>
+        internal static string SizeSentence(string name, string size, long files, long folders, bool complete)
+        {
+            if (!complete) return $"{name} is at least {size}; measuring stopped before the end";
+            static string Of(long n, string noun) => $"{n:N0} {noun}{(n == 1 ? "" : "s")}";
+            var contents = folders > 0 ? $"{Of(files, "file")} in {Of(folders, "folder")}" : Of(files, "file");
+            return $"{name} is {size}, {contents}";
         }
 
         /// <summary>

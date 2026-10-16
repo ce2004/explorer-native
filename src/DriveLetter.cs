@@ -62,7 +62,7 @@ namespace ExplorerNative
                     continue;
 
                 if (c != preferred)
-                    Tell(notify, "drive.letter.taken", $"{preferred}: was taken, using {letter}");
+                    Tell(notify, "drive.letter.taken", $"{preferred}: was taken, so Google Drive is using {letter}");
                 return new DriveLetter(letter, directory);
             }
 

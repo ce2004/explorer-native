@@ -217,12 +217,14 @@ namespace ExplorerNative
 
         // MARK: Writing
 
+        private static ConnectException Unusable() =>
+            new(503, "The PC's clipboard can't be used right now. Restart Explorer Native and try again.");
+
         /// <summary>Runs on the STA thread, then waits for the change it made to arrive; returns its seq.</summary>
         private async Task<long> Write(Func<bool> set, string refusal)
         {
             // Without the thread's window nothing would ever run the work queued below.
-            if (_window == null)
-                throw new ConnectException(503, "The PC's clipboard can't be used right now. Restart Explorer Native and try again.");
+            if (_window == null) throw Unusable();
             long before;
             lock (_gate) before = _current.Seq;
             var done = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -232,8 +234,12 @@ namespace ExplorerNative
                 catch (Exception e) { done.TrySetException(e); }
             });
             _window?.Wake();
-            if (!await done.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false))
-                throw new ConnectException(500, refusal);
+            bool ok;
+            // The thread busy for ten seconds (another program holding the clipboard through a read) is the
+            // same refusal as a write that could not get in, in words, not "The operation has timed out".
+            try { ok = await done.Task.WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false); }
+            catch (TimeoutException) { ok = false; }
+            if (!ok) throw new ConnectException(500, refusal);
             return (await WaitAsync(before, TimeSpan.FromSeconds(2), CancellationToken.None).ConfigureAwait(false)).Seq;
         }
 
@@ -245,6 +251,10 @@ namespace ExplorerNative
 
         public Task<long> SetImageAsync(byte[] image)
         {
+            // Asked before anything is decoded: with no window the work below never runs, so the bitmap its
+            // finally disposes was left behind, a GDI+ image per request, for as long as the app ran.
+            if (_window == null) return Task.FromException<long>(Unusable());
+
             Bitmap bitmap;
             try
             {
@@ -255,7 +265,8 @@ namespace ExplorerNative
             catch { throw new ConnectException(400, "That is not a PNG or JPEG image."); }
 
             byte[] png;
-            using (var output = new MemoryStream()) { bitmap.Save(output, ImageFormat.Png); png = output.ToArray(); }
+            try { using var output = new MemoryStream(); bitmap.Save(output, ImageFormat.Png); png = output.ToArray(); }
+            catch { bitmap.Dispose(); throw; }
 
             return Write(() =>
             {

@@ -321,6 +321,7 @@ namespace ExplorerNative
         {
             lock (_gate)
             {
+                if (_disposed) throw Closing();
                 if (_streams.TryGetValue(path, out var held))
                 {
                     held.Leases++;
@@ -334,11 +335,14 @@ namespace ExplorerNative
             var stream = new StreamingSource(source, _budget);
 
             StreamingSource? loser = null, evicted = null;
-            Leased lease;
+            Leased? lease = null;
             lock (_gate)
             {
+                // Disposed while this one was being opened: Dispose has already let go of everything it found,
+                // and this one, added now, would be downloading with nobody left to stop it.
+                if (_disposed) loser = stream;
                 // Somebody else opened it while this one was being made: use theirs.
-                if (_streams.TryGetValue(path, out var raced)) { loser = stream; stream = raced.Stream; raced.Leases++; raced.LastUsed = DateTime.UtcNow; }
+                else if (_streams.TryGetValue(path, out var raced)) { loser = stream; stream = raced.Stream; raced.Leases++; raced.LastUsed = DateTime.UtcNow; }
                 else
                 {
                     if (_streams.Count >= MostOpen)
@@ -349,12 +353,18 @@ namespace ExplorerNative
                     _streams[path] = new Entry { Stream = stream, Leases = 1, LastUsed = DateTime.UtcNow };
                     ArmSweep();
                 }
-                lease = new Leased(this, path, stream);
+                if (!_disposed) lease = new Leased(this, path, stream);
             }
             loser?.Dispose();
             evicted?.Dispose();
-            return lease;
+            return lease ?? throw Closing();
         }
+
+        /// <summary>
+        /// Asked for after <see cref="Dispose"/>. Never null, which callers take for "not on Drive" and answer
+        /// from the placeholder instead.
+        /// </summary>
+        private static ConnectException Closing() => new(503, "Explorer Native is closing. Try again once it is running.");
 
         private void Return(string path, StreamingSource stream)
         {
@@ -1004,6 +1014,7 @@ namespace ExplorerNative
             if (string.IsNullOrWhiteSpace(path)) throw new ConnectException(400, $"No {what} was given.");
             if (!Path.IsPathFullyQualified(path)) throw new ConnectException(400, $"The {what} has to be a full path, such as C:\\Music.");
             if (IsNetworkPath(path)) throw new ConnectException(403, NetworkPathRefusal);
+            if (IsStreamPath(path)) throw new ConnectException(400, StreamPathRefusal);
             if (_files == null) throw new ConnectException(503, "This computer can't do that yet.");
             var away = _files.Unavailable(path);
             if (away != null) throw new ConnectException(503, Sentence(away));
@@ -1019,6 +1030,15 @@ namespace ExplorerNative
         /// </summary>
         public static bool IsNetworkPath(string? path) =>
             path != null && path.Length >= 1 && path[0] is '\\' or '/';
+
+        /// <summary>
+        /// A colon past the drive's own ("C:\x\a.txt:secret"): one of a file's alternate data streams, which no
+        /// name can contain and no listing gives. Opened, it was read as a file; deleted, the Recycle Bin was
+        /// handed a stream; renamed, a stream was moved. The web app never sends one.
+        /// </summary>
+        public static bool IsStreamPath(string? path) => path is { Length: > 2 } && path.IndexOf(':', 2) >= 0;
+
+        internal const string StreamPathRefusal = "That path names part of a file, not a file or a folder.";
 
         internal const string NetworkPathRefusal =
             "Network paths can't be opened from the web app. Map the share to a drive letter on the PC and open that.";
@@ -1639,6 +1659,9 @@ namespace ExplorerNative
             bool headOnly = r.Method == "HEAD";
             CheckPath(path);
 
+            // Not cancelled once started: a lease taken here has to reach the decoder, which owns it from then
+            // on. With the token on the second step, a shutdown (or the phone hanging up) between the two never
+            // started it, and the Drive download stayed leased, never swept, until the app closed.
             var remote = await Task.Run(() => _remote?.Invoke(path), token);
             var io = ConnectFiles.Io(path);
             string why = "";
@@ -1660,7 +1683,7 @@ namespace ExplorerNative
                     catch { bytes = 0; }
                 }
                 return ConnectAudio.Open(openAs, remote, bytes, out why);
-            }, token);
+            }, CancellationToken.None);
             if (audio == null)
             {
                 bool exists = remote != null || await Task.Run(() => System.IO.File.Exists(io), token);
@@ -1673,6 +1696,7 @@ namespace ExplorerNative
             }
 
             using var _ = audio;
+            token.ThrowIfCancellationRequested();
             long length = audio.Plan.TotalBytes;
             long from = 0, to = length - 1;
             int status = RangeStatus(r.Headers.GetValueOrDefault("range"), length, out from, out to);
@@ -2057,10 +2081,17 @@ namespace ExplorerNative
             return probes.Where(p => p.Task.IsCompletedSuccessfully && p.Task.Result != null).Select(p => p.Task.Result!).ToList();
         }
 
-        /// <summary>A folder's entries, folders first then by name, or null if it can't be read in ten seconds.</summary>
+        /// <summary>How long a folder may take to list before it is "can't be opened"; app.js waits 50 seconds.</summary>
+        public static readonly TimeSpan ListWait = TimeSpan.FromSeconds(45);
+
+        /// <summary>
+        /// A folder's entries, folders first then by name, or null if it can't be read in <see cref="ListWait"/>
+        /// (45 seconds: a Drive folder nobody has opened is a listing from Google, and a sleeping disk spins up).
+        /// The web app waits a little longer than this, so its answer is this one, not its own timeout.
+        /// </summary>
         public async Task<List<ConnectEntry>?> List(string path)
         {
-            if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path) || IsNetworkPath(path)) return null;
+            if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path) || IsNetworkPath(path) || IsStreamPath(path)) return null;
             var listing = Task.Run(() =>
             {
                 var held = _tryListing(path);
@@ -2075,7 +2106,7 @@ namespace ExplorerNative
                 }
                 return list;
             });
-            if (await Task.WhenAny(listing, Task.Delay(45_000)) != listing || !listing.IsCompletedSuccessfully) return null;
+            if (await Task.WhenAny(listing, Task.Delay(ListWait)) != listing || !listing.IsCompletedSuccessfully) return null;
             var entries = listing.Result;
             entries?.Sort((a, b) => a.Folder != b.Folder ? (a.Folder ? -1 : 1) : NameRules.CompareNames(a.Name, a.Name, b.Name, b.Name));
             return entries;
@@ -2088,6 +2119,7 @@ namespace ExplorerNative
             bool headOnly = r.Method == "HEAD";
             if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path)) { await Error(s, 404, "No such file.", headOnly, token); return; }
             if (IsNetworkPath(path)) { await Error(s, 403, NetworkPathRefusal, headOnly, token); return; }
+            if (IsStreamPath(path)) { await Error(s, 400, StreamPathRefusal, headOnly, token); return; }
             var away = _files?.Unavailable(path);
             if (away != null) { await Error(s, 503, Sentence(away), headOnly, token); return; }
             IRangeSource source;
@@ -2097,6 +2129,7 @@ namespace ExplorerNative
             try { source = await Task.Run(() => _open(open), token); }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
             catch (Exception e) when (InUse(e)) { await Error(s, 423, InUseMessage, headOnly, token); return; }
+            catch (ConnectException e) { await Error(s, e.Status, e.Message, headOnly, token); return; }
             catch { await Error(s, 404, "That file can't be opened.", headOnly, token); return; }
             using var _ = source;
 
@@ -2244,7 +2277,10 @@ namespace ExplorerNative
         public static string ContentType(string path) => Path.GetExtension(path).ToLowerInvariant() switch
         {
             ".mp3" => "audio/mpeg",
-            ".m4a" or ".m4b" or ".aac" or ".alac" => "audio/mp4",
+            // .aac is a bare ADTS stream, not an MP4: typed as MP4, Safari would not play what app.js hands it
+            // straight. .m4r (a ringtone) is an M4A; untyped it went as octet-stream.
+            ".m4a" or ".m4b" or ".m4r" or ".alac" => "audio/mp4",
+            ".aac" => "audio/aac",
             ".flac" => "audio/flac",
             ".wav" => "audio/wav",
             ".aif" or ".aiff" or ".aifc" => "audio/aiff",

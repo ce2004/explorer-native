@@ -582,7 +582,7 @@ namespace ExplorerNative
                 // had to.
                 if (!string.Equals(Path.GetFileName(root), "GoogleDrive", StringComparison.Ordinal))
                     Say("drive.root.stuck",
-                        $"An old Google Drive folder couldn't be removed, so a new one is used: {Path.GetFileName(root)}");
+                        $"An old Google Drive folder could not be removed, so {Path.GetFileName(root)} is used instead");
 
                 var mount = new DriveMount(drive, root, budget, Note)
                 {
@@ -1072,11 +1072,24 @@ namespace ExplorerNative
                 if (!match.IsGoogleDocument && match.ParentId != null && !chains.ContainsKey(match.ParentId))
                     chains[match.ParentId] = DriveSearch.ChainUnder(realRootId, match.ParentId, parentOf);
 
+            // One folder on the way that will not list (a blip, the deadline)
+            // costs the hits below it, not the whole search: it threw out of
+            // here and every hit was lost to "Could not search". Each folder is
+            // tried once, and the hits that could not be placed are said.
+            var unlisted = new System.Collections.Concurrent.ConcurrentDictionary<string, string>(
+                StringComparer.OrdinalIgnoreCase);
+            var populateOrNote = DriveSearch.NotingFailures(
+                folder => mount.Populate(folder), unlisted,
+                ex => token.IsCancellationRequested || ex is GoogleSignInRequiredException
+                    ? null
+                    : SearchListingProblem(ex));
+
             await DriveSearch.PopulateAhead(
                 folderPath, chains.Values.Where(c => c != null).Select(c => (IReadOnlyList<string>)c!),
-                folder => mount.Populate(folder),
+                populateOrNote,
                 mount.ChildPathForId,
                 resolved, 4, token).ConfigureAwait(false);
+            int unplaced = 0;
 
             foreach (var match in matches)
             {
@@ -1092,13 +1105,15 @@ namespace ExplorerNative
 
                 var parentPath = DriveSearch.PathForChain(
                     folderPath, chain,
-                    folder => mount.Populate(folder),
+                    populateOrNote,
                     mount.ChildPathForId,
                     resolved);
-                if (parentPath == null) continue;
-
-                var path = mount.ChildPathForId(parentPath, match.Id);
-                if (path == null) continue;
+                var path = parentPath == null ? null : mount.ChildPathForId(parentPath, match.Id);
+                if (path == null)
+                {
+                    unplaced++;
+                    continue;
+                }
 
                 hits.Add(new SearchHit(
                     path, Path.GetFileName(path), match.IsFolder,
@@ -1106,8 +1121,28 @@ namespace ExplorerNative
                     match.Modified == default ? default : match.Modified.ToLocalTime()));
             }
 
+            if (!unlisted.IsEmpty && unplaced > 0)
+            {
+                var (folder, why) = unlisted.First();
+                var name = Path.GetFileName(Path.TrimEndingDirectorySeparator(folder));
+                if (string.IsNullOrEmpty(name)) name = "Google Drive";
+
+                // Nothing could be shown at all: a failure, said as one, rather
+                // than "nothing matching", which would be untrue.
+                if (hits.Count == 0)
+                    throw new IOException($"Google Drive would not list {name} ({why})");
+
+                Say("drive.folder.failed",
+                    $"Could not read {name}: {why}. " +
+                    $"{unplaced} search result{(unplaced == 1 ? "" : "s")} could not be shown");
+            }
+
             return new SearchResult(hits, truncated);
         }
+
+        /// <summary>Why a folder would not list, in words, for a search that goes on without it.</summary>
+        private static string SearchListingProblem(Exception ex) =>
+            ex is OperationCanceledException ? "Google Drive took too long" : GoogleNet.Reason(ex);
 
         /// <summary>
         /// How long the folder graph is reused between searches.
@@ -1475,7 +1510,10 @@ namespace ExplorerNative
                     if (++folders > 2000) return null;
                     token.ThrowIfCancellationRequested();
                     var (folderId, local, copy) = pending.Pop();
-                    if (!Directory.Exists(copy)) return false;
+                    // Exact: a PC folder ending in a dot ("Backup.") is another
+                    // folder to .NET's plain calls, which drop the dot, and the
+                    // copy read as missing.
+                    if (!Directory.Exists(NameRules.ExactPath(copy))) return false;
 
                     var children = await client.ListChildren(folderId, token, driveId: driveId)
                         .ConfigureAwait(false);
@@ -1490,7 +1528,7 @@ namespace ExplorerNative
                         if (child.IsFolder) pending.Push((child.Id, placed, arrived));
                         else
                         {
-                            var file = new FileInfo(arrived);
+                            var file = new FileInfo(NameRules.ExactPath(arrived));
                             if (!file.Exists || file.Length != child.Size) return false;
                         }
                     }
@@ -2141,7 +2179,12 @@ namespace ExplorerNative
 
             // Read before the move, because afterwards the placeholder is gone
             // and with it the only local record of how big the file was.
-            var name = newName ?? Path.GetFileName(fromPath);
+            // With no new name Drive keeps its own, and that is the name the
+            // moved row carries: the name on disk is the cleaned-up one
+            // ("AC_DC.flac" for "AC:DC.flac"), and recording that as Drive's
+            // made a later copy or rename of it send the wrong name to Drive.
+            var onDisk = Path.GetFileName(Path.TrimEndingDirectorySeparator(fromPath));
+            var name = newName ?? mount.DriveNameAt(fromPath) ?? onDisk;
             long size = 0;
             bool isFolder = false;
             var modified = DateTime.UtcNow;

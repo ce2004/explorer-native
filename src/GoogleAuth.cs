@@ -444,10 +444,24 @@ namespace ExplorerNative
                 ["grant_type"] = "refresh_token",
             };
 
-            using var response = await _http.PostAsync(
-                TokenEndpoint, new FormUrlEncodedContent(form), token);
-            var body = await response.Content.ReadAsStringAsync(token);
+            HttpResponseMessage response;
+            string body;
+            try
+            {
+                response = await _http.PostAsync(TokenEndpoint, new FormUrlEncodedContent(form), token);
+                try { body = await response.Content.ReadAsStringAsync(token); }
+                catch { response.Dispose(); throw; }
+            }
+            catch (OperationCanceledException ex) when (!token.IsCancellationRequested)
+            {
+                // The fifteen seconds ran out. HttpClient says that as a bare
+                // TaskCanceledException, which everything above reads as somebody
+                // pressing Cancel: an upload abandoned, a sync pass stopped, for
+                // a sign-in service that was slow for a moment.
+                throw new TimeoutException("Google's sign-in service did not answer within 15 seconds", ex);
+            }
 
+            using var _ = response;
             if (!response.IsSuccessStatusCode)
             {
                 // Told apart, because one of these is permanent and the other is
@@ -521,12 +535,10 @@ namespace ExplorerNative
             string challenge = Base64Url(SHA256.HashData(Encoding.ASCII.GetBytes(verifier)));
             string state = Base64Url(RandomNumberGenerator.GetBytes(16));
 
-            int port = FreePort();
-            string redirect = $"http://127.0.0.1:{port}/";
-
-            using var listener = new HttpListener();
-            listener.Prefixes.Add(redirect);
-            listener.Start();
+            // The port is free when asked and can be taken by somebody else before
+            // the listener claims it; that is a reason to pick another, not to
+            // fail the sign-in.
+            using var listener = StartListener(out string redirect);
 
             var url =
                 $"{AuthEndpoint}?client_id={Uri.EscapeDataString(_clientId)}" +
@@ -554,62 +566,55 @@ namespace ExplorerNative
             // the permission page, all through a screen reader; three minutes
             // ran out first, the listener closed, and Google's redirect landed
             // on "127.0.0.1 refused to connect" with nothing said here at all.
+            var waitUntil = DateTime.UtcNow.AddMinutes(30);
+            System.Collections.Specialized.NameValueCollection query;
             HttpListenerContext context;
-            try
+            while (true)
             {
-                context = await listener.GetContextAsync().WaitAsync(TimeSpan.FromMinutes(30), token);
-            }
-            catch (TimeoutException)
-            {
-                try { Notify?.Invoke("drive.signin.timeout", "Google sign-in timed out. Press Connect Google Drive again."); }
+                try
+                {
+                    var left = waitUntil - DateTime.UtcNow;
+                    if (left <= TimeSpan.Zero) throw new TimeoutException();
+                    context = await listener.GetContextAsync().WaitAsync(left, token);
+                }
+                catch (TimeoutException)
+                {
+                    try { Notify?.Invoke("drive.signin.timeout", "Google sign-in timed out. Press Connect Google Drive again."); }
+                    catch { }
+                    throw;
+                }
+                query = context.Request.QueryString;
+
+                // Only Google's redirect for this sign-in carries this state.
+                // Anything else on the port — the browser asking for an icon, a
+                // tab left over from an earlier try, a page that opened the
+                // address — is told so and the wait goes on. It used to end the
+                // sign-in, so the real redirect then found nobody listening.
+                if (query["state"] == state) break;
+                try
+                {
+                    Answer(context, 404, "Not the sign-in",
+                        "This was not the answer Explorer Native was waiting for. " +
+                        "Finish signing in in the tab Explorer Native opened.");
+                }
                 catch { }
-                throw;
             }
-            var query = context.Request.QueryString;
 
             // Everything that can make this a failure, decided before the page
-            // says otherwise: a request without the state or the code is not the
-            // redirect, and telling the browser "Signed in" for it left the real
-            // one arriving at a listener that had already gone.
-            bool failed = query["error"] != null || query["state"] != state ||
-                          string.IsNullOrEmpty(query["code"]);
+            // says otherwise: a redirect without the code did not sign anybody in.
+            bool failed = query["error"] != null || string.IsNullOrEmpty(query["code"]);
             string heading = failed ? "Sign-in failed" : "Signed in";
 
             // Escaped, because this is somebody else's text going into a page.
-            // The listener answers whatever arrives on the loopback port, so the
-            // query string is not necessarily the redirect Google made — anything
-            // that can get the browser to open the address supplies it, and
-            // dropping it into the markup raw makes this page run it.
             string detail = query["error"] is { } said
                 ? $"Google said: {WebUtility.HtmlEncode(said)}"
                 : failed
                     ? "This was not the answer Explorer Native was waiting for. Try connecting again."
                     : "You can close this tab and go back to Explorer Native.";
 
-            // A real heading and a real title, because the person who lands here
-            // is as likely to be listening to this page as looking at it.
-            var bytes = Encoding.UTF8.GetBytes(
-                "<!doctype html><html lang=en><meta charset=utf-8>" +
-                $"<title>{heading} — Explorer Native</title>" +
-                "<body style='font:16px/1.5 system-ui;padding:3rem;max-width:34rem'>" +
-                $"<h1>{heading}</h1><p>{detail}</p></body></html>");
-
-            // ContentLength64 rather than letting it chunk, and the stream closed
-            // before the listener is: without both, the browser is left holding a
-            // response it cannot tell has finished, and sits on a blank page
-            // while the sign-in has in fact already succeeded.
-            context.Response.StatusCode = failed ? 400 : 200;
-            context.Response.ContentType = "text/html; charset=utf-8";
-            context.Response.ContentLength64 = bytes.Length;
-            using (var output = context.Response.OutputStream)
-            {
-                output.Write(bytes, 0, bytes.Length);
-                output.Flush();
-            }
-            context.Response.Close();
+            Answer(context, failed ? 400 : 200, heading, detail);
 
             if (query["error"] is { } refusal) throw new InvalidOperationException($"consent refused: {refusal}");
-            if (query["state"] != state) throw new InvalidOperationException("state did not match");
 
             string code = query["code"] ?? throw new InvalidOperationException("no code in the redirect");
 
@@ -748,6 +753,55 @@ namespace ExplorerNative
         /// reading back what was bound is the only way to get one without a race
         /// against every other program on the machine.
         /// </summary>
+        /// <summary>
+        /// The page the browser lands on. <paramref name="detail"/> is already
+        /// escaped HTML.
+        /// </summary>
+        private static void Answer(HttpListenerContext context, int status, string heading, string detail)
+        {
+            // A real heading and a real title, because the person who lands here
+            // is as likely to be listening to this page as looking at it.
+            var bytes = Encoding.UTF8.GetBytes(
+                "<!doctype html><html lang=en><meta charset=utf-8>" +
+                $"<title>{heading} — Explorer Native</title>" +
+                "<body style='font:16px/1.5 system-ui;padding:3rem;max-width:34rem'>" +
+                $"<h1>{heading}</h1><p>{detail}</p></body></html>");
+
+            // ContentLength64 rather than letting it chunk, and the stream closed
+            // before the listener is: without both, the browser is left holding a
+            // response it cannot tell has finished, and sits on a blank page
+            // while the sign-in has in fact already succeeded.
+            context.Response.StatusCode = status;
+            context.Response.ContentType = "text/html; charset=utf-8";
+            context.Response.ContentLength64 = bytes.Length;
+            using (var output = context.Response.OutputStream)
+            {
+                output.Write(bytes, 0, bytes.Length);
+                output.Flush();
+            }
+            context.Response.Close();
+        }
+
+        /// <summary>A loopback listener on a free port, trying another if one is taken in between.</summary>
+        private static HttpListener StartListener(out string redirect)
+        {
+            for (int tries = 0; ; tries++)
+            {
+                redirect = $"http://127.0.0.1:{FreePort()}/";
+                var listener = new HttpListener();
+                listener.Prefixes.Add(redirect);
+                try
+                {
+                    listener.Start();
+                    return listener;
+                }
+                catch (HttpListenerException) when (tries < 4)
+                {
+                    listener.Close();
+                }
+            }
+        }
+
         private static int FreePort()
         {
             var socket = new TcpListener(IPAddress.Loopback, 0);

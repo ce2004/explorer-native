@@ -469,8 +469,10 @@ function renderFiles() {
   updateSelectCount();
 }
 
+// A live region: rewritten with the same words on every redraw (a finished
+// upload's refresh) it said "3 selected" again for nothing.
 function updateSelectCount() {
-  $('select-count').textContent = `${state.selected.size} selected`;
+  setText($('select-count'), `${state.selected.size} selected`);
 }
 
 function isAudio(name) { return state.audio.has(extOf(name)); }
@@ -792,14 +794,17 @@ function pollJobs() {
   if (document.hidden) return; // battery: nothing runs in the background
   // On the code screen nothing is asked with the old code: every ask would count as a wrong code on the PC.
   if (!$('screen-code').hidden) return;
-  const running = transfers.filter((t) => t.kind === 'job' && t.state === 'running');
+  // Waiting ones too: a job whose poll once missed the network was set waiting, never asked about again, and
+  // said "waiting for the PC" for ever while the PC finished it.
+  const running = transfers.filter((t) => t.kind === 'job' && (t.state === 'running' || t.state === 'waiting'));
   if (!running.length) return;
   jobTimer = setTimeout(async () => {
     for (const t of running) {
       try {
         const j = await api(`/api/job?id=${encodeURIComponent(t.jobId)}`);
+        if (t.state !== 'running' && t.state !== 'waiting') continue;   // stopped meanwhile
         if (j.bytes > 0) { t.done = j.bytesDone; t.total = j.bytes; } else { t.done = j.itemsDone; t.total = j.items; }
-        if (j.state === 'running') transferProgress(t);
+        if (j.state === 'running') { t.state = 'running'; transferProgress(t); }
         else {
           const failed = (j.failed || []).length;
           finishTransfer(t, j.state === 'done' ? 'done' : j.state === 'cancelled' ? 'cancelled' : 'failed',
@@ -880,6 +885,8 @@ async function upload(file, folder) {
     const s = await api('/api/upload/start', { method: 'POST',
       body: { folder, name: file.name, size: file.size, conflict: prefs.conflict } });
     id = s.id;
+    // Stopped while the PC was making it: Stop had no id to call off, so the PC kept it for a day.
+    if (stopped) { api('/api/upload/cancel', { method: 'POST', body: { id } }).catch(() => { }); return; }
     let offset = 0, failures = 0, busy = 0;
     while (offset < file.size && !stopped) {
       try {
@@ -1017,11 +1024,15 @@ function togglePlay() {
   if (a.paused) a.play().catch((e) => announce('Could not play: ' + e.message, true)); else a.pause();
 }
 
+// Before the length is known (NaN while loading, Infinity on a stream) there is
+// no end to stop short of: the end was taken as 0, so Forward went to the start.
 function skip(seconds) {
   const a = audio();
   if (!a.src) return;
-  a.currentTime = Math.max(0, Math.min((a.duration || 0) - 0.5, a.currentTime + seconds));
-  announce(`${spokenTime(a.currentTime)}`);
+  const end = isFinite(a.duration) && a.duration > 0 ? a.duration - 0.5 : Infinity;
+  const to = Math.max(0, Math.min(end, (a.currentTime || 0) + seconds));
+  a.currentTime = to;
+  announce(`${spokenTime(to)}`);
 }
 
 function savePosition(force = false) {
@@ -1171,7 +1182,8 @@ function setupMediaSession() {
   if (!('mediaSession' in navigator)) return;
   const ms = navigator.mediaSession;
   const on = (name, fn) => { try { ms.setActionHandler(name, fn); } catch { } };
-  on('play', () => audio().play());
+  // A refused play (iOS before a tap) is not a failure to say out loud as one.
+  on('play', () => { audio().play().catch(() => { }); });
   on('pause', () => audio().pause());
   on('previoustrack', () => step(-1));
   on('nexttrack', () => step(1));
@@ -1208,7 +1220,7 @@ function setupAudio() {
     const t = current();
     if (t) store.remove('pos:' + t.path);
     if (player.sleepAtEnd) { player.sleepAtEnd = false; $('np-sleep').value = '0'; announce('Sleep timer: stopped at the end of the track'); renderPlayer(); return; }
-    if (player.repeat === 'one') { a.currentTime = 0; a.play(); return; }
+    if (player.repeat === 'one') { a.currentTime = 0; a.play().catch(() => announce('Press Play to start.')); return; }
     step(1);
   });
   let retry = 0;
@@ -1443,7 +1455,8 @@ function handToSafari(href, name) {
 }
 
 // The status line is cleared first, so an older send's success is never left
-// standing over a send that failed.
+// standing over a send that failed. It is plain text, not a live region:
+// announce() says each message once, and a live line said them all twice.
 async function sendText(text) {
   if (!text) { announce('There is no text to send.'); return; }
   $('clip-status').textContent = '';
@@ -1605,8 +1618,11 @@ function bindEvents() {
   $('code-form').addEventListener('submit', async (e) => {
     e.preventDefault();
     const code = $('code-input').value.replace(/[\s-]/g, '');
+    // Emptied first: the same wrong-code sentence written over itself is no change, and the alert said nothing.
+    $('code-error').textContent = '';
     const res = await timedFetch('/api/whoami', { headers: { 'X-Connect-Code': code } }, 15000).then((r) => r.json()).catch(() => null);
-    if (!res) { $('code-error').textContent = UNREACHABLE; announce(UNREACHABLE, true); return; }
+    // code-error is an alert of its own: announcing it as well said it twice.
+    if (!res) { $('code-error').textContent = UNREACHABLE; return; }
     if (res.error) { $('code-error').textContent = res.error; $('code-input').focus(); return; }
     if (!res.codeOk) { $('code-error').textContent = 'That code is not right. Check it on the PC and try again.'; $('code-input').focus(); return; }
     state.code = code;

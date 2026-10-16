@@ -66,6 +66,9 @@ namespace ExplorerNative
             WebAppEnabled = old.WebAppEnabled,
             WebAppPort = old.WebAppPort,
             GoogleDriveEnabled = old.GoogleDriveEnabled,
+            // Kept with Drive: back at its default, a reset moved a drive mounted
+            // on X: over to G: under every open folder and path that named X:.
+            GoogleDriveLetter = old.GoogleDriveLetter,
             DriveSyncPairs = old.DriveSyncPairs,
             SetAsDefaultFileExplorer = old.SetAsDefaultFileExplorer,
             RegisterContextMenu = old.RegisterContextMenu,

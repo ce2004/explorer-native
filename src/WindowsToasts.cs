@@ -50,7 +50,10 @@ namespace ExplorerNative
             try
             {
                 if (Show == null || string.IsNullOrWhiteSpace(message) || !IsOn(id, settings)) return;
-                Show(Notifications.ById(id)?.Name ?? "Explorer Native", message);
+                // No title: Windows already heads it with the app's name, and the
+                // message's Preferences label ("Sync all, pause all, resume all")
+                // read before every notification was noise. The message says it.
+                Show("", message.Trim());
             }
             catch { }
         }

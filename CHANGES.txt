@@ -1,3 +1,61 @@
+3.0.9
+Better: Windows notifications no longer start with the setting's name, such as Sync all, pause all, resume all. You just hear what happened.
+Better: messages read like a person wrote them. Syncing 1 synced folder now is now Syncing Music now, Deleted 1 item is just Deleted, a folder size says Music is 14 GB, 3,120 files in 12 folders, and copies, moves, uploads, deletes and syncs that partly fail say so in one plain sentence.
+Bug fixed: the audio page said Windows sound effects were bypassed, but they never were. Now they really are on devices that allow it, and if a device refuses, it plays the normal way.
+Bug fixed: pressing Play on a track that had finished, or resuming just as it ended, kept the sound device running with nothing playing. Now it stays stopped until you seek or repeat.
+Bug fixed: the elapsed time of a song could jump back a little a few times a second. Now it only moves forward.
+Bug fixed: playing a track from the network again after it had been paused a long time could download part of it twice. Now it does not.
+Bug fixed: skipping far past the end of a song started it again from the top. Now it goes to the end.
+Bug fixed: songs in a folder whose name ends in a dot, such as Backup., played, converted, edited and showed tags from the file of the same name in the folder next to it, or not at all. Saving tags there could change the other file. Now the right file is used.
+Bug fixed: a WAV file over 4 GB stopped playing part of the way through. Now it plays to the end.
+Bug fixed: cuts made in the audio editor could come back in playback and in the saved file. Now they stay cut.
+Bug fixed: a FLAC in Ogg file with damage near the end would not play at all. Now everything before the damage plays.
+Bug fixed: some damaged WAV and CAF files played noise or failed with a confusing error. Now they play correctly or say the file is damaged.
+Bug fixed: saving a synced folder whose PC folder was on a network drive that had gone away froze the window and every sync. Now it does not.
+Bug fixed: in the Google Drive folder chooser, pressing Backspace or Enter while a folder was loading could save a different folder from the one shown. Now it waits for the folder to load. Browse no longer freezes on a network path that has gone away.
+Bug fixed: if a file changed both on your PC and in Google Drive, its copy could fail to step aside on every sync when the folder name had accents, or a hidden file already had the conflict name. Now it steps aside.
+Bug fixed: if you moved a file on your PC while another program had it open, with deletes on, the Google Drive copy went to the trash and was uploaded again later. Now the move waits for a later sync.
+Bug fixed: if you edited a file on the Google Drive website while Explorer Native was replacing it, your edit could go to the trash. Now Drive is asked first and your edit is kept.
+Bug fixed: a synced folder with accents in its name could be treated as gone after any change in Google Drive, so its files were downloaded again on every sync. Now it is found.
+Bug fixed: deleting a file and making a different one of the same size and time could be taken for a move, so the new file never reached Google Drive. Now the contents are checked.
+Bug fixed: changes in folders nested very deep were missed until the daily check. Now they are seen.
+Bug fixed: removing a synced folder while it synced left its history behind, and a download could land over a file that had just appeared. Now neither happens.
+Bug fixed: if the Drive file a PC edit was replacing had vanished, the upload could fail or leave two copies. Now it is sent once.
+Bug fixed: if one folder in Google Drive would not list, a whole Drive search failed. Now you get the results that could be found, and a sentence about the folder that failed.
+Bug fixed: moving a file like AC:DC.flac within Google Drive recorded the wrong name for it. Now it keeps its name.
+Bug fixed: a Google Drive file that failed to read could start downloading in full anyway. Now it does not.
+Bug fixed: pasting with Replace while other uploads went into the same Google Drive folder could make a new file vanish from the list. Now it stays.
+Bug fixed: folder sizes on the Google Drive letter could freeze for the rest of the session. Now they catch up.
+Bug fixed: moving files or folders out of Google Drive into a folder whose name ends in a dot kept every original in Drive. Now the copy is found and the originals go.
+Bug fixed: if a file grew or shrank while uploading to Google Drive, it was retried for minutes. Now it stops at once and says the file changed size.
+Bug fixed: if Google Drive was full partway through a big upload, every remaining file failed one by one. Now the upload stops with one sentence.
+Bug fixed: uploading two folders with the same name to Google Drive merged them. Now the second is called Music (2), for example.
+Bug fixed: a big upload on a slow line could fail after the last byte while Google was still finishing. Now Google is given time to answer.
+Bug fixed: a slow sign-in renewal could stop an upload or sync as if you had pressed Cancel, and a leftover browser tab could make signing in fail. Now both work.
+Bug fixed: a failed Drive download could read out Google's whole error page. Now it is one sentence.
+Bug fixed: on networks without working IPv6, every connection to Google waited an extra quarter second. Now it does not.
+Bug fixed: after any file in a Google Drive upload failed, the progress bar stopped short. Now it reaches the end.
+Bug fixed: with many files selected, a transfer finishing elsewhere, or changing the sort, left only one selected. Now your selection is kept.
+Bug fixed: opening a big archive while the folder you were in was changing could do nothing at all. Now it opens.
+Bug fixed: if the folder remembered from last time could not be read at startup, the window showed an empty Drives tab. Now it shows your drives.
+Bug fixed: Delete anyway on a synced folder whose name ends in a dot could trash the Google Drive side while keeping the PC side. Now it checks the right folder.
+Bug fixed: searching a folder that holds one whose name ends in a dot listed the wrong files, and stepping up out of such a folder landed on the wrong row. Now both are right.
+Bug fixed: pasting a folder with Replace onto one you already have, then cancelling, could leave a file inside half written. Now each file is swapped in whole.
+Bug fixed: zipping a very large file that compresses well could make a zip some tools refuse. A name too long for a zip made a broken zip. Now both are right.
+Bug fixed: a .gz made of several parts with a big last part was called damaged. Tar files with contiguous entries were refused. Now both extract.
+Bug fixed: extracting with Replace where a folder had a file's name cleared that folder's read-only flag. Now the folder is left alone and you are told.
+Bug fixed: names with a colon in a 7z or tar.xz were renamed silently, and a file of the shorter name could be held back. Now you are told the name cannot be stored.
+Bug fixed: Reset moved Google Drive to G: when you had chosen another letter. Now your letter is kept.
+Bug fixed: a shortcut typed by hand in settings that is not a real key was reported as taken by another program. Now you are told it is not a key combination.
+Bug fixed: asking to start with Windows could say it would when nothing changed. Now it only says what really changed.
+Bug fixed: an emoji near the end of the tray tooltip was cut in half. Now it is whole.
+Bug fixed: names CONIN$ and CONOUT$ were accepted, but Windows treats them as devices. Now they are refused.
+Bug fixed: shortcut targets longer than 260 characters came back cut short. Now they are whole.
+Bug fixed: in the web app, a copy or move could stay waiting for the PC forever after one missed check. Now it carries on.
+Bug fixed: in the web app, pressing Stop as a big upload started left it on the PC for a day. Now it is cancelled.
+Bug fixed: in the web app, Forward and Back before a song's length was known jumped to the start, some messages were said twice, and .aac and .m4r files could be refused by Safari. Now all three are right.
+Bug fixed: sending a picture to the PC clipboard from the web app could leak memory, and a stuck clipboard now says another program is holding it.
+
 3.0.8
 Bug fixed: if your sound device was set to 44.1 kHz (CD quality), or 22.05 or 24 kHz, songs on your PC played in total silence and the time never moved. Switching sound device during a song could do the same on any device. Now they play.
 Bug fixed: Apple Lossless sound in a .caf file never played, and said it could not divide by zero. Now it plays.

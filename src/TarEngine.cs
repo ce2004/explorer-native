@@ -229,7 +229,18 @@ namespace ExplorerNative
         /// from the end of what was written.
         /// </summary>
         internal static bool TrailerAgrees(string archivePath, Stream output, uint crc, long length,
-            CancellationToken token)
+            CancellationToken token) => TrailerAgrees(archivePath, output, crc, length, token, SizeWrap);
+
+        /// <summary>
+        /// A gzip trailer's length is the member's length modulo 2^32. Taken as
+        /// the whole length, a last member of 4GB or more was read back from the
+        /// wrong place and a good file was called damaged.
+        /// </summary>
+        private const long SizeWrap = 1L << 32;
+
+        /// <param name="wrap">What the stored length is taken modulo; 2^32 except in tests.</param>
+        internal static bool TrailerAgrees(string archivePath, Stream output, uint crc, long length,
+            CancellationToken token, long wrap)
         {
             Span<byte> trailer = stackalloc byte[8];
             using (var file = new FileStream(archivePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
@@ -243,27 +254,45 @@ namespace ExplorerNative
             uint storedCrc = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(trailer);
             uint storedSize = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(trailer[4..]);
 
-            if (storedCrc == crc && storedSize == (uint)length) return true;
-            if (storedSize > length || !output.CanRead || !output.CanSeek) return false;
+            if (storedCrc == crc && storedSize == (uint)(length % wrap)) return true;
+            return LastMemberAgrees(output, length, storedCrc, storedSize, wrap, token);
+        }
+
+        /// <summary>
+        /// Whether the end of what came out has the checksum a trailer gives,
+        /// for a last member of the stored length or that plus any multiple of
+        /// 2^32 (the field wraps).
+        /// </summary>
+        private static bool LastMemberAgrees(Stream output, long length, uint storedCrc, long storedSize,
+            long wrap, CancellationToken token)
+        {
+            // An empty last member: nothing to read back.
+            if (storedSize == 0 && storedCrc == Crc32.Seed) return true;
+            if (!output.CanRead || !output.CanSeek) return false;
 
             output.Flush();
             long end = output.Position;
-            output.Position = length - storedSize;
-
             var buffer = new byte[1 << 20];
-            uint last = Crc32.Seed;
-            long left = storedSize;
-            while (left > 0)
+            try
             {
-                token.ThrowIfCancellationRequested();
-                int got = output.Read(buffer, 0, (int)Math.Min(buffer.Length, left));
-                if (got <= 0) break;
-                last = Crc32.Append(last, buffer.AsSpan(0, got));
-                left -= got;
+                for (long size = storedSize; size > 0 && size <= length; size += wrap)
+                {
+                    output.Position = length - size;
+                    uint last = Crc32.Seed;
+                    long left = size;
+                    while (left > 0)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        int got = output.Read(buffer, 0, (int)Math.Min(buffer.Length, left));
+                        if (got <= 0) break;
+                        last = Crc32.Append(last, buffer.AsSpan(0, got));
+                        left -= got;
+                    }
+                    if (left == 0 && last == storedCrc) return true;
+                }
+                return false;
             }
-
-            output.Position = end;
-            return left == 0 && last == storedCrc;
+            finally { output.Position = end; }
         }
 
         /// <summary>
@@ -305,22 +334,7 @@ namespace ExplorerNative
                 if (storedSize > 0 && storedSize < length && slow < 4 && output.CanRead && output.CanSeek)
                 {
                     slow++;
-                    output.Flush();
-                    long end = output.Position;
-                    output.Position = length - storedSize;
-                    var buffer = new byte[1 << 20];
-                    uint last = Crc32.Seed;
-                    long left = storedSize;
-                    while (left > 0)
-                    {
-                        token.ThrowIfCancellationRequested();
-                        int got = output.Read(buffer, 0, (int)Math.Min(buffer.Length, left));
-                        if (got <= 0) break;
-                        last = Crc32.Append(last, buffer.AsSpan(0, got));
-                        left -= got;
-                    }
-                    output.Position = end;
-                    if (left == 0 && last == storedCrc) return extra;
+                    if (LastMemberAgrees(output, length, storedCrc, storedSize, SizeWrap, token)) return extra;
                 }
             }
 
@@ -806,7 +820,12 @@ namespace ExplorerNative
                         continue;
                     }
 
-                    if (entry.EntryType is not (TarEntryType.RegularFile or TarEntryType.V7RegularFile))
+                    // A "contiguous file" ('7') is an ordinary file with a hint
+                    // for a filing system that no longer exists; POSIX says read
+                    // it as one. It was refused as a kind Windows has no
+                    // equivalent for.
+                    if (entry.EntryType is not (TarEntryType.RegularFile or TarEntryType.V7RegularFile
+                            or TarEntryType.ContiguousFile))
                     {
                         // Symbolic and hard links, devices, named pipes. Windows
                         // either cannot represent them or needs a privilege to,

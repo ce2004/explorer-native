@@ -137,7 +137,7 @@ namespace ExplorerNative
                 // page.
                 _source = stream != null
                     ? new ComStream(stream)
-                    : new FileStream(path, FileMode.Open, FileAccess.Read,
+                    : new FileStream(NameRules.ExactPath(path), FileMode.Open, FileAccess.Read,
                         FileShare.ReadWrite | FileShare.Delete, 64 * 1024,
                         FileOptions.SequentialScan);
 

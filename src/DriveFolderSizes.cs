@@ -338,7 +338,7 @@ namespace ExplorerNative
             }
         }
 
-        private async Task RefreshCore(DriveClient client, CancellationToken token)
+        private async Task RefreshCore(DriveClient client, CancellationToken token, bool afterRebuild = false)
         {
             try
             {
@@ -348,7 +348,28 @@ namespace ExplorerNative
 
                 if (from != null)
                 {
-                    var (changes, next) = await client.ChangesSince(from, _driveId, token).ConfigureAwait(false);
+                    List<DriveSizeChange> changes;
+                    string next;
+                    try
+                    {
+                        (changes, next) = await client.ChangesSince(from, _driveId, token).ConfigureAwait(false);
+                    }
+                    catch (DriveClient.DriveStatusException refused) when (!afterRebuild && refused.Status is 400 or 404 or 410)
+                    {
+                        // The feed will not go on from that token (expired, or
+                        // never valid again). Asking it again every thirty
+                        // seconds failed for the rest of the session, and every
+                        // folder size stayed as it was the first time. Listed
+                        // whole instead, the way the first build is, with the
+                        // sizes held meanwhile still answering.
+                        lock (_gate)
+                        {
+                            if (_changes != from) return;
+                            _changes = null;
+                        }
+                        await RebuildAsync(client, token).ConfigureAwait(false);
+                        return;
+                    }
                     lock (_gate)
                     {
                         // Another refresh got further first: its token is newer.
@@ -365,32 +386,38 @@ namespace ExplorerNative
                     return;
                 }
 
-                // The feed's start is taken before the listing, so nothing that
-                // changes while the listing runs can be missed.
-                var start = await client.ChangesStartToken(_driveId, token).ConfigureAwait(false);
-                string? rootId = _driveId == null ? await client.RootId(token).ConfigureAwait(false) : _driveId;
-                var all = await client.ListForSizes(_driveId, token).ConfigureAwait(false);
-                lock (_gate)
-                {
-                    _items.Clear();
-                    foreach (var item in all) _items[item.Id] = item;
-                    _rootId = rootId;
-                    _changes = start;
-                    _totals = null;
-                    _built = true;
-                    _checkedAt = Environment.TickCount64;
-                }
-
-                // Anything that changed during the listing, at once rather than
-                // on the next refresh.
-                lock (_gate) _checkedAt = long.MinValue / 2;
-                await RefreshCore(client, token).ConfigureAwait(false);
+                await RebuildAsync(client, token).ConfigureAwait(false);
             }
             catch
             {
                 lock (_gate) _failedAt = Environment.TickCount64;
                 throw;
             }
+        }
+
+        /// <summary>The whole drive listed afresh, then the feed from where that listing began.</summary>
+        private async Task RebuildAsync(DriveClient client, CancellationToken token)
+        {
+            // The feed's start is taken before the listing, so nothing that
+            // changes while the listing runs can be missed.
+            var start = await client.ChangesStartToken(_driveId, token).ConfigureAwait(false);
+            string? rootId = _driveId == null ? await client.RootId(token).ConfigureAwait(false) : _driveId;
+            var all = await client.ListForSizes(_driveId, token).ConfigureAwait(false);
+            lock (_gate)
+            {
+                _items.Clear();
+                foreach (var item in all) _items[item.Id] = item;
+                _rootId = rootId;
+                _changes = start;
+                _totals = null;
+                _built = true;
+                _checkedAt = Environment.TickCount64;
+            }
+
+            // Anything that changed during the listing, at once rather than
+            // on the next refresh.
+            lock (_gate) _checkedAt = long.MinValue / 2;
+            await RefreshCore(client, token, afterRebuild: true).ConfigureAwait(false);
         }
 
         /// <summary>A folder's size, or null when the index has not been built or does not know it.</summary>

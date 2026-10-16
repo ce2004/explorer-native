@@ -50,7 +50,7 @@ namespace ExplorerNative
         public const string Extension = ".lnk";
 
         private const uint CLSCTX_INPROC_SERVER = 1;
-        private const int MAX_PATH = 260;
+        private const int LongestPath = 32767;
 
         private const int STGM_READ = 0x00000000;
 
@@ -198,8 +198,11 @@ namespace ExplorerNative
             {
                 ((IPersistFile)link).Load(NameRules.ExactPath(linkPath), STGM_READ);
 
-                var buffer = new StringBuilder(MAX_PATH);
-                link.GetPath(buffer, buffer.Capacity, IntPtr.Zero, 0);
+                // The longest path Windows has, not MAX_PATH: a shortcut to
+                // something deeper than 260 characters came back cut short, and
+                // opening it went to a folder part-way down, or nowhere.
+                var buffer = new StringBuilder(LongestPath);
+                link.GetPath(buffer, LongestPath, IntPtr.Zero, 0);
                 return buffer.ToString();
             }
             finally { Marshal.ReleaseComObject(link); }

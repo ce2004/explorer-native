@@ -52,7 +52,9 @@ namespace ExplorerNative
             {
                 // Shared as widely as the rest of the player shares things: the
                 // file must stay movable and deletable while it is being read.
-                var file = new FileStream(path, FileMode.Open, FileAccess.Read,
+                // The exact path: in a folder named "Backup." the ordinary one
+                // opens the file of the same name in "Backup".
+                var file = new FileStream(NameRules.ExactPath(path), FileMode.Open, FileAccess.Read,
                     FileShare.ReadWrite | FileShare.Delete, 64 * 1024,
                     FileOptions.RandomAccess);
 

@@ -177,6 +177,13 @@ namespace ExplorerNative
         private const uint MediaSource = 0xFFFFFFFF;
 
         private const uint StreamFlagEndOfStream = 0x2;
+        private const uint StreamFlagError = 0x1;
+
+        /// <summary>Samples in a row with no audio in them that one read will take before it returns. See ReadOneSample.</summary>
+        private const int EmptySamplesPerRead = 64;
+
+        /// <summary>How many of those this read has had so far.</summary>
+        private int _emptySamples;
 
         /// <summary>How far before a seek target Media Foundation is asked to start, in seconds.</summary>
         private const double SeekPreRoll = 0.25;
@@ -441,9 +448,23 @@ namespace ExplorerNative
                     if (_cd == null) { Diagnostic = "decoder: the CD drive would not open"; return false; }
                 }
 
-                _local = _cd == null && stream == null && !AudioFiles.WindowsHasHandlerFor(Path.GetExtension(path))
+                // And a file in a folder whose name ends in a dot or a space
+                // ("Backup.\song.flac"): Media Foundation opens a path the
+                // ordinary way, which drops the dot, so it played the file of
+                // the same name in "Backup", or nothing. It refuses the literal
+                // \\?\ form outright (0x80070035), so the bytes go to it as a
+                // stream opened on the exact path; measured, it identifies
+                // FLAC, MP3, AAC, WMA and WAV from their content just as well.
+                bool literal = NameRules.ExactPath(path) != path;
+                _local = _cd == null && stream == null &&
+                         (literal || !AudioFiles.WindowsHasHandlerFor(Path.GetExtension(path)))
                     ? LocalByteStream.TryOpen(path)
                     : null;
+                if (literal && _cd == null && stream == null && _local == null)
+                {
+                    Diagnostic = $"cannot read {path}";
+                    return false;
+                }
 
                 // AIFF, which nothing in Windows reads, as the WAV it amounts to.
                 // Tried by extension, and for anything Windows has no handler
@@ -750,6 +771,7 @@ namespace ExplorerNative
 
                 int values = frames * Channels;
                 int written = 0;
+                _emptySamples = 0;
 
                 while (written < values)
                 {
@@ -782,13 +804,27 @@ namespace ExplorerNative
 
             if (hr != 0) { _finished = true; return false; }
 
+            // MF_SOURCE_READERF_ERROR: the stream has failed, and every later
+            // read says so again.
+            if ((flags & StreamFlagError) != 0)
+            {
+                if (samplePtr != IntPtr.Zero) Marshal.Release(samplePtr);
+                _finished = true;
+                return false;
+            }
+
             if ((flags & StreamFlagEndOfStream) != 0)
             {
                 _finished = true;
                 if (samplePtr == IntPtr.Zero) return false;
             }
 
-            if (samplePtr == IntPtr.Zero) return !_finished;
+            // No sample (a stream tick, a format change) is not the end, but a
+            // reader that only ever answers that would hold this read, and the
+            // pump with it, for ever. Bounded per read: past the limit the read
+            // returns what it has, and the player's own count of empty reads
+            // (EmptyReadsBeforeEnd) decides whether the track is over.
+            if (samplePtr == IntPtr.Zero) return !_finished && ++_emptySamples < EmptySamplesPerRead;
 
             IMFSample? sample = null;
             IMFMediaBuffer? buffer = null;
@@ -802,7 +838,8 @@ namespace ExplorerNative
                 locked = true;
 
                 int count = (int)(length / sizeof(float));
-                if (count <= 0) return true;
+                if (count <= 0) return ++_emptySamples < EmptySamplesPerRead;
+                _emptySamples = 0;
 
                 if (_spill.Length < count) _spill = new float[count];
                 Marshal.Copy(data, _spill, 0, count);

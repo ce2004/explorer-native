@@ -378,10 +378,12 @@ namespace ExplorerNative
                 if (decoder == null) return 0;
 
                 int queued, lastPass;
+                double through;
                 lock (_ringGate)
                 {
                     queued = _channels > 0 ? _stored / _channels : 0;
                     lastPass = _lastPassFrames;
+                    through = _writtenThrough;
                 }
 
                 // The decoder has read further than has been heard, and at any
@@ -398,11 +400,8 @@ namespace ExplorerNative
                 // through the source. When the pitch is linked to the tempo they
                 // do not cancel, and a ring frame stands for rate * pitch.
                 //
-                // Both stages hold source frames of their own on top of that.
-                // The resampler's are counted in *its* input, which is the
-                // stretcher's output, so they are worth `_rate` each as well.
-                var stretch = _stretch;
-                var pitch = _pitch;
+                // Both stages hold source frames of their own on top of that —
+                // counted on the pump thread, see SourceAtRingEnd.
 
                 // In decoder frames, which is what decoder.Position is counted
                 // in, so everything has to be converted into them.
@@ -418,8 +417,6 @@ namespace ExplorerNative
                 // each is worth one stretch rate of decoder frames. The
                 // stretcher's own are decoder frames already.
                 double speed = _pitchMovesTempo ? _rate * _pitchRatio : _rate;
-                double stretchRate = _pitchMovesTempo ? _rate : _rate / _pitchRatio;
-                if (!(stretchRate > 0)) stretchRate = 1.0;
 
                 int rate = decoder.SampleRate > 0 ? decoder.SampleRate : 1;
 
@@ -453,22 +450,52 @@ namespace ExplorerNative
                     return atEnd < 0 ? 0 : atEnd;
                 }
 
-                // Silence reduction's held frames are decoder frames, like
-                // the stretcher's, because it sits in front of it — the gap it
-                // is still deciding about has been read and has not been heard,
-                // and a clock that ignored it ran ahead by the whole lookahead.
-                // What it has *dropped* is deliberately not counted anywhere:
-                // those frames were read and will never be heard, which is what
-                // makes the position jump across a gap that was removed.
-                double sourceAhead = queued * speed * RateConversion
-                                   + (pitch?.HeldSourceFrames ?? 0) * stretchRate
-                                   + (stretch?.HeldSourceFrames ?? 0)
-                                   + (_silence?.HeldSourceFrames ?? 0);
-
-                double ahead = sourceAhead / rate;
-                double at = decoder.Position - ahead;
+                // Measured back from where the end of the ring is in the source,
+                // which the pump writes down with every block it puts in the
+                // ring. It used to be worked out here, from the decoder and the
+                // stages as they stood — while the pump was part way through
+                // moving a block from one to the other. A block read and not yet
+                // in the ring was counted nowhere, so the clock ran a block
+                // ahead and then stepped back by it: twenty milliseconds and
+                // more, a few times a second, and further at speed.
+                double at = through - queued * speed * RateConversion / rate;
                 return at < 0 ? 0 : at;
             }
+        }
+
+        /// <summary>
+        /// Where the source has reached at the end of what the ring holds, in
+        /// the decoder's seconds. Written by the pump with every block it puts
+        /// in the ring, and wherever it moves the decoder. Under the ring's lock.
+        /// </summary>
+        private double _writtenThrough;
+
+        /// <summary>
+        /// Where the source has reached at the end of the ring, worked out on the
+        /// pump thread, which is the only thread that moves the decoder and the
+        /// stages — so they are never caught half way through a block.
+        ///
+        /// The decoder has read further than the ring holds by whatever the
+        /// stages are holding. The stretcher's are decoder frames already. The
+        /// resampler's are counted in *its* input, the stretcher's output, so
+        /// each is worth one stretch rate of decoder frames. Silence reduction's
+        /// are decoder frames, like the stretcher's, because it sits in front of
+        /// it — the gap it is still deciding about has been read and has not been
+        /// heard. What it has *dropped* is deliberately not counted anywhere:
+        /// those frames were read and will never be heard, which is what makes
+        /// the position jump across a gap that was removed.
+        /// </summary>
+        private double SourceAtRingEnd(ITrackDecoder decoder)
+        {
+            double stretchRate = _pitchMovesTempo ? _rate : _rate / _pitchRatio;
+            if (!(stretchRate > 0)) stretchRate = 1.0;
+
+            double held = (_pitch?.HeldSourceFrames ?? 0) * stretchRate
+                        + (_stretch?.HeldSourceFrames ?? 0)
+                        + (_silence?.HeldSourceFrames ?? 0);
+
+            int rate = decoder.SampleRate > 0 ? decoder.SampleRate : 1;
+            return decoder.Position - held / rate;
         }
 
         /// <summary>
@@ -766,6 +793,7 @@ namespace ExplorerNative
                 // after both objects exist — see ApplyRates.
                 ApplyRates();
 
+                lock (_ringGate) _writtenThrough = SourceAtRingEnd(decoder);
                 _decoder = decoder;
                 opened.Set();
 
@@ -866,7 +894,11 @@ namespace ExplorerNative
             _silence?.SourceRestarted();
             _stretch?.SourceRestarted();
             _pitch?.SourceRestarted();
-            
+
+            // The next block written is the start of the new pass. Until it is,
+            // the tail of the old one is what Position measures (_lastPassFrames).
+            if (_decoder is { } turned)
+                lock (_ringGate) _writtenThrough = SourceAtRingEnd(turned);
         }
 
         /// <summary>
@@ -1015,7 +1047,11 @@ namespace ExplorerNative
                     _stretch?.Reset();
                     _pitch?.Reset();
 
-                    lock (_ringGate) { _writeAt = _readAt = _stored = _lastPassFrames = 0; }
+                    lock (_ringGate)
+                    {
+                        _writeAt = _readAt = _stored = _lastPassFrames = 0;
+                        if (_decoder is { } sought) _writtenThrough = SourceAtRingEnd(sought);
+                    }
                     Volatile.Write(ref _seekedAt, Environment.TickCount64);
                 }
 
@@ -1188,8 +1224,14 @@ namespace ExplorerNative
                 // a fast, torn mess when they do not.
                 var writing = ToDeviceChannels(block, forRing, got);
 
+                // Where the source is at the end of this block, taken now, while
+                // nothing is moving — see Position.
+                double through = _decoder is { } reading ? SourceAtRingEnd(reading) : 0;
+
                 lock (_ringGate)
                 {
+                    _writtenThrough = through;
+
                     // Two copies at most — up to the end of the ring, then from its
                     // start — rather than a modulo per sample under the lock the
                     // render thread waits on.
@@ -1468,19 +1510,44 @@ namespace ExplorerNative
 
         public void Pause()
         {
-            _paused = true;
-
             // The device stops too, rather than being fed silence a hundred
             // times a second by a thread at Highest priority for as long as the
             // track sits paused. See WasapiRenderer.SetSuspended.
-            _renderer.SetSuspended(true);
+            //
+            // Under the ring's lock, as Wake decides: apart, a wake that had
+            // already read "not paused" started the device again just after
+            // this stopped it, and a paused track held the endpoint.
+            lock (_ringGate)
+            {
+                _paused = true;
+                _renderer.SetSuspended(true);
+            }
         }
 
         public void Resume()
         {
-            _paused = false;
-            _resting = false;
-            _renderer.SetSuspended(false);
+            lock (_ringGate)
+            {
+                _paused = false;
+
+                // A track that has played to its end stays let go of. Resume is
+                // not a seek: it changes nothing about the end having been
+                // reached, and nothing would ever suspend the device again — the
+                // end is announced once. Resumed on its own, or racing the render
+                // thread deciding the end, the device ran on feeding silence for
+                // as long as the track stayed loaded. A seek or the loop point
+                // wakes it (Wake), which is what playing a finished track does.
+                //
+                // Under the ring's lock, which is where the end is decided. Resting
+                // without the end still standing is a track that has more to play
+                // — a device switch to another format took it back from the end —
+                // and that one is woken as before.
+                if (!(_resting && _announcedEnd))
+                {
+                    _resting = false;
+                    _renderer.SetSuspended(false);
+                }
+            }
 
             // The pump may be sitting out a timeout with a full ring; nothing
             // will have drained while the device was stopped.
@@ -1726,6 +1793,8 @@ namespace ExplorerNative
                     // combine — see ApplyRates.
                     ApplyRates();
 
+                    lock (_ringGate) _writtenThrough = SourceAtRingEnd(decoder);
+
                     _sourceDone = false;
                     _announcedEnd = false;
                     _emptyReads = 0;
@@ -1736,7 +1805,9 @@ namespace ExplorerNative
             {
                 // From the state now, not the state when the switch began: a pause or
                 // a resume during a slow open went to the old renderer, which is gone.
-                fresh.SetSuspended(_paused || _resting);
+                // Under the ring's lock, as Pause and Resume decide, so one landing
+                // now is not undone by a value read just before it.
+                lock (_ringGate) fresh.SetSuspended(_paused || _resting);
                 _switching = false;
             }
 
@@ -1763,10 +1834,31 @@ namespace ExplorerNative
         /// <summary>Why the last device change did not happen, or empty.</summary>
         public string SwitchProblem => _lastSwitchProblem;
 
+        /// <summary>
+        /// A seek further than this, on a track whose length is not known, is
+        /// ignored: a year of audio, far past anything playable, and far short
+        /// of overflowing a frame count at any sample rate.
+        /// </summary>
+        private const double MaxSeekSeconds = 365.0 * 24 * 3600;
+
         /// <summary>Moves to a position in seconds; the pump picks it up.</summary>
         public void SeekTo(double seconds)
         {
-            Volatile.Write(ref _seekTo, Math.Max(0, seconds));
+            // Not a number is not a place, and it is ignored outright. It used to
+            // be stored — Math.Max(0, NaN) is NaN — which is how "no seek
+            // waiting" is written, so it silently threw away a real skip that
+            // was still waiting for the pump.
+            if (double.IsNaN(seconds)) return;
+
+            // Past the end is the end. Infinity, or a number big enough to
+            // overflow a frame count, reached the decoders as a negative frame
+            // and landed at the start of the track.
+            seconds = Math.Max(0, seconds);
+            double end = Duration;
+            if (end > 0 && seconds > end) seconds = end;
+            if (!double.IsFinite(seconds) || seconds > MaxSeekSeconds) return;
+
+            Volatile.Write(ref _seekTo, seconds);
 
             // Woken, as Stop and a device switch wake it. A pump sitting on a
             // full ring waits up to a quarter of a second, and every skip paid

@@ -137,7 +137,10 @@ namespace ExplorerNative
                 IEnumerator<Found> walk;
                 try
                 {
-                    walk = new System.IO.Enumeration.FileSystemEnumerable<Found>(folder,
+                    // Exact: a folder called "Backup." read plainly is "Backup",
+                    // so the search listed the sibling's files under the wrong
+                    // folder, or nothing at all. Paths come back plain (Look).
+                    walk = new System.IO.Enumeration.FileSystemEnumerable<Found>(NameRules.ExactPath(folder),
                         (ref System.IO.Enumeration.FileSystemEntry entry) => Look(ref entry, term), WalkOptions)
                     {
                         ShouldIncludePredicate = (ref System.IO.Enumeration.FileSystemEntry entry) =>
@@ -198,7 +201,7 @@ namespace ExplorerNative
             bool hit = Matches(entry.FileName, term);
             if (!hit && !isDir) return default;
 
-            string path = entry.ToFullPath();
+            string path = NameRules.PlainPath(entry.ToFullPath());
             SearchHit? found = null;
             if (hit)
             {

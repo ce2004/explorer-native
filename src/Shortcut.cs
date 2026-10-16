@@ -138,9 +138,17 @@ namespace ExplorerNative
             return Enum.TryParse<Keys>(part, ignoreCase: true, out var k) && IsUsable(k) ? (uint)k : 0;
         }
 
-        /// <summary>A modifier on its own is not a key you can register.</summary>
-        private static bool IsUsable(Keys key) => key switch
+        /// <summary>
+        /// Whether a key code is one key on the keyboard that a shortcut can be
+        /// made of. Not a modifier on its own, not a mouse button, and not one of
+        /// the Keys names that are masks rather than keys ("KeyCode", "Modifiers"):
+        /// a hand-edited "Ctrl+Alt+KeyCode" went to Windows, was refused, and was
+        /// reported as taken by another application that does not exist.
+        /// </summary>
+        public static bool IsUsable(Keys key) => key switch
         {
+            _ when ((uint)key & ~0xFFu) != 0 => false, // KeyCode, Shift, Control, Alt, Modifiers
+            Keys.LButton or Keys.RButton or Keys.MButton or Keys.XButton1 or Keys.XButton2 => false,
             Keys.None or Keys.Modifiers => false,
             Keys.ControlKey or Keys.LControlKey or Keys.RControlKey => false,
             Keys.ShiftKey or Keys.LShiftKey or Keys.RShiftKey => false,

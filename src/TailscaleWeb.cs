@@ -50,6 +50,9 @@ namespace ExplorerNative
             {
                 try
                 {
+                    // A relative entry (".", "bin") is the current folder's, which is whatever folder the app was
+                    // started in: a tailscale.exe planted there would be run, and believed about who is signed in.
+                    if (!Path.IsPathFullyQualified(dir.Trim())) continue;
                     var candidate = Path.Combine(dir.Trim(), "tailscale.exe");
                     if (File.Exists(candidate)) return candidate;
                 }

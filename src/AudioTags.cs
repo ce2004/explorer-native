@@ -183,7 +183,7 @@ namespace ExplorerNative
                         // the empty pair is a file that says nothing about itself,
                         // and the name on disk is all there is to call it.
                         if (artist == null)
-                            Raise("audiofile.tags.none", Path.GetFileName(path) + " has no tags");
+                            Raise("audiofile.tags.none", Path.GetFileName(path) + " has no song details");
                         return null;
                     }
 
@@ -255,7 +255,7 @@ namespace ExplorerNative
             // tell us nothing else about.
             try
             {
-                var info = new FileInfo(path);
+                var info = new FileInfo(NameRules.ExactPath(path));
                 if (info.Exists)
                 {
                     Add(rows, "Size", SizeFormatter.Format(info.Length, SizeUnitStyle.FullWords));
@@ -339,9 +339,7 @@ namespace ExplorerNative
             IPropertyStore? store = null;
             try
             {
-                var iid = typeof(IPropertyStore).GUID;
-                SHGetPropertyStoreFromParsingName(path, IntPtr.Zero, GPS_READWRITE, ref iid, out store);
-                if (store == null) return false;
+                if (OpenWritable(path, out store) < 0 || store == null) return false;
 
                 int written = 0;
                 if (SetText(store, Title, tags.Title)) written++;
@@ -487,10 +485,9 @@ namespace ExplorerNative
         {
             if (values.Count == 0) return null;
 
-            var iid = typeof(IPropertyStore).GUID;
             int hr;
             IPropertyStore? store;
-            try { hr = SHGetWritablePropertyStore(path, IntPtr.Zero, GPS_READWRITE, ref iid, out store); }
+            try { hr = OpenWritable(path, out store); }
             catch (Exception ex) { return ex.Message; }
             if (hr < 0 || store == null) return ExplainWriteFailure(path, hr, opening: true);
 
@@ -597,7 +594,7 @@ namespace ExplorerNative
                 case 0x80030005:
                     try
                     {
-                        if ((File.GetAttributes(path) & FileAttributes.ReadOnly) != 0) return "The file is read-only.";
+                        if ((File.GetAttributes(NameRules.ExactPath(path)) & FileAttributes.ReadOnly) != 0) return "The file is read-only.";
                     }
                     catch { }
                     return "Windows was refused permission to change it.";
@@ -633,12 +630,111 @@ namespace ExplorerNative
 
         private static IPropertyStore? Open(string path)
         {
+            if (NameRules.ExactPath(path) != path)
+                return OpenThroughHandler(path, write: false, out var store, out _) ? store : null;
+
             var iid = typeof(IPropertyStore).GUID;
 
             // Best effort: a file type with no property handler returns an empty
             // store rather than failing, which is exactly what is wanted here.
-            SHGetPropertyStoreFromParsingName(path, IntPtr.Zero, GPS_BESTEFFORT, ref iid, out var store);
-            return store;
+            SHGetPropertyStoreFromParsingName(path, IntPtr.Zero, GPS_BESTEFFORT, ref iid, out var shell);
+            return shell;
+        }
+
+        /// <summary>
+        /// A writable store, or an HRESULT saying why not. The shell's, except
+        /// in a folder whose name ends in a dot or a space: see <see cref="OpenThroughHandler"/>.
+        /// </summary>
+        private static int OpenWritable(string path, out IPropertyStore? store)
+        {
+            if (NameRules.ExactPath(path) != path)
+                return OpenThroughHandler(path, write: true, out store, out int failed) ? 0 : failed;
+
+            var iid = typeof(IPropertyStore).GUID;
+            return SHGetWritablePropertyStore(path, IntPtr.Zero, GPS_READWRITE, ref iid, out store);
+        }
+
+        [ComImport, Guid("B824B49D-22AC-4161-AC8A-9916E8FA3F7F"),
+         InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IInitializeWithStream
+        {
+            [PreserveSig] int Initialize(System.Runtime.InteropServices.ComTypes.IStream stream, uint mode);
+        }
+
+        [DllImport("propsys.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
+        private static extern int PSLookupPropertyHandlerCLSID(string path, out Guid clsid);
+
+        [DllImport("shlwapi.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
+        private static extern int SHCreateStreamOnFileEx(string file, uint mode, uint attributes, bool create,
+            IntPtr template, out System.Runtime.InteropServices.ComTypes.IStream stream);
+
+        [DllImport("ole32.dll", PreserveSig = true)]
+        private static extern int CoCreateInstance(ref Guid clsid, IntPtr outer, uint context, ref Guid iid,
+            [MarshalAs(UnmanagedType.IUnknown)] out object instance);
+
+        private const uint STGM_READ = 0x0, STGM_READWRITE = 0x2, STGM_SHARE_DENY_WRITE = 0x20, STGM_SHARE_DENY_NONE = 0x40;
+        private const uint CLSCTX_INPROC_SERVER = 0x1;
+
+        /// <summary>
+        /// The file type's own property handler, given the file as a stream
+        /// opened on its exact path. For a file in a folder named "Backup.":
+        /// the shell parses the name the ordinary way, which drops the dot, so
+        /// it read (and wrote) the tags of the file of the same name in
+        /// "Backup", and it refuses the literal \\?\ form. Measured: FLAC, MP3,
+        /// M4A and WMA read and write this way; WAV reads and refuses to write,
+        /// as through the shell.
+        /// </summary>
+        private static bool OpenThroughHandler(string path, bool write, out IPropertyStore? store, out int failed)
+        {
+            store = null;
+            // No handler for the extension: this kind of file has no tags
+            // Windows knows (the lookup's own "not found" read as the file gone).
+            if (PSLookupPropertyHandlerCLSID(path, out var clsid) < 0)
+            {
+                failed = unchecked((int)0x80004001);    // E_NOTIMPL
+                return false;
+            }
+
+            failed = SHCreateStreamOnFileEx(NameRules.ExactPath(path),
+                write ? STGM_READWRITE | STGM_SHARE_DENY_WRITE : STGM_READ | STGM_SHARE_DENY_NONE,
+                0, false, IntPtr.Zero, out var stream);
+            if (failed < 0 || stream == null) return false;
+
+            object? handler = null;
+            try
+            {
+                var iid = typeof(IPropertyStore).GUID;
+                failed = CoCreateInstance(ref clsid, IntPtr.Zero, CLSCTX_INPROC_SERVER, ref iid, out handler);
+                if (failed < 0 || handler == null) return false;
+                if (handler is not IInitializeWithStream init || handler is not IPropertyStore opened)
+                {
+                    failed = unchecked((int)0x80004002);    // E_NOINTERFACE
+                    return false;
+                }
+
+                failed = init.Initialize(stream, write ? STGM_READWRITE : STGM_READ);
+                // A handler that will only read says "access denied" to a
+                // read-write stream it was given: that is this kind of file
+                // refusing tags, not the disk refusing us.
+                if (failed == unchecked((int)0x80030005) && write) failed = unchecked((int)0x80004001);
+                if (failed < 0) return false;
+
+                store = opened;
+                handler = null;
+                failed = 0;
+                return true;
+            }
+            catch (Exception ex)
+            {
+                failed = ex.HResult < 0 ? ex.HResult : unchecked((int)0x80004005);
+                return false;
+            }
+            finally
+            {
+                if (handler != null) { try { Marshal.ReleaseComObject(handler); } catch { } }
+                // The handler keeps its own reference for as long as it reads.
+                try { Marshal.ReleaseComObject(stream); } catch { }
+            }
         }
 
         private static void Release(IPropertyStore store)

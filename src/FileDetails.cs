@@ -44,9 +44,12 @@ namespace ExplorerNative
 
         private static string? DescribeText(string path)
         {
-            var info = new FileInfo(path);
+            // Exact: in a folder named "Notes." the ordinary path counts the
+            // words of the file of the same name in "Notes".
+            var exact = NameRules.ExactPath(path);
+            var info = new FileInfo(exact);
             if (!info.Exists || info.Length > MaxTextBytes) return null;
-            return CountText(File.ReadAllText(path));
+            return CountText(File.ReadAllText(exact));
         }
 
         /// <summary>"120 words, 640 characters". Words are runs of anything that is not white space.</summary>

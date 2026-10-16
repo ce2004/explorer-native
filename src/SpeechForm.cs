@@ -185,18 +185,7 @@ namespace ExplorerNative
             }
             if (!changed) return;
 
-            var known = new HashSet<string>(Notifications.All.Select(n => n.Id), StringComparer.OrdinalIgnoreCase);
-            var unknown = (_working.SpeechOverrides ?? "")
-                .Split(';', StringSplitOptions.RemoveEmptyEntries)
-                .Where(part =>
-                {
-                    int equals = part.IndexOf('=');
-                    return equals > 0 && !known.Contains(part[..equals].Trim());
-                });
-
-            var written = Notifications.FormatOverrides(_values);
-            _working.SpeechOverrides = string.Join(";",
-                new[] { written }.Where(s => s.Length > 0).Concat(unknown));
+            _working.SpeechOverrides = Notifications.FormatOverridesKeeping(_values, _working.SpeechOverrides);
         }
 
         /// <summary>How many messages the current category lists. For the tests.</summary>

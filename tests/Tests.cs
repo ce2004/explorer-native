@@ -379,6 +379,15 @@ namespace ExplorerNative
             await Guard("Sweep308MainFormTests", () => { Sweep308MainFormTests.RunAll(Check); return Task.CompletedTask; });
             await Guard("Sweep308SyncTests", () => Sweep308SyncTests.RunAll(Check, Equal));
             await Guard("Sweep308DotPathTests", () => { Sweep308DotPathTests.RunAll(Check); return Task.CompletedTask; });
+            await Guard("Sweep309MainFormTests", () => { Sweep309MainFormTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("Sweep309MountTests", () => Sweep309MountTests.RunAll(Check, Equal));
+            await Guard("Sweep309FilesTests", () => Sweep309FilesTests.RunAll(Check));
+            await Guard("Sweep309WebTests", () => Sweep309WebTests.RunAll(Check, Equal));
+            await Guard("Sweep309ClientTests", () => Sweep309ClientTests.RunAll(Check, Equal));
+            await Guard("Sweep309CoreTests", () => { Sweep309CoreTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("Sweep309PlaybackTests", () => { Sweep309PlaybackTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("Sweep309SyncTests", () => Sweep309SyncTests.RunAll(Check, Equal));
+            await Guard("Sweep309DecoderTests", () => { Sweep309DecoderTests.RunAll(Check, Equal); return Task.CompletedTask; });
 
             Console.WriteLine($"\n{_passed} passed, {_failed} failed");
             return _failed == 0 ? 0 : 1;

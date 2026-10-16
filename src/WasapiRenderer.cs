@@ -145,6 +145,7 @@ namespace ExplorerNative
                         _watchEnumerator = enumerator;
                         _watcher = watcher;
                     }
+                    else ReleaseCom(enumerator);
                 }
             }
 
@@ -388,10 +389,12 @@ namespace ExplorerNative
         public static IReadOnlyList<AudioDevice> Devices()
         {
             var found = new List<AudioDevice>();
+            IMMDeviceEnumerator? enumerator = null;
+            IMMDeviceCollection? devices = null;
             try
             {
-                var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
-                if (enumerator.EnumAudioEndpoints(RenderFlow, (int)DeviceStateActive, out var devices) != 0)
+                enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+                if (enumerator.EnumAudioEndpoints(RenderFlow, (int)DeviceStateActive, out devices) != 0)
                     return found;
 
                 if (devices.GetCount(out uint count) != 0) return found;
@@ -399,8 +402,12 @@ namespace ExplorerNative
                 for (uint i = 0; i < count; i++)
                 {
                     if (devices.Item(i, out var device) != 0 || device == null) continue;
-                    if (device.GetId(out string id) != 0 || string.IsNullOrEmpty(id)) continue;
-                    found.Add(new AudioDevice(id, NameOf(device) ?? id));
+                    try
+                    {
+                        if (device.GetId(out string id) != 0 || string.IsNullOrEmpty(id)) continue;
+                        found.Add(new AudioDevice(id, NameOf(device) ?? id));
+                    }
+                    finally { ReleaseCom(device); }
                 }
             }
             catch
@@ -408,14 +415,36 @@ namespace ExplorerNative
                 // A machine with no audio at all is not an error worth throwing
                 // over; it is an empty list and a menu that says so.
             }
+            finally
+            {
+                // Let go of now, not whenever the collector gets round to it.
+                // The list is built every time the device menu or page opens,
+                // and each wrapper held an endpoint, its property store and the
+                // collection alive in the audio service until a GC.
+                ReleaseCom(devices);
+                ReleaseCom(enumerator);
+            }
             return found;
+        }
+
+        /// <summary>
+        /// Lets go of one reference to a COM object. ReleaseComObject, not the
+        /// final release: the runtime hands back the same wrapper for the same
+        /// object, and the enumerator watching for default changes may well be
+        /// the very one a later call is given.
+        /// </summary>
+        private static void ReleaseCom(object? com)
+        {
+            if (com == null) return;
+            try { if (Marshal.IsComObject(com)) Marshal.ReleaseComObject(com); } catch { }
         }
 
         private static string? NameOf(IMMDevice device)
         {
+            IPropertyStore? store = null;
             try
             {
-                if (device.OpenPropertyStore(StorageRead, out var store) != 0 || store == null) return null;
+                if (device.OpenPropertyStore(StorageRead, out store) != 0 || store == null) return null;
 
                 var key = FriendlyName;
                 if (store.GetValue(ref key, out var value) != 0) return null;
@@ -429,6 +458,7 @@ namespace ExplorerNative
                 finally { try { PropVariantClear(ref value); } catch { } }
             }
             catch { return null; }
+            finally { ReleaseCom(store); }
         }
 
         /// <summary>
@@ -472,14 +502,22 @@ namespace ExplorerNative
         /// <summary>The system's default render endpoint now, or null.</summary>
         public static string? DefaultEndpointId()
         {
+            IMMDeviceEnumerator? enumerator = null;
+            IMMDevice? device = null;
             try
             {
-                var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
-                if (enumerator.GetDefaultAudioEndpoint(RenderFlow, ConsoleRole, out var device) != 0 || device == null)
+                enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+                if (enumerator.GetDefaultAudioEndpoint(RenderFlow, ConsoleRole, out device) != 0 || device == null)
                     return null;
                 return device.GetId(out var id) == 0 ? id : null;
             }
             catch { return null; }
+            finally
+            {
+                // Asked on every default change and every switch to the default.
+                ReleaseCom(device);
+                ReleaseCom(enumerator);
+            }
         }
         private int _quietWaits;
 
@@ -753,11 +791,12 @@ namespace ExplorerNative
 
         private bool Open(bool preferRaw, string? deviceId)
         {
+            IMMDeviceEnumerator? enumerator = null;
+            IMMDevice? device = null;
             try
             {
-                var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+                enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
 
-                IMMDevice? device = null;
                 int hr = 0;
 
                 // A remembered device that is not plugged in any more falls back
@@ -783,7 +822,10 @@ namespace ExplorerNative
 
                     if (device != null &&
                         (device.GetState(out uint state) != 0 || state != DeviceStateActive))
+                    {
+                        ReleaseCom(device);
                         device = null;
+                    }
                 }
 
                 if (device == null)
@@ -800,6 +842,7 @@ namespace ExplorerNative
                 // IAudioClient2 first, because raw mode is only reachable through
                 // it — and because SetClientProperties has to happen *before*
                 // Initialize, which is the whole reason the order matters here.
+                IAudioClient? client = null;
                 var iid2 = typeof(IAudioClient2).GUID;
                 if (device.Activate(ref iid2, ClsCtxAll, IntPtr.Zero, out object raw2) == 0 &&
                     raw2 is IAudioClient2 client2)
@@ -817,14 +860,27 @@ namespace ExplorerNative
                         };
                         RawMode = client2.SetClientProperties(ref properties) == 0;
                     }
+
+                    // The same object, asked for its base interface. Activate
+                    // builds a new audio client every time it is called, so the
+                    // second Activate this used to make gave a client the raw
+                    // request had never been made on: the stream played through
+                    // the system effects while the audio page said they were
+                    // bypassed.
+                    client = raw2 as IAudioClient;
                 }
 
-                var iid = typeof(IAudioClient).GUID;
-                hr = device.Activate(ref iid, ClsCtxAll, IntPtr.Zero, out object rawClient);
-                if (hr != 0 || rawClient is not IAudioClient client)
+                if (client == null)
                 {
-                    Diagnostic = $"no audio client (0x{hr:X8})";
-                    return false;
+                    RawMode = false;
+                    var iid = typeof(IAudioClient).GUID;
+                    hr = device.Activate(ref iid, ClsCtxAll, IntPtr.Zero, out object rawClient);
+                    if (hr != 0 || rawClient is not IAudioClient plain)
+                    {
+                        Diagnostic = $"no audio client (0x{hr:X8})";
+                        return false;
+                    }
+                    client = plain;
                 }
                 _client = client;
 
@@ -879,6 +935,29 @@ namespace ExplorerNative
                         0, 0, _formatBlock, IntPtr.Zero);
                 }
 
+                // Raw is a request, and a device that granted it and then will not
+                // start a stream that way still plays the ordinary way: a fresh
+                // client with nothing asked of it, rather than no sound at all.
+                if (hr != 0 && RawMode)
+                {
+                    var iid = typeof(IAudioClient).GUID;
+                    if (device.Activate(ref iid, ClsCtxAll, IntPtr.Zero, out object plainRaw) == 0 &&
+                        plainRaw is IAudioClient plain)
+                    {
+                        ReleaseCom(client);
+                        _client2 = null;
+                        _client = client = plain;
+                        RawMode = false;
+
+                        hr = client.Initialize(SharedMode,
+                            EventCallback | NoPersist | AutoConvertPcm | SrcDefaultQuality,
+                            0, 0, _formatBlock, IntPtr.Zero);
+                        if (hr != 0)
+                            hr = client.Initialize(SharedMode, EventCallback | NoPersist,
+                                0, 0, _formatBlock, IntPtr.Zero);
+                    }
+                }
+
                 if (hr != 0) { Diagnostic = $"initialise failed (0x{hr:X8})"; return false; }
 
                 hr = client.SetEventHandle(_readyEvent);
@@ -922,6 +1001,13 @@ namespace ExplorerNative
             {
                 Diagnostic = ex.GetType().Name + ": " + ex.Message;
                 return false;
+            }
+            finally
+            {
+                // The audio client holds what it needs of the device; these two
+                // were only the way to it.
+                ReleaseCom(device);
+                ReleaseCom(enumerator);
             }
         }
 
@@ -1338,7 +1424,13 @@ namespace ExplorerNative
             if (Interlocked.Exchange(ref _freed, 1) != 0) return;
 
             if (_render != null) { try { Marshal.ReleaseComObject(_render); } catch { } _render = null; }
-            if (_client2 != null) { try { Marshal.ReleaseComObject(_client2); } catch { } _client2 = null; }
+            // Usually the very same object as _client, asked for another
+            // interface: released once, through _client below.
+            if (_client2 != null)
+            {
+                if (!ReferenceEquals(_client2, _client)) { try { Marshal.ReleaseComObject(_client2); } catch { } }
+                _client2 = null;
+            }
             if (_client != null) { try { Marshal.ReleaseComObject(_client); } catch { } _client = null; }
 
             if (_formatBlock != IntPtr.Zero) { try { CoTaskMemFree(_formatBlock); } catch { } _formatBlock = IntPtr.Zero; }

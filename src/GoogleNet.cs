@@ -46,12 +46,37 @@ namespace ExplorerNative
                 return await OpenAsync(only, port, token).ConfigureAwait(false);
             }
 
+            return await RaceAsync<System.IO.Stream>(
+                t => OpenAsync(v6, port, t), t => OpenAsync(v4, port, t),
+                SecondFamilyDelayMilliseconds, token).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Two ways of getting the same thing, the first given a head start:
+        /// whichever succeeds first wins and the loser is closed if it arrives.
+        /// The second starts when the head start is up or the moment the first
+        /// has failed, whichever is sooner. A network with no IPv6 route says so
+        /// at once, and waiting out the rest of the head start anyway put a
+        /// quarter of a second on every new connection to Google.
+        /// </summary>
+        internal static async Task<T> RaceAsync<T>(
+            Func<CancellationToken, Task<T>> preferred, Func<CancellationToken, Task<T>> fallback,
+            int headStartMilliseconds, CancellationToken token) where T : class, IDisposable
+        {
             using var race = CancellationTokenSource.CreateLinkedTokenSource(token);
-            var first = OpenAsync(v6, port, race.Token);
-            var second = Task.Delay(SecondFamilyDelayMilliseconds, race.Token)
-                .ContinueWith(_ => OpenAsync(v4, port, race.Token), race.Token,
-                    TaskContinuationOptions.OnlyOnRanToCompletion, TaskScheduler.Default)
-                .Unwrap();
+            var first = preferred(race.Token);
+
+            async Task<T> StartSecond()
+            {
+                // WhenAny never throws: a cancelled delay simply ends the wait.
+                await Task.WhenAny(first, Task.Delay(headStartMilliseconds, race.Token)).ConfigureAwait(false);
+                race.Token.ThrowIfCancellationRequested();
+                if (first.Status == TaskStatus.RanToCompletion)
+                    throw new OperationCanceledException("the first already won");
+                return await fallback(race.Token).ConfigureAwait(false);
+            }
+
+            var second = StartSecond();
 
             Exception? failure = null;
             var pending = new[] { first, second }.ToList();

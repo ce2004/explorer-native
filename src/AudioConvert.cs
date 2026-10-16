@@ -110,8 +110,11 @@ namespace ExplorerNative
             {
                 token.ThrowIfCancellationRequested();
 
-                if (File.Exists(path)) { Add(path); continue; }
-                if (!Directory.Exists(path)) continue;
+                // Exact throughout: in a folder named "Backup." the ordinary path
+                // is "Backup", and the conversion read (and wrote beside) the
+                // sibling folder's files. The names kept are the ordinary form.
+                if (File.Exists(NameRules.ExactPath(path))) { Add(path); continue; }
+                if (!Directory.Exists(NameRules.ExactPath(path))) continue;
 
                 var stack = new Stack<string>();
                 stack.Push(path);
@@ -122,7 +125,7 @@ namespace ExplorerNative
                     var files = new List<string>();
                     try
                     {
-                        foreach (var info in new DirectoryInfo(folder).EnumerateFileSystemInfos())
+                        foreach (var info in new DirectoryInfo(NameRules.ExactPath(folder)).EnumerateFileSystemInfos())
                         {
                             if (info is DirectoryInfo dir)
                             {
@@ -130,9 +133,9 @@ namespace ExplorerNative
                                 // OneDrive folder is one too, and its subfolders
                                 // were left out of the conversion without a word.
                                 if (subfolders && !NameRules.IsLink(dir))
-                                    stack.Push(dir.FullName);
+                                    stack.Push(NameRules.PlainPath(dir.FullName));
                             }
-                            else files.Add(info.FullName);
+                            else files.Add(NameRules.PlainPath(info.FullName));
                         }
                     }
                     catch (IOException) { continue; }
@@ -166,7 +169,7 @@ namespace ExplorerNative
             foreach (var source in sources)
             {
                 long bytes = 0;
-                try { bytes = new FileInfo(source).Length; } catch { }
+                try { bytes = new FileInfo(NameRules.ExactPath(source)).Length; } catch { }
 
                 var target = TargetFor(source, choice);
 
@@ -182,7 +185,7 @@ namespace ExplorerNative
                 var job = new ConvertJob(source, target, bytes, false);
                 plan.Claimed.Add(target);
                 plan.Jobs.Add(job);
-                if (File.Exists(target) || Directory.Exists(target)) plan.Clashing.Add(job);
+                if (Taken(target)) plan.Clashing.Add(job);
             }
 
             return plan;
@@ -212,7 +215,7 @@ namespace ExplorerNative
 
                     case FileOperations.ConflictChoice.Overwrite:
                         // Never a folder: a folder in the way is numbered past.
-                        if (Directory.Exists(job.Target)) goto default;
+                        if (Directory.Exists(NameRules.ExactPath(job.Target))) goto default;
                         jobs.Add(job with { Replace = true });
                         break;
 
@@ -387,23 +390,30 @@ namespace ExplorerNative
             if (replace)
             {
                 // Replace means replace, a read-only file included, as a paste's does.
-                FileOperations.MoveReplacing(temp, target);
+                FileOperations.MoveReplacing(NameRules.ExactPath(temp), NameRules.ExactPath(target));
                 return target;
             }
 
             for (int attempt = 0; attempt < 5; attempt++)
             {
-                if (File.Exists(target) || Directory.Exists(target))
+                if (Taken(target))
                     target = FileOperations.UniqueName(target, null, folder: false);
                 try
                 {
-                    File.Move(temp, target, overwrite: false);
+                    File.Move(NameRules.ExactPath(temp), NameRules.ExactPath(target), overwrite: false);
                     return target;
                 }
-                catch (IOException) when (File.Exists(target) || Directory.Exists(target)) { }
+                catch (IOException) when (Taken(target)) { }
             }
 
             throw new IOException("no free name could be found beside it");
+        }
+
+        /// <summary>Whether a file or folder is at this exact path (a dot or space at the end of a folder's name included).</summary>
+        private static bool Taken(string path)
+        {
+            var exact = NameRules.ExactPath(path);
+            return File.Exists(exact) || Directory.Exists(exact);
         }
 
         /// <summary>

@@ -91,6 +91,16 @@ namespace ExplorerNative
                 return null;
             }
 
+            // A WAV over 4GB whose 32-bit size wrapped: Windows plays it only
+            // as far as the wrapped size (a 5GB recording stopped after one),
+            // so it goes to the managed reader, which takes the file's length.
+            if (stream == null && OverFourGigabytes(path) && WavDecoder.IsWav(path, null))
+            {
+                var big = new WavDecoder();
+                if (big.Open(path, null) && big.LengthFromFile) { why = big.Diagnostic; return big; }
+                big.Dispose();
+            }
+
             var media = new AudioDecoder();
             if (media.Open(path, stream, sampleRate, channels)) { why = media.Diagnostic; return media; }
 
@@ -195,7 +205,7 @@ namespace ExplorerNative
                 }
                 else
                 {
-                    using var file = new FileStream(path, FileMode.Open, FileAccess.Read,
+                    using var file = new FileStream(NameRules.ExactPath(path), FileMode.Open, FileAccess.Read,
                         FileShare.ReadWrite | FileShare.Delete, 16);
                     while (got < head.Length)
                     {
@@ -209,6 +219,12 @@ namespace ExplorerNative
 
             return got == 4 && head[0] == (byte)'O' && head[1] == (byte)'g' &&
                    head[2] == (byte)'g' && head[3] == (byte)'S';
+        }
+
+        private static bool OverFourGigabytes(string path)
+        {
+            try { return new FileInfo(NameRules.ExactPath(path)).Length > uint.MaxValue; }
+            catch { return false; }
         }
 
         private static string SafeExtension(string path)

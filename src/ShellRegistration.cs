@@ -324,6 +324,7 @@ namespace ExplorerNative
         public static void SetStartup(bool enabled)
         {
             bool changed = false;
+            bool isOn = false;
             try
             {
                 using var key = Registry.CurrentUser.OpenSubKey(StartupRun, writable: true);
@@ -346,14 +347,16 @@ namespace ExplorerNative
                 bool namesABuild = !AppInstall.IsInstalled &&
                                    !AppInstall.IsRunningInstalledCopy;
 
-                bool now = enabled && !namesABuild;
-
-                if (now) key.SetValue(StartupValue, $"\"{ExePath}\"");
+                if (enabled && !namesABuild) key.SetValue(StartupValue, $"\"{ExePath}\"");
                 else if (!enabled) key.DeleteValue(StartupValue, throwOnMissingValue: false);
 
                 // What the key holds now, not what was asked for — a request
-                // that was declined is not a change to announce.
-                changed = was != now;
+                // that was declined is not a change to announce. Read back
+                // rather than inferred: a declined request with a value already
+                // there left it there, and "was on, asked on but declined"
+                // counted as a change and announced "will start with Windows".
+                isOn = key.GetValue(StartupValue) != null;
+                changed = was != isOn;
             }
             catch { }
 
@@ -361,8 +364,8 @@ namespace ExplorerNative
             // a registry failure and quietly swallowed.
             if (!changed) return;
 
-            Changed?.Invoke(enabled ? "startup.on" : "startup.off",
-                enabled
+            Changed?.Invoke(isOn ? "startup.on" : "startup.off",
+                isOn
                     ? "Explorer Native will start with Windows"
                     : "Explorer Native will no longer start with Windows");
         }

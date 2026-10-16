@@ -160,6 +160,33 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// <paramref name="populate"/>, made to survive one folder that will not
+        /// list. Its failure goes into <paramref name="failed"/> (by path, in the
+        /// words <paramref name="reason"/> gives) and the folder is not tried
+        /// again this search, so the hits elsewhere are still placed. Raw, one
+        /// folder's blip or deadline threw out of the whole search and every hit
+        /// was lost. A null reason means the exception is not this folder's
+        /// problem (the search was stopped, the sign-in lapsed), and it goes on up.
+        /// </summary>
+        public static Action<string> NotingFailures(
+            Action<string> populate,
+            System.Collections.Concurrent.ConcurrentDictionary<string, string> failed,
+            Func<Exception, string?> reason)
+        {
+            return folder =>
+            {
+                if (failed.ContainsKey(folder)) return;
+                try { populate(folder); }
+                catch (Exception ex)
+                {
+                    var why = reason(ex);
+                    if (why == null) throw;
+                    failed.TryAdd(folder, why);
+                }
+            };
+        }
+
+        /// <summary>
         /// Lists every folder the hits' chains pass through, a level at a time
         /// and <paramref name="parallelism"/> folders at once, filling
         /// <paramref name="resolved"/> as <see cref="PathForChain"/> would — so

@@ -269,7 +269,8 @@ namespace ExplorerNative
 
         internal static void TryDelete(string path)
         {
-            try { if (File.Exists(path)) File.Delete(path); } catch { }
+            var exact = NameRules.ExactPath(path);
+            try { if (File.Exists(exact)) File.Delete(exact); } catch { }
         }
 
         /// <summary>One float as a signed integer of <paramref name="bits"/>, scaled so 16-bit audio round-trips exactly.</summary>
@@ -305,7 +306,7 @@ namespace ExplorerNative
         {
             _channels = channels;
             _bits = bits;
-            _file = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read, 1 << 16);
+            _file = new FileStream(NameRules.ExactPath(path), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read, 1 << 16);
 
             using var w = new BinaryWriter(_file, Encoding.ASCII, leaveOpen: true);
             int blockAlign = channels * bits / 8;
@@ -429,7 +430,7 @@ namespace ExplorerNative
         public OpusFileEncoder(string path, int channels, int kbps, AudioTagSet? tags)
         {
             _channels = channels;
-            _file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.Read, 1 << 16);
+            _file = new FileStream(NameRules.ExactPath(path), FileMode.CreateNew, FileAccess.Write, FileShare.Read, 1 << 16);
 
             try
             {
@@ -514,7 +515,7 @@ namespace ExplorerNative
             _block = new int[channels][];
             for (int c = 0; c < channels; c++) _block[c] = new int[BlockSize];
 
-            _file = new FileStream(path, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read, 1 << 16);
+            _file = new FileStream(NameRules.ExactPath(path), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read, 1 << 16);
             _file.Write("fLaC"u8);
 
             // STREAMINFO, written now with the counts unknown and again at the end.
@@ -1118,7 +1119,7 @@ namespace ExplorerNative
                 input.SetUINT32(ref BlockAlignment, (uint)(bits / 8 * channels));
                 input.SetUINT32(ref BytesPerSecond, (uint)(rate * bits / 8 * channels));
 
-                int hr = MFCreateSinkWriterFromURL(path, IntPtr.Zero, IntPtr.Zero, out var writer);
+                int hr = MFCreateSinkWriterFromURL(NameRules.ExactPath(path), IntPtr.Zero, IntPtr.Zero, out var writer);
                 if (hr != 0 || writer == null)
                     throw new AudioEncodeException($"Windows could not create the {_format} file (0x{hr:X8})");
                 _writer = writer;

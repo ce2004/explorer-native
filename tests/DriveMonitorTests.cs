@@ -328,8 +328,8 @@ namespace ExplorerNative
                 settings.WindowsNotifications = WindowsToasts.Format(new[] { "sync.done", "sync.space" });
                 WindowsToasts.Raise("sync.done", "Music synced: 3 uploaded", settings);
                 WindowsToasts.Raise("sync.error", "Music could not sync", settings);
-                Check("notifications: one turned on shows, titled with its name, and others still do not",
-                    shown.Count == 1 && shown[0] == "Synced folder finished: Music synced: 3 uploaded", string.Join(" | ", shown));
+                Check("notifications: one turned on shows, with no label for a title, and others still do not",
+                    shown.Count == 1 && shown[0] == ": Music synced: 3 uploaded", string.Join(" | ", shown));
             }
             finally { WindowsToasts.Show = before; }
         }
@@ -405,19 +405,35 @@ namespace ExplorerNative
 
             // Sync all, Pause all, Resume all.
             using var all = rig.NewMonitor();
-            Equal("sync all with nothing synced", "No folders are synced with Google Drive", all.SyncAllNow());
+            Equal("sync all with nothing synced", "You are not syncing any folders with Google Drive yet", all.SyncAllNow());
+            // One folder is named, never "1 synced folder" (Conner, 3.0.x).
+            all.SetPairs(new List<DriveSyncPair>
+            {
+                new() { Name = "Music", LocalFolder = rig.Local, DriveFolderId = "m", CheckMinutes = 0 },
+            });
+            Equal("sync all with one folder names it", "Syncing Music now", all.SyncAllNow());
+            Equal("pause all with one folder names it", "Paused Music. Nothing syncs until you resume", all.PauseAll(true));
+            Equal("sync all with the one folder paused names it", "Music is paused. Resume it first", all.SyncAllNow());
+            Equal("resume all with one folder names it", "Resumed Music. Syncing now", all.PauseAll(false));
             var two = new List<DriveSyncPair>
             {
                 new() { Name = "A", LocalFolder = rig.Local, DriveFolderId = "a", CheckMinutes = 0 },
                 new() { Name = "B", LocalFolder = rig.Local, DriveFolderId = "b", CheckMinutes = 0 },
             };
             all.SetPairs(two);
-            Equal("sync all says how many", "Syncing all 2 synced folders now", all.SyncAllNow());
-            Equal("pause all says what it did", "Paused all 2 synced folders. Nothing is copied until you resume", all.PauseAll(true));
+            Equal("sync all says how many, in words", "Syncing both folders now", all.SyncAllNow());
+            Equal("pause all says what it did", "Paused both folders. Nothing syncs until you resume", all.PauseAll(true));
             Check("and every pair is paused, and the menu then offers Resume all", all.Pairs.All(p => p.Paused) && all.AllPaused);
-            Equal("sync all while everything is paused says so", "All 2 synced folders are paused. Resume them first", all.SyncAllNow());
-            Equal("resume all", "Resumed all 2 synced folders. Syncing now", all.PauseAll(false));
+            Equal("sync all while everything is paused says so", "Both folders are paused. Resume them first", all.SyncAllNow());
+            Equal("resume all", "Resumed both folders. Syncing now", all.PauseAll(false));
             Check("and none is paused afterwards", all.Pairs.All(p => !p.Paused) && !all.AllPaused);
+            var mixed = all.Pairs.ToList();
+            mixed[1].Paused = true;
+            all.SetPairs(mixed);
+            Equal("sync all with one paused names the running one and the paused one", "Syncing A now. B is paused", all.SyncAllNow());
+            all.PauseAll(false);
+            foreach (var w in new[] { all.SyncAllNow(), all.PauseAll(true), all.PauseAll(false) })
+                Check("sync all wording never says 'synced folder' or a bare 1", !w.Contains("synced folder") && !w.Contains(" 1 "), w);
         }
 
         // ---------------- what counts as "not now" ----------------

@@ -596,14 +596,20 @@ namespace ExplorerNative
             }
         }
 
-        public void EndLease()
+        /// <summary>
+        /// Lets go of a lease. <paramref name="warm"/> false is a reader's lease:
+        /// one that failed before it read anything (a closing mount, a size that
+        /// disagreed, a deadline) is not the mount warming the file, and taken
+        /// as one it started a whole-file download for a read that had failed.
+        /// </summary>
+        public void EndLease(bool warm = true)
         {
             lock (_leaseGate) _readers--;
 
             // A lease that ends with nothing ever read through it is the mount
             // warming the file ahead of a paste: the one case where the whole
             // download is wanted before anybody asks for a byte.
-            if (!_everRead) StartPump();
+            if (warm && !_everRead) StartPump();
         }
 
         /// <summary>

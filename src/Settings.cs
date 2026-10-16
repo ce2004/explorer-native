@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -134,6 +135,26 @@ namespace ExplorerNative
         [JsonIgnore]
         public string DisplayTitle =>
             string.IsNullOrWhiteSpace(WindowTitle) ? DefaultWindowTitle : WindowTitle.Trim();
+
+        /// <summary>
+        /// At most <paramref name="max"/> UTF-16 units of <paramref name="text"/>,
+        /// cut between whole characters. A plain cut at 63 could land inside an
+        /// emoji (two units) or between a letter and its accent, leaving half a
+        /// character at the end of the tray tooltip for NVDA to read as junk.
+        /// </summary>
+        public static string CutAtCharacter(string text, int max)
+        {
+            if (string.IsNullOrEmpty(text) || text.Length <= max) return text ?? "";
+            int end = 0;
+            var e = System.Globalization.StringInfo.GetTextElementEnumerator(text);
+            while (e.MoveNext())
+            {
+                int next = e.ElementIndex + ((string)e.Current).Length;
+                if (next > max) break;
+                end = next;
+            }
+            return text[..end];
+        }
 
         // ---------- Behaviour ----------
         public bool WrapArrowNavigation { get; set; } = false;
@@ -1111,7 +1132,9 @@ namespace ExplorerNative
                 changed = true;
             }
 
-            if (changed) SpeechOverrides = Notifications.FormatOverrides(overrides);
+            // Keeping the ids this build has no message for, as Preferences does:
+            // a newer build's choices survive the trip through this one.
+            if (changed) SpeechOverrides = Notifications.FormatOverridesKeeping(overrides, SpeechOverrides);
         }
 
         /// <summary>
@@ -1504,7 +1527,14 @@ namespace ExplorerNative
                 if (_diskJson != null && string.Equals(_diskPath, SettingsPath, StringComparison.OrdinalIgnoreCase))
                 {
                     try { before = JsonSerializer.Deserialize<Settings>(_diskJson, ReadFormat)?.Validated(); }
-                    catch { before = null; }
+                    catch
+                    {
+                        // A file that was damaged when it was read, and salvaged:
+                        // read the same way again. Left null, the reload took the
+                        // file wholesale and lost everything changed this session.
+                        try { before = Salvage(_diskJson)?.Validated(); }
+                        catch { before = null; }
+                    }
                 }
             }
 
@@ -1557,13 +1587,28 @@ namespace ExplorerNative
                 var now = property.GetValue(after);
                 if (SameValue(was, now)) continue;
 
-                property.SetValue(merged, now is int[] numbers ? (int[])numbers.Clone() : now);
+                property.SetValue(merged, CopyOf(now));
             }
 
             // The version is the file's business, not a setting anybody changed.
             merged.SettingsVersion = Math.Max(live.SettingsVersion, after.SettingsVersion);
             return merged;
         }
+
+        /// <summary>
+        /// A value of its own for the merged copy. Taken by reference, the
+        /// merged settings and <c>after</c> shared one list of sync pairs and one
+        /// folder-sort table, so editing either (a pair paused in place, say)
+        /// changed the other behind its back.
+        /// </summary>
+        private static object? CopyOf(object? value) => value switch
+        {
+            int[] numbers => (int[])numbers.Clone(),
+            List<DriveSyncPair> pairs => pairs.Select(p => p?.Copy()!).ToList(),
+            Dictionary<string, string> sorts => new Dictionary<string, string>(sorts, sorts.Comparer),
+            Dictionary<string, JsonElement> unknown => unknown.ToDictionary(p => p.Key, p => p.Value.Clone(), unknown.Comparer),
+            _ => value,
+        };
 
         private static bool SameValue(object? a, object? b)
         {

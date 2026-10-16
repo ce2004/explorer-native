@@ -301,9 +301,44 @@ namespace ExplorerNative
             _gain = (float)Math.Pow(10, segment.GainDb / 20);
 
             if (_innerAt == start) return true;
-            bool ok = _inner.SeekTo(sourceFrame / (double)_edits.SampleRate);
-            _innerAt = ok ? start : -1;
-            return ok;
+            if (_inner.SeekTo(sourceFrame / (double)_edits.SampleRate)) { _innerAt = start; return true; }
+
+            // Refused. The source is then somewhere nobody knows, and reading on
+            // played (and saved) whatever followed the last segment instead of
+            // this one: a cut that came back. So back to the top, which every
+            // decoder here can do, and decoded forward to the start. If even
+            // that fails, the segment is skipped rather than played from the
+            // wrong place.
+            _innerAt = -1;
+            if (!_inner.SeekTo(0)) { _segmentLeft = 0; return false; }
+            _innerAt = 0;
+            if (!SkipForward(start)) { _innerAt = -1; _segmentLeft = 0; return false; }
+            _innerAt = start;
+            return true;
+        }
+
+        /// <summary>
+        /// Reads and drops <paramref name="frames"/> decoder frames. False when
+        /// the source ran out first (three empty reads in a row, as everywhere).
+        /// </summary>
+        private bool SkipForward(long frames)
+        {
+            int channels = Math.Max(1, Channels);
+            const int Chunk = 16384;
+            if (_scratch.Length < Chunk * channels) _scratch = new float[Chunk * channels];
+            int empties = 0;
+            while (frames > 0)
+            {
+                int got = _inner.Read(_scratch, (int)Math.Min(Chunk, frames));
+                if (got <= 0)
+                {
+                    if (++empties >= 3) return false;
+                    continue;
+                }
+                empties = 0;
+                frames -= got;
+            }
+            return true;
         }
 
         public int Read(float[] destination, int frames)

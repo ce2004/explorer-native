@@ -187,7 +187,8 @@ namespace ExplorerNative
         {
             try
             {
-                var handle = File.OpenHandle(path, FileMode.Open, FileAccess.Read,
+                // Exact: in a folder named "Backup." the ordinary path is "Backup"'s file.
+                var handle = File.OpenHandle(NameRules.ExactPath(path), FileMode.Open, FileAccess.Read,
                     FileShare.ReadWrite | FileShare.Delete, FileOptions.RandomAccess);
                 return new FileBytes(handle, RandomAccess.GetLength(handle));
             }

@@ -416,11 +416,18 @@ namespace ExplorerNative
                 {
                     gapSkipped.Add(name);
                 }
-                else if (collides && conflictPolicy == PasteConflictPolicy.Overwrite && !isFolder)
+                else if (collides && conflictPolicy == PasteConflictPolicy.Overwrite)
                 {
                     // Robocopy writes over the old file in place, so a cancel or a
                     // dropped share left neither the old file nor the new one. The
                     // managed engine writes beside it and swaps (CopyFileAsync).
+                    //
+                    // A folder too: robocopy merged it and wrote over every file
+                    // inside that the destination already had, in place, and the
+                    // cleanup after a cancel never touches a file that was there
+                    // before — so the one being written when Cancel was pressed
+                    // was left half old, half new. The managed engine merges the
+                    // same way and swaps each file in whole.
                     literalFolders.Add(source);
                 }
                 else

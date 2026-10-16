@@ -730,7 +730,7 @@ namespace ExplorerNative
                     return;
                 }
 
-                var (file, dir) = await Task.Run(() => (File.Exists(target), Directory.Exists(target)));
+                var (file, dir) = await Task.Run(() => (File.Exists(NameRules.ExactPath(target)), Directory.Exists(NameRules.ExactPath(target))));
                 if (IsDisposed) return;
                 if (dir) { Say($"There is a folder called {name}. Choose another name"); return; }
                 if (file)
@@ -833,7 +833,7 @@ namespace ExplorerNative
                 Exception? moveFailed = null;
                 for (int attempt = 0; attempt < 5; attempt++)
                 {
-                    try { await Task.Run(() => File.Move(temp, _path)); moveFailed = null; break; }
+                    try { await Task.Run(() => File.Move(NameRules.ExactPath(temp), NameRules.ExactPath(_path))); moveFailed = null; break; }
                     catch (IOException ex) { moveFailed = ex; await Task.Delay(300); }
                     catch (UnauthorizedAccessException ex) { moveFailed = ex; await Task.Delay(300); }
                 }
@@ -889,7 +889,7 @@ namespace ExplorerNative
             var progress = new Progress<TransferProgress>(p => window.Update(p));
 
             long estimate = 1;
-            try { estimate = Math.Max(1, (long)(new FileInfo(_path).Length * (edits.Length / (double)Math.Max(1, edits.SourceFrames)))); }
+            try { estimate = Math.Max(1, (long)(new FileInfo(NameRules.ExactPath(_path)).Length * (edits.Length / (double)Math.Max(1, edits.SourceFrames)))); }
             catch { }
 
             var clock = System.Diagnostics.Stopwatch.StartNew();

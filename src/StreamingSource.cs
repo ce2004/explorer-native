@@ -251,12 +251,14 @@ namespace ExplorerNative
         private void Start()
         {
             CancellationToken token;
+            int run;
             lock (_gate)
             {
                 if (_disposed || Cacheable <= 0) return;
                 _released = false;
                 _run = new CancellationTokenSource();
                 token = _run.Token;
+                run = ++_generation;
                 if (_head == null && Length > 0) _headComing = true;
             }
 
@@ -264,11 +266,23 @@ namespace ExplorerNative
             // the track starts has the link to itself.
             _ = Task.Run(async () =>
             {
-                await FetchHead(token).ConfigureAwait(false);
+                await FetchHead(token, run).ConfigureAwait(false);
                 for (int i = 0; i < Workers; i++)
-                    _ = Task.Run(() => Worker(token));
+                    _ = Task.Run(() => Worker(token, run));
             });
         }
+
+        /// <summary>
+        /// Which run of the download is the current one, moved on by every Start.
+        ///
+        /// A worker of a run that was released goes on until its read comes back,
+        /// and its tidying up used to land on the run that replaced it: a release
+        /// and a resume, and the old worker's finally took a piece out of the new
+        /// run's "being fetched" list while a new worker was still fetching it —
+        /// so a second worker fetched the same four megabytes again. Each run's
+        /// tidying touches only its own run now. Under the lock.
+        /// </summary>
+        private int _generation;
 
         /// <summary>How many download workers a run starts.</summary>
         private int Workers => Math.Max(1, _source.Streams);
@@ -281,7 +295,7 @@ namespace ExplorerNative
         /// </summary>
         private readonly SemaphoreSlim _wake = new(0, int.MaxValue);
 
-        private async Task FetchHead(CancellationToken token)
+        private async Task FetchHead(CancellationToken token, int run)
         {
             try
             {
@@ -297,12 +311,15 @@ namespace ExplorerNative
             catch (Exception ex) { Trace?.Invoke($"head failed: {ex.Message}"); }
             finally
             {
-                lock (_gate) _headComing = false;
+                // Only this run's: a released run's head finishing late said "not
+                // coming" about the head the new run is fetching, and reads that
+                // should have waited for it fetched it again directly.
+                lock (_gate) if (run == _generation) _headComing = false;
                 Pulse();
             }
         }
 
-        private async Task Worker(CancellationToken token)
+        private async Task Worker(CancellationToken token, int run)
         {
             int failures = 0;
             while (!token.IsCancellationRequested)
@@ -360,7 +377,8 @@ namespace ExplorerNative
                 }
                 finally
                 {
-                    lock (_gate) _fetching.Remove(index);
+                    // Only from this run's list — see _generation.
+                    lock (_gate) if (run == _generation) _fetching.Remove(index);
                     if (stored) Pulse();
                 }
             }

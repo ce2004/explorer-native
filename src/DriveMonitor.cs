@@ -368,9 +368,20 @@ namespace ExplorerNative
         /// <summary>The live drive, for the space and quota checks in the add/edit dialog.</summary>
         internal GoogleDrive Drive => _drive;
 
-        /// <summary>Takes the pairs settings now hold, and watches their PC folders.</summary>
+        /// <summary>
+        /// Takes the pairs settings now hold, and watches their PC folders.
+        ///
+        /// Called on the UI thread (the sync window saves every change at once),
+        /// so only the bookkeeping is done here. Looking at a PC folder and
+        /// starting its watcher touch the disk: a pair on a share that had gone
+        /// away held the window, and the engine waiting on the same lock, for as
+        /// long as Windows took to give up. That is done on a worker, one per
+        /// pair, and a watcher is put in place only if it is still the one wanted.
+        /// </summary>
         public void Reload(IEnumerable<DriveSyncPair> pairs)
         {
+            var retired = new List<FileSystemWatcher>();
+            var wanted = new List<(DriveSyncPair Pair, long Ticket)>();
             lock (_gate)
             {
                 var before = _pairs;
@@ -385,12 +396,19 @@ namespace ExplorerNative
                         JsonSerializer.Serialize(old) != JsonSerializer.Serialize(pair))
                         _generation[pair.Id] = (_generation.TryGetValue(pair.Id, out var g) ? g : 0) + 1;
 
+                foreach (var gone in before.Where(old => _pairs.All(p => p.Id != old.Id)))
+                {
+                    if (_watchers.Remove(gone.Id, out var watcher)) retired.Add(watcher);
+                    _watchJournals.Remove(gone.Id);
+                    _watchTickets.Remove(gone.Id);
+                    _status.Remove(gone.Id);
+                }
                 foreach (var gone in _watchers.Keys.Where(id => _pairs.All(p => p.Id != id)).ToList())
                 {
-                    try { _watchers[gone].Dispose(); } catch { }
+                    retired.Add(_watchers[gone]);
                     _watchers.Remove(gone);
                     _watchJournals.Remove(gone);
-                    _status.Remove(gone);
+                    _watchTickets.Remove(gone);
                 }
 
                 foreach (var pair in _pairs)
@@ -400,68 +418,110 @@ namespace ExplorerNative
                         if (!pair.Paused &&
                             string.Equals(existing.Path, pair.LocalFolder, StringComparison.OrdinalIgnoreCase) &&
                             existing.IncludeSubdirectories == pair.IncludeSubfolders) continue;
-                        try { existing.Dispose(); } catch { }
+                        retired.Add(existing);
                         _watchers.Remove(pair.Id);
                     }
 
                     // A new watcher has seen nothing yet: until it has watched a
-                    // whole walk, what it says is not the whole story.
+                    // whole walk, what it says is not the whole story. A watcher
+                    // still being made for this pair's old settings is no longer
+                    // wanted (its ticket is out of date).
                     _watchJournals.Remove(pair.Id);
-                    if (pair.Paused || !Directory.Exists(pair.LocalFolder)) continue;
-
-                    try
-                    {
-                        var watcher = new FileSystemWatcher(pair.LocalFolder)
-                        {
-                            IncludeSubdirectories = pair.IncludeSubfolders,
-                            NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName |
-                                           NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.Attributes,
-                            InternalBufferSize = 64 * 1024,
-                        };
-
-                        // Events make a pass due, and say which folders to list
-                        // again where the volume has no change journal (see
-                        // LookAtPc). A buffer overflow (Error) loses that, and the
-                        // next pass walks the whole folder.
-                        //
-                        // The monitor's own writes are noted but are not news: a
-                        // download landing used to make the next pass due, which
-                        // listed the whole of Drive again for nothing.
-                        var id = pair.Id;
-                        var root = pair.LocalFolder;
-                        var journal = new PcWatchJournal();
-                        _watchJournals[pair.Id] = journal;
-                        void Seen(string fullPath, WatcherChangeTypes kind)
-                        {
-                            journal.Note(Relative(root, fullPath), kind);
-                            if (!IsMine(fullPath)) Soon(id);
-                        }
-                        FileSystemEventHandler changed = (_, e) =>
-                        {
-                            if (!SyncPlanner.IsSkipped(e.Name ?? "")) Seen(e.FullPath, e.ChangeType);
-                        };
-                        watcher.Created += changed;
-                        watcher.Changed += changed;
-                        watcher.Deleted += changed;
-                        watcher.Renamed += (_, e) =>
-                        {
-                            journal.Note(Relative(root, e.OldFullPath), WatcherChangeTypes.Deleted);
-                            Seen(e.FullPath, WatcherChangeTypes.Renamed);
-                        };
-                        watcher.Error += (_, _) =>
-                        {
-                            journal.Lose();
-                            Soon(id);
-                        };
-                        watcher.EnableRaisingEvents = true;
-                        _watchers[pair.Id] = watcher;
-                    }
-                    catch { }
+                    long ticket = ++_lastTicket;
+                    _watchTickets[pair.Id] = ticket;
+                    if (!pair.Paused) wanted.Add((pair.Copy(), ticket));
                 }
             }
 
+            if (retired.Count > 0)
+                _ = Task.Run(() => { foreach (var watcher in retired) { try { watcher.Dispose(); } catch { } } });
+            foreach (var (pair, ticket) in wanted)
+                _ = Task.Run(() => WatchAsWanted(pair, ticket));
+
             try { Changed?.Invoke(); } catch { }
             SyncNow();
+        }
+
+        /// <summary>The newest watcher asked for, per pair: one made for an older ticket is thrown away.</summary>
+        private readonly Dictionary<string, long> _watchTickets = new();
+        private long _lastTicket;
+        private bool _disposed;
+
+        /// <summary>Whether a PC folder is there, asked by the watcher's worker. The suite holds it to stand for a dead share.</summary>
+        internal Func<string, bool> FolderThere { get; set; } = Directory.Exists;
+
+        /// <summary>
+        /// Makes a pair's folder watcher, on a worker (see <see cref="Reload"/>),
+        /// and puts it in place only while <paramref name="ticket"/> is still the
+        /// pair's newest and the monitor is open.
+        /// </summary>
+        private void WatchAsWanted(DriveSyncPair pair, long ticket)
+        {
+            FileSystemWatcher? watcher = null;
+            try
+            {
+                if (!FolderThere(pair.LocalFolder)) return;
+                lock (_gate) if (_disposed || !_watchTickets.TryGetValue(pair.Id, out var now) || now != ticket) return;
+
+                watcher = new FileSystemWatcher(pair.LocalFolder)
+                {
+                    IncludeSubdirectories = pair.IncludeSubfolders,
+                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName |
+                                   NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.Attributes,
+                    InternalBufferSize = 64 * 1024,
+                };
+
+                // Events make a pass due, and say which folders to list
+                // again where the volume has no change journal (see
+                // LookAtPc). A buffer overflow (Error) loses that, and the
+                // next pass walks the whole folder.
+                //
+                // The monitor's own writes are noted but are not news: a
+                // download landing used to make the next pass due, which
+                // listed the whole of Drive again for nothing.
+                var id = pair.Id;
+                var root = pair.LocalFolder;
+                var journal = new PcWatchJournal();
+                void Seen(string fullPath, WatcherChangeTypes kind)
+                {
+                    journal.Note(Relative(root, fullPath), kind);
+                    if (!IsMine(fullPath)) Soon(id);
+                }
+                FileSystemEventHandler changed = (_, e) =>
+                {
+                    if (!SyncPlanner.IsSkipped(e.Name ?? "")) Seen(e.FullPath, e.ChangeType);
+                };
+                watcher.Created += changed;
+                watcher.Changed += changed;
+                watcher.Deleted += changed;
+                watcher.Renamed += (_, e) =>
+                {
+                    journal.Note(Relative(root, e.OldFullPath), WatcherChangeTypes.Deleted);
+                    Seen(e.FullPath, WatcherChangeTypes.Renamed);
+                };
+                watcher.Error += (_, _) =>
+                {
+                    journal.Lose();
+                    Soon(id);
+                };
+                watcher.EnableRaisingEvents = true;
+
+                lock (_gate)
+                {
+                    if (!_disposed && _watchTickets.TryGetValue(pair.Id, out var now) && now == ticket &&
+                        !_watchers.ContainsKey(pair.Id))
+                    {
+                        _watchers[pair.Id] = watcher;
+                        _watchJournals[pair.Id] = journal;
+                        watcher = null;
+                    }
+                }
+            }
+            catch { }
+            finally
+            {
+                try { watcher?.Dispose(); } catch { }
+            }
         }
 
         /// <summary>Saves an edited list of pairs at once (through settings) and syncs.</summary>
@@ -498,12 +558,31 @@ namespace ExplorerNative
         public string SyncAllNow()
         {
             var pairs = Pairs;
-            if (pairs.Count == 0) return "No folders are synced with Google Drive";
+            if (pairs.Count == 0) return "You are not syncing any folders with Google Drive yet";
             int running = pairs.Count(p => !p.Paused);
-            if (running == 0) return $"All {SyncedFolders(pairs.Count)} are paused. Resume them first";
+            if (running == 0)
+                return pairs.Count == 1
+                    ? $"{DisplayName(pairs[0])} is paused. Resume it first"
+                    : $"{Capitalise(AllFolders(pairs.Count))} are paused. Resume them first";
             SyncNow();
-            return running == 1 ? "Syncing 1 synced folder now" : $"Syncing all {SyncedFolders(running)} now";
+            int paused = pairs.Count - running;
+            string syncing = running == 1
+                ? $"Syncing {DisplayName(pairs.First(p => !p.Paused))} now"
+                : paused == 0
+                    ? $"Syncing {AllFolders(running)} now"
+                    : $"Syncing {NameRules.Counted(running, "folder")} now";
+            if (paused == 0) return syncing;
+            return paused == 1
+                ? $"{syncing}. {DisplayName(pairs.First(p => p.Paused))} is paused"
+                : $"{syncing}. {Capitalise(NameRules.Number(paused))} are paused";
         }
+
+        /// <summary>"both folders", "all three folders".</summary>
+        private static string AllFolders(int count) =>
+            count == 2 ? "both folders" : $"all {NameRules.Counted(count, "folder")}";
+
+        private static string Capitalise(string text) =>
+            text.Length == 0 ? text : char.ToUpperInvariant(text[0]) + text[1..];
 
         /// <summary>
         /// Pause all or Resume all: every pair at once, saved like an edit in
@@ -512,15 +591,16 @@ namespace ExplorerNative
         public string PauseAll(bool pause)
         {
             var pairs = Pairs;
-            if (pairs.Count == 0) return "No folders are synced with Google Drive";
+            if (pairs.Count == 0) return "You are not syncing any folders with Google Drive yet";
             if (pairs.Any(p => p.Paused != pause))
             {
                 foreach (var pair in pairs) pair.Paused = pause;
                 SetPairs(pairs);
             }
+            string which = pairs.Count == 1 ? DisplayName(pairs[0]) : AllFolders(pairs.Count);
             return pause
-                ? $"Paused {(pairs.Count == 1 ? "the synced folder" : $"all {SyncedFolders(pairs.Count)}")}. Nothing is copied until you resume"
-                : $"Resumed {(pairs.Count == 1 ? "the synced folder" : $"all {SyncedFolders(pairs.Count)}")}. Syncing now";
+                ? $"Paused {which}. Nothing syncs until you resume"
+                : $"Resumed {which}. Syncing now";
         }
 
         /// <summary>True when there are pairs and every one is paused: the tray and menu then offer Resume all.</summary>
@@ -528,8 +608,6 @@ namespace ExplorerNative
         {
             get { lock (_gate) return _pairs.Count > 0 && _pairs.All(p => p.Paused); }
         }
-
-        private static string SyncedFolders(int count) => count == 1 ? "1 synced folder" : $"{count:N0} synced folders";
 
         /// <summary>Every pair, now: Sync now, at start, Drive connecting, Drive back online.</summary>
         public void SyncNow()
@@ -913,7 +991,10 @@ namespace ExplorerNative
                         // Reached however the pass ended, short of the process
                         // dying: anything it sent has been answered (see Drain).
                         try { File.Delete(RunningMarker(pair.Id)); } catch { }
-                        SyncHistory.Flush(pair.Id);
+                        bool removed;
+                        lock (_gate) removed = _removed.Contains(pair.Id);
+                        if (removed) SyncHistory.Discard(pair.Id);
+                        else SyncHistory.Flush(pair.Id);
                         GiveMemoryBack(GC.GetTotalAllocatedBytes() - allocatedBefore);
                     }
                     lock (_gate) _lastChecked[pair.Id] = DateTime.UtcNow;
@@ -944,7 +1025,7 @@ namespace ExplorerNative
                     if (!_saidOffline)
                     {
                         _saidOffline = true;
-                        _notify("sync.offline", "Drive monitor paused, offline");
+                        _notify("sync.offline", "You are offline, so syncing has paused. It carries on when you are back");
                     }
                     return false;
                 }
@@ -1027,7 +1108,7 @@ namespace ExplorerNative
                         Problem = $"waiting, {why}, trying again in {Seconds(wait)}",
                     });
                     if (Interlocked.Exchange(ref _waitingEpisode, 1) == 0)
-                        _notify("sync.ratelimited", $"{DisplayName(pair)}: waiting, {why}");
+                        _notify("sync.ratelimited", $"{DisplayName(pair)} is waiting, because {why}");
 
                     // Taken before the pair is checked, so a pause that lands in
                     // between still cuts this wait short.
@@ -1076,7 +1157,7 @@ namespace ExplorerNative
         {
             SetStatus(pair.Id, StatusOf(pair.Id) with { Problem = null });
             if (Interlocked.Exchange(ref _waitingEpisode, 0) == 1)
-                _notify("sync.ratelimited", $"{DisplayName(pair)}: Google is answering again, carrying on");
+                _notify("sync.ratelimited", $"Google is answering again, so {DisplayName(pair)} is carrying on");
         }
 
         private static string Seconds(TimeSpan wait)
@@ -1107,7 +1188,7 @@ namespace ExplorerNative
             var name = DisplayName(pair);
             long bytes = toHash.Sum(p => local[p].Size);
             bool big = SyncSpace.IsBig(bytes, toHash.Count);
-            if (big) _notify("sync.checking", $"{name}: checking what is already there, {toHash.Count:N0} files");
+            if (big) _notify("sync.checking", $"Checking which of {toHash.Count:N0} files in {name} are already in Google Drive");
 
             int done = 0;
             var gate = new object();
@@ -1164,7 +1245,7 @@ namespace ExplorerNative
                             }
                             Progress();
                             if (big && SyncSpace.QuarterPassed(before, after, toHash.Count) is int percent and > 0)
-                                _notify("sync.checking", $"{name}: {percent} percent checked");
+                                _notify("sync.checking", $"Checked {percent} percent of {name}");
                         }
                         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                         {
@@ -1182,7 +1263,7 @@ namespace ExplorerNative
                         _status[pair.Id] = was with { CheckDone = 0, CheckTotal = 0 };
             }
 
-            if (big) _notify("sync.checking", $"{name}: finished checking what is already there");
+            if (big) _notify("sync.checking", $"Finished checking {name}");
             return known;
         }
 
@@ -1213,10 +1294,23 @@ namespace ExplorerNative
             // A file moved on the PC is only taken for the file Drive holds when
             // its MD5 agrees. Read once, and kept like any other.
             var checkedMoves = new List<SyncMove>();
+
+            // A move whose new file cannot be read just now (open in another
+            // program) is not known to be a move or not. Left to the plan, its
+            // halves were a delete and an upload: with deletes on, Drive's copy
+            // went to the trash at once and the file went up again later as a
+            // new one. Both halves wait for a later pass instead, as a move tried
+            // and not made does.
+            var unread = new List<SyncMove>();
             foreach (var move in found)
             {
                 token.ThrowIfCancellationRequested();
-                if (!move.OnDrive || move.Was.RemoteMd5 == null) { checkedMoves.Add(move); continue; }
+                // Drive's checksum as recorded, or as listed now when the record
+                // has none (an older record): taken on size and time alone, two
+                // different files alike in both were paired, and the new one's
+                // contents never went up.
+                var driveMd5 = move.Was.RemoteMd5 ?? (move.OnDrive && remote.TryGetValue(move.From, out var listed) ? listed.Md5 : null);
+                if (!move.OnDrive || driveMd5 == null) { checkedMoves.Add(move); continue; }
                 var l = local[move.To];
                 string? md5 = state.Hashes.TryGetValue(move.To, out var h) && h.Size == l.Size && h.ModifiedUtc == l.ModifiedUtc
                     ? h.Md5 : null;
@@ -1229,9 +1323,16 @@ namespace ExplorerNative
                         md5 = Convert.ToHexString(await MD5.HashDataAsync(file, token).ConfigureAwait(false)).ToLowerInvariant();
                         state.Hashes[move.To] = new SyncHashEntry(l.Size, l.ModifiedUtc, md5);
                     }
-                    catch (Exception) when (!token.IsCancellationRequested) { continue; }
+                    catch (Exception) when (!token.IsCancellationRequested) { unread.Add(move); continue; }
                 }
-                if (string.Equals(md5, move.Was.RemoteMd5, StringComparison.OrdinalIgnoreCase)) checkedMoves.Add(move);
+                if (string.Equals(md5, driveMd5, StringComparison.OrdinalIgnoreCase)) checkedMoves.Add(move);
+            }
+            if (unread.Count > 0)
+            {
+                var waiting = new HashSet<string>(SyncNameComparer.Instance);
+                foreach (var m in unread) { waiting.Add(m.From); waiting.Add(m.To); }
+                plan = plan.Where(a => !waiting.Contains(a.Path)).ToList();
+                notMade.UnionWith(waiting);
             }
             if (checkedMoves.Count == 0) return (plan, 0);
 
@@ -1436,6 +1537,22 @@ namespace ExplorerNative
                 Kill("moved " + move.From);
                 return true;
             }
+        }
+
+        /// <summary>
+        /// Where the PC's copy of a conflict steps aside: the conflict name's own
+        /// file name (<paramref name="asideRelative"/>), in the folder the PC's
+        /// file is really in (<paramref name="localPath"/>, from LocalPathFor).
+        /// </summary>
+        internal static string AsidePathFor(string localPath, string asideRelative) =>
+            Path.Combine(Path.GetDirectoryName(localPath) ?? "", SyncMoves.Leaf(asideRelative));
+
+        private static bool OnDisk(string path)
+        {
+            // Never throws (Exists answers false on any error), so the name
+            // search always ends; a clash it misses fails the move, not the file.
+            try { return File.Exists(path) || Directory.Exists(path); }
+            catch { return false; }
         }
 
         /// <summary>A full path under <paramref name="root"/> as the pair's relative path.</summary>
@@ -1845,7 +1962,7 @@ namespace ExplorerNative
                 state.Problem = gone;
                 SaveState(pair.Id, state);
                 SetStatus(pair.Id, new PairStatus(state.LastSyncedUtc, gone, false));
-                if (newProblem) _notify("sync.paused", $"{name} {gone}");
+                if (newProblem) _notify("sync.paused", $"{name} is {gone}");
                 return;
             }
 
@@ -2832,7 +2949,7 @@ namespace ExplorerNative
             header.Problem = problem;
             SaveState(pair.Id, header);
             SetStatus(pair.Id, new PairStatus(header.LastSyncedUtc, problem, false));
-            _notify("sync.error", $"{DisplayName(pair)} {problem}");
+            _notify("sync.error", $"{DisplayName(pair)} is {problem}");
 
             List<DriveSyncPair>? paused = null;
             lock (_gate)
@@ -3035,8 +3152,8 @@ namespace ExplorerNative
             {
                 tally.Announced = true;
                 _notify("sync.start", tally.Batched
-                    ? $"{name}: a big sync, {tally.Transfers:N0} files so far and more to come"
-                    : $"{name}: {Amounts(downBytes, upBytes)}, {transfers:N0} files");
+                    ? $"Starting a big sync of {name}: {tally.Transfers:N0} files so far, with more to come"
+                    : $"Starting a big sync of {name}: {transfers:N0} files, {Amounts(downBytes, upBytes)}");
             }
             SetProgress(pair.Id, 0, totalBytes);
 
@@ -3046,7 +3163,7 @@ namespace ExplorerNative
                 doneBytes += bytes;
                 SetProgress(pair.Id, doneBytes, totalBytes);
                 if (big && !tally.Batched && SyncSpace.QuarterPassed(before, doneBytes, totalBytes) is int percent and > 0)
-                    _notify("sync.progress", $"{name}: {percent} percent synced");
+                    _notify("sync.progress", $"{name} is {percent} percent synced");
             }
 
             int uploaded = 0, downloaded = 0, deleted = 0, failed = 0, deferred = 0;
@@ -3182,8 +3299,14 @@ namespace ExplorerNative
                         }
                         try
                         {
-                            var aside = SyncPlanner.ConflictName(path, DateTime.Now, p => remote.ContainsKey(p) || local.ContainsKey(p));
-                            var asidePath = Path.Combine(root, aside.Replace('/', Path.DirectorySeparatorChar));
+                            // Beside the PC's file, in the folder as the PC spells
+                            // it (LocalPathFor), and under a name nothing on disk
+                            // has: built from the plan's spelling, a folder whose
+                            // accent was written the other way was not found, and
+                            // the conflict failed on every pass.
+                            var aside = SyncPlanner.ConflictName(path, DateTime.Now, p => remote.ContainsKey(p) || local.ContainsKey(p) ||
+                                OnDisk(AsidePathFor(localPath, p)));
+                            var asidePath = AsidePathFor(localPath, aside);
                             Mine(localPath);
                             Mine(asidePath);
                             File.Move(localPath, asidePath);
@@ -3480,11 +3603,11 @@ namespace ExplorerNative
                 lock (_gate) _clean.Add(pair.Id);
             if (conflicts.Count > 0)
                 _notify("sync.conflict", conflicts.Count == 1
-                    ? $"{name}: {conflicts[0]} changed in both places; both copies kept"
-                    : $"{name}: {conflicts.Count} files changed in both places; both copies kept");
+                    ? $"{conflicts[0]} in {name} changed in both places, so both copies were kept"
+                    : $"{Capitalise(NameRules.Counted(conflicts.Count, "file"))} in {name} changed in both places, so both copies of each were kept");
 
             if (tally.Uploaded + tally.Downloaded + tally.Deleted + tally.Moved > 0)
-                _notify("sync.done", $"{name} synced: " + Tally(tally.Uploaded, tally.Downloaded, tally.Deleted, tally.Moved));
+                _notify("sync.done", $"Synced {name}: " + Tally(tally.Uploaded, tally.Downloaded, tally.Deleted, tally.Moved));
 
             var spaceProblem = tally.SpaceProblem;
             if (spaceProblem != null)
@@ -3495,7 +3618,7 @@ namespace ExplorerNative
                 state.Problem = spaceProblem;
                 SaveState(pair.Id, state);
                 SetStatus(pair.Id, StatusOf(pair.Id) with { LastSyncedUtc = state.LastSyncedUtc, Problem = spaceProblem, Running = false, Phase = null });
-                if (newProblem) _notify("sync.space", $"{name} {spaceProblem}");
+                if (newProblem) _notify("sync.space", $"{name} is {spaceProblem}");
                 return;
             }
 
@@ -3961,16 +4084,27 @@ namespace ExplorerNative
             }
 
             // Whether a walk would reach this folder: all of it there, and none
-            // of the folders above it hidden, system or unreadable.
+            // of the folders above it hidden, system or unreadable. Looked at as
+            // the PC spells it (LocalPathFor): a folder the changes feed named
+            // (Drive's spelling, "Café" with the accent as one character, where
+            // the PC's has two) read as gone, its files as deleted, and every
+            // pass deferred them again.
             string? Blocked(string folder, out bool gone)
             {
                 gone = false;
                 if (folder.Length == 0) return null;
                 var parts = folder.Split('/');
+                var onDisk = parts;
+                try
+                {
+                    var resolved = Path.GetRelativePath(root, LocalPathFor(root, folder)).Split(Path.DirectorySeparatorChar);
+                    if (resolved.Length == parts.Length) onDisk = resolved;
+                }
+                catch { }
                 var path = root;
                 for (int i = 0; i < parts.Length; i++)
                 {
-                    path = Path.Combine(path, parts[i]);
+                    path = Path.Combine(path, onDisk[i]);
                     FileAttributes attributes;
                     try { attributes = File.GetAttributes(path); }
                     catch (FileNotFoundException) { gone = true; return null; }
@@ -4868,9 +5002,12 @@ namespace ExplorerNative
                 {
                     // The file to update went between the check and the upload
                     // (trashed on the website): this becomes a new file. Should
-                    // the old one be there after all, it is trashed below.
+                    // the old one be there after all, it is trashed below. A new
+                    // file is a create, sent once like any other (SendOnceAsync):
+                    // sent plainly, an answer lost on the way back could be a
+                    // second copy, or fail the file when Drive would not say.
                     lock (_fastGate) state.Uploads.Remove(path);
-                    sent = await Send(null, null).ConfigureAwait(false);
+                    sent = await SendOnceAsync(pair, client, () => Send(null, null), local.Size, token).ConfigureAwait(false);
                 }
             }
             catch (Exception ex) when (!IsOffline(ex, token) && !token.IsCancellationRequested &&
@@ -4901,7 +5038,13 @@ namespace ExplorerNative
                 SaveState(pair.Id, state);
                 try
                 {
-                    await client.Trash(replaces, token).ConfigureAwait(false);
+                    // Only while it still holds what the scan saw, asked just
+                    // before (the upload can have taken an hour): an edit made in
+                    // Drive meanwhile is not thrown away for one made on the PC
+                    // before it. Edited, it is let go of, as TrashPendingAsync does.
+                    var now = await client.FileNow(replaces, token).ConfigureAwait(false);
+                    if (now != null && old is { } scanned && SameAsScanned(now, scanned))
+                        await client.Trash(replaces, token).ConfigureAwait(false);
                     state.PendingTrash.Remove(replaces);
                 }
                 catch (Exception ex) when (!token.IsCancellationRequested && NotFound(ex))
@@ -5145,8 +5288,12 @@ namespace ExplorerNative
                     throw new IOException($"the PC's copy was kept, so Google Drive's was not put over it: {kept}");
             }
 
+            // Over the PC's file only when there was one to replace. With none,
+            // a file saved there since the check above is never overwritten:
+            // the move fails, and the download waits whole in its ".partial".
             Mine(localPath);
-            File.Move(partial, localPath, overwrite: true);
+            try { File.Move(partial, localPath, overwrite: scanned != null); }
+            catch (IOException) when (scanned == null && OnDisk(localPath)) { return null; }
             lock (_fastGate) state.Partials.Remove(path);
 
             return new SyncBase(remote.Size, remote.ModifiedUtc, remote.Size, remote.ModifiedUtc, remote.Id ?? "", remote.Md5);
@@ -5317,7 +5464,7 @@ namespace ExplorerNative
             fresh.Problem = problem;
             SaveState(pair.Id, fresh);
             SetStatus(pair.Id, new PairStatus(null, problem, false));
-            _notify("sync.error", $"{DisplayName(pair)} {problem}");
+            _notify("sync.error", $"{DisplayName(pair)} is {problem}");
 
             List<DriveSyncPair>? paused = null;
             lock (_gate)
@@ -5413,7 +5560,7 @@ namespace ExplorerNative
                         if (!keep.Contains(Path.GetFileName(file))) { try { File.Delete(file); } catch { } }
                     foreach (var dir in Directory.GetDirectories(StateDirectory, "*.shards"))
                         if (!keep.Contains(Path.GetFileNameWithoutExtension(dir) + ".json")) { try { Directory.Delete(dir, true); } catch { } }
-                    foreach (var pattern in new[] { "*.history", "*.listing" })
+                    foreach (var pattern in new[] { "*.history", "*.listing", "*.running" })
                         foreach (var file in Directory.GetFiles(StateDirectory, pattern))
                             if (!keep.Contains(Path.GetFileNameWithoutExtension(file) + ".json")) { try { File.Delete(file); } catch { } }
                 }
@@ -5439,6 +5586,7 @@ namespace ExplorerNative
             try { _drive.ConnectionChanged -= _onConnection; } catch { }
             lock (_gate)
             {
+                _disposed = true;
                 foreach (var watcher in _watchers.Values) { try { watcher.Dispose(); } catch { } }
                 _watchers.Clear();
                 _debounce?.Dispose();

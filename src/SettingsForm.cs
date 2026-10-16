@@ -396,7 +396,10 @@ namespace ExplorerNative
 
             AddButton(panel, "Turn all o&ff", () =>
             {
-                _working.WindowsNotifications = "";
+                // Every message this build has, off. Ids it does not know are a
+                // newer build's choices, kept for it as the chooser keeps them.
+                _working.WindowsNotifications = WindowsToasts.Format(
+                    WindowsToasts.Parse(_working.WindowsNotifications).Where(id => Notifications.ById(id) == null));
                 Say("All Windows notifications are off");
             });
 

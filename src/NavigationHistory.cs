@@ -52,6 +52,15 @@ namespace ExplorerNative
     public static class NavigationHistory
     {
         /// <summary>
+        /// A full path, without losing a name that ends in a dot or a space:
+        /// GetFullPath drops those ("Backup." became "Backup"), so stepping up
+        /// out of such a folder landed on its sibling, or on the first row.
+        /// A path already fully qualified needs no resolving for those.
+        /// </summary>
+        private static string Full(string path) =>
+            NameRules.ExactPath(path) != path ? path.Replace('/', '\\') : Path.GetFullPath(path);
+
+        /// <summary>
         /// The immediate child of <paramref name="ancestor"/> that leads towards
         /// <paramref name="descendant"/>, or null if one is not below the other.
         ///
@@ -70,8 +79,8 @@ namespace ExplorerNative
                 // Normalised first: a bare "C:" means the current directory on C,
                 // so GetFullPath would resolve it to wherever this process
                 // started rather than to the root of the drive.
-                a = Path.GetFullPath(NameRules.NormaliseLaunchPath(ancestor));
-                d = Path.GetFullPath(NameRules.NormaliseLaunchPath(descendant));
+                a = Full(NameRules.NormaliseLaunchPath(ancestor));
+                d = Full(NameRules.NormaliseLaunchPath(descendant));
             }
             catch { return null; }
 

@@ -25,7 +25,7 @@ namespace ExplorerNative
             {
                 source = stream != null
                     ? new ComStream(stream)
-                    : new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 64 * 1024);
+                    : new FileStream(NameRules.ExactPath(path), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 64 * 1024);
                 var head = new byte[200];
                 source.Position = 0;
                 int got = ReadFully(source, head, head.Length);
@@ -88,7 +88,14 @@ namespace ExplorerNative
             var header = new byte[27];
             while (ReadFully(source, header, 27) == 27)
             {
-                if (header[0] != 'O' || header[1] != 'g' || header[2] != 'g' || header[3] != 'S') return null;
+                // Damage after good pages ends the sound there, as a file cut
+                // short does: refusing the whole file over its last page threw
+                // away everything before it.
+                if (header[0] != 'O' || header[1] != 'g' || header[2] != 'g' || header[3] != 'S')
+                {
+                    if (first) return null;
+                    break;
+                }
                 int pageSerial = BitConverter.ToInt32(header, 14);
                 int segments = header[26];
                 var table = new byte[segments];

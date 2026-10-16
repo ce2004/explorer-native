@@ -72,6 +72,21 @@ namespace ExplorerNative
         public static string Items(int count, string noun = "item") =>
             $"{count} {noun}{(count == 1 ? "" : "s")}";
 
+        private static readonly string[] SmallNumbers =
+            { "no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten" };
+
+        /// <summary>
+        /// A count as a person would say it in a sentence: "two", "ten", "1,250".
+        /// Words up to ten, digits above, because "Syncing all three folders"
+        /// reads like a sentence and "Syncing all 3 synced folders" like a log.
+        /// </summary>
+        public static string Number(int count) =>
+            count >= 0 && count < SmallNumbers.Length ? SmallNumbers[count] : count.ToString("N0");
+
+        /// <summary>A count and its noun in words: "one folder", "three folders", "1,250 files".</summary>
+        public static string Counted(int count, string noun) =>
+            $"{Number(count)} {noun}{(count == 1 ? "" : "s")}";
+
         /// <summary>
         /// A name nothing has already claimed, by adding " (2)", " (3)" and so on.
         ///
@@ -220,6 +235,17 @@ namespace ExplorerNative
             foreach (var reserved in ReservedDeviceNames)
                 if (string.Equals(stem, reserved, StringComparison.OrdinalIgnoreCase))
                     return $"\"{reserved}\" is a name Windows reserves for a device";
+
+            // The console's own two names. Windows' path parser turns these into
+            // \\.\CONIN$ and \\.\CONOUT$ when they stand alone (checked with
+            // RtlIsDosDeviceName_U on Windows 11 26300), so a file of that name is
+            // one a program opening it by name gets the console instead of. With
+            // an extension they are ordinary, unlike CON. COM0 and LPT0 are not
+            // here: Windows treats them as plain names, and the files are made.
+            var whole = name.TrimEnd(' ', '.');
+            if (string.Equals(whole, "CONIN$", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(whole, "CONOUT$", StringComparison.OrdinalIgnoreCase))
+                return $"\"{whole.ToUpperInvariant()}\" is a name Windows reserves for the console";
 
             // A trailing dot or space is silently stripped by the filesystem, so
             // what appears afterwards is not the name that was asked for.
