@@ -307,6 +307,27 @@ namespace ExplorerNative
                     rig.Said.Any(s => s.Contains("cleared off this PC")) && !rig.Said.Any(s => s.Contains(" deleted")), string.Join(" | ", rig.Said));
             }
 
+            // A pass cut off after deleting a file but before its record was
+            // dropped: the record outlives the file. The same book arriving in
+            // another folder must not be taken for a move of Drive's copy.
+            using (var rig = new Rig(sandbox, SyncMode.UploadOnly))
+            {
+                rig.Write("Book/01.mp3", Noise(300_000, 7), T0);
+                rig.Write("locked.txt", "read-only", T0);
+                File.SetAttributes(Path.Combine(rig.Local, "locked.txt"), FileAttributes.ReadOnly);
+                await rig.Pass();
+                rig.Pair.DeleteAfterUpload = true;
+                File.Delete(Path.Combine(rig.Local, "Book", "01.mp3"));
+                rig.Write("Canada/01.mp3", Noise(300_000, 7), T0);
+                await rig.Pass();
+                var drive = rig.DriveTree();
+                Check("free up: a record left behind by a cut-off pass never moves Drive's copy",
+                    drive.ContainsKey("Book/01.mp3") && drive.ContainsKey("Canada/01.mp3"), Names(drive));
+                Check("free up: a read-only file is left on the PC",
+                    File.Exists(Path.Combine(rig.Local, "locked.txt")) && drive.ContainsKey("locked.txt"));
+                File.SetAttributes(Path.Combine(rig.Local, "locked.txt"), FileAttributes.Normal);
+            }
+
             using (var rig = new Rig(sandbox, SyncMode.TwoWay))
             {
                 rig.Pair.DeleteAfterUpload = true;

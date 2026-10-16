@@ -1,3 +1,9 @@
+3.0.12
+Bug fixed: a synced folder with thousands of empty subfolders, like the ones Resilio Sync makes before its files arrive, could stop sending files for over an hour while each empty folder was made in Google Drive one by one, and new files were not noticed until it finished. Empty folders are now made several at a time.
+Bug fixed: with Free up space on, if Explorer Native was closed or updated in the middle of a sync, a book that later arrived in a second folder could be mistaken for the first one being moved, and the copy already in Google Drive was moved to the new folder. Files cleared off the PC are now forgotten straight away, and with Free up space on a file gone from the PC is never taken for a move.
+Bug fixed: pausing a synced folder, or changing its settings, while Free up space was clearing files could still delete the files it had lined up. Now it stops at once.
+Better: Free up space checks several files at a time when it catches up on files that were already in Google Drive, so new files are not held up as long. Read-only files are left alone.
+
 3.0.11
 New feature: Free up space, in a synced folder's settings. With PC to Google Drive only, each file is deleted from this PC once Google Drive has all of it, so you can send up a folder bigger than your disk as it fills. A file is only deleted after its copy in Drive is checked to match it exactly, and never while anything is still writing it. Temporary files, half downloads and anything you skip are never touched.
 New feature: empty folders sync to Google Drive. Make a folder in a synced folder and it shows up in Drive straight away, even with nothing in it yet. Folders you already had are added the next time Explorer Native syncs.

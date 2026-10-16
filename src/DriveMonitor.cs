@@ -1308,6 +1308,12 @@ namespace ExplorerNative
             Dictionary<string, SyncFile> local, Dictionary<string, SyncFile> remote, Dictionary<string, string> folders,
             SyncSkips skips, string root, int generation, HashSet<string> notMade, CancellationToken token)
         {
+            // Free up space: files leave the PC as they go up, so a recorded file
+            // gone from the PC is that and nothing more. A record that outlived
+            // its file (a pass cut off before it was dropped) and the same book
+            // arriving in another folder were taken for a move, and Drive's copy
+            // was moved away from where it belongs.
+            if (pair.FreesUpSpace) return (plan, 0);
             var found = SyncMoves.Find(rules, plan, local, remote, state.Files);
             if (found.Count == 0) return (plan, 0);
 
@@ -2126,8 +2132,17 @@ namespace ExplorerNative
                     state.LocalClashing = localClashing.Distinct(StringComparer.Ordinal).ToList();
                     PcPlanned(pair, state, look, walkedWhole: changedOnPc == null, links);
                 }, scope: null, hold: null, token).ConfigureAwait(false);
-            await MakeEmptyFoldersAsync(client, pair, state, rules, pcFolders, folders, driveFoldersBefore, skips, tally, token)
-                .ConfigureAwait(false);
+            try
+            {
+                await MakeEmptyFoldersAsync(client, pair, state, rules, pcFolders, folders, driveFoldersBefore, skips, tally, token)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception ex) when (ex is OperationCanceledException or PairStoppedException)
+            {
+                // The folders made before the stop are remembered (the table is the state's own).
+                SaveState(pair.Id, state);
+                throw;
+            }
             await FreeUpAsync(client, pair, state, rules, local, skips, tally, token).ConfigureAwait(false);
             FinishPass(pair, state, tally, unusable, clashing, localClashing);
         }
@@ -2136,36 +2151,81 @@ namespace ExplorerNative
         /// PC folders the pass walked through that Drive does not have, made in
         /// Drive: the files sync only makes a folder to put a file in, so an
         /// empty folder (or one holding only skipped files) never appeared.
-        /// Shallowest first. Not in download only. In two-way with deletes
+        /// A depth at a time, <see cref="FolderLanes"/> at once, as
+        /// <see cref="MakeFoldersAsync"/>: one at a time, the 3,400 folders
+        /// Resilio Sync lays out before its files took most of an hour, and no
+        /// file moved meanwhile. Not in download only. In two-way with deletes
         /// copied, a folder Drive had before this pass is not made again: it
-        /// was deleted there. A folder that cannot be made counts as failed, and
-        /// the next pass that walks it tries again.
+        /// was deleted there. A folder that cannot be made counts as failed
+        /// (and so do the folders under it), and the next pass that walks it
+        /// tries again.
         /// </summary>
         private async Task MakeEmptyFoldersAsync(DriveClient client, DriveSyncPair pair, PairState state, SyncRules rules,
             IEnumerable<string> pcFolders, Dictionary<string, string> folders, IReadOnlySet<string> driveFoldersBefore,
             SyncSkips skips, PassTally tally, CancellationToken token)
         {
             if (rules.Mode == SyncMode.DownloadOnly || !rules.IncludeSubfolders) return;
-            var wanted = pcFolders
-                .Where(f => f.Length > 0 && !folders.ContainsKey(f) && !IsLeftOutFolder(f, rules, skips) &&
-                            !(rules.Mode == SyncMode.TwoWay && rules.CopyDeletes && driveFoldersBefore.Contains(f)))
-                .OrderBy(f => f.Count(c => c == '/')).ToList();
-            foreach (var folder in wanted)
+            var wanted = new HashSet<string>(SyncNameComparer.Instance);
+            foreach (var pcFolder in pcFolders)
+                if (pcFolder.Length > 0 && !folders.ContainsKey(pcFolder) && !IsLeftOutFolder(pcFolder, rules, skips) &&
+                    !(rules.Mode == SyncMode.TwoWay && rules.CopyDeletes && driveFoldersBefore.Contains(pcFolder)))
+                    for (var at = pcFolder; at.Length > 0 && !folders.ContainsKey(at) && wanted.Add(at); at = SyncMoves.Parent(at)) { }
+            foreach (var level in wanted.GroupBy(f => f.Count(c => c == '/')).OrderBy(g => g.Key))
             {
                 if (Stopped(pair)) throw new PairStoppedException();
-                if (folders.ContainsKey(folder)) continue;
-                try
+                var made = new System.Collections.Concurrent.ConcurrentDictionary<string, string>(SyncNameComparer.Instance);
+                Exception? cut = null;
+                using var gate = new SemaphoreSlim(FolderLanes);
+
+                // A create already sent finishes when the pass is stopped (see
+                // Drain): cut off, Drive could have the folder with its id never
+                // heard, and the next pass made it again.
+                using var drain = new Drain(token);
+                await Task.WhenAll(level.Select(async folder =>
                 {
-                    await Patiently(pair, () => EnsureFolderAsync(client, folders, pair.DriveFolderId, folder, token, state.Remembered),
-                        client, token).ConfigureAwait(false);
-                    SyncHistory.Add(pair.Id, "Made folder", folder);
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    tally.Failed++;
-                    tally.LastError = $"{folder}: {ex.Message}";
-                }
+                    bool entered = false;
+                    try
+                    {
+                        await gate.WaitAsync(token).ConfigureAwait(false);
+                        entered = true;
+                        if (Stopped(pair) || token.IsCancellationRequested) return;
+                        var parent = SyncMoves.Parent(folder);
+                        string? parentId = parent.Length == 0 ? pair.DriveFolderId : folders.GetValueOrDefault(parent);
+                        if (parentId == null)
+                        {
+                            lock (_fastGate)
+                            {
+                                tally.Failed++;
+                                tally.LastError = $"{folder}: the folder above it could not be made";
+                            }
+                            return;
+                        }
+                        made[folder] = await Patiently(pair,
+                            () => MakeFolderAsync(client, parentId, folder, drain.Token, state.Remembered), client, drain.Token)
+                            .ConfigureAwait(false);
+                        SyncHistory.Add(pair.Id, "Made folder", folder);
+                    }
+                    catch (Exception ex) when (ex is OperationCanceledException or PairStoppedException)
+                    {
+                        Interlocked.CompareExchange(ref cut, ex, null);
+                    }
+                    catch (Exception ex)
+                    {
+                        lock (_fastGate)
+                        {
+                            tally.Failed++;
+                            tally.LastError = $"{folder}: {ex.Message}";
+                        }
+                    }
+                    finally { if (entered) gate.Release(); }
+                })).ConfigureAwait(false);
+
+                // Nothing writes the table while a depth runs; its parents are read
+                // from it. What was made is kept even when the pass was stopped.
+                foreach (var (folder, id) in made) folders[folder] = id;
+                if (cut != null) System.Runtime.ExceptionServices.ExceptionDispatchInfo.Throw(cut);
             }
+            if (Stopped(pair)) throw new PairStoppedException();
         }
 
         /// <summary>
@@ -2199,15 +2259,31 @@ namespace ExplorerNative
         private async Task FreeUpEachAsync(DriveClient client, DriveSyncPair pair, PairState state, SyncRules rules,
             IReadOnlyDictionary<string, SyncFile> local, SyncSkips skips, PassTally tally, CancellationToken token)
         {
-            foreach (var (path, was) in state.Files.ToList())
+            // A few at a time: each is a question to Drive and a read of the
+            // whole file, and one by one, a library of big books freed after
+            // the fact held the pass (and every new file behind it) for an hour.
+            var freed = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            using var gate = new SemaphoreSlim(FreeUpLanes);
+            await Task.WhenAll(state.Files.Where(f => local.ContainsKey(f.Key)).ToList().Select(async f =>
             {
-                if (Stopped(pair)) throw new PairStoppedException();
-                if (!local.ContainsKey(path)) continue;
-                if (!await TryFreeUpOneAsync(client, pair, rules, skips, path, was, token).ConfigureAwait(false)) continue;
-                Forget(state, path);
-                tally.FreedUp++;
-            }
+                await gate.WaitAsync(token).ConfigureAwait(false);
+                try
+                {
+                    if (Stopped(pair)) return;
+                    if (await TryFreeUpOneAsync(client, pair, rules, skips, f.Key, f.Value, token).ConfigureAwait(false))
+                        freed.Enqueue(f.Key);
+                }
+                finally { gate.Release(); }
+            })).ConfigureAwait(false);
+
+            // The records go with their files, whether or not the pair was stopped meanwhile.
+            foreach (var path in freed) Forget(state, path);
+            tally.FreedUp += freed.Count;
+            if (Stopped(pair)) throw new PairStoppedException();
         }
+
+        /// <summary>How many files the end-of-pass sweep checks and frees at once.</summary>
+        internal const int FreeUpLanes = 4;
 
         /// <summary>
         /// A freed file's record goes with it. Kept, the next pass saw a synced
@@ -2229,7 +2305,10 @@ namespace ExplorerNative
         private async Task<bool> TryFreeUpOneAsync(DriveClient client, DriveSyncPair pair, SyncRules rules, SyncSkips skips,
             string path, SyncBase was, CancellationToken token)
         {
-            const FileAttributes notOurs = FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReparsePoint;
+            // Read-only too: the delete would be refused anyway, after Drive was
+            // asked and every byte read, and again every pass.
+            const FileAttributes notOurs = FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReparsePoint |
+                                           FileAttributes.ReadOnly;
             var root = pair.LocalFolder;
             if (string.IsNullOrEmpty(was.RemoteId) || string.IsNullOrEmpty(was.RemoteMd5)) return false;
             if (SyncPlanner.IsSkippedPath(path) || rules.SkipsType(path) || skips.Covers(path)) return false;
@@ -2259,10 +2338,12 @@ namespace ExplorerNative
                 SyncHistory.Add(pair.Id, "Deleted from this PC", path, "it is safely in Google Drive");
                 return true;
             }
-            catch (OperationCanceledException) { throw; }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
             catch (Exception) when (!token.IsCancellationRequested)
             {
-                // In use, gone, or Drive would not say: tried again next pass.
+                // In use, gone, Drive would not say, or a request that timed out
+                // (which arrives as a cancellation nobody asked for): tried again
+                // next pass.
                 return false;
             }
         }
@@ -2281,17 +2362,34 @@ namespace ExplorerNative
                 System.Threading.Channels.Channel.CreateUnbounded<(string, SyncBase)>(
                     new System.Threading.Channels.UnboundedChannelOptions { SingleReader = true });
 
-            public readonly System.Collections.Concurrent.ConcurrentQueue<string> Freed = new();
+            private readonly System.Collections.Concurrent.ConcurrentQueue<string> _freed = new();
             private readonly Task _worker;
+            private int _freedCount;
 
-            public FreeUpLane(Func<string, SyncBase, Task<bool>> free, CancellationToken token)
+            /// <summary>How many files this lane has cleared off the PC.</summary>
+            public int FreedCount => Volatile.Read(ref _freedCount);
+
+            /// <param name="stopped">
+            /// True once the pair is paused, removed or edited: what is still
+            /// queued is left alone (the next pass's sweep sees to it), as the
+            /// settings it was queued under may be gone, free up itself included.
+            /// </param>
+            public FreeUpLane(Func<string, SyncBase, Task<bool>> free, Func<bool> stopped, CancellationToken token)
             {
                 _worker = Task.Run(async () =>
                 {
                     try
                     {
                         await foreach (var (path, was) in _queue.Reader.ReadAllAsync(token).ConfigureAwait(false))
-                            if (await free(path, was).ConfigureAwait(false)) Freed.Enqueue(path);
+                        {
+                            if (stopped()) continue;
+                            bool gone;
+                            try { gone = await free(path, was).ConfigureAwait(false); }
+                            catch (Exception) when (!token.IsCancellationRequested) { continue; }
+                            if (!gone) continue;
+                            _freed.Enqueue(path);
+                            Interlocked.Increment(ref _freedCount);
+                        }
                     }
                     catch (OperationCanceledException) { }
                     catch (Exception) { }
@@ -2300,6 +2398,18 @@ namespace ExplorerNative
 
             /// <summary>A file whose upload has just been recorded.</summary>
             public void Sent(string path, SyncBase was) => _queue.Writer.TryWrite((path, was));
+
+            /// <summary>
+            /// Drops the records of the files cleared off the PC since last
+            /// time. Called by whoever may write the records just then (a lane
+            /// under its lock, the careful loop between files), before it saves,
+            /// so a pass cut off part way does not leave records of files that
+            /// are gone.
+            /// </summary>
+            public void ForgetFreed(PairState state)
+            {
+                while (_freed.TryDequeue(out var path)) Forget(state, path);
+            }
 
             /// <summary>No more files: waits for the ones handed over to be checked.</summary>
             public async Task FinishAsync()
@@ -2918,7 +3028,7 @@ namespace ExplorerNative
 
                     // ---- sync the batch ----
                     var records = slice.Files;
-                    Func<SyncAction, bool>? hold = hasRecords
+                    Func<SyncAction, bool>? hold = hasRecords && !pair.FreesUpSpace
                         ? a => tally.Held.Count < HeldMost && IsMoveHalf(a, local, remote, records)
                         : null;
                     int heldBefore = tally.Held.Count;
@@ -3406,7 +3516,8 @@ namespace ExplorerNative
 
             var listings = new Dictionary<string, List<(string Name, bool Folder)>>(StringComparer.Ordinal);
             var freeUp = pair.FreesUpSpace && rules.Mode == SyncMode.UploadOnly && !rules.CopyDeletes
-                ? new FreeUpLane((path, was) => TryFreeUpOneAsync(client, pair, rules, skips, path, was, token), token)
+                ? new FreeUpLane((path, was) => TryFreeUpOneAsync(client, pair, rules, skips, path, was, token),
+                    () => Stopped(pair) || GenerationOf(pair.Id) != generation, token)
                 : null;
             try
             {
@@ -3449,6 +3560,7 @@ namespace ExplorerNative
                     // while waiting for Google: a pass of hundreds of gigabytes
                     // used to carry on to the end under settings that had gone.
                     if (Stopped(pair) || GenerationOf(pair.Id) != generation) throw new PairStoppedException();
+                    freeUp?.ForgetFreed(state);
                     SaveSoon(pair.Id, state);
                     int step = i;
                     int up = tally.Uploaded + uploaded, down = tally.Downloaded + downloaded,
@@ -3808,8 +3920,8 @@ namespace ExplorerNative
                 if (freeUp != null)
                 {
                     await freeUp.FinishAsync().ConfigureAwait(false);
-                    foreach (var path in freeUp.Freed) Forget(state, path);
-                    tally.FreedUp += freeUp.Freed.Count;
+                    freeUp.ForgetFreed(state);
+                    tally.FreedUp += freeUp.FreedCount;
                 }
 
                 // Everything done so far is remembered even if the connection
@@ -5049,6 +5161,7 @@ namespace ExplorerNative
                         state.Files[path] = new SyncBase(file.Size, file.ModifiedUtc, up.Size ?? file.Size,
                             Truncate(up.ModifiedUtc ?? stamp), up.Id, up.Md5);
                         freeUp?.Sent(path, state.Files[path]);
+                        freeUp?.ForgetFreed(state);
                         sent.Add(path);
                         done++;
                         SaveSoon(pair.Id, state);
@@ -5129,6 +5242,7 @@ namespace ExplorerNative
                 {
                     state.Files[path] = up;
                     freeUp?.Sent(path, up);
+                    freeUp?.ForgetFreed(state);
                     sent.Add(path);
                     done++;
                     SaveSoon(pair.Id, state);
