@@ -656,6 +656,13 @@ namespace ExplorerNative
         /// </summary>
         public string AudioLocalShortcuts { get; set; } = "";
 
+        /// <summary>
+        /// Google Drive's trash, as a Trash folder on the letter beside My Drive
+        /// and Shared drives, where things can be restored or deleted for good.
+        /// Off: no Trash folder at all.
+        /// </summary>
+        public bool ShowDriveTrash { get; set; } = true;
+
         // ---------- Startup ----------
         public bool StartWithWindows { get; set; } = true;
         public bool StartMinimised { get; set; } = false;

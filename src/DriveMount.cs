@@ -85,6 +85,35 @@ namespace ExplorerNative
         public bool IsSharedDrivesFolder(string? fullPath) =>
             FolderIdFor(fullPath) == DriveClient.SharedDrivesId;
 
+        /// <summary>Whether the account root shows the Trash folder (Preferences, Google Drive). Asked at each listing of the root.</summary>
+        public Func<bool> ShowTrash { get; set; } = () => true;
+
+        /// <summary>Whether this path is the Trash folder itself.</summary>
+        public bool IsTrashFolder(string? fullPath) => FolderIdFor(fullPath) == DriveClient.TrashId;
+
+        /// <summary>Whether this path is something in the Trash folder, at any depth (not the folder itself).</summary>
+        public bool IsInTrash(string? fullPath)
+        {
+            var key = KeyFor(fullPath);
+            if (string.IsNullOrEmpty(key)) return false;
+            var parent = Parent(key);
+            return parent != null && IsUnderTrash(parent);
+        }
+
+        /// <summary>Whether a relative folder is the Trash folder or inside it: listed as trashed.</summary>
+        private bool IsUnderTrash(string relative)
+        {
+            for (string? at = relative; !string.IsNullOrEmpty(at); at = Parent(at))
+                if (_folders.TryGetValue(at, out var id) && id == DriveClient.TrashId) return true;
+            return false;
+        }
+
+        private static string? Parent(string relative)
+        {
+            int slash = relative.LastIndexOf('\\');
+            return slash < 0 ? "" : relative[..slash];
+        }
+
         /// <summary>
         /// Whether this path is one of the shared drives themselves. Those are
         /// drives, not folders: Drive will not trash, rename or move one through
@@ -1265,16 +1294,20 @@ namespace ExplorerNative
             bool accountRoot = relative.Length == 0 && folderId == "root";
             var sharedDrives = new DriveEntry(DriveClient.SharedDrivesId, DriveClient.SharedDrivesName,
                 DriveClient.FolderMimeType, 0, DateTime.UtcNow);
+            var trash = new DriveEntry(DriveClient.TrashId, DriveClient.TrashName,
+                DriveClient.FolderMimeType, 0, DateTime.UtcNow);
+            bool showTrash = accountRoot && ShowTrash();
+            var ours = showTrash ? new List<DriveEntry> { sharedDrives, trash } : new List<DriveEntry> { sharedDrives };
 
             // Ahead of everything else, for the reason given below.
-            if (accountRoot) onPage?.Invoke(new List<DriveEntry> { sharedDrives });
+            if (accountRoot) onPage?.Invoke(ours);
 
             _driveIds.TryGetValue(relative, out var driveId);
             // Said explicitly, never left to ListChildren's guess from the label:
             // a caller deciding whether to create something (an upload's parent,
             // a conflict check) has to wait out a blip, not fail fast and carry on.
             var entries = _drive.ListChildren(folderId, token, label: name, driveId: driveId, onPage: onPage,
-                    interactive: interactive)
+                    interactive: interactive, trashed: IsUnderTrash(relative))
                                 .GetAwaiter().GetResult();
             Interlocked.Increment(ref Listings);
 
@@ -1284,7 +1317,8 @@ namespace ExplorerNative
             // the folder away, and gave its name to a real folder of the same
             // name, which Delete then sent to the Drive trash. First, so it keeps
             // its name: a My Drive folder called the same is "Shared drives (2)".
-            if (accountRoot) entries.Insert(0, sharedDrives);
+            // The trash the same way, right after it, while it is shown.
+            if (accountRoot) entries.InsertRange(0, ours);
 
             if (name != null)
             {

@@ -625,6 +625,9 @@ namespace ExplorerNative
                     _form?.DriveLetterMoved(from, to);
                     Notify("drive.mounted", $"Google Drive is on {to}");
                 }
+
+                // The Trash folder comes or goes at once: the root lists again.
+                _drive.SetShowTrash(_settings.ShowDriveTrash);
             }
             else
             {

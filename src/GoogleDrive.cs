@@ -226,6 +226,30 @@ namespace ExplorerNative
 
         public bool Mounted => Letter != null;
 
+        /// <summary>For the suite: a mount over the fake Drive, with no sign-in and no letter.</summary>
+        internal void UseForTests(DriveMount mount, DriveClient client)
+        {
+            lock (_gate) { _mount = mount; _client = client; }
+            mount.ShowTrash = () => ShowTrash;
+            Rewire();
+        }
+
+        /// <summary>Whether the letter shows Google Drive's Trash folder (Preferences, Google Drive).</summary>
+        public bool ShowTrash { get; private set; } = true;
+
+        /// <summary>
+        /// Shows or hides the Trash folder. The root's listing is forgotten, so
+        /// the next visit lists it again with the folder put in or taken out.
+        /// </summary>
+        public void SetShowTrash(bool show)
+        {
+            if (ShowTrash == show) return;
+            ShowTrash = show;
+            string? root;
+            lock (_gate) root = _mount?.Letter ?? _mount?.Root;
+            if (root != null) Forget(root.TrimEnd('\\') + "\\");
+        }
+
         private string _status = "Not connected.";
 
         /// <summary>
@@ -586,10 +610,12 @@ namespace ExplorerNative
                     Say("drive.root.stuck",
                         $"An old Google Drive folder could not be removed, so {Path.GetFileName(root)} is used instead");
 
+                ShowTrash = settings.ShowDriveTrash;
                 var mount = new DriveMount(drive, root, budget, Note)
                 {
                     Notify = Forward,
                     IdleRelease = TimeSpan.FromSeconds(CacheIdleSeconds),
+                    ShowTrash = () => ShowTrash,
                 };
 
                 // Start registers a sync root, populates it and then takes a
@@ -1026,14 +1052,18 @@ namespace ExplorerNative
             // The list of shared drives holds drives, and a search there is a
             // search of their names — searching inside all of them at once is
             // minutes of Drive listing on an account with many (see Query).
-            if (rootId == DriveClient.SharedDrivesId)
+            // The trash the same way: a search of what is in it, by name. Drive's
+            // own search leaves trashed files out, and inside a trashed folder
+            // there is nothing it would find.
+            if (rootId == DriveClient.SharedDrivesId || InTrash(mount, folderPath))
             {
                 await Task.Run(() => mount.Populate(folderPath), token).ConfigureAwait(false);
                 var named = new List<SearchHit>();
                 if (mount.TryListing(folderPath, out var drives))
                     foreach (var d in drives)
                         if (d.Name.Contains(term, StringComparison.CurrentCultureIgnoreCase))
-                            named.Add(new SearchHit(Path.Combine(folderPath, d.Name), d.Name, true, -1, d.Modified));
+                            named.Add(new SearchHit(Path.Combine(folderPath, d.Name), d.Name, d.IsFolder,
+                                d.IsFolder ? -1 : d.Size, d.Modified));
                 return new SearchResult(named, false);
             }
 
@@ -1217,6 +1247,7 @@ namespace ExplorerNative
             lock (_gate) { mount = _mount; client = _client; lifetime = _lifetime.Token; }
             if (mount == null || client == null || !Owns(mount, path)) return null;
             if (mount.IsSharedDrivesFolder(path)) return null;
+            if (InTrash(mount, path)) return null;      // the size index covers what is not trashed
 
             var id = mount.FolderIdFor(path) ?? mount.IdFor(path);
             if (id == null) return null;
@@ -1674,6 +1705,14 @@ namespace ExplorerNative
 
             var name = Path.GetFileName(path);
 
+            if (InTrash(mount, path))
+            {
+                Say("drive.trash.failed", mount.IsTrashFolder(path)
+                    ? $"Could not delete {name}: it is Google Drive's trash. Use Empty Google Drive trash instead"
+                    : $"Could not move {name} to the trash: it is already there. Use Delete permanently instead");
+                return false;
+            }
+
             if (IsDriveItself(mount, path))
             {
                 Say("drive.trash.failed",
@@ -1745,6 +1784,11 @@ namespace ExplorerNative
             DriveClient? client;
             lock (_gate) { mount = _mount; client = _client; }
             if (mount == null || client == null || !Owns(parentFullPath)) return null;
+            if (InTrash(mount, parentFullPath))
+            {
+                Say("drive.upload.failed", $"Could not create {name}: nothing can be put in the Google Drive trash");
+                return null;
+            }
 
             // What is in the parent has to be known before anything can be said
             // about whether the folder is already there. A parent nobody had opened
@@ -1834,6 +1878,11 @@ namespace ExplorerNative
             DriveClient? client;
             lock (_gate) { mount = _mount; client = _client; }
             if (mount == null || client == null || !Owns(folderPath)) return null;
+            if (InTrash(mount, folderPath))
+            {
+                Say("drive.upload.failed", $"Could not create {name}: nothing can be put in the Google Drive trash");
+                return null;
+            }
 
             var parentId = mount.FolderIdFor(folderPath);
             if (parentId == null)
@@ -1891,6 +1940,14 @@ namespace ExplorerNative
 
             var folder = Path.GetDirectoryName(path);
             if (string.IsNullOrEmpty(folder)) return null;
+
+            if (InTrash(mount, path))
+            {
+                Say("rename.failed", mount.IsTrashFolder(path)
+                    ? $"Could not rename {Path.GetFileName(path)}: it is Google Drive's trash"
+                    : $"Could not rename {Path.GetFileName(path)}: {TrashRefusal}");
+                return null;
+            }
 
             if (IsDriveItself(mount, path))
             {
@@ -1989,6 +2046,11 @@ namespace ExplorerNative
             if (mount == null || client == null || !Owns(destinationFolder)) return null;
 
             var name = Path.GetFileName(localPath);
+            if (InTrash(mount, destinationFolder))
+            {
+                Say("drive.upload.failed", $"Could not upload {name}: nothing can be put in the Google Drive trash");
+                return null;
+            }
 
             // Looked up *before* the upload, because afterwards there are two
             // files of this name in Drive and the path map only remembers the one
@@ -2152,6 +2214,11 @@ namespace ExplorerNative
             lock (_gate) { mount = _mount; client = _client; }
             if (mount == null || client == null || !Owns(fromPath) || !Owns(toFolder)) return false;
 
+            if (InTrash(mount, toFolder))
+                throw new InvalidOperationException("nothing can be moved into the Google Drive trash; delete it instead");
+            if (InTrash(mount, fromPath))
+                throw new InvalidOperationException("it is in the Google Drive trash; restore it first");
+
             if (IsDriveItself(mount, fromPath))
                 throw new InvalidOperationException(
                     "shared drives cannot be moved; move what is inside one instead");
@@ -2265,6 +2332,9 @@ namespace ExplorerNative
             // The whole list of shared drives is not a thing to duplicate; one
             // shared drive is, and copies as a folder of what is in it.
             if (mount.IsSharedDrivesFolder(fromPath)) return 0;
+            if (mount.IsTrashFolder(fromPath)) return 0;
+            if (InTrash(mount, toFolder))
+                throw new InvalidOperationException("nothing can be copied into the Google Drive trash");
 
             var id = await IdOrRelist(mount, fromPath, token).ConfigureAwait(false)
                      ?? throw new InvalidOperationException("Google Drive does not have a file by that name here");
@@ -2494,7 +2564,121 @@ namespace ExplorerNative
         /// — neither of which is a file Drive will trash, rename or move.
         /// </summary>
         private static bool IsDriveItself(DriveMount mount, string path) =>
-            mount.IsSharedDrivesFolder(path) || mount.IsSharedDriveRoot(path);
+            mount.IsSharedDrivesFolder(path) || mount.IsSharedDriveRoot(path) || mount.IsTrashFolder(path);
+
+        // ---------------- the trash ----------------
+
+        /// <summary>Whether a path is the Trash folder on the letter.</summary>
+        public bool IsTrashFolder(string path)
+        {
+            DriveMount? mount;
+            lock (_gate) mount = _mount;
+            try { return mount != null && Owns(mount, path) && mount.IsTrashFolder(path); } catch { return false; }
+        }
+
+        /// <summary>Whether a path is something inside the Trash folder, at any depth.</summary>
+        public bool IsInTrash(string path)
+        {
+            DriveMount? mount;
+            lock (_gate) mount = _mount;
+            try { return mount != null && Owns(mount, path) && mount.IsInTrash(path); } catch { return false; }
+        }
+
+        /// <summary>The Trash folder or anything in it: nothing can be written there.</summary>
+        private static bool InTrash(DriveMount mount, string path) => mount.IsTrashFolder(path) || mount.IsInTrash(path);
+
+        private const string TrashRefusal = "it is in the Google Drive trash. Restore it first";
+
+        /// <summary>
+        /// Puts something in the Trash folder back where it was. Only for items
+        /// directly in the Trash folder: inside a trashed folder, the folder is
+        /// what was trashed, and restoring it brings everything in it back.
+        /// </summary>
+        public async Task<bool> RestoreFromTrash(string path, CancellationToken token = default)
+        {
+            var (mount, client, id, name) = await TrashItem(path, "restore", token).ConfigureAwait(false);
+            if (mount == null || client == null || id == null) return false;
+            try { await client.Untrash(id, token).ConfigureAwait(false); }
+            catch (Exception ex)
+            {
+                Say("drive.restore.failed", $"Could not restore {name}: {ex.Message}");
+                throw;
+            }
+            mount.RemoveOne(path);
+            lock (_gate) _folders = null;
+            Say("drive.restored", $"Restored {name}");
+            return true;
+        }
+
+        /// <summary>
+        /// Deletes something in the Trash folder for good. The caller has asked;
+        /// this only refuses anything that is not in the trash, so nothing
+        /// outside it can ever be deleted permanently from here.
+        /// </summary>
+        public async Task<bool> DeleteForever(string path, CancellationToken token = default)
+        {
+            var (mount, client, id, name) = await TrashItem(path, "delete", token).ConfigureAwait(false);
+            if (mount == null || client == null || id == null) return false;
+            try { await client.DeleteForever(id, token).ConfigureAwait(false); }
+            catch (Exception ex)
+            {
+                Say("drive.trash.failed", $"Could not delete {name}: {ex.Message}");
+                throw;
+            }
+            mount.RemoveOne(path);
+            Say("drive.deleted", $"Deleted {name} permanently");
+            return true;
+        }
+
+        /// <summary>Deletes everything in My Drive's trash for good. The caller has asked.</summary>
+        public async Task<bool> EmptyTrash(CancellationToken token = default)
+        {
+            DriveMount? mount;
+            DriveClient? client;
+            lock (_gate) { mount = _mount; client = _client; }
+            if (mount == null || client == null) return false;
+            try { await client.EmptyTrash(token).ConfigureAwait(false); }
+            catch (Exception ex)
+            {
+                Say("drive.trash.failed", $"Could not empty the Google Drive trash: {ex.Message}");
+                throw;
+            }
+            var top = (mount.Letter ?? mount.Root).TrimEnd('\\') + "\\";
+            try { mount.Forget(Path.Combine(top, DriveClient.TrashName)); } catch { }
+            Say("drive.trash.emptied", "Google Drive trash emptied");
+            return true;
+        }
+
+        /// <summary>One item directly in the Trash folder, by id, or nulls with the reason said.</summary>
+        private async Task<(DriveMount? Mount, DriveClient? Client, string? Id, string Name)> TrashItem(
+            string path, string verb, CancellationToken token)
+        {
+            DriveMount? mount;
+            DriveClient? client;
+            lock (_gate) { mount = _mount; client = _client; }
+            var name = Path.GetFileName(path.TrimEnd('\\'));
+            string failed = verb == "restore" ? "drive.restore.failed" : "drive.trash.failed";
+            if (mount == null || client == null || !Owns(path)) return (null, null, null, name);
+            if (!mount.IsInTrash(path))
+            {
+                Say(failed, $"Could not {verb} {name}: it is not in the Google Drive trash");
+                return (null, null, null, name);
+            }
+            var parent = Path.GetDirectoryName(path.TrimEnd('\\'));
+            if (!mount.IsTrashFolder(parent))
+            {
+                Say(failed, $"Could not {verb} {name} on its own: it is inside a trashed folder. " +
+                            $"{(verb == "restore" ? "Restore" : "Delete")} the folder instead");
+                return (null, null, null, name);
+            }
+            var id = await IdOrRelist(mount, path, token).ConfigureAwait(false);
+            if (id == null)
+            {
+                Say(failed, $"Could not {verb} {name}: Google Drive does not have it in the trash any more");
+                return (null, null, null, name);
+            }
+            return (mount, client, id, name);
+        }
 
         public void Dispose()
         {

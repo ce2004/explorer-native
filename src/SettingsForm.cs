@@ -724,6 +724,10 @@ namespace ExplorerNative
 
             AddDriveLetter(panel);
 
+            // Beside My Drive and Shared drives on the letter (Conner, 3.0.16).
+            AddCheck(panel, "Show Google Drive's &Trash folder", _working.ShowDriveTrash,
+                v => _working.ShowDriveTrash = v);
+
             AddGoogleAccountControls(panel, driveBox);
 
             AddNumber(panel, "Warn when a synced folder's drive has less free space than this, in gigabytes (0 never warns)",
