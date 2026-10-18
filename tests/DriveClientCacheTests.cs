@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Threading;
@@ -26,6 +27,56 @@ namespace ExplorerNative
             await WarmingStartsTheDownload(check);
             await FailedChunksAreRetried(check);
             await SearchListsFoldersTogether(check);
+            await RateLimitsAreWaitedOut(check);
+        }
+
+        /// <summary>
+        /// Google's "slow down" (403 rateLimitExceeded) on a copy to Drive is
+        /// waited out, however many times it comes, and never spends the six
+        /// attempts: a big copy used to end in a dialog with the files not
+        /// copied. Twenty in a row on each kind of request; six used to fail.
+        /// </summary>
+        private static async Task RateLimitsAreWaitedOut(Action<string, bool, string?> check)
+        {
+            var limited = FakeDrive.ErrorBody(403, "rateLimitExceeded", "Rate Limit Exceeded");
+            var dir = Path.Combine(Path.GetTempPath(), "en-ratelimit-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var small = Path.Combine(dir, "small.txt");
+                File.WriteAllText(small, "hello");
+                var big = Path.Combine(dir, "big.bin");
+                File.WriteAllBytes(big, Pattern((int)DriveClient.SmallUploadBytes + 1024));
+
+                foreach (var kind in new[] { "multipart", "create", "begin", "put" })
+                {
+                    var fake = new FakeDrive();
+                    var client = new DriveClient(fake, 0.0005);
+                    var folder = fake.AddFolder("Up");
+                    fake.AddFault(new FakeDrive.Fault { Kind = kind, Times = 20, Status = 403, Body = limited });
+                    string? problem = null;
+                    try
+                    {
+                        if (kind == "create") await client.CreateFolder("Disc", folder, CancellationToken.None);
+                        else await client.UploadDetailed(kind == "multipart" ? small : big, "f", folder, null, CancellationToken.None);
+                    }
+                    catch (Exception ex) { problem = ex.Message; }
+                    check($"Drive copy: twenty rate limits in a row on {kind} are waited out",
+                        problem == null && fake.FaultsLeft == 0, $"{problem}; {fake.FaultsLeft} left");
+                }
+
+                // Not for ever: an hour of waits, then the file fails.
+                var endless = new FakeDrive();
+                var patient = new DriveClient(endless, 0.0005);
+                var into = endless.AddFolder("Up");
+                endless.AddFault(new FakeDrive.Fault { Kind = "multipart", Times = 100_000, Status = 403, Body = limited });
+                bool failed = false;
+                try { await patient.UploadDetailed(small, "f", into, null, CancellationToken.None); }
+                catch (Exception) { failed = true; }
+                check("Drive copy: a rate limit that never lifts still ends, after about an hour of waits",
+                    failed && endless.FaultsServed is > 20 and < 200, $"failed {failed}, {endless.FaultsServed} tries");
+            }
+            finally { try { Directory.Delete(dir, true); } catch { } }
         }
 
         private static byte[] Pattern(int length)

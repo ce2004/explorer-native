@@ -145,6 +145,43 @@ namespace ExplorerNative
             return reason is "rateLimitExceeded" or "userRateLimitExceeded";
         }
 
+        /// <summary>Google's "slow down": a 429, or a 403 whose reason is a rate limit.</summary>
+        internal static bool IsRateLimit(int status, string? body) =>
+            status == 429 ||
+            (status == 403 && ErrorReason(body) is "rateLimitExceeded" or "userRateLimitExceeded");
+
+        /// <summary>
+        /// How long one request keeps waiting out Google's "slow down" before it
+        /// counts as failed. A rate limit is not a failure, so it does not spend
+        /// the request's attempts: a big copy to Drive met Google limiting how
+        /// many files may be made, spent all six tries in two minutes, and ended
+        /// in a dialog with the files not copied (Conner, 3.0.14).
+        /// </summary>
+        internal static readonly TimeSpan RateLimitPatience = TimeSpan.FromHours(1);
+
+        /// <summary>
+        /// One request's waits on a rate limit: 2s doubling to a minute, or what
+        /// Google asked for, plus jitter so parallel uploads do not come back
+        /// together. Counted in the waits asked for, not the clock, so the
+        /// suite's shortened waits still reach the end.
+        /// </summary>
+        internal sealed class SlowDown
+        {
+            private TimeSpan _waited;
+            private int _times;
+
+            /// <summary>The next wait, or null once <see cref="RateLimitPatience"/> is spent.</summary>
+            public TimeSpan? Next(Random random, TimeSpan? asked)
+            {
+                if (_waited >= RateLimitPatience) return null;
+                var wait = asked ?? TimeSpan.FromSeconds(Math.Min(60, 2 << Math.Min(_times, 5)));
+                _times++;
+                wait += TimeSpan.FromMilliseconds(random.NextDouble() * 0.5 * Math.Min(wait.TotalMilliseconds, 30_000));
+                _waited += wait;
+                return wait;
+            }
+        }
+
         /// <summary>
         /// The machine-readable <c>reason</c> out of a Google error payload, or
         /// an empty string.
@@ -982,12 +1019,15 @@ namespace ExplorerNative
                 return Uploaded(file);
             }
 
+            var slow = new SlowDown();
+            bool waited = false;
             for (int attempt = 0; attempt < MaxSmallUploadAttempts; attempt++)
             {
                 token.ThrowIfCancellationRequested();
 
-                if (attempt > 0)
+                if (attempt > 0 && !waited)
                     await Pause(RetryDelay(attempt - 1, random, asked), token);
+                waited = false;
 
                 if (await AlreadyUploaded() is { } uploaded) return uploaded;
 
@@ -1126,6 +1166,16 @@ namespace ExplorerNative
 
                 if (status == 408 || status >= 500) maybeDone = true;
 
+                // Slowed down: waited out without spending an attempt.
+                if (IsRateLimit(status, text) && slow.Next(random, asked) is { } slowWait)
+                {
+                    Say("drive.upload.retrying", $"Retrying {name}: {lastProblem}");
+                    await Pause(slowWait, token);
+                    waited = true;
+                    attempt--;
+                    continue;
+                }
+
                 if (attempt == MaxSmallUploadAttempts - 1) break;
 
                 // Said, because otherwise a retry is invisible: the file simply
@@ -1175,13 +1225,16 @@ namespace ExplorerNative
             // answered, carrying on from our own figure is the one thing not to do.
             bool askFirst = resumeSession != null;
 
+            var slow = new SlowDown();
+            bool waited = false;
             for (int attempt = 0; attempt < MaxUploadAttempts; attempt++)
             {
                 token.ThrowIfCancellationRequested();
 
                 // Spaced out. Going straight back into a connection that has just
                 // broken is how five resumes are spent in a second.
-                if (attempt > 0) await Pause(RetryDelay(attempt - 1, random), token);
+                if (attempt > 0 && !waited) await Pause(RetryDelay(attempt - 1, random), token);
+                waited = false;
 
                 if (askFirst)
                 {
@@ -1324,6 +1377,20 @@ namespace ExplorerNative
                     // a small file, rather than failing every file after it.
                     if (DriveQuotaException.From(refused.Status, refused.Body) is { } stop) throw stop;
                     throw;
+                }
+                catch (UploadRefusedException refused) when (IsRateLimit(refused.Status, refused.Body) &&
+                                                             slow.Next(random, null) is { } slowWait)
+                {
+                    // Slowed down: waited out without spending an attempt, then
+                    // Google is asked how much it holds.
+                    lastProblem = refused.Message; lastFailure = refused;
+                    Say("drive.upload.retrying", $"Retrying {name}: {Explain(refused.Status, refused.Body)}");
+                    await Pause(slowWait, token);
+                    sent = before;
+                    askFirst = true;
+                    waited = true;
+                    attempt--;
+                    continue;
                 }
                 catch (Exception ex)
                 {

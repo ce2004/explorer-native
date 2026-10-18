@@ -1,3 +1,6 @@
+3.0.14
+Bug fixed: when you copied lots of files to Google Drive and Google started limiting how many files could be uploaded, Explorer Native only tried a few more times over about two minutes, then gave up with an error and the files were not copied. Now it waits Google out, for up to an hour if it has to, and carries on copying by itself.
+
 3.0.13
 New feature: Space selects and deselects. Press Space on an item to add it to your selection, and Space again to take it out, without losing anything else you selected. Hold Ctrl and use the arrows to move without selecting, press Space on each item you want, and when you let go of Ctrl you hear how many are selected.
 Changed: Ctrl with the arrows, Home, End, Page Up or Page Down can no longer be a shortcut, because those keys move through the list without selecting. If your volume shortcuts were Ctrl+Up and Ctrl+Down, Explorer Native tells you when it starts, and pressing OK takes you straight to the shortcuts window with the cursor on the first one to change.

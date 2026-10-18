@@ -126,6 +126,8 @@ namespace ExplorerNative
             bool maybeDone = false;
             int attempts = interactive ? InteractiveAttempts : MaxSmallUploadAttempts;
             var client = interactive ? _http : _slowMetadata;
+            var slow = new SlowDown();
+            bool waited = false;
 
             async Task<HttpResponseMessage?> AlreadyDone()
             {
@@ -144,7 +146,7 @@ namespace ExplorerNative
             for (int attempt = 0; attempt < attempts; attempt++)
             {
                 token.ThrowIfCancellationRequested();
-                if (attempt > 0)
+                if (attempt > 0 && !waited)
                 {
                     var wait = RetryDelay(attempt - 1, random, asked);
 
@@ -153,6 +155,7 @@ namespace ExplorerNative
                     if (interactive && wait > InteractiveLongestWait) break;
                     await Pause(wait, token);
                 }
+                waited = false;
 
                 if (await AlreadyDone() is { } done) return done;
 
@@ -256,6 +259,15 @@ namespace ExplorerNative
                 asked = RetryAfter(response);
                 last = new DriveStatusException(code, body, $"{code}: " + Explain(code, body));
                 response.Dispose();
+
+                // Slowed down: a transfer waits it out without spending an
+                // attempt. Somebody waiting on an interactive request is told.
+                if (!interactive && IsRateLimit(code, body) && slow.Next(random, asked) is { } slowWait)
+                {
+                    await Pause(slowWait, token);
+                    waited = true;
+                    attempt--;
+                }
             }
 
             // The last answer may have been lost as well: asked once more before
