@@ -62,8 +62,8 @@ namespace ExplorerNative
 
             var mount = Source("DriveMount.cs");
             Check("the top of the letter lists the shared drives as a folder",
-                mount != null && mount.Contains("if (accountRoot) entries.Insert(0, sharedDrives);",
-                    StringComparison.Ordinal));
+                mount != null && mount.Contains("if (accountRoot) entries.InsertRange(0, ours);", StringComparison.Ordinal) &&
+                mount.Contains("new List<DriveEntry> { sharedDrives", StringComparison.Ordinal));
             Check("and a listing inside a shared drive names the drive",
                 mount != null && mount.Contains("driveId: driveId", StringComparison.Ordinal));
 

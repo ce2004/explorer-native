@@ -71,7 +71,7 @@
     <Compile Include="..\src\CfApi.cs" />
     <Compile Include="..\src\DriveLetter.cs" />
     <Compile Include="..\src\GoogleAuth.cs" /><Compile Include="..\src\GoogleNet.cs" /><Compile Include="..\src\ProtectedFile.cs" />
-    <Compile Include="..\src\DriveClient.cs" /><Compile Include="..\src\DriveFolderSizes.cs" /><Compile Include="..\src\DriveWrites.cs" /><Compile Include="..\src\DriveHealth.cs" />
+    <Compile Include="..\src\DriveClient.cs" /><Compile Include="..\src\DriveFolderSizes.cs" /><Compile Include="..\src\DriveWrites.cs" /><Compile Include="..\src\DriveTrash.cs" /><Compile Include="..\src\DriveHealth.cs" />
     <Compile Include="..\src\DriveFileCache.cs" />
     <Compile Include="..\src\MemoryGiveBack.cs" />
     <Compile Include="..\src\SyncHistory.cs" />
@@ -100,6 +100,7 @@
     <Compile Include="DriveCopyTests.cs" />
     <Compile Include="FakeDrive.cs" />
     <Compile Include="DriveMountTests.cs" />
+    <Compile Include="DriveTrashTests.cs" />
     <Compile Include="DriveMountTimerTests.cs" />
     <Compile Include="DriveSizeTests.cs" />
     <Compile Include="DriveClientCacheTests.cs" />

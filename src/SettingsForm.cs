@@ -691,6 +691,10 @@ namespace ExplorerNative
 
             AddDriveLetter(panel);
 
+            // Beside My Drive and Shared drives on the letter (Conner, 3.0.16).
+            AddCheck(panel, "Show Google Drive's &Trash folder", _working.ShowDriveTrash,
+                v => _working.ShowDriveTrash = v);
+
             AddGoogleAccountControls(panel, driveBox);
 
             // This said the opposite until the scope changed under it: "nothing

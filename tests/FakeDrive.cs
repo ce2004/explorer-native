@@ -43,6 +43,10 @@ namespace ExplorerNative
             public byte[] Data = Array.Empty<byte>();
             public DateTime Modified = DateTime.UtcNow;
             public bool Trashed;
+
+            /// <summary>Trashed by itself, not only inside a trashed folder: what the Trash folder lists.</summary>
+            public bool ExplicitlyTrashed;
+            public DateTime? TrashedTime;
             public Dictionary<string, string> AppProperties = new();
             public DateTime Created = DateTime.UtcNow;
             public bool IsFolder => MimeType == DriveClient.FolderMimeType;
@@ -168,7 +172,38 @@ namespace ExplorerNative
             }
         }
 
-        public void Trash(string id) { lock (_gate) { _items[id].Trashed = true; _changed.Add(id); } }
+        public void Trash(string id)
+        {
+            lock (_gate)
+            {
+                _items[id].Trashed = _items[id].ExplicitlyTrashed = true;
+                _items[id].TrashedTime = Ms(DateTime.UtcNow);
+                _changed.Add(id);
+            }
+        }
+
+        /// <summary>Items deleted for good (files.delete), and trash emptyings (files.emptyTrash).</summary>
+        public int PermanentDeletes, TrashEmptied, Untrashes;
+
+        /// <summary>Trashed, or inside a folder that is: what Drive answers "trashed = true" for.</summary>
+        private bool InTrash(Item item)
+        {
+            for (var at = item; ; )
+            {
+                if (at.Trashed) return true;
+                if (at.Id == Root || !_items.TryGetValue(at.Parent, out var up)) return false;
+                at = up;
+            }
+        }
+
+        /// <summary>An item and everything under it, for a delete.</summary>
+        private void RemoveTree(string id)
+        {
+            foreach (var child in ChildrenOf(id).ToList()) RemoveTree(child.Id);
+            _items.Remove(id);
+            _byParent = null;
+            _changed.Add(id);
+        }
 
         public void Remove(string id) { lock (_gate) { _items.Remove(id); _byParent = null; _changed.Add(id); } }
 
@@ -341,6 +376,36 @@ namespace ExplorerNative
                 case "list" when (query["q"] ?? "").StartsWith("trashed = false", StringComparison.Ordinal):
                     return ListEverything(query);
 
+                case "list" when (query["q"] ?? "") == "trashed = true":
+                    lock (_gate)
+                    {
+                        var binned = _items.Values.Where(i => i.Id != Root && InTrash(i)).Select(i =>
+                        {
+                            var d = Describe(i);
+                            d["parents"] = new[] { i.Parent };
+                            return d;
+                        }).ToList();
+                        return Json(200, new Dictionary<string, object> { ["files"] = binned });
+                    }
+
+                case "delete":
+                    lock (_gate)
+                    {
+                        if (!_items.ContainsKey(subject)) return Error(404, "notFound", "File not found: " + subject);
+                        RemoveTree(subject);
+                        PermanentDeletes++;
+                        return new HttpResponseMessage(HttpStatusCode.NoContent) { Content = new StringContent("") };
+                    }
+
+                case "emptytrash":
+                    lock (_gate)
+                    {
+                        foreach (var item in _items.Values.Where(i => i.Id != Root && i.Trashed).ToList())
+                            if (_items.ContainsKey(item.Id)) RemoveTree(item.Id);
+                        TrashEmptied++;
+                        return new HttpResponseMessage(HttpStatusCode.NoContent) { Content = new StringContent("") };
+                    }
+
                 case "list":
                 case "lookup":
                     if (kind == "list" && OnList is { } onList) await onList(subject, ct);
@@ -478,6 +543,7 @@ namespace ExplorerNative
             if (path.StartsWith("/drive/v3/files/", StringComparison.Ordinal))
             {
                 var rest = Uri.UnescapeDataString(path["/drive/v3/files/".Length..]);
+                if (request.Method == HttpMethod.Delete) return (rest == "trash" ? "emptytrash" : "delete", rest, body);
                 if (rest.EndsWith("/copy", StringComparison.Ordinal)) return ("copy", rest[..^5], body);
                 if (request.Method == HttpMethod.Patch)
                     return (body.Contains("\"trashed\"", StringComparison.Ordinal) ? "trash" : "patch", rest, body);
@@ -526,6 +592,8 @@ namespace ExplorerNative
             var q = query["q"] ?? "";
             var parent = Regex.Match(q, "'([^']*)' in parents").Groups[1].Value;
             var tag = lookup ? Regex.Match(q, "value='([^']*)'").Groups[1].Value : null;
+            bool binned = q.Contains("trashed = true", StringComparison.Ordinal);
+            if (parent == "root") parent = Root;      // Drive's own alias for My Drive
             int size = int.TryParse(query["pageSize"], out var s) ? s : 100;
             int start = int.TryParse(query["pageToken"], out var p) ? p : 0;
 
@@ -534,7 +602,7 @@ namespace ExplorerNative
             lock (_gate)
             {
                 var shownBefore = DateTime.UtcNow - ListingLag;
-                var rows = ChildrenOf(parent).Where(i => !i.Trashed && i.Id != Root)
+                var rows = ChildrenOf(parent).Where(i => (binned ? InTrash(i) : !i.Trashed) && i.Id != Root)
                     .Where(i => ListingLag <= TimeSpan.Zero || i.Created <= shownBefore)
                     .Where(i => tag == null ||
                                 (i.AppProperties.TryGetValue(DriveClient.OperationProperty, out var t) && t == tag))
@@ -756,8 +824,15 @@ namespace ExplorerNative
                 var json = JsonDocument.Parse(string.IsNullOrEmpty(body) ? "{}" : body).RootElement;
                 if (json.TryGetProperty("trashed", out var t) && t.ValueKind == JsonValueKind.True)
                 {
-                    item.Trashed = true;
+                    item.Trashed = item.ExplicitlyTrashed = true;
+                    item.TrashedTime = Ms(DateTime.UtcNow);
                     Trashes++;
+                }
+                else if (json.TryGetProperty("trashed", out var u) && u.ValueKind == JsonValueKind.False)
+                {
+                    item.Trashed = item.ExplicitlyTrashed = false;
+                    item.TrashedTime = null;
+                    Untrashes++;
                 }
                 if (json.TryGetProperty("name", out var name))
                 {
@@ -811,7 +886,9 @@ namespace ExplorerNative
                 ["mimeType"] = item.MimeType,
                 ["modifiedTime"] = DriveClient.RfcTime(item.Modified),
                 ["trashed"] = item.Trashed,
+                ["explicitlyTrashed"] = item.ExplicitlyTrashed,
             };
+            if (item.TrashedTime is { } binnedAt) d["trashedTime"] = DriveClient.RfcTime(binnedAt);
             if (!item.IsFolder && !item.IsDocument)
             {
                 d["size"] = item.Data.Length.ToString();

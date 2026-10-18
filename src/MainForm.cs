@@ -1396,8 +1396,10 @@ namespace ExplorerNative
             _contextMenu.Items.Add(Item("&Open", Keys.None, ActivateFocused));
             _contextMenu.Items.Add(new ToolStripSeparator());
             _contextMenu.Items.Add(Item("&Copy", Keys.None, () => CopyToClipboard(false)));
-            _contextMenu.Items.Add(ArchiveHidden(Item("Cu&t", Keys.None, () => CopyToClipboard(true))));
-            _contextMenu.Items.Add(ArchiveHidden(Item("&Paste", Keys.None, PasteClipboard)));
+            _cutItem = ArchiveHidden(Item("Cu&t", Keys.None, () => CopyToClipboard(true)));
+            _pasteItem = ArchiveHidden(Item("&Paste", Keys.None, PasteClipboard));
+            _contextMenu.Items.Add(_cutItem);
+            _contextMenu.Items.Add(_pasteItem);
             _contextMenu.Items.Add(Item("Copy &path", Keys.None, CopyPath));
             _contextMenu.Items.Add(DriveLinkItem("Copy Drive &link", Keys.None, makePublic: false));
             _contextMenu.Items.Add(DriveLinkItem("Copy p&ublic Drive link", Keys.None, makePublic: true));
@@ -1409,8 +1411,19 @@ namespace ExplorerNative
             _shortcutItem = Item("Create &shortcut", Keys.None, CreateShortcut);
             _contextMenu.Items.Add(_shortcutItem);
 
-            _contextMenu.Items.Add(ArchiveHidden(Item("&Rename", Keys.None, RenameSelected)));
-            _contextMenu.Items.Add(ArchiveHidden(Item("&Delete", Keys.None, () => DeleteSelected(false))));
+            _renameItem = ArchiveHidden(Item("&Rename", Keys.None, RenameSelected));
+            _deleteItem = ArchiveHidden(Item("&Delete", Keys.None, () => DeleteSelected(false)));
+            _contextMenu.Items.Add(_renameItem);
+            _contextMenu.Items.Add(_deleteItem);
+
+            // Google Drive's trash (3.0.16): shown only there, in place of the
+            // commands that could only refuse in it.
+            _restoreItem = Item("Re&store", Keys.None, RestoreFromDriveTrash);
+            _deleteForeverItem = Item("Delete perma&nently…", Keys.None, DeleteFromDriveTrash);
+            _emptyTrashItem = Item("Empty Google Drive &trash…", Keys.None, EmptyDriveTrash);
+            _contextMenu.Items.Add(_restoreItem);
+            _contextMenu.Items.Add(_deleteForeverItem);
+            _contextMenu.Items.Add(_emptyTrashItem);
             _contextMenu.Items.Add(new ToolStripSeparator());
 
             // Compress asks a question and Extract does not, which is why only
@@ -1427,7 +1440,8 @@ namespace ExplorerNative
             // answer "that is not an archive" is a word heard on every single
             // opening of the menu to be useful on almost none of them. Compress
             // stays, because anything selected can be compressed.
-            _contextMenu.Items.Add(ArchiveHidden(Item("&Compress…", Keys.None, CompressSelection)));
+            _compressItem = ArchiveHidden(Item("&Compress…", Keys.None, CompressSelection));
+            _contextMenu.Items.Add(_compressItem);
 
             _extractItem = Item("&Extract", Keys.None, () => ExtractFocused(intoNewFolder: true));
             _extractHereItem = Item("Extract h&ere", Keys.None, () => ExtractFocused(intoNewFolder: false));
@@ -5402,6 +5416,22 @@ namespace ExplorerNative
                 !(Drive != null && Drive.Owns(Active.CurrentPath));
 
             _formatItem.Visible = IsDrivesView && FormattableDrive(focused) != null;
+            // Google Drive's trash, by name and the mount's own map: no reads.
+            // Directly in the Trash folder, Restore and Delete permanently take
+            // the place of everything that could only refuse there; inside a
+            // trashed folder only what reads is left. Empty is offered in the
+            // Trash folder, inside it, and on the Trash folder itself.
+            var drive = Drive;
+            bool trashHere = drive != null && !IsDrivesView &&
+                             (drive.IsTrashFolder(Active.CurrentPath) || drive.IsInTrash(Active.CurrentPath));
+            bool topOfTrash = trashHere && drive!.IsTrashFolder(Active.CurrentPath);
+            bool onTrashFolder = drive != null && focused != null && drive.IsTrashFolder(focused);
+            _restoreItem.Visible = topOfTrash && focused != null;
+            _deleteForeverItem.Visible = topOfTrash && focused != null;
+            _emptyTrashItem.Visible = trashHere || onTrashFolder;
+            if (trashHere || onTrashFolder)
+                foreach (var item in new[] { _cutItem, _pasteItem, _renameItem, _deleteItem, _compressItem })
+                    item.Visible = false;
 
             _contextMenu.Show(where);
         }
@@ -5453,6 +5483,146 @@ namespace ExplorerNative
             {
                 if (!IsDisposed) Announce("Could not open Format: " + ex.Message, isError: true);
             }
+        }
+
+        private ToolStripMenuItem _cutItem = null!, _pasteItem = null!, _renameItem = null!, _deleteItem = null!,
+            _compressItem = null!, _restoreItem = null!, _deleteForeverItem = null!, _emptyTrashItem = null!;
+
+        /// <summary>
+        /// Puts what is selected in Google Drive's Trash folder back where it was.
+        /// Async void like every menu command, and guarded the same way.
+        /// </summary>
+        private async void RestoreFromDriveTrash()
+        {
+            try
+            {
+                if (Drive is not { } drive) return;
+                var paths = SelectedPaths();
+                if (paths.Length == 0 || !paths.All(drive.IsInTrash)) return;
+                var outcome = await EachInDriveTrash(paths, p => drive.RestoreFromTrash(p));
+                if (IsDisposed) return;
+                if (outcome.Done > 1) AnnounceOperation("drive.restored", $"Restored {NameRules.Items(outcome.Done)}");
+                if (outcome.Errors.Count > 0)
+                {
+                    AnnounceOperation("drive.restore.failed", outcome.Errors.Count == 1
+                        ? $"Could not restore {outcome.Errors[0]}"
+                        : $"Could not restore {outcome.Errors.Count:N0} items");
+                    ShowErrors(outcome.Errors);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) Announce("Could not restore: " + ex.Message, isError: true);
+            }
+        }
+
+        /// <summary>
+        /// Deletes what is selected in Google Drive's Trash folder for good, after
+        /// asking every time, whatever "Confirm before deleting" says: this is the
+        /// one delete in the application nothing can undo. No is the default.
+        /// </summary>
+        private async void DeleteFromDriveTrash()
+        {
+            try
+            {
+                if (Drive is not { } drive) return;
+                var paths = SelectedPaths();
+                if (paths.Length == 0 || !paths.All(drive.IsInTrash)) return;
+                var what = paths.Length == 1 ? $"\"{Path.GetFileName(paths[0].TrimEnd('\\'))}\"" : $"{paths.Length:N0} items";
+                if (MessageBox.Show(this, $"Permanently delete {what} from Google Drive? This cannot be undone.",
+                        "Delete permanently", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                        MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                {
+                    AnnounceOperation("delete.cancelled", "Delete cancelled");
+                    RestoreListFocus();
+                    return;
+                }
+                var outcome = await EachInDriveTrash(paths, p => drive.DeleteForever(p));
+                if (IsDisposed) return;
+                if (outcome.Done > 1) AnnounceOperation("drive.deleted", $"Deleted {NameRules.Items(outcome.Done)} permanently");
+                if (outcome.Errors.Count > 0)
+                {
+                    AnnounceOperation("delete.failed", outcome.Errors.Count == 1
+                        ? $"Could not delete {outcome.Errors[0]}"
+                        : $"Could not delete {outcome.Errors.Count:N0} items");
+                    ShowErrors(outcome.Errors);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) Announce("Could not delete: " + ex.Message, isError: true);
+            }
+        }
+
+        /// <summary>Empties Google Drive's trash for good, after asking. No is the default.</summary>
+        private async void EmptyDriveTrash()
+        {
+            try
+            {
+                if (Drive is not { } drive) return;
+                if (MessageBox.Show(this,
+                        "Permanently delete everything in the Google Drive trash? This cannot be undone.",
+                        "Empty Google Drive trash", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                        MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                {
+                    AnnounceOperation("delete.cancelled", "Emptying the trash cancelled");
+                    RestoreListFocus();
+                    return;
+                }
+
+                // Inside a trashed folder, which is about to be gone: back up to
+                // the Trash folder itself.
+                var origin = Active.CurrentPath;
+                var land = origin;
+                while (drive.IsInTrash(land) && SafeParent(land) is { } up) land = up;
+
+                RunningTransfers++;
+                try { await drive.EmptyTrash(); }
+                catch (Exception) { /* said by the Drive layer */ }
+                finally { RunningTransfers--; }
+                if (IsDisposed) return;
+                if (drive.IsTrashFolder(land)) await NavigateAsync(land);
+                else await RefreshAsync(null, folder: origin);
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) Announce("Could not empty the Google Drive trash: " + ex.Message, isError: true);
+            }
+        }
+
+        /// <summary>
+        /// One trash command over a selection, one item at a time, then the folder
+        /// listed again on the row after them. Each item names itself as it goes
+        /// (the Drive layer says it); what failed is collected, by name.
+        /// </summary>
+        private async Task<(int Done, List<string> Errors)> EachInDriveTrash(string[] paths, Func<string, Task<bool>> one)
+        {
+            var origin = Active.CurrentPath;
+            var landOn = RowAfterRemoving(paths);
+            int done = 0;
+            var errors = new List<string>();
+            RunningTransfers++;
+            BeginTransferTo(origin);
+            try
+            {
+                foreach (var path in paths)
+                {
+                    var name = Path.GetFileName(path.TrimEnd('\\'));
+                    try
+                    {
+                        if (await one(path)) done++;
+                        else errors.Add(name);
+                    }
+                    catch (Exception ex) { errors.Add($"{name}: {ex.Message}"); }
+                }
+            }
+            finally
+            {
+                RunningTransfers--;
+                EndTransferTo(origin);
+            }
+            if (!IsDisposed) await RefreshAsync(landOn, folder: origin);
+            return (done, errors);
         }
 
         /// <summary>
@@ -8498,6 +8668,14 @@ namespace ExplorerNative
 
             var paths = SelectedPaths();
             if (paths.Length == 0) { Announce("Nothing selected"); return; }
+
+            // In Google Drive's trash, Delete (and Shift+Delete) is Delete
+            // permanently, which always asks.
+            if (Drive is { } trashDrive && paths.All(trashDrive.IsInTrash))
+            {
+                DeleteFromDriveTrash();
+                return;
+            }
 
             bool permanent = permanentOverride || _settings.Delete == DeleteMode.Permanent;
 

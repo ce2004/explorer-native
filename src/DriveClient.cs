@@ -608,6 +608,10 @@ namespace ExplorerNative
                 url.Contains(SharedDrivesId, StringComparison.Ordinal))
                 throw new InvalidOperationException(
                     "\"Shared drives\" is the list of shared drives, not a folder; open one of them first");
+            if (url.Contains(Uri.EscapeDataString(TrashId), StringComparison.Ordinal) ||
+                url.Contains(TrashId, StringComparison.Ordinal))
+                throw new InvalidOperationException(
+                    "Trash is Google Drive's trash, not a folder; nothing can be put in it from here");
 
             url = AllDrives(url);
             var request = new HttpRequestMessage(method, url);
@@ -667,7 +671,8 @@ namespace ExplorerNative
         /// </summary>
         public async Task<List<DriveEntry>> ListChildren(
             string folderId, CancellationToken token, int max = 100_000, string? label = null,
-            string? driveId = null, Action<List<DriveEntry>>? onPage = null, bool? interactive = null)
+            string? driveId = null, Action<List<DriveEntry>>? onPage = null, bool? interactive = null,
+            bool trashed = false)
         {
             bool waiting = interactive ?? (label != null || onPage != null);
 
@@ -676,6 +681,13 @@ namespace ExplorerNative
                 var drives = await ListSharedDrives(token, waiting);
                 onPage?.Invoke(drives);
                 return drives;
+            }
+
+            if (folderId == TrashId)
+            {
+                var binned = await ListTrash(token, waiting);
+                onPage?.Invoke(binned);
+                return binned;
             }
 
             var results = new List<DriveEntry>();
@@ -688,7 +700,9 @@ namespace ExplorerNative
 
             do
             {
-                string query = Uri.EscapeDataString($"'{folderId}' in parents and trashed = false");
+                // Inside a trashed folder everything is trashed with it, so the
+                // Trash folder's subfolders list what is trashed, not what is not.
+                string query = Uri.EscapeDataString($"'{folderId}' in parents and trashed = {(trashed ? "true" : "false")}");
                 string fields = Uri.EscapeDataString(
                     "nextPageToken,files(id,name,mimeType,size,modifiedTime,driveId,md5Checksum)");
                 // The first page small when somebody is waiting to see it: Drive
@@ -928,7 +942,7 @@ namespace ExplorerNative
         internal async Task<DriveRights> RightsOf(string fileId, CancellationToken token)
         {
             // The list of shared drives is ours, not an item Drive can answer for.
-            if (fileId == SharedDrivesId) return new DriveRights(null, false, false, false, false, false, false);
+            if (fileId is SharedDrivesId or TrashId) return new DriveRights(null, false, false, false, false, false, false);
 
             const string fields = "driveId,capabilities(canCopy,canTrash,canRename," +
                                   "canMoveItemWithinDrive,canMoveItemOutOfDrive,canAddChildren)";
