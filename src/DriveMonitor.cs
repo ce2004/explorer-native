@@ -164,6 +164,14 @@ namespace ExplorerNative
 
             /// <summary>Free up space: empty PC folders too new to clear yet, looked at again next pass.</summary>
             public List<string>? EmptyLater { get; set; }
+
+            /// <summary>
+            /// Free up space: how many files the pair's Drive folder holds, from
+            /// the last whole listing plus what went up since. Its records are
+            /// forgotten as files are cleared, so a pass on the changes feed
+            /// counted only the folders it listed ("On Google Drive: 205 files").
+            /// </summary>
+            public int? DriveFileTotal { get; set; }
             public DateTime? LastFullListUtc { get; set; }
             public bool? ScanSubfolders { get; set; }
             public List<string> DriveUnusable { get; set; } = new();
@@ -2299,6 +2307,15 @@ namespace ExplorerNative
             await FreeUpAsync(client, pair, state, rules, local, skips, tally, token).ConfigureAwait(false);
             if (ClearEmptyFolders(pair, state, rules, skips, pcFolders, folders)) SaveState(pair.Id, state);
             await TidyTwinFoldersAsync(client, pair, rules, clashing, folders, tally, token).ConfigureAwait(false);
+            if (pair.FreesUpSpace)
+            {
+                state.DriveFileTotal = fullList || state.DriveFileTotal is not int before
+                    ? remote.Count + tally.Uploaded
+                    : Math.Max(remote.Count, before) + tally.Uploaded;
+                int total = state.DriveFileTotal.Value;
+                Report(pair.Id, s => s with { DriveFound = total }, now: true);
+                SaveState(pair.Id, state);
+            }
             FinishPass(pair, state, tally, unusable, clashing, localClashing);
         }
 

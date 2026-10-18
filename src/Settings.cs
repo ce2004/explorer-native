@@ -1229,7 +1229,7 @@ namespace ExplorerNative
             if (!Enum.IsDefined(ArchiveCompression)) ArchiveCompression = ArchiveLevel.Balanced;
             CopyBufferKilobytes = Math.Clamp(CopyBufferKilobytes, 4, 16384);
             FolderSizeTimeoutSeconds = Math.Clamp(FolderSizeTimeoutSeconds, 1, 600);
-            if (LowDiskWarningGigabytes < 0) LowDiskWarningGigabytes = 0;
+            LowDiskWarningGigabytes = Math.Clamp(LowDiskWarningGigabytes, 0, 100_000);
             // Below about a tenth of a second no two keystrokes would ever join up;
             // above a few seconds a forgotten letter is still waiting to ambush the
             // next one.

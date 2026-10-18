@@ -117,6 +117,7 @@ $p.WaitForExit(120000)
 - OK applies only what the dialog changed (`WithChanges`), and an external reload does the same (`ReloadOnto`).
 - Anything that edits settings.json from outside must send `ReloadSettingsCommand`. Otherwise the app's save-on-exit overwrites it (this once deregistered every folder). Save the return value of `ShellRegistration.Reconcile`.
 - `settings.json.*` matches `settings.json` itself on Windows.
+- Export and import (Preferences beside Reset, no access keys there because the dialog keeps only O, C and R; File menu with &Export and I&mport): `Settings.ToExportJson` writes plain JSON starting with `ExportMarker`, without `ThisPcOnly` (ConnectCode is a secret; the rest is this PC's: exe path, FoldersTakenAt, window, start and last folders, tabs, last track, device id). `FromExportJson` goes through Salvage and Validated like settings.json and refuses anything without the marker or SettingsVersion. `PrepareImport` carries this PC's values over and pauses pairs whose LocalFolder is not here. It is applied with `Program.ApplySettings`. Tests: `EXPLORERNATIVE_SELFTEST_ONLY=settingstransfer`.
 - Tests use `Settings.OverrideAppDataDir` and `PersistedProperties()` (Public|Instance). Plain `GetProperties()` includes statics and would retarget the real file.
 
 ## UI and NVDA rules

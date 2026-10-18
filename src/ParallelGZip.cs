@@ -209,6 +209,18 @@ namespace ExplorerNative
             /// because the old one belongs to a worker until the member is
             /// written.
             /// </summary>
+            /// <summary>
+            /// One empty gzip member: the header (deflate, no flags, no time,
+            /// unknown OS), a final empty fixed-Huffman block, and a trailer of
+            /// CRC 0 and length 0.
+            /// </summary>
+            private static readonly byte[] EmptyMember =
+            {
+                0x1f, 0x8b, 0x08, 0x00, 0, 0, 0, 0, 0x00, 0xff,
+                0x03, 0x00,
+                0, 0, 0, 0, 0, 0, 0, 0,
+            };
+
             private void Dispatch(bool evenIfEmpty = false)
             {
                 if (_used == 0 && !evenIfEmpty) return;
@@ -246,6 +258,11 @@ namespace ExplorerNative
                         // GZipStream writes all three. Nothing here hand-rolls the
                         // format: the only thing being done by hand is deciding
                         // which bytes go into which member.
+                        // Except for an empty input: since .NET 9 (zlib-ng) a
+                        // GZipStream that was never given a byte writes nothing,
+                        // not an empty member, and a zero-byte .gz does not open.
+                        if (length == 0) return new Chunk((byte[])EmptyMember.Clone(), EmptyMember.Length);
+
                         var into = new MemoryStream(Math.Max(64, length / 2));
                         using (var gzip = new GZipStream(into, level, leaveOpen: true))
                             gzip.Write(buffer, 0, length);
