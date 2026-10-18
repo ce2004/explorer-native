@@ -43,6 +43,8 @@ namespace ExplorerNative
 
             _list = new ListView
             {
+                // A list, not a table (see MainForm.FileListView): NVDA reads the row.
+                AccessibleRole = AccessibleRole.List,
                 Dock = DockStyle.Fill,
                 View = View.Details,
                 FullRowSelect = true,

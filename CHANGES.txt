@@ -1,3 +1,6 @@
+3.1.1
+Bug fixed: in 3.1.0, NVDA read only the name of each file and folder in the list, with no size and no date. The list reads a whole row again, as it did before.
+
 3.1.0
 Changed: Explorer Native now runs on .NET 10 and has it built in, so nothing else needs to be installed. Updating from an older version is the same one click in Help, Check for updates, and the files older versions left in your temporary folder are cleaned up.
 New feature: Google Drive's trash is now a Trash folder on your Google Drive letter, next to My Drive and Shared drives. Press Shift+F10 on something in it to restore it, or to delete it permanently, and use Empty Google Drive trash to delete everything in it for good. Explorer Native always asks before deleting anything for good. You can hide the Trash folder in Preferences, Google Drive.

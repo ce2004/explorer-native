@@ -131,6 +131,7 @@ $p.WaitForExit(120000)
 - Use one scan (`EnumerateFileSystemInfos`).
 - A row is a sentence heard on every arrow press, so each column must earn that. Say less, because NVDA already reads the row and its position.
 - Never rename the focused control (`Pane.PendingName` is applied on Leave).
+- Every details-view ListView sets `AccessibleRole = AccessibleRole.List` (FileListView's constructor, SongPropertiesForm). Since .NET 9 it otherwise reports itself as a UIA Table, and NVDA reads only the name cell: 3.1.0 shipped that way. Check with UIA (ControlType.List) and the NVDA log ("name; Size 3 bytes; Modified today").
 - Entering a folder: the app reads the first row itself (`readRowAloud` is always on). Predicting the control's event and `AccessibilityNotifyClients` both failed. Going up raises no focus event, so `SpeakRow` covers it.
 - Focus the list, then the row (`FocusListAndRow`). Move focus once per action. Return focus to the list after anything modal (`RestoreListFocus`).
 - Stepping up lands on the folder you came from, and returning to a folder lands on the row you left.

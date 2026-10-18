@@ -270,6 +270,15 @@ namespace ExplorerNative
         private sealed class FileListView : ListView
         {
             /// <summary>
+            /// A list, not a table. Since .NET 9 a details-view ListView tells
+            /// screen readers it is a table, and NVDA then reads only the cell
+            /// under the cursor: on 3.1.0 every row was its name alone, no size
+            /// and no date (Conner, the day it shipped). Said to be a list, it is
+            /// read a row at a time again, as on .NET 8.
+            /// </summary>
+            public FileListView() => AccessibleRole = AccessibleRole.List;
+
+            /// <summary>
             /// Says that this row now has the focus, whether or not the control
             /// thinks anything changed.
             ///
