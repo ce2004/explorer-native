@@ -160,6 +160,39 @@ namespace ExplorerNative
         internal static readonly TimeSpan RateLimitPatience = TimeSpan.FromHours(1);
 
         /// <summary>
+        /// Set by a caller with its own rate-limit wait (the folder monitor's,
+        /// which shows in the pair's status and stops on Pause): requests made
+        /// under it hand a rate limit straight back, as before 3.0.14.
+        /// </summary>
+        internal static readonly AsyncLocal<bool> CallerWaitsOutRateLimits = new();
+
+        /// <summary>Google's 750 GB a day, as said (Conner's words).</summary>
+        internal const string DailyUploadLimitSaid = "You've reached your daily upload limit for Google";
+
+        /// <summary>When a copy last said the daily limit, so it is said once, not once per file.</summary>
+        private long _dailySaidAt;
+
+        /// <summary>
+        /// Waits out one rate limit, without spending an attempt. False when
+        /// the caller waits these out itself or this request's patience is
+        /// spent. A limit that has lasted past a few minutes is the day's
+        /// upload cap, and that is said once an hour at most.
+        /// </summary>
+        private async Task<bool> WaitOutRateLimit(SlowDown slow, Random random, TimeSpan? asked, CancellationToken token)
+        {
+            if (CallerWaitsOutRateLimits.Value || slow.Next(random, asked) is not { } wait) return false;
+            if (slow.LooksDaily)
+            {
+                long now = Environment.TickCount64, last = Interlocked.Read(ref _dailySaidAt);
+                if ((last == 0 || now - last > 3_600_000) &&
+                    Interlocked.CompareExchange(ref _dailySaidAt, now, last) == last)
+                    Say("drive.upload.dailylimit", DailyUploadLimitSaid + ". Copying carries on by itself when it resets");
+            }
+            await Pause(wait, token);
+            return true;
+        }
+
+        /// <summary>
         /// One request's waits on a rate limit: 2s doubling to a minute, or what
         /// Google asked for, plus jitter so parallel uploads do not come back
         /// together. Counted in the waits asked for, not the clock, so the
@@ -169,6 +202,9 @@ namespace ExplorerNative
         {
             private TimeSpan _waited;
             private int _times;
+
+            /// <summary>Limited for long enough that it is the daily cap, not a minute's throttling.</summary>
+            public bool LooksDaily => _waited >= TimeSpan.FromMinutes(3);
 
             /// <summary>The next wait, or null once <see cref="RateLimitPatience"/> is spent.</summary>
             public TimeSpan? Next(Random random, TimeSpan? asked)
@@ -1167,10 +1203,9 @@ namespace ExplorerNative
                 if (status == 408 || status >= 500) maybeDone = true;
 
                 // Slowed down: waited out without spending an attempt.
-                if (IsRateLimit(status, text) && slow.Next(random, asked) is { } slowWait)
+                if (IsRateLimit(status, text) && await WaitOutRateLimit(slow, random, asked, token))
                 {
                     Say("drive.upload.retrying", $"Retrying {name}: {lastProblem}");
-                    await Pause(slowWait, token);
                     waited = true;
                     attempt--;
                     continue;
@@ -1379,13 +1414,13 @@ namespace ExplorerNative
                     throw;
                 }
                 catch (UploadRefusedException refused) when (IsRateLimit(refused.Status, refused.Body) &&
-                                                             slow.Next(random, null) is { } slowWait)
+                                                             !CallerWaitsOutRateLimits.Value)
                 {
                     // Slowed down: waited out without spending an attempt, then
                     // Google is asked how much it holds.
                     lastProblem = refused.Message; lastFailure = refused;
                     Say("drive.upload.retrying", $"Retrying {name}: {Explain(refused.Status, refused.Body)}");
-                    await Pause(slowWait, token);
+                    if (!await WaitOutRateLimit(slow, random, null, token)) throw;
                     sent = before;
                     askFirst = true;
                     waited = true;

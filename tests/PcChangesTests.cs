@@ -100,6 +100,8 @@ namespace ExplorerNative
                 JournalNamesTheFolders(sandbox);
                 await PassesUseTheJournal(sandbox, batched: false);
                 await PassesUseTheJournal(sandbox, batched: true);
+                await FreeUpGoesByTheJournal(sandbox, batched: false);
+                await FreeUpGoesByTheJournal(sandbox, batched: true);
                 await RandomRounds(sandbox, batched: false, seed: 11);
                 await RandomRounds(sandbox, batched: true, seed: 12);
             }
@@ -414,6 +416,68 @@ namespace ExplorerNative
                 rig.Pair.SkipExtensions = ".tmp";
                 await rig.Pass();
                 Check(label + "a change of settings walks it again", rig.Monitor.LastPcSide.Contains("settings"), rig.Monitor.LastPcSide);
+                return 0;
+            });
+        }
+
+        /// <summary>
+        /// Free up space forgets every file it clears, so a pair that has done
+        /// its job has no records. It still goes by the journal after its first
+        /// walk, rather than walking the whole folder every pass (Resilio's
+        /// 24,000 folders, every few seconds), and new files still go up.
+        /// </summary>
+        private static async Task FreeUpGoesByTheJournal(string sandbox, bool batched)
+        {
+            if (UsnJournal.Where(sandbox) == null) return;
+            var label = batched ? "[batched] free up: " : "free up: ";
+            await InBatches(batched, async () =>
+            {
+                using var rig = new Rig(sandbox);
+                rig.Pair.Mode = SyncMode.UploadOnly;
+                rig.Pair.CopyDeletes = false;
+                rig.Pair.DeleteAfterUpload = true;
+                for (int f = 0; f < 6; f++)
+                    for (int i = 0; i < 3; i++)
+                        rig.Write($"F{f:D2}/s{i}.txt", $"{f}-{i}", T0);
+                await rig.Pass();
+                await rig.Pass();
+                Check(label + "everything went up and was cleared off the PC",
+                    rig.DriveTree().Count == 18 && rig.LocalTree().Count == 0,
+                    $"Drive {rig.DriveTree().Count}, PC {rig.LocalTree().Count}");                await rig.Pass();
+                Check(label + "with nothing left to remember, a pass still goes by the journal",
+                    rig.Monitor.LastPcSide.EndsWith("folders changed"), rig.Monitor.LastPcSide);
+
+                // Just made, so not cleared yet: a file may be on its way into it.
+                Check(label + "empty folders younger than the wait are left alone",
+                    Directory.Exists(Path.Combine(rig.Local, "F00")), "F00 was cleared at once");
+
+                var age = DriveMonitor.EmptyFolderAge;
+                DriveMonitor.EmptyFolderAge = TimeSpan.Zero;
+                try
+                {
+                    Directory.CreateDirectory(Path.Combine(rig.Local, ".sync"));
+                    rig.Write("Deep/a/b/c.txt", "deep", T0);
+                    rig.Write("Keep/hidden.txt", "kept", T0);
+                    File.SetAttributes(Path.Combine(rig.Local, "Keep", "hidden.txt"), FileAttributes.Hidden);
+                    await rig.Pass();
+                    await rig.Pass();
+                    var left = Directory.EnumerateDirectories(rig.Local).Select(Path.GetFileName).OrderBy(n => n).ToList();
+                    Check(label + "emptied folders are cleared, deepest first, leaving .sync and a folder that holds something",
+                        string.Join(",", left) == ".sync,Keep" && rig.DriveTree().ContainsKey("Deep/a/b/c.txt") &&
+                        rig.DriveTree().ContainsKey("F05/s2.txt"),
+                        string.Join(",", left));
+
+                    rig.Write("F02/new.txt", "arrived later", T0);
+                    rig.Write("Fresh/one.txt", "a new folder", T0);
+                    await rig.Pass();
+                    await rig.Pass();
+                    left = Directory.EnumerateDirectories(rig.Local).Select(Path.GetFileName).OrderBy(n => n).ToList();
+                    Check(label + "and files that arrive later in new folders still go up, and their folders are cleared too",
+                        rig.DriveTree().ContainsKey("F02/new.txt") && rig.DriveTree().ContainsKey("Fresh/one.txt") &&
+                        string.Join(",", left) == ".sync,Keep" && rig.Monitor.LastPcSide.EndsWith("folders changed"),
+                        $"{rig.Monitor.LastPcSide}; PC holds {string.Join(",", left)}");
+                }
+                finally { DriveMonitor.EmptyFolderAge = age; }
                 return 0;
             });
         }

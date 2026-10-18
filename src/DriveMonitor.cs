@@ -161,6 +161,9 @@ namespace ExplorerNative
             public string? ChangesToken { get; set; }
             public Dictionary<string, string> FolderIds { get; set; } = new(SyncNameComparer.Instance);
             public List<string> DirtyFolders { get; set; } = new();
+
+            /// <summary>Free up space: empty PC folders too new to clear yet, looked at again next pass.</summary>
+            public List<string>? EmptyLater { get; set; }
             public DateTime? LastFullListUtc { get; set; }
             public bool? ScanSubfolders { get; set; }
             public List<string> DriveUnusable { get; set; } = new();
@@ -1073,6 +1076,12 @@ namespace ExplorerNative
 
         private int _waitingEpisode;
 
+        /// <summary>How long a rate limit has to last before it is taken for the 750 GB daily upload cap.</summary>
+        internal static readonly TimeSpan DailyLimitAfter = TimeSpan.FromMinutes(3);
+
+        /// <summary>How often Google is asked again once the daily upload cap is reached.</summary>
+        internal static readonly TimeSpan DailyCapRecheck = TimeSpan.FromMinutes(15);
+
         /// <summary>
         /// Runs a Drive request, waiting out "not now" from Google for as long
         /// as it lasts: a rate limit or a server error is retried with growing,
@@ -1091,6 +1100,11 @@ namespace ExplorerNative
             int attempt = 0;
             var random = new Random();
             var waited = TimeSpan.Zero;
+            var limitedFor = TimeSpan.Zero;
+
+            // This wait says why in the pair's status and stops on Pause; the
+            // client's own rate-limit wait would hide both for up to an hour.
+            DriveClient.CallerWaitsOutRateLimits.Value = true;
             while (true)
             {
                 try
@@ -1104,11 +1118,20 @@ namespace ExplorerNative
                     var (asked, at) = client.LastRetryAfter;
                     var retryAfter = Environment.TickCount64 - at < 15_000 ? asked : null;
                     var wait = SyncBackoff.Delay(attempt++, retryAfter, random.NextDouble());
-                    bool daily = SyncBackoff.IsDailyLimit(ex);
-                    if (daily && wait < SyncBackoff.DailyLimitWait) wait = SyncBackoff.DailyLimitWait;
                     bool limited = ex.ToString().Contains("429") || ex.ToString().Contains("ateLimitExceeded") ||
                                    Limited(ex);
-                    var why = daily ? "Google's daily limit for this account has been reached"
+
+                    // Google's 750 GB a day comes back as the same "user rate
+                    // limit exceeded" as a minute's throttling. One that lasts
+                    // past DailyLimitAfter is the day's: said as that, asked
+                    // about every DailyCapRecheck, never given up on.
+                    bool daily = SyncBackoff.IsDailyLimit(ex);
+                    bool dailyCap = !daily && limited && limitedFor >= DailyLimitAfter;
+                    if (limited) limitedFor += wait;
+                    if (daily && wait < SyncBackoff.DailyLimitWait) wait = SyncBackoff.DailyLimitWait;
+                    if (dailyCap && wait < DailyCapRecheck) wait = DailyCapRecheck;
+                    daily |= dailyCap;
+                    var why = daily ? DriveClient.DailyUploadLimitSaid
                         : limited ? "Google is limiting requests"
                         : "Google Drive is having trouble";
                     if (!daily)
@@ -1125,10 +1148,17 @@ namespace ExplorerNative
                     }
                     SetStatus(pair.Id, StatusOf(pair.Id) with
                     {
-                        Problem = $"waiting, {why}, trying again in {Seconds(wait)}",
+                        Problem = daily
+                            ? $"{why}. Trying again in {Seconds(wait)}"
+                            : $"waiting, {why}, trying again in {Seconds(wait)}",
                     });
-                    if (Interlocked.Exchange(ref _waitingEpisode, 1) == 0)
-                        _notify("sync.ratelimited", $"{DisplayName(pair)} is waiting, because {why}");
+                    // Said once when it starts, and once more when a wait turns
+                    // out to be the day's limit.
+                    int episode = daily ? 2 : 1;
+                    if (Interlocked.Exchange(ref _waitingEpisode, episode) < episode)
+                        _notify("sync.ratelimited", daily
+                            ? $"{why}, so {DisplayName(pair)} is waiting until it resets"
+                            : $"{DisplayName(pair)} is waiting, because {why}");
 
                     // Taken before the pair is checked, so a pause that lands in
                     // between still cuts this wait short.
@@ -1176,7 +1206,7 @@ namespace ExplorerNative
         private void Resumed(DriveSyncPair pair)
         {
             SetStatus(pair.Id, StatusOf(pair.Id) with { Problem = null });
-            if (Interlocked.Exchange(ref _waitingEpisode, 0) == 1)
+            if (Interlocked.Exchange(ref _waitingEpisode, 0) != 0)
                 _notify("sync.ratelimited", $"Google is answering again, so {DisplayName(pair)} is carrying on");
         }
 
@@ -1678,7 +1708,7 @@ namespace ExplorerNative
         /// every pair walks once after the update.
         /// </summary>
         internal static string PcWalkKeyOf(DriveSyncPair pair) =>
-            JsonSerializer.Serialize(new { pair.LocalFolder, pair.DriveFolderId, Rules = SyncRules.For(pair), Walk = 2 });
+            JsonSerializer.Serialize(new { pair.LocalFolder, pair.DriveFolderId, Rules = SyncRules.For(pair), Walk = 3 });
 
         /// <summary>What a pass knows about the PC side before it looks: see <see cref="LookAtPc"/>.</summary>
         private sealed class PcLook
@@ -1706,6 +1736,17 @@ namespace ExplorerNative
         /// change, when a walk met a junction or link, and whenever the journal
         /// cannot account for every change since.
         /// </summary>
+        /// <summary>
+        /// Whether the PC side may be looked at by what changed rather than
+        /// walked whole. Normally that is having records. With Free up space,
+        /// every file cleared off the PC is forgotten, so a folder that has done
+        /// its job has none, and every pass walked all of it again ("nothing
+        /// synced yet"; every few seconds while Resilio was adding files to a
+        /// 24,000-folder tree). There, a whole walk done before is enough.
+        /// </summary>
+        private static bool HasSyncedBefore(DriveSyncPair pair, PairState state, bool hasRecords) =>
+            hasRecords || (pair.FreesUpSpace && state.LastPcWalkUtc != null && state.UsnNext != null);
+
         private PcLook LookAtPc(DriveSyncPair pair, PairState state, bool hasRecords)
         {
             var look = new PcLook { Journal = UsnJournal.Where(pair.LocalFolder) };
@@ -2015,13 +2056,13 @@ namespace ExplorerNative
                 // gives it the totals a pass of only some folders goes on.
                 bool batchedBefore = state.Sharded;
                 if (!state.Sharded) MigrateToShards(pair.Id, state);
-                var batchLook = LookAtPc(pair, state, batchedBefore && state.ShardFolders.Count > 0);
+                var batchLook = LookAtPc(pair, state, batchedBefore && HasSyncedBefore(pair, state, state.ShardFolders.Count > 0));
                 try { await SyncInBatchesAsync(client, pair, state, generation, batchLook, token).ConfigureAwait(false); }
                 finally { PcUnplanned(batchLook); }
                 return;
             }
 
-            var look = LookAtPc(pair, state, state.Files.Count > 0);
+            var look = LookAtPc(pair, state, HasSyncedBefore(pair, state, state.Files.Count > 0));
             try
             {
                 await SyncSmallPairAsync(client, pair, state, generation, look, token).ConfigureAwait(false);
@@ -2144,7 +2185,62 @@ namespace ExplorerNative
                 throw;
             }
             await FreeUpAsync(client, pair, state, rules, local, skips, tally, token).ConfigureAwait(false);
+            if (ClearEmptyFolders(pair, state, rules, skips, pcFolders, folders)) SaveState(pair.Id, state);
             FinishPass(pair, state, tally, unusable, clashing, localClashing);
+        }
+
+        /// <summary>How old an empty folder has to be before free up space clears it, so one just made is not taken from under a file arriving in it.</summary>
+        internal static TimeSpan EmptyFolderAge = TimeSpan.FromMinutes(10);
+
+        /// <summary>
+        /// Free up space clears empty folders too (Conner, 3.0.16: the PC side
+        /// should end up holding nothing but Resilio's .sync). A folder the pass
+        /// looked at, or one left for later, is deleted when it holds nothing at
+        /// all, Drive has it, it is not left out (.sync, the skip list), hidden,
+        /// system or a link, and it was made over <see cref="EmptyFolderAge"/>
+        /// ago; then the folder above it is tried the same way. A folder that
+        /// arrives later with files in it is taken whole by the next pass, as
+        /// any new folder is. The delete is Windows' own, which refuses a folder
+        /// with anything in it, so nothing inside can go with it. True when the
+        /// state changed.
+        /// </summary>
+        private bool ClearEmptyFolders(DriveSyncPair pair, PairState state, SyncRules rules, SyncSkips skips,
+            IEnumerable<string> seen, IReadOnlyDictionary<string, string> onDrive)
+        {
+            if (!pair.FreesUpSpace || rules.Mode != SyncMode.UploadOnly || rules.CopyDeletes || !rules.IncludeSubfolders)
+                return false;
+            var before = state.EmptyLater ?? new List<string>();
+            var candidates = new HashSet<string>(seen, SyncNameComparer.Instance);
+            candidates.UnionWith(before);
+            var later = new HashSet<string>(SyncNameComparer.Instance);
+            var now = DateTime.UtcNow;
+            int cleared = 0;
+            const FileAttributes kept = FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReparsePoint;
+
+            foreach (var folder in candidates.OrderByDescending(f => f.Count(c => c == '/')))
+            {
+                if (Stopped(pair)) break;
+                for (var at = folder; at.Length > 0; at = SyncMoves.Parent(at))
+                {
+                    if (!onDrive.ContainsKey(at) || IsLeftOutFolder(at, rules, skips) ||
+                        at.Split('/').Any(part => part.Equals(".sync", StringComparison.OrdinalIgnoreCase)))
+                        break;
+                    var dir = new DirectoryInfo(Path.Combine(pair.LocalFolder, at.Replace('/', Path.DirectorySeparatorChar)));
+                    try
+                    {
+                        if (!dir.Exists) continue;      // cleared already: the one above may be empty now
+                        if ((dir.Attributes & kept) != 0 || dir.EnumerateFileSystemInfos().Any()) break;
+                        if (now - dir.CreationTimeUtc < EmptyFolderAge) { later.Add(at); break; }
+                        dir.Delete(recursive: false);
+                        cleared++;
+                    }
+                    catch (Exception) { break; }
+                }
+            }
+
+            state.EmptyLater = later.Count == 0 ? null : later.ToList();
+            if (cleared > 0) GoogleDrive.Trace($"sync {DisplayName(pair)}: cleared {cleared} empty folders off the PC");
+            return cleared > 0 || later.Count != before.Count || !later.SetEquals(before);
         }
 
         /// <summary>
@@ -3167,6 +3263,7 @@ namespace ExplorerNative
             // Stopped short for space: folders it never reached are still owed
             // the changes read for them, so the journal's place stays where it was.
             if (tally.SpaceProblem == null) PcPlanned(pair, header, look, walkedWhole: !partial, links);
+            ClearEmptyFolders(pair, header, rules, allSkips, visited, folders);
             SaveState(pair.Id, header);
             FinishPass(pair, header, tally, unusable, clashing, localClashing);
         }

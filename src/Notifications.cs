@@ -253,6 +253,8 @@ namespace ExplorerNative
             // spoken, that is the screen reader talking over everything else to
             // report a problem that is being dealt with.
             Live("drive.upload.retrying", "Upload being retried", DriveOperations, Bar, "Retrying {0}: {1}", "album.flac", "Google Drive is temporarily unavailable"),
+            // Spoken: a copy waiting out the day's limit looks hung otherwise.
+            Live("drive.upload.dailylimit", "Daily upload limit reached", DriveOperations, Say, "{0}", "You've reached your daily upload limit for Google. Copying carries on by itself when it resets"),
             // Spoken, unlike the retries. A transfer that has stopped and is
             // waiting for the internet looks exactly like one that has hung, and
             // this is the sentence that tells them apart — it is worth

@@ -1035,7 +1035,24 @@ namespace ExplorerNative
                     problem == null && Names(rig.DriveTree()) == "a.txt" && rig.Drive.FaultsLeft == 0,
                     $"{problem}; Drive holds {Names(rig.DriveTree())}");
                 Check("and says it is the daily limit",
-                    rig.Said.Any(s => s.Contains("daily limit", StringComparison.Ordinal)), string.Join(" | ", rig.Said));
+                    rig.Said.Any(s => s.Contains("daily upload limit", StringComparison.Ordinal)), string.Join(" | ", rig.Said));
+            }
+
+            // Google's 750 GB a day arrives as "user rate limit exceeded", the
+            // same as a minute's throttling. One that lasts is said as the daily
+            // upload limit, waited out, and never fails the file.
+            using (var rig = new Rig(sandbox, SyncMode.UploadOnly))
+            {
+                var capped = FakeDrive.ErrorBody(403, "userRateLimitExceeded", "User rate limit exceeded.");
+                rig.Write("a.txt", "a", T0);
+                rig.Drive.AddFault(new FakeDrive.Fault { Kind = "multipart", Times = 90, Status = 403, Body = capped });
+                var problem = await rig.Pass();
+                Check("a rate limit that lasts is said as the daily upload limit, and the file still goes up",
+                    problem == null && Names(rig.DriveTree()) == "a.txt" && rig.Drive.FaultsLeft == 0 &&
+                    rig.Said.Any(s => s.Contains("You've reached your daily upload limit for Google", StringComparison.Ordinal)),
+                    $"{problem}; Drive holds {Names(rig.DriveTree())}; {rig.Drive.FaultsLeft} left; said {string.Join(" | ", rig.Said)}");
+                Check("and a short one is not",
+                    !rig.Said.Take(1).Any(s => s.Contains("daily", StringComparison.Ordinal)), string.Join(" | ", rig.Said));
             }
 
             // Duplicate cleanup: the older copy holds an edit the PC never had.

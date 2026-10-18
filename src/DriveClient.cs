@@ -262,9 +262,8 @@ namespace ExplorerNative
 
                 // Slowed down: a transfer waits it out without spending an
                 // attempt. Somebody waiting on an interactive request is told.
-                if (!interactive && IsRateLimit(code, body) && slow.Next(random, asked) is { } slowWait)
+                if (!interactive && IsRateLimit(code, body) && await WaitOutRateLimit(slow, random, asked, token))
                 {
-                    await Pause(slowWait, token);
                     waited = true;
                     attempt--;
                 }

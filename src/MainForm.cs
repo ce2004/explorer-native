@@ -1450,6 +1450,10 @@ namespace ExplorerNative
             // the Drive letter or over an Ogg file it could only refuse.
             _editTagsItem = Item("Edit ta&gs…", Keys.None, EditTagsForSelection);
             _contextMenu.Items.Add(_editTagsItem);
+
+            // Windows' own Format window, on a drive row only (Conner, 3.0.14).
+            _formatItem = Item("&Format…", Keys.None, FormatFocusedDrive);
+            _contextMenu.Items.Add(_formatItem);
             _contextMenu.Items.Add(ArchiveHidden(Item("P&roperties", Keys.None, ShowProperties)));
             _contextMenu.Items.Add(new ToolStripSeparator());
             _contextMenu.Items.Add(ArchiveHidden(Item("&More Windows options…", Keys.None, ShowShellMenuForSelection)));
@@ -5397,7 +5401,58 @@ namespace ExplorerNative
                 focused != null && !IsDrivesView && !inArchive &&
                 !(Drive != null && Drive.Owns(Active.CurrentPath));
 
+            _formatItem.Visible = IsDrivesView && FormattableDrive(focused) != null;
+
             _contextMenu.Show(where);
+        }
+
+        private ToolStripMenuItem _formatItem = null!;
+
+        /// <summary>
+        /// The drive letter a drive row could be formatted as, by name alone: a
+        /// root such as "E:\", not the Windows drive and not the Google Drive
+        /// letter (a folder on C: wearing a letter). Null otherwise.
+        /// </summary>
+        private string? FormattableDrive(string? path)
+        {
+            if (path == null || path.Length != 3 || path[1] != ':' || path[2] != Path.DirectorySeparatorChar) return null;
+            char letter = char.ToUpperInvariant(path[0]);
+            if (letter is < 'A' or > 'Z') return null;
+            var system = Path.GetPathRoot(Environment.SystemDirectory);
+            if (system != null && char.ToUpperInvariant(system[0]) == letter) return null;
+            if (Drive?.Letter is { Length: > 0 } mounted && char.ToUpperInvariant(mounted[0]) == letter) return null;
+            return letter + ":";
+        }
+
+        [System.Runtime.InteropServices.DllImport("shell32.dll")]
+        private static extern uint SHFormatDrive(IntPtr hwnd, uint drive, uint fmtID, uint options);
+
+        /// <summary>
+        /// Opens Windows' Format window for the focused drive. It asks, warns
+        /// and formats by itself; this only says how it ended and lists the
+        /// drives again, since the label and size may have changed.
+        /// </summary>
+        private void FormatFocusedDrive()
+        {
+            try
+            {
+                if (FormattableDrive(FocusedPath()) is not { } letter) return;
+                const uint DefaultFormat = 0xFFFF;
+                uint result = SHFormatDrive(Handle, (uint)(letter[0] - 'A'), DefaultFormat, 0);
+                ShowStatus(result switch
+                {
+                    0xFFFFFFFE => $"Format of {letter} cancelled",
+                    0xFFFFFFFD => $"{letter} cannot be formatted",
+                    0xFFFFFFFF => $"{letter} was not formatted",
+                    _ => $"{letter} formatted",
+                });
+                RestoreListFocus();
+                if (IsDrivesView) _ = NavigateAsync(DrivesPath, preferPath: letter + Path.DirectorySeparatorChar);
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) Announce("Could not open Format: " + ex.Message, isError: true);
+            }
         }
 
         /// <summary>
@@ -5573,9 +5628,9 @@ namespace ExplorerNative
             // total is said once, when it is let go (List_KeyUp).
             AnnounceOperation("select.count",
                 (isIn && selected == 1) || (ModifierKeys & Keys.Control) != 0
-                    ? $"{name} {(isIn ? "selected" : "not selected")}"
-                : selected == 0 ? $"{name} not selected"
-                : $"{name} {(isIn ? "selected" : "not selected")}, {selected:N0} selected in all");
+                    ? $"{(isIn ? "Selected" : "Not selected")} {name}"
+                : selected == 0 ? $"Not selected {name}"
+                : $"{(isIn ? "Selected" : "Not selected")} {name}, {selected:N0} selected in all");
         }
 
         private void List_ColumnClick(object? sender, ColumnClickEventArgs e)

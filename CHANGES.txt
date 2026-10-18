@@ -1,3 +1,9 @@
+3.0.15
+New feature: Format is on the Shift+F10 menu when you are on a drive in the drives list. It opens the Windows Format window for that drive. It is not offered for the Windows drive or the Google Drive letter.
+Changed: pressing Space now says "Selected" or "Not selected" first, then the name, so you hear what happened straight away.
+Changed: when Google stops your uploads for the day, a synced folder and a copy to Google Drive now say "You've reached your daily upload limit for Google", and carry on by themselves once it resets.
+Bug fixed: in 3.0.14, while a synced folder waited on Google's limits, its status stopped saying so and it looked stuck, and Pause had to wait for the wait to finish. Now the status says what it is waiting for, and Pause works straight away.
+
 3.0.14
 Bug fixed: when you copied lots of files to Google Drive and Google started limiting how many files could be uploaded, Explorer Native only tried a few more times over about two minutes, then gave up with an error and the files were not copied. Now it waits Google out, for up to an hour if it has to, and carries on copying by itself.
 
