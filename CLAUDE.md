@@ -60,7 +60,7 @@ $p.WaitForExit(120000)
 
 - .NET 10 since 3.1.0 (`net10.0-windows`, both projects; the release workflow sets up 10.0.x; the per-user SDK here is 10.0.402). PublishSingleFile, self-contained (Conner, 3.1.0: nobody installs anything; ~127MB x64), ReadyToRun (not for Concentus/NVorbis), not trimmed (NETSDK1175), not compressed: measured medians 102ms vs 347ms to start, and every folder open starts a messenger. `WFO1000` (designer serialization) is in NoWarn. C# 14: `array.Reverse()` binds to the in-place span Reverse (returns void); write `.AsEnumerable().Reverse()`.
 - Native libraries unpack to `%TEMP%\.net\ExplorerNative\<build>`; `AppInstall.SweepOldExtractions` deletes other builds' folders at startup (this PC had 43).
-- `Speech.LoadNvda` must probe `NATIVE_DLL_SEARCH_DIRECTORIES`, or the app is silently mute.
+- `Speech.LoadNvda` must find the bundled NVDA client, or the app is silently mute. Self-contained (3.1.0), `NATIVE_DLL_SEARCH_DIRECTORIES` is empty, so a bare name goes through `NativeLibrary.TryLoad(name, assembly, null)`, which knows the unpack folder (measured with a probe build). `Speech.LoadedFrom` records the path; `SweepOldExtractions` uses its folder. Check a release by listing the running process's modules for nvdaControllerClient.
 - Every folder open spawns a messenger. `Main` hands the path over the pipe before loading settings, speech or WinForms. Keep slow work off startup (web server, clipboard listener and audio warm run later).
 
 ## Shape of the code (src\)

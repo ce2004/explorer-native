@@ -293,10 +293,16 @@ namespace ExplorerNative
         /// go; one still in use by a copy that is running stays until next time.
         /// Nothing is touched unless this build's own folder is found there.
         /// </summary>
-        public static int SweepOldExtractions() =>
-            AppContext.GetData("NATIVE_DLL_SEARCH_DIRECTORIES") is string search
-                ? SweepOldExtractions(search.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-                : 0;
+        public static int SweepOldExtractions()
+        {
+            // Self-contained, the runtime no longer names its unpack folder, so
+            // the folder the NVDA client was loaded from is the one that is ours.
+            var folders = new List<string>();
+            if (Speech.LoadedFrom is { } loaded && Path.GetDirectoryName(loaded) is { } where) folders.Add(where);
+            if (AppContext.GetData("NATIVE_DLL_SEARCH_DIRECTORIES") is string search)
+                folders.AddRange(search.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries));
+            return SweepOldExtractions(folders);
+        }
 
         /// <summary>The same, given the search folders; internal for the suite.</summary>
         internal static int SweepOldExtractions(IEnumerable<string> searchFolders)

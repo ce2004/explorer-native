@@ -158,7 +158,16 @@ namespace ExplorerNative
             foreach (string c in candidates)
             {
                 if (string.IsNullOrEmpty(c)) continue;
-                if (!NativeLibrary.TryLoad(c, out IntPtr lib)) continue;
+
+                // A bare name goes through the runtime's own probe first, which
+                // knows where a single-file build unpacked it. Self-contained
+                // (3.1.0), NATIVE_DLL_SEARCH_DIRECTORIES is empty, and the OS
+                // search alone left the bundled client unfound: no speech.
+                IntPtr lib;
+                bool loaded = Path.IsPathRooted(c)
+                    ? NativeLibrary.TryLoad(c, out lib)
+                    : NativeLibrary.TryLoad(c, typeof(Speech).Assembly, null, out lib) || NativeLibrary.TryLoad(c, out lib);
+                if (!loaded) continue;
                 try
                 {
                     if (!NativeLibrary.TryGetExport(lib, "nvdaController_speakText", out IntPtr speak) ||
@@ -172,7 +181,9 @@ namespace ExplorerNative
                     _speakText = (delegate* unmanaged[Stdcall]<char*, int>)speak;
                     _testIfRunning = (delegate* unmanaged[Stdcall]<int>)test;
                     _cancelSpeech = cancel == IntPtr.Zero ? null : (delegate* unmanaged[Stdcall]<int>)cancel;
-                    LoadDiagnostic = "loaded " + c;
+                    var path = new System.Text.StringBuilder(1024);
+                    LoadedFrom = GetModuleFileNameW(lib, path, (uint)path.Capacity) > 0 ? path.ToString() : null;
+                    LoadDiagnostic = "loaded " + (LoadedFrom ?? c);
                     return;
                 }
                 catch (Exception e)
@@ -184,6 +195,12 @@ namespace ExplorerNative
 
             LoadDiagnostic = $"could not load {exact} (tried {candidates.Count} locations)";
         }
+
+        /// <summary>Where the NVDA client was loaded from, in full; null until it is. The single-file unpack folder, in a release.</summary>
+        internal static string? LoadedFrom { get; private set; }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern uint GetModuleFileNameW(IntPtr module, System.Text.StringBuilder path, uint size);
 
         // NVDA starting or stopping mid-session is rare; asking on every single
         // announcement is an RPC round trip we pay for nothing. Re-checked
