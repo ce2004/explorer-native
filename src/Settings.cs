@@ -1429,6 +1429,117 @@ namespace ExplorerNative
             return true;
         }
 
+        // ---------- Export and import (Preferences, File menu) ----------
+
+        /// <summary>The first property of an export, so an import can tell one from any other JSON file.</summary>
+        internal const string ExportMarker = "ExplorerNativeSettingsExport";
+
+        /// <summary>
+        /// Never in an export, and never taken from one: these stay this PC's own.
+        /// ConnectCode is the web app's pairing code, a secret (whoever holds it
+        /// can pair a browser with this PC). The rest describe this PC, not the
+        /// person: where the program is and when it last took over folders, the
+        /// window's place and the folders last open, the last track, and the sound
+        /// device's id, which means nothing on another PC. The Google sign-in, the
+        /// client secret, logs and sync progress are separate files and never go.
+        /// </summary>
+        internal static readonly string[] ThisPcOnly =
+        {
+            nameof(ConnectCode), nameof(RegisteredExePath), nameof(FoldersTakenAt),
+            nameof(WindowX), nameof(WindowY), nameof(WindowWidth), nameof(WindowHeight),
+            nameof(StartPath), nameof(LastFolder), nameof(LastFolderTab2), nameof(ActiveTab),
+            nameof(FocusedPathTab1), nameof(FocusedPathTab2), nameof(AudioLastPath), nameof(AudioOutputDeviceId),
+        };
+
+        /// <summary>
+        /// These settings as an export: plain, readable JSON (not encrypted, so it
+        /// opens on another PC or Windows account), starting with
+        /// <see cref="ExportMarker"/>, without <see cref="ThisPcOnly"/>.
+        /// </summary>
+        internal string ToExportJson()
+        {
+            var copy = Clone();
+            copy.SettingsVersion = Math.Max(copy.SettingsVersion, CurrentSettingsVersion);
+            var node = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(copy, JsonFormat))!.AsObject();
+            foreach (var name in ThisPcOnly) node.Remove(name);
+            var export = new System.Text.Json.Nodes.JsonObject { [ExportMarker] = 1 };
+            foreach (var (key, value) in node.ToList())
+            {
+                node.Remove(key);
+                export[key] = value;
+            }
+            return export.ToJsonString(JsonFormat);
+        }
+
+        /// <summary>What an import says when the file is not Explorer Native settings.</summary>
+        internal const string NotSettingsSentence = "That file is not Explorer Native settings, so nothing was changed.";
+
+        /// <summary>
+        /// An export read back, through the same salvage and repair settings.json
+        /// gets: a value that will not read is dropped on its own, a broken one is
+        /// repaired, and a newer build's settings are kept for it. Also takes a
+        /// settings.json itself. Null, with the reason in
+        /// <paramref name="refusal"/>, for anything that is not Explorer Native
+        /// settings. <see cref="ThisPcOnly"/> is never taken from the file.
+        /// </summary>
+        internal static Settings? FromExportJson(string json, out string? refusal)
+        {
+            refusal = NotSettingsSentence;
+            System.Text.Json.Nodes.JsonObject? node;
+            try { node = System.Text.Json.Nodes.JsonNode.Parse(json, documentOptions: ReadDocument) as System.Text.Json.Nodes.JsonObject; }
+            catch { node = null; }
+            if (node == null || !(node.ContainsKey(ExportMarker) || node.ContainsKey(nameof(SettingsVersion)))) return null;
+
+            node.Remove(ExportMarker);
+            foreach (var name in ThisPcOnly) node.Remove(name);
+            var text = node.ToJsonString();
+
+            Settings? loaded;
+            try { loaded = JsonSerializer.Deserialize<Settings>(text, ReadFormat); }
+            catch { loaded = Salvage(text); }
+            if (loaded == null) return null;
+            try { loaded = loaded.Validated(); }
+            catch { return null; }
+            refusal = null;
+            return loaded;
+        }
+
+        /// <summary>
+        /// The bytes of an export file as text: plain JSON, or a settings.json
+        /// still encrypted for this Windows account. Throws when it cannot be read.
+        /// </summary>
+        internal static string ExportFileText(byte[] bytes) => ProtectedFile.Decode(bytes);
+
+        /// <summary>
+        /// <paramref name="imported"/> made ready to replace <paramref name="live"/>:
+        /// with this PC's own values (<see cref="ThisPcOnly"/>) carried over, and
+        /// every synced folder whose PC folder <paramref name="folderExists"/> says
+        /// is not on this PC paused, so nothing syncs into a folder that is not
+        /// there. Returns how many were paused.
+        /// </summary>
+        internal static int PrepareImport(Settings live, Settings imported, Func<string, bool> folderExists)
+        {
+            foreach (var name in ThisPcOnly)
+            {
+                var property = typeof(Settings).GetProperty(name)!;
+                property.SetValue(imported, property.GetValue(live));
+            }
+            imported.SettingsVersion = Math.Max(imported.SettingsVersion, live.SettingsVersion);
+
+            int paused = 0;
+            foreach (var pair in imported.DriveSyncPairs)
+            {
+                if (pair.Paused) continue;
+                bool there;
+                try { there = !string.IsNullOrWhiteSpace(pair.LocalFolder) && folderExists(pair.LocalFolder); }
+                catch { there = false; }
+                if (there) continue;
+                pair.Paused = true;
+                paused++;
+            }
+            return paused;
+        }
+
         public Settings Clone()
         {
             var copy = JsonSerializer.Deserialize<Settings>(JsonSerializer.Serialize(this, PlainFormat), PlainFormat)!;

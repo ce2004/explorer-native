@@ -924,6 +924,10 @@ namespace ExplorerNative
             file.DropDownItems.Add(properties);
             _archiveHidden.Add(properties);
             file.DropDownItems.Add(new ToolStripSeparator());
+            // Also in Preferences, beside Reset.
+            file.DropDownItems.Add(Item("&Export settings...", Keys.None, () => ExportSettings(this)));
+            file.DropDownItems.Add(Item("I&mport settings...", Keys.None, () => ImportSettings(this, null)));
+            file.DropDownItems.Add(new ToolStripSeparator());
             file.DropDownItems.Add(Item("E&xit", Keys.None, Close));
 
             // Always on the menu, drive or no drive, at Conner's request: a USB
@@ -9087,8 +9091,21 @@ namespace ExplorerNative
             // What the dialog started from, so OK can apply what was changed in it
             // and nothing else. See Settings.WithChanges.
             var before = _settings.Clone();
-            using var dialog = new SettingsForm(_settings, startCategory) { OpenShortcutsWhenShown = openShortcuts };
+            using var dialog = new SettingsForm(_settings, startCategory)
+            {
+                OpenShortcutsWhenShown = openShortcuts,
+                ExportRequested = owner => ExportSettings(owner),
+            };
             var outcome = dialog.ShowDialog(this);
+
+            // Import closes Preferences first: it replaces every setting, so
+            // nothing changed on the dialog's pages could stand anyway.
+            if (outcome == DialogResult.Yes && dialog.ImportPath is { } importFrom)
+            {
+                RestoreListFocus();
+                ImportSettings(this, importFrom);
+                return;
+            }
 
             // Put the keyboard back in the list.
             //
@@ -9131,6 +9148,114 @@ namespace ExplorerNative
             else
                 AnnounceOperation("settings.failed",
                     "Preferences could not be saved. The change applies to this session only.");
+        }
+
+        /// <summary>
+        /// Writes the settings to a file of the person's choosing, as plain JSON
+        /// another PC can import (see <see cref="Settings.ToExportJson"/>). The
+        /// saved settings, not a page of Preferences still being edited.
+        /// </summary>
+        private async void ExportSettings(IWin32Window owner)
+        {
+            try
+            {
+                string path;
+                using (var dialog = new SaveFileDialog
+                {
+                    Title = "Export settings",
+                    FileName = "Explorer Native settings.json",
+                    Filter = "Settings files (*.json)|*.json|All files (*.*)|*.*",
+                    InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                    OverwritePrompt = true,
+                })
+                {
+                    var shown = dialog.ShowDialog(owner);
+                    if (ReferenceEquals(owner, this)) RestoreListFocus();
+                    if (shown != DialogResult.OK) return;
+                    path = dialog.FileName;
+                }
+
+                var json = _settings.ToExportJson();
+                // Off the UI thread: the file may be on a share.
+                await Task.Run(() => File.WriteAllText(path, json, new System.Text.UTF8Encoding(false)));
+                if (!IsDisposed) AnnounceOperation("settings.exported", $"Settings exported to {Path.GetFileName(path)}");
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) AnnounceOperation("settings.export.failed", "Could not export settings: " + ex.Message);
+            }
+        }
+
+        /// <summary>
+        /// Replaces the settings with an export's, after asking. The file goes
+        /// through the same salvage and repair as settings.json; anything that is
+        /// not Explorer Native settings is refused and nothing changes. This PC's
+        /// own values stay (<see cref="Settings.ThisPcOnly"/>), and synced folders
+        /// whose PC folder is not here come in paused. Applied like OK in
+        /// Preferences, so shortcuts, folder handling and the window follow.
+        /// </summary>
+        /// <param name="chosen">A file already picked (Preferences' button), or null to ask for one.</param>
+        private async void ImportSettings(IWin32Window owner, string? chosen)
+        {
+            try
+            {
+                var path = chosen;
+                if (path == null)
+                {
+                    using var dialog = new OpenFileDialog
+                    {
+                        Title = "Import settings",
+                        Filter = "Settings files (*.json)|*.json|All files (*.*)|*.*",
+                        InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                        CheckFileExists = true,
+                    };
+                    var shown = dialog.ShowDialog(owner);
+                    RestoreListFocus();
+                    if (shown != DialogResult.OK) return;
+                    path = dialog.FileName;
+                }
+
+                var (imported, refusal) = await Task.Run(() =>
+                {
+                    var read = Settings.FromExportJson(Settings.ExportFileText(File.ReadAllBytes(path)), out var why);
+                    return (read, why);
+                });
+                if (IsDisposed) return;
+                if (imported == null)
+                {
+                    AnnounceOperation("settings.import.failed", refusal ?? Settings.NotSettingsSentence);
+                    return;
+                }
+
+                var name = Path.GetFileName(path);
+                var answer = MessageBox.Show(this,
+                    $"Replace your current settings with the ones in {name}? " +
+                    "Your Google sign-in and synced folders' progress are not changed.",
+                    "Import settings", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                RestoreListFocus();
+                if (answer != DialogResult.Yes) return;
+
+                // The live values this PC keeps, taken now; the folder checks off
+                // the UI thread, since a synced folder may be on a share.
+                var live = _settings.Clone();
+                int paused = await Task.Run(() => Settings.PrepareImport(live, imported, Directory.Exists));
+                if (IsDisposed) return;
+
+                if (!Program.ApplySettings(imported))
+                {
+                    AnnounceOperation("settings.failed",
+                        "The imported settings apply to this session, but could not be saved. They are lost on the next launch.");
+                    return;
+                }
+                var said = $"Settings imported from {name}";
+                if (paused == 1) said += ". One synced folder is paused, because its folder is not on this PC";
+                else if (paused > 1) said += $". {paused} synced folders are paused, because their folders are not on this PC";
+                AnnounceOperation("settings.imported", said);
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) AnnounceOperation("settings.import.failed", "Could not import settings: " + ex.Message);
+            }
         }
 
         private void AnnounceFolder()

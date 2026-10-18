@@ -165,6 +165,15 @@ namespace ExplorerNative
         /// </summary>
         public bool OpenShortcutsWhenShown { get; init; }
 
+        /// <summary>The window's export, owned by this dialog; null leaves the button doing nothing (the suite).</summary>
+        public Action<IWin32Window>? ExportRequested { get; init; }
+
+        /// <summary>
+        /// The file chosen with Import settings. The dialog then closes with
+        /// DialogResult.Yes and the window imports it, after asking.
+        /// </summary>
+        public string? ImportPath { get; private set; }
+
         private void OpenShortcuts()
         {
             using var dialog = new ShortcutsForm(_working);
@@ -332,6 +341,30 @@ namespace ExplorerNative
             buttons.Controls.Add(cancel);
             buttons.Controls.Add(ok);
             buttons.Controls.Add(reset);
+
+            // Export and import, beside Reset (also on the File menu, with access
+            // keys there). None here: a key on these would have to be free on every
+            // page, and the dialog's own buttons keep O, C and R (SettingsFixTests). Tab reaches them.
+            var export = new Button { Text = "Export settings...", AutoSize = true, UseMnemonic = false, AccessibleName = "Export settings" };
+            export.Click += (_, _) => ExportRequested?.Invoke(this);
+            var import = new Button { Text = "Import settings...", AutoSize = true, UseMnemonic = false, AccessibleName = "Import settings" };
+            import.Click += (_, _) =>
+            {
+                using var pick = new OpenFileDialog
+                {
+                    Title = "Import settings",
+                    Filter = "Settings files (*.json)|*.json|All files (*.*)|*.*",
+                    InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                    CheckFileExists = true,
+                };
+                if (pick.ShowDialog(this) != DialogResult.OK) return;
+                // The window asks before anything is replaced, once Preferences is closed.
+                ImportPath = pick.FileName;
+                DialogResult = DialogResult.Yes;
+                Close();
+            };
+            buttons.Controls.Add(export);
+            buttons.Controls.Add(import);
 
             // Not a plain DialogResult button: the Google client ID and secret
             // are checked with Google first, and a refusal keeps the dialog open.
