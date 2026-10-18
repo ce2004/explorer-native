@@ -135,6 +135,10 @@ namespace ExplorerNative
                 if (!char.IsLetterOrDigit(c)) return 0;
             if (char.IsDigit(part[0])) return 0;
 
+            // The names NameOf gives them, for the - and = keys.
+            if (part.Equals("Minus", StringComparison.OrdinalIgnoreCase)) return (uint)Keys.OemMinus;
+            if (part.Equals("Equals", StringComparison.OrdinalIgnoreCase)) return (uint)Keys.Oemplus;
+
             return Enum.TryParse<Keys>(part, ignoreCase: true, out var k) && IsUsable(k) ? (uint)k : 0;
         }
 
@@ -160,6 +164,9 @@ namespace ExplorerNative
         private static string NameOf(Keys key) => key switch
         {
             >= Keys.D0 and <= Keys.D9 => ((char)('0' + (key - Keys.D0))).ToString(),
+            // Windows calls them Oem keys, which is not what anybody would say.
+            Keys.OemMinus => "Minus",
+            Keys.Oemplus => "Equals",
             _ => key.ToString(),
         };
     }

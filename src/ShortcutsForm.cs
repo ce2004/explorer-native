@@ -111,6 +111,26 @@ namespace ExplorerNative
 
             Controls.Add(page);
             Controls.Add(buttons);
+
+            // A shortcut the settings already had that can no longer be one (Ctrl+Up
+            // for the volume, from before Ctrl with the arrows was kept for the list):
+            // the keyboard starts in its box and says why, so the fix is one press away.
+            Shown += (_, _) =>
+            {
+                var refused = new List<string>();
+                ShortcutBox? first = null;
+                foreach (var action in AudioActions.All)
+                {
+                    if (!_boxes.TryGetValue(action.Action, out var box) || !box.Value.IsAssigned) continue;
+                    if (ReservedShortcuts.OwnerOf(box.Value) is not { } owner) continue;
+                    refused.Add($"{action.Label} is {box.Value.Spoken}, which is kept for {owner}");
+                    first ??= box;
+                }
+                if (first == null) return;
+                first.Focus();
+                _message.Text = string.Join(". ", refused) + ". Press new keys in each, or Delete to clear it.";
+                if (_working.SpeakEnabled) Speech.Speak(_message.Text, interrupt: false);
+            };
         }
 
         /// <summary>

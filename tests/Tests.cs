@@ -5208,14 +5208,14 @@ namespace ExplorerNative
                 var mine = new Settings
                 {
                     AudioPlayPauseShortcut = "Ctrl+Alt+P",
-                    AudioVolumeUpShortcut = "Ctrl+Up",
+                    AudioVolumeUpShortcut = "Ctrl+Shift+Equals",
                     HotkeyModifiers = HotkeyManager.MOD_CONTROL | HotkeyManager.MOD_ALT,
                     HotkeyKey = (uint)Keys.E,
                 };
                 mine.Save();
                 var back = Settings.Load();
                 Check("a settings file that has shortcuts keeps every one of them",
-                    back.AudioPlayPauseShortcut == "Ctrl+Alt+P" && back.AudioVolumeUpShortcut == "Ctrl+Up" &&
+                    back.AudioPlayPauseShortcut == "Ctrl+Alt+P" && back.AudioVolumeUpShortcut == "Ctrl+Shift+Equals" &&
                     back.HotkeyKey == (uint)Keys.E &&
                     back.HotkeyModifiers == (HotkeyManager.MOD_CONTROL | HotkeyManager.MOD_ALT));
             }
@@ -11782,19 +11782,26 @@ namespace ExplorerNative
 
             // Something plainly free stays free.
             //
-            // The last four are a real person's settings, and the list must not
-            // take a combination somebody already chose on purpose. Ctrl+Up and
-            // Ctrl+Down move the cursor without moving the selection, which is a
-            // convenience the plain arrows already cover — so they are not worth
-            // reserving, and reserving them once broke a working volume control.
+            // The last ones are a real person's settings, and the list must not
+            // take a combination somebody already chose on purpose.
             foreach (var free in new[]
             {
                 "Ctrl+Alt+P", "Ctrl+Alt+Shift+B", "Ctrl+Alt+1",
-                "Ctrl+Up", "Ctrl+Down", "Ctrl+Shift+Space", "Ctrl+Shift+Left",
+                "Ctrl+Shift+Equals", "Ctrl+Shift+Minus", "Ctrl+Shift+Space", "Ctrl+Shift+Left",
                 "Ctrl+Shift+Right", "Ctrl+Shift+P", "Ctrl+Alt+E",
             })
                 Check($"{free} is still allowed", ReservedShortcuts.OwnerOf(Shortcut.Parse(free)) == null,
                     ReservedShortcuts.OwnerOf(Shortcut.Parse(free)) ?? "");
+
+            // Ctrl with a moving key is how items are picked out one by one
+            // (Ctrl+arrow, Space). As the volume, it never reached the list.
+            foreach (var moving in new[] { "Ctrl+Up", "Ctrl+Down", "Ctrl+Home", "Ctrl+End", "Ctrl+PageUp", "Ctrl+PageDown" })
+                Check($"{moving} can never be a shortcut", ReservedShortcuts.OwnerOf(Shortcut.Parse(moving)) != null);
+
+            Check("the - and = keys read as Minus and Equals, and back",
+                Shortcut.Parse("Ctrl+Shift+Equals").ToString() == "Ctrl+Shift+Equals" &&
+                Shortcut.Parse("ctrl+shift+minus").Key == (uint)Keys.OemMinus &&
+                new Shortcut(HotkeyManager.MOD_CONTROL, (uint)Keys.Oemplus).Spoken == "Ctrl plus Equals");
 
             // The Windows key cannot collide with anything on the list, and
             // claiming it did would be wrong.

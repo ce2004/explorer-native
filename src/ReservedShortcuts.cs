@@ -84,16 +84,18 @@ namespace ExplorerNative
             new(Keys.Shift | Keys.PageUp, "Extending the selection"),
             new(Keys.Shift | Keys.PageDown, "Extending the selection"),
 
-            // Ctrl with an arrow — moving the cursor without moving the
-            // selection — is deliberately *not* here, and the reason is a real
-            // configuration rather than a principle. Somebody was already using
-            // Ctrl+Up and Ctrl+Down for the volume, and reserving them would have
-            // taken away two shortcuts they had chosen on purpose in order to
-            // protect a convenience that the plain arrows already provide.
-            //
-            // The line this list draws is "would losing it leave no way to do the
-            // thing". Extending a selection and toggling one item have no other
-            // keyboard route, so they stay. Moving without selecting has one.
+            // Ctrl with a moving key moves the cursor without moving the
+            // selection, which is how a selection is picked out item by item
+            // (Ctrl+arrow, Space, Ctrl+arrow, Space). It used to be left free
+            // because the volume was on Ctrl+Up and Ctrl+Down; taken as global
+            // shortcuts, those keys never reached the list, and picking items
+            // out by keyboard did not work at all. Conner: never again.
+            new(Keys.Control | Keys.Up, "moving through the list without selecting"),
+            new(Keys.Control | Keys.Down, "moving through the list without selecting"),
+            new(Keys.Control | Keys.Home, "moving through the list without selecting"),
+            new(Keys.Control | Keys.End, "moving through the list without selecting"),
+            new(Keys.Control | Keys.PageUp, "moving through the list without selecting"),
+            new(Keys.Control | Keys.PageDown, "moving through the list without selecting"),
 
             // ---- everybody's, and the quietest to lose ----
             new(Keys.Control | Keys.Z, "Undo, in every application"),

@@ -158,8 +158,25 @@ namespace ExplorerNative
 
         public Settings Result => _working;
 
+        /// <summary>
+        /// Goes straight on into the audio shortcuts window once this is up: OK
+        /// on the startup dialog about refused shortcuts (Conner's request).
+        /// OK there, then OK here, saves them.
+        /// </summary>
+        public bool OpenShortcutsWhenShown { get; init; }
+
+        private void OpenShortcuts()
+        {
+            using var dialog = new ShortcutsForm(_working);
+            dialog.ShowDialog(this);
+        }
+
         public SettingsForm(Settings current, string? startCategory)
         {
+            Shown += (_, _) =>
+            {
+                if (OpenShortcutsWhenShown) BeginInvoke(new Action(OpenShortcuts));
+            };
             _working = current.Clone();
 
             Text = "Explorer Native Preferences";
@@ -998,11 +1015,7 @@ namespace ExplorerNative
             AudioVolumeSection(panel);
             AudioSpeechSection(panel);
 
-            AddButton(panel, "Configure keyboard &shortcuts...", () =>
-            {
-                using var dialog = new ShortcutsForm(_working);
-                dialog.ShowDialog(this);
-            });
+            AddButton(panel, "Configure keyboard &shortcuts...", OpenShortcuts);
             AddInfo(panel,
                 $"{AudioActions.All.Count} actions, each with its own global shortcut. They open in their own window " +
                 "rather than filling this page, and a combination already used by another action is " +

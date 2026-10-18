@@ -1,3 +1,9 @@
+3.0.13
+New feature: Space selects and deselects. Press Space on an item to add it to your selection, and Space again to take it out, without losing anything else you selected. Hold Ctrl and use the arrows to move without selecting, press Space on each item you want, and when you let go of Ctrl you hear how many are selected.
+Changed: Ctrl with the arrows, Home, End, Page Up or Page Down can no longer be a shortcut, because those keys move through the list without selecting. If your volume shortcuts were Ctrl+Up and Ctrl+Down, Explorer Native tells you when it starts, and pressing OK takes you straight to the shortcuts window with the cursor on the first one to change.
+New feature: the Status list for a synced folder says about how long is left at the speed it is going.
+Bug fixed: if Explorer Native started before the internet was ready, such as right after a restart, Google Drive never connected and your synced folders stopped until you restarted Explorer Native yourself. Now it keeps trying until Google answers, and syncing carries on by itself.
+
 3.0.12
 Bug fixed: a synced folder with thousands of empty subfolders, like the ones Resilio Sync makes before its files arrive, could stop sending files for over an hour while each empty folder was made in Google Drive one by one, and new files were not noticed until it finished. Empty folders are now made several at a time.
 Bug fixed: with Free up space on, if Explorer Native was closed or updated in the middle of a sync, a book that later arrived in a second folder could be mistaken for the first one being moved, and the copy already in Google Drive was moved to the new folder. Files cleared off the PC are now forgotten straight away, and with Free up space on a file gone from the PC is never taken for a move.

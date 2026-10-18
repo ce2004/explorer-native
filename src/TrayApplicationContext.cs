@@ -466,14 +466,42 @@ namespace ExplorerNative
         /// every folder open, and nothing that waits on Google belongs in that
         /// path.
         /// </summary>
+        /// <summary>Raised by every connect asked for, so a retry loop gives way to a newer one.</summary>
+        private int _mountAttempt;
+
+        /// <summary>Ten seconds, doubling, at most two minutes.</summary>
+        internal static TimeSpan MountRetryWait(int tries) =>
+            TimeSpan.FromSeconds(Math.Min(120, 10 * Math.Pow(2, Math.Min(tries, 4))));
+
         private void MountGoogleDrive()
         {
+            int attempt = Interlocked.Increment(ref _mountAttempt);
             _ = System.Threading.Tasks.Task.Run(async () =>
             {
                 // A leftover sync root or letter is cleared before a new one is
                 // made, as it was when the sweep ran in the constructor.
                 await _sweeps;
                 bool ok = await _drive.Mount(_settings);
+
+                // No network yet (started with Windows, before it was up: "No such
+                // host is known") is tried again until Google answers. It was
+                // tried once, and Drive and every synced folder stayed off until
+                // the app was restarted by hand: a day's sync lost while the PC's
+                // disk filled. Only network failures; a sign-in is never retried.
+                for (int tries = 0; !ok && _drive.FailedOnNetwork; tries++)
+                {
+                    if (tries == 0)
+                    {
+                        var why = _drive.Status.Replace("Could not connect: ", "").TrimEnd('.');
+                        PostUi(() => Notify("drive.signin.refused",
+                            $"Google Drive could not connect yet: {why}. It keeps trying, and syncs once it is back"));
+                    }
+                    await System.Threading.Tasks.Task.Delay(MountRetryWait(tries));
+                    if (_quitting || !_settings.GoogleDriveEnabled || attempt != Volatile.Read(ref _mountAttempt) ||
+                        _drive.Mounted) return;
+                    ok = await _drive.Mount(_settings, quietly: true);
+                    if (!ok && !_drive.FailedOnNetwork && !_settings.GoogleDriveEnabled) return;
+                }
                 PostUi(() =>
                 {
                     if (ok)
@@ -720,7 +748,7 @@ namespace ExplorerNative
                 if (!Shortcut.IsUsable((Keys)window.Key))
                     unreadable.Add($"{window} (show the window)");
                 else if (window.IsAssigned && ReservedShortcuts.OwnerOf(window) is { } windowOwner)
-                    reserved.Add($"{window} (show the window) is {windowOwner}");
+                    reserved.Add($"{window} (show the window) is kept for {windowOwner}");
                 else if (window.IsAssigned && !window.CanRegister)
                     unusable.Add($"{window} (show the window)");
                 else if (!_hotkeys.Register(HotkeyManager.MainWindowHotkeyId, window))
@@ -760,7 +788,7 @@ namespace ExplorerNative
                     // problem is that Windows would accept it.
                     if (ReservedShortcuts.OwnerOf(shortcut) is { } spokenFor)
                     {
-                        reserved.Add($"{keys} ({label}) is {spokenFor}");
+                        reserved.Add($"{keys} ({label}) is kept for {spokenFor}");
                         continue;
                     }
 
@@ -940,8 +968,12 @@ namespace ExplorerNative
                 Environment.NewLine + Environment.NewLine +
                 string.Join(Environment.NewLine + Environment.NewLine, why) +
                 Environment.NewLine + Environment.NewLine +
-                "Everything else in the settings file was applied. To choose different " +
-                "keys, open Preferences and go to Shortcuts.";
+                "Everything else in the settings file was applied. Press OK to choose different keys.";
+
+            // OK goes straight to where the keys are chosen (Conner's request):
+            // the audio shortcuts window, or the Hotkey page when only the
+            // window's own shortcut is wrong.
+            bool audio = lines.Exists(l => !l.Contains("(show the window)"));
 
             HotkeyTrace($"dialog queued: {lines.Count} lines " +
                         $"(reserved={reserved.Count} duplicate={duplicates.Count} unusable={unusable.Count} " +
@@ -960,6 +992,10 @@ namespace ExplorerNative
                         MessageBox.Show(body, Title,
                             MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     HotkeyTrace("dialog dismissed");
+
+                    if (_quitting || _audioDialogOpen || _form?.PreferencesOpen == true) return;
+                    ShowWindow();
+                    _form?.OpenPreferencesExternally(audio ? "Audio" : "Hotkey", openShortcuts: audio);
                 }
                 catch (Exception ex)
                 {

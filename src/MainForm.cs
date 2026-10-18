@@ -819,6 +819,7 @@ namespace ExplorerNative
                 // UpdatePaneName: this is only what an empty pane is called.
                 list.AccessibleName = "Files and folders";
                 list.KeyDown += List_KeyDown;
+                list.KeyUp += List_KeyUp;
                 list.KeyPress += List_KeyPress;
                 list.DoubleClick += (_, _) => ActivateFocused();
                 list.ColumnClick += List_ColumnClick;
@@ -5130,14 +5131,42 @@ namespace ExplorerNative
                 // the key yet, so what is selected is still the old answer.
                 case Keys.Up or Keys.Down or Keys.Home or Keys.End
                      or Keys.PageUp or Keys.PageDown when e.Shift:
-                case Keys.Space when e.Control:
                     ScheduleSelectionAnnouncement();
+                    break;
+
+                // Space puts the row in or takes it out, with or without Ctrl,
+                // and leaves the rest of the selection alone (Conner's request).
+                // Ctrl+arrow moves without selecting, so: hold Ctrl, arrow, Space
+                // on each one wanted, let go of Ctrl to hear how many. Left to
+                // the control, a plain Space selected that row alone and dropped
+                // everything else. Not while a name is being typed: "Program
+                // Files" has a space in it.
+                // Ctrl moves without selecting, and the control raises no focus
+                // event for it: measured with NVDA's log, Ctrl+Down said nothing,
+                // so you could not hear where you were while picking items out.
+                // Said once the control has moved, with whether it is selected.
+                case Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.PageUp or Keys.PageDown
+                    when e.Control && !e.Shift && !e.Alt:
+                    BeginInvoke(new Action(() =>
+                    {
+                        if (IsDisposed || !pane.List.Focused) return;
+                        int at = FocusedIndex(pane.List);
+                        SpeakRow(pane, at, pane.List.SelectedIndices.Contains(at));
+                    }));
+                    break;
+
+                case Keys.Space when !e.Alt && !e.Shift &&
+                                     pane.TypeAhead.Current(Environment.TickCount64).Length == 0:
+                    if (ToggleFocusedRow(pane) && e.Control) _selectedWithCtrl = true;
+                    e.Handled = e.SuppressKeyPress = true;
                     break;
             }
 
             switch (e.KeyCode)
             {
-                case Keys.Down or Keys.Up when count > 0 && !e.Shift:
+                // Not with Ctrl: wrapping selects the row it lands on, which would
+                // throw away the items picked out with Ctrl+arrow and Space.
+                case Keys.Down or Keys.Up when count > 0 && !e.Shift && !e.Control:
                 {
                     int index = FocusedIndex(pane.List);
                     if (index < 0) break;
@@ -5152,6 +5181,40 @@ namespace ExplorerNative
                     break;
                 }
             }
+        }
+
+        /// <summary>Space was pressed with Ctrl down since Ctrl went down; the total is said when it comes up.</summary>
+        private bool _selectedWithCtrl;
+
+        /// <summary>
+        /// The focused row in the selection or out of it, the others as they
+        /// were. Said as the row and which it is now; with Ctrl held, the total
+        /// waits for Ctrl to be let go (<see cref="List_KeyUp"/>).
+        /// </summary>
+        private bool ToggleFocusedRow(Pane pane)
+        {
+            int index = FocusedIndex(pane.List);
+            if (index < 0 || index >= pane.Entries.Count) return false;
+            bool wasIn = pane.List.SelectedIndices.Contains(index);
+            var lvi = new LVITEM { mask = LVIF_STATE, state = wasIn ? 0 : LVIS_SELECTED, stateMask = LVIS_SELECTED };
+            SendMessage(pane.List.Handle, LVM_SETITEMSTATE, new IntPtr(index), ref lvi);
+            ScheduleSelectionAnnouncement();
+            return true;
+        }
+
+        private void List_KeyUp(object? sender, KeyEventArgs e)
+        {
+            if (e.KeyCode != Keys.ControlKey || !_selectedWithCtrl) return;
+            _selectedWithCtrl = false;
+
+            // Said after the last row's own "selected", not instead of it.
+            if (_selectionSpeechTimer is { Enabled: true } pending)
+            {
+                pending.Stop();
+                AnnounceSelectionChange();
+            }
+            int selected = Active.List.SelectedIndices.Count;
+            AnnounceOperation("select.count", selected == 0 ? "Nothing selected" : $"{NameRules.Items(selected)} selected");
         }
 
         /// <summary>
@@ -5506,9 +5569,11 @@ namespace ExplorerNative
             var name = DisplayNameOf(pane.Entries[index]);
 
             // The count only when it adds something: "song.flac selected, 1
-            // selected" said the same thing twice.
+            // selected" said the same thing twice. Nor while Ctrl is held: the
+            // total is said once, when it is let go (List_KeyUp).
             AnnounceOperation("select.count",
-                isIn && selected == 1 ? $"{name} selected"
+                (isIn && selected == 1) || (ModifierKeys & Keys.Control) != 0
+                    ? $"{name} {(isIn ? "selected" : "not selected")}"
                 : selected == 0 ? $"{name} not selected"
                 : $"{name} {(isIn ? "selected" : "not selected")}, {selected:N0} selected in all");
         }
@@ -5844,13 +5909,15 @@ namespace ExplorerNative
         /// <summary>
         /// Says a row the way it reads: the name, then whatever the columns show.
         /// </summary>
-        private void SpeakRow(Pane pane, int index)
+        /// <param name="selected">Said after the name, for Ctrl+arrow, where the screen reader says nothing.</param>
+        private void SpeakRow(Pane pane, int index, bool selected = false)
         {
             if (!_settings.SpeakEnabled) return;
             if (index < 0 || index >= pane.Entries.Count) return;
 
             var entry = pane.Entries[index];
-            var parts = new List<string>(3) { DisplayNameOf(entry) };
+            var parts = new List<string>(4) { DisplayNameOf(entry) };
+            if (selected) parts.Add("selected");
 
             if (!entry.IsDir && entry.Size >= 0)
                 parts.Add(SizeFormatter.Format(entry.Size, _settings.SizeUnits));
@@ -8944,7 +9011,7 @@ namespace ExplorerNative
         /// </summary>
         public static bool AudioDialogOpen { get; set; }
 
-        private void OpenPreferences(string? startCategory)
+        private void OpenPreferences(string? startCategory, bool openShortcuts = false)
         {
             if (PreferencesOpen) return;
 
@@ -8956,16 +9023,16 @@ namespace ExplorerNative
                 return;
             }
             PreferencesOpen = true;
-            try { OpenPreferencesCore(startCategory); }
+            try { OpenPreferencesCore(startCategory, openShortcuts); }
             finally { PreferencesOpen = false; }
         }
 
-        private void OpenPreferencesCore(string? startCategory)
+        private void OpenPreferencesCore(string? startCategory, bool openShortcuts = false)
         {
             // What the dialog started from, so OK can apply what was changed in it
             // and nothing else. See Settings.WithChanges.
             var before = _settings.Clone();
-            using var dialog = new SettingsForm(_settings, startCategory);
+            using var dialog = new SettingsForm(_settings, startCategory) { OpenShortcutsWhenShown = openShortcuts };
             var outcome = dialog.ShowDialog(this);
 
             // Put the keyboard back in the list.
@@ -9234,7 +9301,9 @@ namespace ExplorerNative
         /// </summary>
         public void RestoreListFocusExternally() => RestoreListFocus();
 
-        public void OpenPreferencesExternally(string? category = null) => OpenPreferences(category);
+        /// <param name="openShortcuts">Straight into the audio shortcuts window, after a shortcut was refused at startup.</param>
+        public void OpenPreferencesExternally(string? category = null, bool openShortcuts = false) =>
+            OpenPreferences(category, openShortcuts);
 
         /// <summary>
         /// Takes on settings changed from outside while quitting, so the save on

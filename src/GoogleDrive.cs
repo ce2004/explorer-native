@@ -391,7 +391,8 @@ namespace ExplorerNative
         /// something the person can act on — no credentials, no letter free, or a
         /// consent they declined.
         /// </summary>
-        public async Task<bool> Mount(Settings settings, CancellationToken token = default)
+        /// <param name="quietly">A retry after the network failed: "Connecting" is not said again.</param>
+        public async Task<bool> Mount(Settings settings, CancellationToken token = default, bool quietly = false)
         {
             // One at a time. Two in parallel — OK pressed and a settings reload a
             // moment apart — both chose the same root, and the second tore the
@@ -418,7 +419,7 @@ namespace ExplorerNative
                     return await RenewSignIn(linked.Token).ConfigureAwait(false);
                 }
 
-                return await MountFresh(settings, linked.Token).ConfigureAwait(false);
+                return await MountFresh(settings, linked.Token, quietly).ConfigureAwait(false);
             }
             finally
             {
@@ -484,10 +485,11 @@ namespace ExplorerNative
             try { SignInRequired?.Invoke(); } catch { }
         }
 
-        private async Task<bool> MountFresh(Settings settings, CancellationToken token)
+        private async Task<bool> MountFresh(Settings settings, CancellationToken token, bool quietly = false)
         {
             _units = settings.SizeUnits;
-            Say("drive.mounting", "Connecting to Google Drive");
+            FailedOnNetwork = false;
+            if (!quietly) Say("drive.mounting", "Connecting to Google Drive");
 
             // The client ID and secret entered in Preferences. Nothing is compiled in.
             var client = GoogleAuth.Credentials(SafeDirectory());
@@ -653,10 +655,19 @@ namespace ExplorerNative
                 Status = token.IsCancellationRequested
                     ? "Not connected."
                     : $"Could not connect: {GoogleNet.Reason(ex)}";
+                FailedOnNetwork = !token.IsCancellationRequested && ex is not GoogleSignInRequiredException &&
+                                  DriveHealth.LooksLikeNetwork(ex);
                 TearDown();
                 return false;
             }
         }
+
+        /// <summary>
+        /// The last connect failed because Google could not be reached (no
+        /// network yet, a name that would not resolve), not over the sign-in:
+        /// worth trying again on its own, which opens no browser.
+        /// </summary>
+        public bool FailedOnNetwork { get; private set; }
 
         /// <summary>
         /// Moves a mounted Drive to the letter Preferences now names, without

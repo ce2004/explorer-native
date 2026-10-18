@@ -321,6 +321,18 @@ namespace ExplorerNative
             return $"{DriveMonitor.DisplayName(pair)}, {state}. {does}{deletes}";
         }
 
+        /// <summary>"3 hours, 20 minutes", "12 minutes", "1 day, 4 hours": the two biggest parts, rounded.</summary>
+        internal static string TimeLeft(TimeSpan left)
+        {
+            if (left.TotalMinutes < 1) return "a minute";
+            if (left.TotalHours < 1) return NameRules.Items((int)Math.Ceiling(left.TotalMinutes), "minute");
+            if (left.TotalDays < 1)
+                return left.Minutes == 0 ? NameRules.Items(left.Hours, "hour")
+                    : $"{NameRules.Items(left.Hours, "hour")}, {NameRules.Items(left.Minutes, "minute")}";
+            return left.Hours == 0 ? NameRules.Items((int)left.TotalDays, "day")
+                : $"{NameRules.Items((int)left.TotalDays, "day")}, {NameRules.Items(left.Hours, "hour")}";
+        }
+
         /// <summary>
         /// "1,995,500 already on both sides, change 1,204 of 4,500: 1,000
         /// uploaded, 200 downloaded, 3 failed, 1.2 gigabytes of 4 gigabytes".
@@ -399,6 +411,11 @@ namespace ExplorerNative
             if (status.Failed > 0) lines.Add($"Failed: {Files(status.Failed)}");
             if (running && status.TotalBytes > 0)
                 lines.Add($"Copied: {DriveMonitor.Words(status.DoneBytes)} of {DriveMonitor.Words(status.TotalBytes)}");
+
+            // Conner's request: how long the rest takes at the speed it is going now.
+            if (running && live != null && status.TotalBytes > status.DoneBytes && live.UpPerSecond + live.DownPerSecond > 0)
+                lines.Add("Time left: about " +
+                          TimeLeft(TimeSpan.FromSeconds((status.TotalBytes - status.DoneBytes) / (double)(live.UpPerSecond + live.DownPerSecond))));
 
             if (running && live != null)
             {
