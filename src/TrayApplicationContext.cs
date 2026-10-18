@@ -204,6 +204,7 @@ namespace ExplorerNative
                     DriveMonitor.ForgetRemovedPairs(pairs);
                 }));
             _monitor.Reload(_settings.DriveSyncPairs);
+            _monitor.LowDiskWarningBytes = () => (long)Math.Max(0, _settings.LowDiskWarningGigabytes) << 30;
             DrivePairForm.DriveMonitorClient = () => _drive.Client;
 
             // A track on the Drive letter downloads straight from Google.

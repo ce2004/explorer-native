@@ -212,7 +212,8 @@ namespace ExplorerNative
         {
             int at = _list.SelectedIndex;
             var lines = at >= 0 && at < _pairs.Count
-                ? Details(_pairs[at], _monitor?.StatusIfLoaded(_pairs[at].Id), DateTime.UtcNow, _monitor?.LiveOf(_pairs[at].Id))
+                ? Details(_pairs[at], _monitor?.StatusIfLoaded(_pairs[at].Id), DateTime.UtcNow, _monitor?.LiveOf(_pairs[at].Id),
+                    _monitor?.UploadedLast24Hours ?? 0)
                 : new List<string> { "No folder chosen." };
 
             _details.SetLines(lines);
@@ -365,7 +366,7 @@ namespace ExplorerNative
         /// "And 14 more files moving".
         /// </summary>
         internal static List<string> Details(DriveSyncPair pair, DriveMonitor.PairStatus? status, DateTime nowUtc,
-            SyncLive.Snapshot? live)
+            SyncLive.Snapshot? live, long uploadedLastDay = 0)
         {
             static string Files(int n) => n == 1 ? "1 file" : $"{n:N0} files";
             static string Capital(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s[1..];
@@ -373,7 +374,8 @@ namespace ExplorerNative
             var lines = new List<string>();
             bool running = status is { Running: true };
             if (pair.Paused) lines.Add("Paused. To start it again, press Resume");
-            else if (status?.Problem is { } waiting && waiting.StartsWith("waiting", StringComparison.Ordinal))
+            else if (status?.Problem is { } waiting && (waiting.StartsWith("waiting", StringComparison.Ordinal) ||
+                                                        waiting.StartsWith(DriveClient.DailyUploadLimitSaid, StringComparison.Ordinal)))
                 lines.Add(Capital(waiting));
             else if (running)
                 lines.Add(status!.CheckTotal > 0 ? "Checking with Google what is already there"
@@ -416,6 +418,12 @@ namespace ExplorerNative
             if (running && live != null && status.TotalBytes > status.DoneBytes && live.UpPerSecond + live.DownPerSecond > 0)
                 lines.Add("Time left: about " +
                           TimeLeft(TimeSpan.FromSeconds((status.TotalBytes - status.DoneBytes) / (double)(live.UpPerSecond + live.DownPerSecond))));
+
+            // Conner's request: Google's 750 GB a day, seen coming. All pairs
+            // together, since the allowance is the account's.
+            if (pair.Mode != SyncMode.DownloadOnly && uploadedLastDay > 0)
+                lines.Add($"Uploaded to Google Drive in the last 24 hours: {DriveMonitor.Words(uploadedLastDay)} of the " +
+                          $"{DriveMonitor.Words(DriveMonitor.UploadedRecently.DailyAllowance)} Google allows a day");
 
             if (running && live != null)
             {

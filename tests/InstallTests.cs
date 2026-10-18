@@ -210,6 +210,22 @@ namespace ExplorerNative
                 Equal("sweeping again finds nothing", "0", AppInstall.SweepRetired(dir).ToString());
                 Equal("and a folder that does not exist is not an error",
                     "0", AppInstall.SweepRetired(Path.Combine(dir, "nowhere")).ToString());
+
+                // Older builds' unpacked files under .net\ExplorerNative go;
+                // this build's, and other apps', stay.
+                var net = Path.Combine(dir, ".net");
+                var mine = Directory.CreateDirectory(Path.Combine(net, "ExplorerNative", "current")).FullName;
+                File.WriteAllText(Path.Combine(net, "ExplorerNative", "current", "nvda.dll"), "x");
+                Directory.CreateDirectory(Path.Combine(net, "ExplorerNative", "old1"));
+                File.WriteAllText(Path.Combine(net, "ExplorerNative", "old1", "nvda.dll"), "x");
+                Directory.CreateDirectory(Path.Combine(net, "ExplorerNative", "old2"));
+                Directory.CreateDirectory(Path.Combine(net, "Kova", "theirs"));
+                Equal("older builds' unpacked folders are swept", "2",
+                    AppInstall.SweepOldExtractions(new[] { Path.Combine(dir, "elsewhere"), mine + Path.DirectorySeparatorChar }).ToString());
+                Check("this build's own unpacked files stay", File.Exists(Path.Combine(mine, "nvda.dll")));
+                Check("and another app's are not touched", Directory.Exists(Path.Combine(net, "Kova", "theirs")));
+                Equal("with no unpacked folder of its own, nothing is touched", "0",
+                    AppInstall.SweepOldExtractions(new[] { Path.Combine(dir, "elsewhere") }).ToString());
             }
             finally { Cleanup(dir); }
         }

@@ -1038,6 +1038,84 @@ namespace ExplorerNative
                     rig.Said.Any(s => s.Contains("daily upload limit", StringComparison.Ordinal)), string.Join(" | ", rig.Said));
             }
 
+            // A synced folder's drive getting full is said once, and again only
+            // after it has had room since.
+            using (var rig = new Rig(sandbox, SyncMode.UploadOnly))
+            {
+                long free = 40L << 30;
+                rig.Monitor.DiskOfRoot = _ => (free, 500L << 30, "T:");
+                rig.Monitor.LowDiskWarningBytes = () => 50L << 30;
+                rig.Write("a.txt", "a", T0);
+                await rig.Pass();
+                await rig.Pass();
+                int said() => rig.Said.Count(s => s.StartsWith("sync.lowspace: T: is getting full", StringComparison.Ordinal));
+                Check("a drive below the warning is said to be getting full, once", said() == 1, string.Join(" | ", rig.Said));
+                free = 100L << 30;
+                await rig.Pass();
+                free = 30L << 30;
+                await rig.Pass();
+                Check("and said again only after it has had room since", said() == 2, string.Join(" | ", rig.Said));
+                rig.Monitor.LowDiskWarningBytes = () => 0;
+                free = 200L << 30; await rig.Pass(); free = 1L << 30; await rig.Pass();
+                Check("set to 0, it never warns", said() == 2, string.Join(" | ", rig.Said));
+            }
+
+            // What went up in the last 24 hours, for Google's 750 GB a day: older
+            // hours drop off, and it survives a restart.
+            {
+                var file = Path.Combine(sandbox, "uploaded-" + Guid.NewGuid().ToString("N") + ".json");
+                var now = new DateTime(2026, 10, 18, 14, 30, 0, DateTimeKind.Utc);
+                int every = DriveMonitor.UploadedRecently.SaveEveryMs;
+                DriveMonitor.UploadedRecently.SaveEveryMs = 0;
+                try
+                {
+                    var log = new DriveMonitor.UploadedRecently(file);
+                    log.Add(5_000, now.AddHours(-30));
+                    log.Add(1_000, now.AddHours(-3));
+                    log.Add(2_000, now);
+                    Equal("uploads in the last 24 hours leave out older ones", "3000", log.Last24Hours(now).ToString());
+                    var again = new DriveMonitor.UploadedRecently(file);
+                    Equal("and are read back after a restart", "3000", again.Last24Hours(now).ToString());
+                }
+                finally
+                {
+                    DriveMonitor.UploadedRecently.SaveEveryMs = every;
+                    try { File.Delete(file); } catch { }
+                }
+            }
+
+            // Two Drive folders of exactly one name, one of them empty (a create
+            // whose answer was lost): the empty one goes to Drive's trash and the
+            // folder syncs again. Both holding files: said as twins, nothing trashed.
+            using (var rig = new Rig(sandbox, SyncMode.UploadOnly))
+            {
+                var full = rig.Drive.AddFolder("Disc", rig.FolderId);
+                rig.Drive.AddFile("old.txt", Encoding.UTF8.GetBytes("o"), T0, full);
+                rig.Drive.AddFolder("Disc", rig.FolderId);
+                rig.Write("Disc/new.txt", "n", T0);
+                await rig.Pass();
+                int trashed = rig.Drive.Trashes;
+                await rig.Pass();
+                Check("an empty twin folder in Drive is put in the trash, and the folder's new file goes up beside the old one",
+                    trashed == 1 && rig.DriveTree().ContainsKey("Disc/new.txt") && rig.DriveTree().ContainsKey("Disc/old.txt") &&
+                    rig.Drive.Duplicates(rig.FolderId).Count == 0,
+                    $"{trashed} trashed; Drive holds {Names(rig.DriveTree())}");
+            }
+            using (var rig = new Rig(sandbox, SyncMode.UploadOnly))
+            {
+                var one = rig.Drive.AddFolder("Disc", rig.FolderId);
+                rig.Drive.AddFile("a.txt", Encoding.UTF8.GetBytes("a"), T0, one);
+                var two = rig.Drive.AddFolder("Disc", rig.FolderId);
+                rig.Drive.AddFile("b.txt", Encoding.UTF8.GetBytes("b"), T0, two);
+                rig.Write("Disc/new.txt", "n", T0);
+                await rig.Pass();
+                Check("twins that both hold files are left alone and said as twins, not as a Windows spelling clash",
+                    rig.Drive.Trashes == 0 &&
+                    rig.Said.Any(s => s.Contains("two folders called Disc", StringComparison.Ordinal)) &&
+                    !rig.Said.Any(s => s.Contains("Windows sees", StringComparison.Ordinal)),
+                    $"{rig.Drive.Trashes} trashed; said {string.Join(" | ", rig.Said)}");
+            }
+
             // Google's 750 GB a day arrives as "user rate limit exceeded", the
             // same as a minute's throttling. One that lasts is said as the daily
             // upload limit, waited out, and never fails the file.
@@ -1411,7 +1489,7 @@ namespace ExplorerNative
                 rig.Drive.AddFile("two.txt", Encoding.UTF8.GetBytes("2"), T0, second);
                 var problem = await rig.Pass();
                 Check("a second Drive folder of the same name is said, and nothing in either is taken for deleted",
-                    problem != null && problem.Contains("Docs/", StringComparison.Ordinal) && rig.Recycled.Count == 0 &&
+                    problem != null && problem.Contains("two folders called Docs", StringComparison.Ordinal) && rig.Recycled.Count == 0 &&
                     rig.Drive.Trashes == 0 && Names(rig.LocalTree()) == "Docs/one.txt,fine.txt", $"{problem}; PC {Names(rig.LocalTree())}");
             }
 

@@ -1,4 +1,10 @@
-3.0.15
+3.1.0
+Changed: Explorer Native now runs on .NET 10 and has it built in, so nothing else needs to be installed. Updating from an older version is the same one click in Help, Check for updates, and the files older versions left in your temporary folder are cleaned up.
+New feature: with Free up space on, empty folders are cleared off the PC too, once Google Drive has them. A folder that has just been made is left alone for 10 minutes in case files are still arriving in it. When a new folder turns up with files in it, they go up to Google Drive and the folder is cleared again.
+New feature: if Google Drive has two folders with the same name in the same place and one of them is empty, the sync puts the empty one in the Google Drive trash and carries on. If both have files in them, the status tells you, instead of saying it is a Windows spelling problem.
+New feature: the Status list for a synced folder shows how much has been uploaded to Google Drive in the last 24 hours, out of the 750 gigabytes Google allows a day.
+New feature: you are told when the drive a synced folder is on gets low on space. Choose how low in Preferences, Google Drive. It is 50 gigabytes unless you change it, and 0 turns it off.
+Faster: with Free up space on, a synced folder no longer reads every folder on the PC on every sync. It looks only at what changed, so big folders use much less disk and processor time.
 New feature: Format is on the Shift+F10 menu when you are on a drive in the drives list. It opens the Windows Format window for that drive. It is not offered for the Windows drive or the Google Drive letter.
 Changed: pressing Space now says "Selected" or "Not selected" first, then the name, so you hear what happened straight away.
 Changed: when Google stops your uploads for the day, a synced folder and a copy to Google Drive now say "You've reached your daily upload limit for Google", and carry on by themselves once it resets.

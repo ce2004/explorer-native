@@ -524,6 +524,13 @@ namespace ExplorerNative
         public List<DriveSyncPair> DriveSyncPairs { get; set; } = new();
 
         /// <summary>
+        /// A synced folder's drive with less free space than this is said once
+        /// (Conner, 3.0.16: Resilio could fill C: while Google's daily limit held
+        /// the uploads). Gigabytes; 0 never warns.
+        /// </summary>
+        public int LowDiskWarningGigabytes { get; set; } = 50;
+
+        /// <summary>
         /// The pairing code a tailnet user other than this PC's owner enters once in the web app. Made on first
         /// run; Preferences, Web app shows it. There is nothing to choose.
         /// </summary>
@@ -1222,6 +1229,7 @@ namespace ExplorerNative
             if (!Enum.IsDefined(ArchiveCompression)) ArchiveCompression = ArchiveLevel.Balanced;
             CopyBufferKilobytes = Math.Clamp(CopyBufferKilobytes, 4, 16384);
             FolderSizeTimeoutSeconds = Math.Clamp(FolderSizeTimeoutSeconds, 1, 600);
+            if (LowDiskWarningGigabytes < 0) LowDiskWarningGigabytes = 0;
             // Below about a tenth of a second no two keystrokes would ever join up;
             // above a few seconds a forgotten letter is still waiting to ambush the
             // next one.

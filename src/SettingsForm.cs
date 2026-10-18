@@ -693,6 +693,9 @@ namespace ExplorerNative
 
             AddGoogleAccountControls(panel, driveBox);
 
+            AddNumber(panel, "Warn when a synced folder's drive has less free space than this, in gigabytes (0 never warns)",
+                _working.LowDiskWarningGigabytes, 0, 100_000, v => _working.LowDiskWarningGigabytes = v);
+
             // This said the opposite until the scope changed under it: "nothing
             // this application does can change or delete anything in your Drive".
             // Copy, move and delete were added, the scope became full Drive

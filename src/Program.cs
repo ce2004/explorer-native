@@ -1068,6 +1068,8 @@ namespace ExplorerNative
                 {
                     int swept = AppInstall.SweepRetired();
                     if (swept > 0) WriteLog("Swept", $"{swept} retired file(s) removed from {AppInstall.Directory}");
+                    int unpacked = AppInstall.SweepOldExtractions();
+                    if (unpacked > 0) WriteLog("Swept", $"{unpacked} older build(s) unpacked files removed");
                 }
                 catch { }
 

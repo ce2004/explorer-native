@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <AssemblyName>ExplorerNative</AssemblyName>
     <RootNamespace>ExplorerNative</RootNamespace>
     <LangVersion>latest</LangVersion>
@@ -12,7 +12,9 @@
     <!-- ARM64 by default; "dotnet publish -r win-x64" builds the x64 copy.
          Release builds stamp Version from the git tag (see .github\workflows). -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-arm64</RuntimeIdentifier>
-    <Version>3.0.15</Version>
+    <Version>3.1.0</Version>
+    <!-- .NET 9+ checks properties for the forms designer, which nothing here uses. -->
+    <NoWarn>$(NoWarn);WFO1000</NoWarn>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <InvariantGlobalization>true</InvariantGlobalization>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
@@ -22,17 +24,20 @@
          controller client are bundled into the executable. The registry names
          one path, and one path is the whole application.
 
-         Not self-contained. The .NET 8 Desktop Runtime is used from where
-         Windows has it installed, which makes the file about 2MB instead of
-         152MB. Startup measured the same either way (medians 183ms and 180ms).
-         If the runtime is missing, the launcher itself says so and offers the
+         Until 3.1.0 it was not self-contained: the .NET 8 Desktop Runtime was
+         used from where Windows had it installed, which made the file about 2MB
+         instead of 152MB. Startup measured the same either way (medians 183ms
+         and 180ms). If the runtime was missing, the launcher said so and offered the
          download â€” for every folder opened, since this is the folder handler.
-         RollForward Major: a newer .NET is used when 8 has been removed.
 
          Not trimmed. Trimming and WinForms disagree about reflection. -->
     <PublishSingleFile>true</PublishSingleFile>
-    <SelfContained>false</SelfContained>
-    <RollForward>Major</RollForward>
+    <!-- Self-contained since 3.1.0 (Conner: nobody should have to install
+         anything). .NET 10 travels inside the file, so an update is one click
+         and a PC with no .NET at all runs it. Native libraries unpack to
+         %TEMP%\.net\ExplorerNative\<build>, and AppInstall.SweepOldExtractions
+         removes older builds' folders. -->
+    <SelfContained>true</SelfContained>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
     <PublishTrimmed>false</PublishTrimmed>

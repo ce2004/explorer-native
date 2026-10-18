@@ -286,6 +286,44 @@ namespace ExplorerNative
         public static int SweepRetired() => SweepRetired(Directory);
 
         /// <summary>
+        /// The one file unpacks its native libraries (the NVDA client and,
+        /// with .NET inside it, the runtime's own) into a folder per build under
+        /// %TEMP%\.net\ExplorerNative. Every update left the old build's folder
+        /// behind (Conner: an update leaves nothing). The folders of other builds
+        /// go; one still in use by a copy that is running stays until next time.
+        /// Nothing is touched unless this build's own folder is found there.
+        /// </summary>
+        public static int SweepOldExtractions() =>
+            AppContext.GetData("NATIVE_DLL_SEARCH_DIRECTORIES") is string search
+                ? SweepOldExtractions(search.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+                : 0;
+
+        /// <summary>The same, given the search folders; internal for the suite.</summary>
+        internal static int SweepOldExtractions(IEnumerable<string> searchFolders)
+        {
+            int removed = 0;
+            try
+            {
+                foreach (var entry in searchFolders)
+                {
+                    var mine = new DirectoryInfo(entry.TrimEnd(Path.DirectorySeparatorChar));
+                    var parent = mine.Parent;
+                    if (parent == null || !parent.Name.Equals("ExplorerNative", StringComparison.OrdinalIgnoreCase) ||
+                        parent.Parent?.Name.Equals(".net", StringComparison.OrdinalIgnoreCase) != true || !mine.Exists)
+                        continue;
+                    foreach (var other in parent.EnumerateDirectories())
+                    {
+                        if (other.Name.Equals(mine.Name, StringComparison.OrdinalIgnoreCase)) continue;
+                        try { other.Delete(recursive: true); removed++; } catch { }
+                    }
+                    break;
+                }
+            }
+            catch { }
+            return removed;
+        }
+
+        /// <summary>
         /// The same, in a named folder. Internal so the suite can sweep its own
         /// scratch directory instead of the real install.
         /// </summary>

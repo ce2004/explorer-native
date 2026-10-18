@@ -286,6 +286,36 @@ namespace ExplorerNative
         /// <summary>Free and total bytes of the PC folder's volume, and its letter.</summary>
         internal Func<string, (long Free, long Total, string Letter)> DiskOfRoot { get; set; } = DiskOf;
 
+        /// <summary>The free space below which a synced folder's drive is said to be getting full (Settings.LowDiskWarningGigabytes); 0 never.</summary>
+        internal Func<long>? LowDiskWarningBytes { get; set; }
+
+        /// <summary>Drives already said to be getting full, until they have room again.</summary>
+        private readonly HashSet<string> _lowDiskSaid = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Says once when a synced folder's drive drops below the warning, and
+        /// again only after it has had room (a tenth over, at most 5 GB) since:
+        /// Resilio could fill C: while Google's daily limit held the uploads.
+        /// Called at the end of each pass and before each wait on Google.
+        /// </summary>
+        private void WarnIfLowOnSpace(DriveSyncPair pair)
+        {
+            long limit = LowDiskWarningBytes?.Invoke() ?? 0;
+            if (limit <= 0) return;
+            (long Free, long Total, string Letter) disk;
+            try { disk = DiskOfRoot(pair.LocalFolder); } catch { return; }
+            if (disk.Total <= 0 || string.IsNullOrEmpty(disk.Letter)) return;
+            bool say = false;
+            lock (_gate)
+            {
+                if (disk.Free < limit) say = _lowDiskSaid.Add(disk.Letter);
+                else if (disk.Free > limit + Math.Min(limit / 10, 5L << 30)) _lowDiskSaid.Remove(disk.Letter);
+            }
+            if (say)
+                _notify("sync.lowspace", $"{disk.Letter} is getting full: only {Words(disk.Free)} left. " +
+                                         "Your synced folders keep going, but you may want to make some room");
+        }
+
         /// <summary>
         /// Sends a PC file to the Recycle Bin with no window of any kind: null
         /// when it went, otherwise why it was kept.
@@ -361,6 +391,86 @@ namespace ExplorerNative
         }
 
         public static string StateDirectory => Path.Combine(Settings.AppDataDir, "drive-monitor");
+
+        /// <summary>
+        /// What every pair has sent to Drive in the last 24 hours, so the
+        /// status can show Google's 750 GB a day coming (Conner, 3.0.16). By
+        /// the hour, kept in drive-monitor\uploaded.json across restarts.
+        /// </summary>
+        internal sealed class UploadedRecently
+        {
+            /// <summary>Google's upload allowance a day, in bytes.</summary>
+            public const long DailyAllowance = 750L << 30;     // said as "750 gigabytes", as Google says it
+
+            private readonly object _gate = new();
+            private readonly string _file;
+            private Dictionary<long, long>? _byHour;
+            private long _savedAt;
+
+            /// <summary>How often the file is written at most; the suite sets 0.</summary>
+            internal static int SaveEveryMs = 30_000;
+
+            public UploadedRecently(string file) { _file = file; }
+
+            private Dictionary<long, long> Hours()
+            {
+                if (_byHour != null) return _byHour;
+                try
+                {
+                    _byHour = File.Exists(_file)
+                        ? JsonSerializer.Deserialize<Dictionary<long, long>>(ProtectedFile.ReadAllUtf8(_file)) ?? new()
+                        : new();
+                }
+                catch { _byHour = new(); }
+                return _byHour;
+            }
+
+            private static long HourOf(DateTime utc) => utc.Ticks / TimeSpan.TicksPerHour;
+
+            public void Add(long bytes, DateTime nowUtc)
+            {
+                if (bytes <= 0) return;
+                lock (_gate)
+                {
+                    var hours = Hours();
+                    long hour = HourOf(nowUtc);
+                    hours[hour] = hours.GetValueOrDefault(hour) + bytes;
+                    foreach (var old in hours.Keys.Where(h => h < hour - 24).ToList()) hours.Remove(old);
+                    if (_savedAt != 0 && Environment.TickCount64 - _savedAt < SaveEveryMs) return;
+                    _savedAt = Environment.TickCount64;
+                    try
+                    {
+                        Directory.CreateDirectory(Path.GetDirectoryName(_file)!);
+                        ProtectedFile.WriteAllUtf8(_file, JsonSerializer.SerializeToUtf8Bytes(hours));
+                    }
+                    catch { }
+                }
+            }
+
+            /// <summary>Bytes sent in the last 24 hours (the current hour and the 23 whole ones before it, plus part of the 24th).</summary>
+            public long Last24Hours(DateTime nowUtc)
+            {
+                lock (_gate)
+                {
+                    long hour = HourOf(nowUtc);
+                    double into = (nowUtc.Ticks % TimeSpan.TicksPerHour) / (double)TimeSpan.TicksPerHour;
+                    long sum = 0;
+                    foreach (var (h, bytes) in Hours())
+                        if (h > hour - 24 && h <= hour) sum += bytes;
+                        else if (h == hour - 24) sum += (long)(bytes * (1 - into));
+                    return sum;
+                }
+            }
+        }
+
+        private UploadedRecently? _uploadedRecently;
+
+        /// <summary>See <see cref="UploadedRecently"/>.</summary>
+        internal UploadedRecently Uploads =>
+            _uploadedRecently ??= new UploadedRecently(Path.Combine(StateDirectory, "uploaded.json"));
+
+        /// <summary>What every pair has sent to Google Drive in the last 24 hours, in bytes.</summary>
+        public long UploadedLast24Hours => Uploads.Last24Hours(DateTime.UtcNow);
 
         private static string StatePath(string pairId) => Path.Combine(StateDirectory, pairId + ".json");
 
@@ -1159,6 +1269,8 @@ namespace ExplorerNative
                         _notify("sync.ratelimited", daily
                             ? $"{why}, so {DisplayName(pair)} is waiting until it resets"
                             : $"{DisplayName(pair)} is waiting, because {why}");
+
+                    WarnIfLowOnSpace(pair);
 
                     // Taken before the pair is checked, so a pause that lands in
                     // between still cuts this wait short.
@@ -2186,6 +2298,7 @@ namespace ExplorerNative
             }
             await FreeUpAsync(client, pair, state, rules, local, skips, tally, token).ConfigureAwait(false);
             if (ClearEmptyFolders(pair, state, rules, skips, pcFolders, folders)) SaveState(pair.Id, state);
+            await TidyTwinFoldersAsync(client, pair, rules, clashing, folders, tally, token).ConfigureAwait(false);
             FinishPass(pair, state, tally, unusable, clashing, localClashing);
         }
 
@@ -3265,6 +3378,7 @@ namespace ExplorerNative
             if (tally.SpaceProblem == null) PcPlanned(pair, header, look, walkedWhole: !partial, links);
             ClearEmptyFolders(pair, header, rules, allSkips, visited, folders);
             SaveState(pair.Id, header);
+            await TidyTwinFoldersAsync(client, pair, rules, clashing, folders, tally, token).ConfigureAwait(false);
             FinishPass(pair, header, tally, unusable, clashing, localClashing);
         }
 
@@ -3479,6 +3593,9 @@ namespace ExplorerNative
             public int FreedUp;
             public string? LastError, SpaceProblem;
 
+            /// <summary>Drive folders with a twin of exactly the same name beside them, left out (see TidyTwinFoldersAsync).</summary>
+            public List<string> Twins = new();
+
             /// <summary>Going a batch at a time: the start of a big pass is said once, not per batch.</summary>
             public bool Batched, Announced;
 
@@ -3627,6 +3744,7 @@ namespace ExplorerNative
                 foreach (var path in sentFast)
                 {
                     uploadedThisPass += local[path].Size;
+                    Uploads.Add(local[path].Size, DateTime.UtcNow);
                     SyncHistory.Add(pair.Id, "Uploaded", path);
                 }
 
@@ -3637,6 +3755,7 @@ namespace ExplorerNative
                 foreach (var path in sentMedium)
                 {
                     uploadedThisPass += local[path].Size;
+                    Uploads.Add(local[path].Size, DateTime.UtcNow);
                     SyncHistory.Add(pair.Id, "Uploaded", path);
                 }
                 sentFast.UnionWith(sentMedium);
@@ -3808,6 +3927,7 @@ namespace ExplorerNative
                                     Kill("uploaded " + path);
                                     state.Files[path] = sent;
                                     uploadedThisPass += local[path].Size;
+                                    Uploads.Add(local[path].Size, DateTime.UtcNow);
                                     uploaded++;
                                     SyncHistory.Add(pair.Id, replaces != null ? "Updated in Drive" : "Uploaded", path);
                                     freeUp?.Sent(path, sent);
@@ -3923,6 +4043,7 @@ namespace ExplorerNative
                                     Kill("uploaded " + path);
                                     state.Files[path] = sent;
                                     uploadedThisPass += local[path].Size;
+                                    Uploads.Add(local[path].Size, DateTime.UtcNow);
                                     conflicts.Add(Path.GetFileName(path));
                                     uploaded++;
                                     SyncHistory.Add(pair.Id, "Kept both copies of", path,
@@ -4052,6 +4173,7 @@ namespace ExplorerNative
         private void FinishPass(DriveSyncPair pair, PairState state, PassTally tally,
             List<string> unusable, List<string> clashing, List<string> localClashing)
         {
+            WarnIfLowOnSpace(pair);
             var name = DisplayName(pair);
             var conflicts = tally.Conflicts;
 
@@ -4089,10 +4211,11 @@ namespace ExplorerNative
 
             // Everything else is in step; these few never can be, and say so
             // rather than failing on every pass or landing somewhere else.
-            if (unusable.Count > 0 || clashing.Count > 0 || localClashing.Count > 0)
+            if (unusable.Count > 0 || clashing.Count > 0 || localClashing.Count > 0 || tally.Twins.Count > 0)
             {
                 var left = new List<string>();
                 if (unusable.Count > 0) left.Add(UnusableNames(unusable));
+                if (tally.Twins.Count > 0) left.Add(TwinNames(tally.Twins));
                 if (clashing.Count > 0) left.Add(ClashingNames(clashing));
                 if (localClashing.Count > 0) left.Add(ClashingOnPc(localClashing));
                 Finish(pair, state, string.Join(". ", left), announce: true, synced: true);
@@ -4102,6 +4225,73 @@ namespace ExplorerNative
             Finish(pair, state, null, announce: false);
         }
 
+
+        /// <summary>"Google Drive has two folders called x in the same place, so it was left out. ..."</summary>
+        internal static string TwinNames(IReadOnlyList<string> names)
+        {
+            const int shown = 5;
+            var list = string.Join(", ", names.Take(shown)) + (names.Count > shown ? $" and {names.Count - shown} more" : "");
+            return names.Count == 1
+                ? $"Google Drive has two folders called {names[0]} in the same place, and both have files in them, so it was left out. " +
+                  "Move what is in one into the other in Google Drive, and it syncs again"
+                : $"Google Drive has {names.Count} places with two folders of the same name, both with files in them, so they were left out: {list}. " +
+                  "Move what is in one of each pair into the other in Google Drive, and they sync again";
+        }
+
+        /// <summary>
+        /// Two Drive folders of exactly one name in one place are left out (the
+        /// sync cannot tell which is the PC's). Most come from a create whose
+        /// answer was lost, and one of them is empty (Ruby 3/Disc_7_of_10 sat
+        /// out of every pass because of one, its files never going up). So: an
+        /// exact twin whose others are all empty has the empty ones put in
+        /// Drive's trash, where they can be restored, and the folder syncs again
+        /// on the next pass (the trash shows in the changes feed). Twins that
+        /// both hold something are said as such, not as a Windows spelling
+        /// clash. Never in download only, which does not write to Drive.
+        /// </summary>
+        private async Task TidyTwinFoldersAsync(DriveClient client, DriveSyncPair pair, SyncRules rules,
+            List<string> clashing, IReadOnlyDictionary<string, string> folders, PassTally tally, CancellationToken token)
+        {
+            foreach (var entry in clashing.Where(e => e.EndsWith('/')).Distinct(StringComparer.Ordinal).ToList())
+            {
+                if (token.IsCancellationRequested || Stopped(pair)) return;
+                var path = entry.TrimEnd('/');
+                var parent = SyncMoves.Parent(path);
+                var parentId = parent.Length == 0 ? pair.DriveFolderId : folders.GetValueOrDefault(parent);
+                if (parentId == null) continue;
+                var leaf = SyncMoves.Leaf(path);
+                try
+                {
+                    var siblings = await Patiently(pair, () => client.ListChildren(parentId, token), client, token).ConfigureAwait(false);
+                    var same = siblings.Where(e => e.IsFolder && string.Equals(e.Name, leaf, StringComparison.Ordinal)).ToList();
+                    if (same.Count < 2) continue;      // two spellings, not twins: said as before
+                    clashing.Remove(entry);
+                    if (rules.Mode == SyncMode.DownloadOnly) { tally.Twins.Add(path); continue; }
+
+                    var empty = new List<DriveEntry>();
+                    foreach (var twin in same)
+                    {
+                        var inside = await Patiently(pair, () => client.ListChildren(twin.Id, token, max: 1), client, token)
+                            .ConfigureAwait(false);
+                        if (inside.Count == 0) empty.Add(twin);
+                    }
+                    if (empty.Count < same.Count - 1) { tally.Twins.Add(path); continue; }
+
+                    // All empty: one stays. Otherwise the one holding something stays.
+                    var toTrash = empty.Count == same.Count ? empty.Skip(1).ToList() : empty;
+                    foreach (var twin in toTrash)
+                        await Patiently(pair, async () => { await client.Trash(twin.Id, token).ConfigureAwait(false); return true; },
+                            client, token).ConfigureAwait(false);
+                    SyncHistory.Add(pair.Id, "Removed empty duplicate folder", path);
+                    _notify("sync.done", $"{path} had an empty copy of itself in Google Drive, so the empty one was put in the trash and it syncs again");
+                    SoonAfter(pair.Id, TimeSpan.FromSeconds(5));
+                }
+                catch (Exception) when (!token.IsCancellationRequested)
+                {
+                    tally.Twins.Add(path);
+                }
+            }
+        }
 
         /// <summary>"x in Google Drive was left out, because Windows sees another item in that folder as the same name".</summary>
         internal static string ClashingNames(IReadOnlyList<string> names)
