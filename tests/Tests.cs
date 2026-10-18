@@ -211,6 +211,13 @@ namespace ExplorerNative
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "ttaprobe")
                 return CodecProbe.RunTta();
 
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "settingstransfer")
+            {
+                await Guard("SettingsTransferTests", () => { SettingsTransferTests.RunAll(Check, Equal); return Task.CompletedTask; });
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "drivecache")
             {
                 await Guard("DriveClientCacheTests", () => DriveClientCacheTests.RunAll(Check, Equal));
@@ -361,6 +368,7 @@ namespace ExplorerNative
             await Guard("TransferFixTests", () => TransferFixTests.RunAll(Check, Equal));
             await Guard("FilesR2Tests", () => FilesR2Tests.RunAll(Check, Equal));
             await Guard("SettingsFixTests", () => { SettingsFixTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("SettingsTransferTests", () => { SettingsTransferTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("SearchTests", () => { SearchTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("ConnectTests", () => ConnectTests.RunAll(Check, Equal));
             await Guard("ExactSeekTests", () => { ExactSeekTests.RunAll(Check); return Task.CompletedTask; });

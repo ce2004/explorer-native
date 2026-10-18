@@ -63,7 +63,7 @@ namespace ExplorerNative
             Check("accent-only twins are decided", Cmp("resume", "résumé") != 0 || Cmp("résumé", "resume") != 0);
             var names = new[] { "Track 10", "track 2", "Track 2", "Éclair", "eclair", "Zebra", "~x", "日本語", "file (10)", "file (2)" };
             var one = Sorted(names);
-            var two = Sorted(names.Reverse());
+            var two = Sorted(Enumerable.Reverse(names));
             var three = Sorted(names.OrderBy(n => n.GetHashCode()));
             Check("the order is the same whatever order the names arrive in",
                 one.SequenceEqual(two) && one.SequenceEqual(three), string.Join(" | ", one));
