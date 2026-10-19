@@ -79,6 +79,9 @@ namespace ExplorerNative
                 Listings.Clear();
                 Displayed.Clear();
                 Fetched.Clear();
+                Favorited.Clear();
+                RatingKnown.Clear();
+                _playlists = null;
             }
         }
 
@@ -171,6 +174,14 @@ namespace ExplorerNative
             {
                 Listings[folder] = rows;
                 Fetched[folder] = Environment.TickCount64;
+            }
+            // Which are favorited comes after, so the list is not held up for it.
+            _ = RateAsync(folder);
+            if (folder.Equals(Root + "\\Library\\Playlists", StringComparison.OrdinalIgnoreCase))
+            {
+                List<AppleMusicItem> shown;
+                lock (Gate) shown = rows.Select(r => Items.TryGetValue(r.Path, out var i) ? i : null).Where(i => i != null).Select(i => i!).ToList();
+                KeepPlaylists(shown);
             }
             return rows;
         }
@@ -311,7 +322,7 @@ namespace ExplorerNative
                 added = RowsFor(folder, more, sort: false, numbered: false, startAt: have.Count, taken: have);
                 Listings[folder] = have.Concat(added).ToList();
             }
-            if (added.Count > 0) Grew?.Invoke(folder);
+            if (added.Count > 0) { Grew?.Invoke(folder); _ = RateAsync(folder); }
             return added;
         }
 
@@ -333,11 +344,7 @@ namespace ExplorerNative
             {
                 foreach (var item in items)
                 {
-                    string name = item.IsSong ? SongName(item, folder)
-                        : item.Kind == "album" && item.Subtitle.Length > 0 && ItemAt(folder)?.Kind != "artist"
-                            ? item.Name + ", " + item.Subtitle
-                            : item.Name;
-                    if (item.Kind == "station" && item.IsLive) name += ", live";
+                    string name = RowName(item, folder);
                     string leaf = Safe(item.Name);
                     string path = folder + "\\" + leaf;
                     for (int n = 2; used.Contains(path); n++)
@@ -354,13 +361,184 @@ namespace ExplorerNative
 
         /// <summary>
         /// A song as a row: just the title inside an album (the artist is the
-        /// album's), title and artist everywhere else.
+        /// album's), artist then title everywhere else, so typing an artist's
+        /// first letters moves through their songs (Conner's request, 4.0.2).
         /// </summary>
         private static string SongName(AppleMusicItem song, string folder)
         {
             var parent = ItemAt(folder);
-            if (parent?.Kind == "album" || song.Subtitle.Length == 0) return song.Name;
-            return song.Name + ", " + song.Subtitle;
+            string name = parent?.Kind == "album" || song.Subtitle.Length == 0 ? song.Name : song.Subtitle + ", " + song.Name;
+            // At the end, so it never gets in the way of moving by artist (Conner, 4.1.0).
+            var id = CatalogKey(song);
+            if (id.Length > 0 && Favorited.Contains(id)) name += ", favorited";
+            return name;
+        }
+
+        /// <summary>What a row says. Called under Gate.</summary>
+        private static string RowName(AppleMusicItem item, string folder)
+        {
+            string name = item.IsSong ? SongName(item, folder)
+                : item.Kind == "album" && item.Subtitle.Length > 0 && ItemAt(folder)?.Kind != "artist"
+                    ? item.Subtitle + ", " + item.Name
+                    : item.Name;
+            if (item.Kind == "station" && item.IsLive) name += ", live";
+            return name;
+        }
+
+        // ---- Favorites ----
+
+        /// <summary>Catalogue songs Apple says are favorited, and every catalogue song asked about.</summary>
+        private static readonly HashSet<string> Favorited = new(StringComparer.Ordinal);
+        private static readonly HashSet<string> RatingKnown = new(StringComparer.Ordinal);
+
+        /// <summary>The id Apple keeps a favorite on: the catalogue song's. Blank for an upload, which can't be favorited.</summary>
+        private static string CatalogKey(AppleMusicItem song) =>
+            song.CatalogId.Length > 0 ? song.CatalogId : song.IsLibrary ? "" : song.Id;
+
+        /// <summary>True or false once Apple has said; null when not known yet, or not a song that can be favorited.</summary>
+        public static bool? IsFavorite(string path)
+        {
+            lock (Gate)
+            {
+                if (!Items.TryGetValue(path, out var item) || !item.IsSong) return null;
+                var id = CatalogKey(item);
+                if (id.Length == 0 || !RatingKnown.Contains(id)) return null;
+                return Favorited.Contains(id);
+            }
+        }
+
+        /// <summary>
+        /// Asks Apple which songs in a folder (and, for a search, its kinds) are
+        /// favorited, after the rows are already showing, then renames the rows
+        /// that changed and raises <see cref="Grew"/> so they are put on screen
+        /// quietly. A failure here costs only the word "favorited".
+        /// </summary>
+        private static async Task RateAsync(string folder)
+        {
+            try
+            {
+                List<string> ids;
+                lock (Gate)
+                {
+                    ids = Listings
+                        .Where(l => l.Key.Equals(folder, StringComparison.OrdinalIgnoreCase) ||
+                                    (folder.StartsWith(SearchFolder + "\\", StringComparison.OrdinalIgnoreCase) &&
+                                     l.Key.StartsWith(folder + "\\", StringComparison.OrdinalIgnoreCase)))
+                        .SelectMany(l => l.Value)
+                        .Select(r => Items.TryGetValue(r.Path, out var i) && i.IsSong ? CatalogKey(i) : "")
+                        .Where(id => id.Length > 0)
+                        .Distinct()
+                        .ToList();
+                }
+                if (ids.Count == 0) return;
+                var favorites = await Client().FavoritesAmongAsync(ids, CancellationToken.None).ConfigureAwait(false);
+                lock (Gate)
+                    foreach (var id in ids)
+                    {
+                        RatingKnown.Add(id);
+                        if (favorites.Contains(id)) Favorited.Add(id); else Favorited.Remove(id);
+                    }
+                RenameAll();
+            }
+            catch (AppleMusicException) { }
+            catch (OperationCanceledException) { }
+        }
+
+        /// <summary>Re-reads every listed song's name (after a favorite changed) and says which folders changed.</summary>
+        private static void RenameAll()
+        {
+            var changed = new List<string>();
+            lock (Gate)
+            {
+                foreach (var key in Listings.Keys.ToList())
+                {
+                    var rows = Listings[key];
+                    List<Row>? renamed = null;
+                    for (int i = 0; i < rows.Count; i++)
+                    {
+                        if (!Items.TryGetValue(rows[i].Path, out var item) || !item.IsSong) continue;
+                        var name = RowName(item, key);
+                        if (name == rows[i].Name) continue;
+                        renamed ??= new List<Row>(rows);
+                        renamed[i] = rows[i] with { Name = name };
+                    }
+                    if (renamed == null) continue;
+                    Listings[key] = renamed;
+                    changed.Add(key);
+                }
+            }
+            foreach (var folder in changed) Grew?.Invoke(folder);
+        }
+
+        /// <summary>Favorites a song or takes the favorite off, at Apple, then renames its rows. Returns what to say.</summary>
+        public static async Task<string> SetFavoriteAsync(string path, bool favorite, CancellationToken token)
+        {
+            var item = ItemAt(path);
+            if (item == null || !item.IsSong) throw new AppleMusicException("That isn't a song.");
+            var id = CatalogKey(item);
+            if (id.Length == 0) throw new AppleMusicException("Apple Music can't favorite that song.");
+            await Client().SetFavoriteAsync(id, favorite, token).ConfigureAwait(false);
+            lock (Gate)
+            {
+                RatingKnown.Add(id);
+                if (favorite) Favorited.Add(id); else Favorited.Remove(id);
+            }
+            RenameAll();
+            return favorite ? "Favorited " + item.Name : "Unfavorited " + item.Name;
+        }
+
+        // ---- Playlists you can add to ----
+
+        private static List<AppleMusicItem>? _playlists;
+        private static long _playlistsAt;
+        private static Task? _playlistsLoading;
+
+        /// <summary>Your own playlists by name, for Add to playlist; null until they have been fetched.</summary>
+        public static IReadOnlyList<AppleMusicItem>? EditablePlaylists
+        {
+            get { lock (Gate) return _playlists; }
+        }
+
+        /// <summary>Fetches your playlists in the background, unless fetched in the last five minutes.</summary>
+        public static void LoadPlaylistsSoon()
+        {
+            lock (Gate)
+            {
+                if (!IsSetUp || _playlistsLoading is { IsCompleted: false }) return;
+                if (_playlists != null && Environment.TickCount64 - _playlistsAt < 5 * 60_000) return;
+                _playlistsLoading = Task.Run(async () =>
+                {
+                    try
+                    {
+                        var all = await Client().ListAllAsync("/v1/me/library/playlists?limit=100", CancellationToken.None).ConfigureAwait(false);
+                        KeepPlaylists(all);
+                    }
+                    catch (AppleMusicException) { }
+                    catch (OperationCanceledException) { }
+                });
+            }
+        }
+
+        private static void KeepPlaylists(List<AppleMusicItem> all)
+        {
+            var mine = all.Where(p => p.Kind == "playlist" && p.CanEdit)
+                .OrderBy(p => p.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+            lock (Gate) { _playlists = mine; _playlistsAt = Environment.TickCount64; }
+        }
+
+        /// <summary>Adds a song to one of your playlists at Apple; that playlist is asked again next time it opens. Returns what to say.</summary>
+        public static async Task<string> AddToPlaylistAsync(string path, AppleMusicItem playlist, CancellationToken token)
+        {
+            var item = ItemAt(path);
+            if (item == null || !item.IsSong) throw new AppleMusicException("That isn't a song.");
+            await Client().AddToPlaylistAsync(playlist.Id, item, token).ConfigureAwait(false);
+            lock (Gate)
+                foreach (var key in Listings.Keys.ToList())
+                    if (Items.TryGetValue(key, out var shown) && shown.Kind == "playlist" && shown.Id == playlist.Id)
+                    {
+                        Listings.Remove(key); Fetched.Remove(key);
+                    }
+            return $"Added {item.Name} to {playlist.Name}";
         }
 
         internal static string Duration(long ms)
@@ -468,8 +646,13 @@ namespace ExplorerNative
         }
 
         /// <summary>The order a folder starts in when nothing has been chosen for it.</summary>
-        internal static (Sort By, bool Ascending) DefaultSort(string folder) =>
-            AppleOrderName(folder) != null || IsFixedFolder(folder) ? (Sort.Apple, true) : (Sort.Name, true);
+        internal static (Sort By, bool Ascending) DefaultSort(string folder)
+        {
+            if (AppleOrderName(folder) != null || IsFixedFolder(folder)) return (Sort.Apple, true);
+            // Songs and albums read artist first, so they start in artist order,
+            // where typing an artist's first letters lands on all of theirs together.
+            return SortsFor(folder).Contains(Sort.Artist) ? (Sort.Artist, true) : (Sort.Name, true);
+        }
 
         /// <summary>
         /// The folder's rows in the order given, and remembered as the order on
@@ -609,7 +792,22 @@ namespace ExplorerNative
 
         internal static void ResetForTests()
         {
-            lock (Gate) { _token = ""; _client = null; Items.Clear(); Listings.Clear(); Displayed.Clear(); Fetched.Clear(); }
+            lock (Gate)
+            {
+                _token = ""; _client = null; Items.Clear(); Listings.Clear(); Displayed.Clear(); Fetched.Clear();
+                Favorited.Clear(); RatingKnown.Clear(); _playlists = null;
+            }
+        }
+
+        /// <summary>Marks catalogue songs as favorited (and every other one as known not to be), as if Apple had said.</summary>
+        internal static void SetFavoritesForTests(IEnumerable<string> favorited, IEnumerable<string> notFavorited)
+        {
+            lock (Gate)
+            {
+                foreach (var id in favorited) { Favorited.Add(id); RatingKnown.Add(id); }
+                foreach (var id in notFavorited) { Favorited.Remove(id); RatingKnown.Add(id); }
+            }
+            RenameAll();
         }
 
         /// <summary>Signs in with a fake token so the offline folders (top, Library) list.</summary>

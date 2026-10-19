@@ -1480,7 +1480,21 @@ namespace ExplorerNative
         {
             _contextMenu = new ContextMenuStrip();
             _contextMenu.Opened += (_, _) => { foreach (var p in _panes) ApplyPendingName(p); };
-            _contextMenu.Items.Add(Item("&Open", Keys.None, ActivateFocused));
+            _contextOpenItem = Item("&Open", Keys.None, ActivateFocused);
+            _contextMenu.Items.Add(_contextOpenItem);
+
+            // Apple Music songs only (Conner, 4.1.0). Favorite and Unfavorite are
+            // one item whose words say what it will do, shown once Apple has
+            // said which the song is; Add to playlist lists your own playlists.
+            _playNextItem = Item("Play ne&xt", Keys.None, PlayFocusedAppleSongNext);
+            _favoriteItem = Item("Fa&vorite", Keys.None, ToggleFocusedAppleFavorite);
+            _addToPlaylistItem = new ToolStripMenuItem("Add to p&laylist");
+            // A submenu needs an item from the start or it has no arrow (see BuildSortMenu).
+            _addToPlaylistItem.DropDownItems.Add(new ToolStripMenuItem("(none)"));
+            _playNextItem.Visible = _favoriteItem.Visible = _addToPlaylistItem.Visible = false;
+            _contextMenu.Items.Add(_playNextItem);
+            _contextMenu.Items.Add(_favoriteItem);
+            _contextMenu.Items.Add(_addToPlaylistItem);
             _contextMenu.Items.Add(new ToolStripSeparator());
             _contextMenu.Items.Add(AppleHidden(Item("&Copy", Keys.None, () => CopyToClipboard(false))));
             _cutItem = ArchiveHidden(Item("Cu&t", Keys.None, () => CopyToClipboard(true)));
@@ -4281,12 +4295,15 @@ namespace ExplorerNative
             }
 
             menu.DropDownItems.Add(new ToolStripSeparator());
-            var up = new ToolStripMenuItem(Capitalise(AppleDirection(currentBy, true))) { Checked = currentAsc };
-            var down = new ToolStripMenuItem(Capitalise(AppleDirection(currentBy, false))) { Checked = !currentAsc };
+            var up = new ToolStripMenuItem(Capitalise(AppleDirection(folder, currentBy, true))) { Checked = currentAsc };
+            var down = new ToolStripMenuItem(Capitalise(AppleDirection(folder, currentBy, false))) { Checked = !currentAsc };
             up.Click += (_, _) => SetAppleSort(folder, (currentBy, true));
             down.Click += (_, _) => SetAppleSort(folder, (currentBy, false));
-            menu.DropDownItems.Add(up);
-            menu.DropDownItems.Add(down);
+            // Oldest first, then newest, whichever way round the order itself runs
+            // (Recently added's own order is newest first).
+            bool newestUp = currentBy == AppleMusic.Sort.Apple && IsRecentlyAddedOrder(folder);
+            menu.DropDownItems.Add(newestUp ? down : up);
+            menu.DropDownItems.Add(newestUp ? up : down);
 
             menu.DropDownItems.Add(new ToolStripSeparator());
             var def = new ToolStripMenuItem("Use the default order") { Checked = AppleSortIsDefault(folder) };
@@ -4634,6 +4651,11 @@ namespace ExplorerNative
             var token = BeginPaneWork(pane);
             pane.Searching = false;
 
+            // The player starts while you browse, so the first Enter on a song
+            // does not also wait for it. It closes itself if nothing is played.
+            AppleMusicPlayer.Warm();
+            AppleMusic.LoadPlaylistsSoon();   // for Add to playlist on Shift+F10
+
             bool sameFolder = string.Equals(pane.LastLoadedPath, full, StringComparison.OrdinalIgnoreCase);
             var previousRow = sameFolder ? FocusedPathOf(pane) : null;
             if (keepFocus && sameFolder) preferPath = previousRow ?? preferPath;
@@ -4845,14 +4867,27 @@ namespace ExplorerNative
 
             var (by, ascending) = AppleSortFor(folder);
             AnnounceOperation("nav.sorted", by == AppleMusic.Sort.Apple
-                ? AppleMusic.AppleOrderName(folder) ?? "Apple's order"
-                : $"Sorted by {AppleMusic.SortName(by)}, {AppleDirection(by, ascending)}");
+                ? IsRecentlyAddedOrder(folder) ? Capitalise(AppleDirection(folder, by, ascending))
+                  : AppleMusic.AppleOrderName(folder) ?? "Apple's order"
+                : $"Sorted by {AppleMusic.SortName(by)}, {AppleDirection(folder, by, ascending)}");
         }
 
-        /// <summary>"newest first" says more than "descending" for a date.</summary>
-        private static string AppleDirection(AppleMusic.Sort by, bool ascending) => by switch
+        /// <summary>Whether a folder's own order is Apple's newest-added-first (Library, Recently added).</summary>
+        private static bool IsRecentlyAddedOrder(string folder) =>
+            string.Equals(AppleMusic.AppleOrderName(folder), "Recently added", StringComparison.Ordinal);
+
+        /// <summary>
+        /// "newest first" says more than "descending" for a date. Added dates say
+        /// so in full (Conner: "oldest added, and then most recently added"), and
+        /// so does Recently added's own order, which runs newest first: "last to
+        /// first" there meant nothing.
+        /// </summary>
+        private static string AppleDirection(string folder, AppleMusic.Sort by, bool ascending) => by switch
         {
-            AppleMusic.Sort.RecentlyAdded or AppleMusic.Sort.RecentlyUpdated or AppleMusic.Sort.ReleaseDate =>
+            AppleMusic.Sort.Apple when IsRecentlyAddedOrder(folder) =>
+                ascending ? "most recently added first" : "oldest added first",
+            AppleMusic.Sort.RecentlyAdded => ascending ? "oldest added first" : "most recently added first",
+            AppleMusic.Sort.RecentlyUpdated or AppleMusic.Sort.ReleaseDate =>
                 ascending ? "oldest first" : "newest first",
             AppleMusic.Sort.Length => ascending ? "shortest first" : "longest first",
             AppleMusic.Sort.Apple => ascending ? "first to last" : "last to first",
@@ -5872,6 +5907,27 @@ namespace ExplorerNative
             // what needs a real file on disk, can only refuse there.
             ShowArchiveHidden();
 
+            // On an Apple Music song, Enter plays it, and the menu says so.
+            bool appleSong = focused != null && AppleMusic.ItemAt(focused) is { IsSong: true };
+            _contextOpenItem.Text = appleSong ? "&Play" : "&Open";
+            _playNextItem.Visible = appleSong;
+            var favorite = appleSong ? AppleMusic.IsFavorite(focused!) : null;
+            _favoriteItem.Visible = favorite != null;
+            _favoriteItem.Text = favorite == true ? "Unfa&vorite" : "Fa&vorite";
+            var playlists = appleSong ? AppleMusic.EditablePlaylists : null;
+            _addToPlaylistItem.Visible = playlists is { Count: > 0 };
+            if (playlists is { Count: > 0 })
+            {
+                _addToPlaylistItem.DropDownItems.Clear();
+                foreach (var playlist in playlists)
+                {
+                    var chosen = playlist;
+                    _addToPlaylistItem.DropDownItems.Add(new ToolStripMenuItem(playlist.Name, null,
+                        (_, _) => AddFocusedAppleSongToPlaylist(chosen)));
+                }
+            }
+            if (appleSong && playlists == null) AppleMusic.LoadPlaylistsSoon();   // ready by the next time
+
             _extractItem.Visible = looksLikeArchive;
             _extractHereItem.Visible = looksLikeArchive;
 
@@ -5926,6 +5982,45 @@ namespace ExplorerNative
         }
 
         private ToolStripMenuItem _formatItem = null!;
+        private ToolStripMenuItem _contextOpenItem = null!;
+        private ToolStripMenuItem _playNextItem = null!;
+        private ToolStripMenuItem _favoriteItem = null!;
+        private ToolStripMenuItem _addToPlaylistItem = null!;
+
+        private void PlayFocusedAppleSongNext()
+        {
+            if (FocusedPath() is { } path && AppleMusic.ItemAt(path) is { IsSong: true })
+                Program.PlayAppleMusicNext(path);
+        }
+
+        /// <summary>Favorite or Unfavorite on the focused Apple Music song: changed at Apple, then said, and the row renamed quietly.</summary>
+        private async void ToggleFocusedAppleFavorite()
+        {
+            try
+            {
+                if (FocusedPath() is not { } path || AppleMusic.IsFavorite(path) is not { } now) return;
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                var said = await AppleMusic.SetFavoriteAsync(path, !now, cts.Token);
+                AnnounceAfterMenu("applemusic.favorite", said);
+            }
+            catch (AppleMusicException ex) { AnnounceAfterMenu("applemusic.failed", ex.Message); }
+            catch (OperationCanceledException) { AnnounceAfterMenu("applemusic.failed", "Apple Music took too long to answer."); }
+            catch (Exception ex) { AnnounceAfterMenu("applemusic.failed", "Apple Music couldn't change that: " + ex.Message); }
+        }
+
+        private async void AddFocusedAppleSongToPlaylist(AppleMusicItem playlist)
+        {
+            try
+            {
+                if (FocusedPath() is not { } path) return;
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                var said = await AppleMusic.AddToPlaylistAsync(path, playlist, cts.Token);
+                AnnounceAfterMenu("applemusic.playlist", said);
+            }
+            catch (AppleMusicException ex) { AnnounceAfterMenu("applemusic.failed", ex.Message); }
+            catch (OperationCanceledException) { AnnounceAfterMenu("applemusic.failed", "Apple Music took too long to answer."); }
+            catch (Exception ex) { AnnounceAfterMenu("applemusic.failed", "Apple Music couldn't add it: " + ex.Message); }
+        }
 
         /// <summary>
         /// The drive letter a drive row could be formatted as, by name alone: a

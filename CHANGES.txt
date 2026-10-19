@@ -1,3 +1,17 @@
+4.1.0
+New feature: in Apple Music, songs you have favorited say favorited at the end, and Shift+F10 on a song has Favorite or Unfavorite, whichever it isn't yet.
+New feature: Shift+F10 on an Apple Music song has Add to playlist, listing your own playlists. The song goes on the end of the one you pick.
+New feature: Shift+F10 on an Apple Music song has Play next. It plays after the song playing now, and then the list carries on from where it was. With nothing playing, it plays straight away.
+Bug fixed: Apple Music always played through the Windows default device, and Output device on the Audio menu just said it wasn't available. It now plays through the device you pick, moves as you arrow through the list, and remembers it like your files do.
+Bug fixed: Apple Music songs were slow to start. The player now gets ready while you browse Apple Music, so the first song starts much sooner, and the next song in the list is fetched ahead of time, so one song goes straight into the next instead of pausing for a second or two.
+Bug fixed: skipping through an Apple Music song was slow, and holding a skip key kept moving for seconds after you let go. Skips within what has already downloaded are now instant, and letting go stops where you are.
+Bug fixed: when Apple Music played on into a song Apple no longer offers, the music stopped. It now says that song isn't available, skips it and carries on.
+Bug fixed: if Apple Music's player crashed or got stuck, the music just stopped. It now starts again by itself where the song was, and a song that won't start is tried once more before you are told.
+Changed: in Apple Music, songs and albums read the artist first, then the title, and lists of songs start in artist order, so typing the first letters of an artist takes you to their songs.
+Changed: Apple Music uses less processor time while it plays, and its player closes itself after five minutes with nothing playing.
+Changed: in Sort by, Recently added's two directions are now called Oldest added first and Most recently added first, in that order, instead of First to last and Last to first.
+Changed: on an Apple Music song, the first item of the Shift+F10 menu says Play instead of Open.
+
 4.0.1
 Bug fixed: in Apple Music, pressing Enter on a song said it could not play it and tried to open it in another app. Songs now play, and Enter no longer says anything else first.
 Bug fixed: inside Apple Music, a few seconds after opening a list you were sent back to the drives list. You now stay where you are.

@@ -52,7 +52,11 @@ settings export.
 
 Playing goes through Apple's own player (MusicKit), so it uses the Microsoft
 Edge WebView2 runtime that ships with Windows 11. Nothing is installed and
-nothing is left on disk between runs. Because Apple keeps the sound sealed,
+nothing is left on disk between runs. It plays through the device chosen in
+Output device on the Audio menu, like your files. Songs and albums read the
+artist first, so typing an artist's first letters takes you to their songs.
+Songs you have favorited say so at the end. Shift+F10 on a song has Play
+next, Favorite or Unfavorite, and Add to playlist. Because Apple keeps the sound sealed,
 the speed, pitch, equaliser and silence-removal tools do not apply to Apple
 Music.
 

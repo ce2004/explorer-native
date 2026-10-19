@@ -1143,8 +1143,10 @@ namespace ExplorerNative
                     AudioAction.SayRemaining => AppleMusicPlayer.DescribeRemaining(),
                     AudioAction.SayTotal => AppleMusicPlayer.DescribeTotal(),
                     AudioAction.Mute => AppleMusicPlayer.ToggleMute(),
+                    // The output device is the one thing here both players share.
+                    AudioAction.DeviceDialog => ShowDeviceDialog(),
                     AudioAction.SpeedUp or AudioAction.SpeedDown or AudioAction.ToggleRepeat
-                        or AudioAction.SpeedDialog or AudioAction.DeviceDialog or AudioAction.LimiterDialog
+                        or AudioAction.SpeedDialog or AudioAction.LimiterDialog
                         or AudioAction.EqualiserDialog or AudioAction.PitchDialog or AudioAction.SilenceDialog
                         => "That isn't available for Apple Music",
                     _ => "",
@@ -1297,12 +1299,28 @@ namespace ExplorerNative
         /// Opens the output device list, which moves the audio as it is arrowed
         /// onto. Same shape as the speed dialog and for the same reason.
         /// </summary>
+        /// <summary>The Windows name of a saved output device id, or "" for the system default or one that is gone.</summary>
+        private static string OutputDeviceName(string id)
+        {
+            if (string.IsNullOrEmpty(id)) return "";
+            try { return AudioPlayer.OutputDevices().Where(d => d.Id == id).Select(d => d.Name).FirstOrDefault() ?? ""; }
+            catch { return ""; }
+        }
+
         private string ShowDeviceDialog()
         {
+            // Apple Music's player follows the same choice, by the device's name
+            // (its own list knows devices only by name), as it is arrowed onto.
+            var devices = AudioPlayer.OutputDevices();
+            string NameOf(string id) => string.IsNullOrEmpty(id) ? "" : devices.Where(d => d.Id == id).Select(d => d.Name).FirstOrDefault() ?? "";
             using var dialog = new DeviceForm(
                 _audio.OutputDeviceId,
-                AudioPlayer.OutputDevices(),
-                id => _audio.OutputDeviceId = id);
+                devices,
+                id =>
+                {
+                    _audio.OutputDeviceId = id;
+                    AppleMusicPlayer.SetOutputDevice(NameOf(id));
+                });
 
             var outcome = _form is { IsDisposed: false, Visible: true }
                 ? dialog.ShowDialog(_form)
@@ -1314,6 +1332,7 @@ namespace ExplorerNative
             // player still names the missing device — so OK kept it pinned there.
             if (outcome == DialogResult.OK) _audio.OutputDeviceId = dialog.SelectedId;
             _settings.AudioOutputDeviceId = _audio.OutputDeviceId;
+            AppleMusicPlayer.SetOutputDevice(NameOf(_audio.OutputDeviceId));
 
             _form?.RestoreListFocusExternally();
             return "";
@@ -1654,6 +1673,7 @@ namespace ExplorerNative
             if (_audioDialogOpen) { _audioApplyPending = true; return; }
 
             _audio.OutputDeviceId = _settings.AudioOutputDeviceId;
+            if (AppleMusicPlayer.IsActive) AppleMusicPlayer.SetOutputDevice(OutputDeviceName(_settings.AudioOutputDeviceId));
             _audio.Limiter = _settings.AudioLimiter;
             _audio.LimiterWholeRange = _settings.AudioLimiterWholeRange;
             _audio.LimiterAttackMicroseconds = _settings.AudioLimiterAttackMicroseconds;
@@ -1734,8 +1754,20 @@ namespace ExplorerNative
             // Only when there is something to stop: with nothing loaded, Stop
             // answers "Nothing is loaded" out loud, and every Enter on a song said it.
             if (_audio.HasTrack) _audio.Stop();
+            AppleMusicPlayer.SetOutputDevice(OutputDeviceName(_settings.AudioOutputDeviceId));
             if (AppleMusicPlayer.PlayRow(path, Math.Min(100, _settings.AudioVolumePercent)))
                 SayAudio("audio.play", AppleMusic.SpokenName(path) ?? System.IO.Path.GetFileName(path));
+        }
+
+        /// <summary>
+        /// Play next on an Apple Music song (Shift+F10): after the song playing
+        /// now, or straight away when nothing is.
+        /// </summary>
+        public void PlayAppleMusicNext(string path)
+        {
+            var said = AppleMusicPlayer.PlayAfterCurrent(path);
+            if (said == null) { PlayAppleMusic(path); return; }
+            Notify("applemusic.playnext", said);
         }
 
         public bool PlayAudioFile(string path)

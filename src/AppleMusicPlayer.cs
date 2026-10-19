@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text;
 using System.Text.Json;
@@ -17,9 +18,10 @@ namespace ExplorerNative
     /// keyboard commands (play, pause, stop, seek, volume, mute).
     ///
     /// Because Apple's player keeps the audio sealed, the processing chain
-    /// (speed, pitch, EQ, limiter, silence removal) does not apply here, and the
-    /// audio goes to the system default output. Everything else about the
-    /// player's controls is mirrored so it feels like the built-in player.
+    /// (speed, pitch, EQ, limiter, silence removal) does not apply here. The
+    /// output device is the one chosen in the Output device list, matched by
+    /// its Windows name (setSinkId). Everything else about the player's
+    /// controls is mirrored so it feels like the built-in player.
     ///
     /// Nothing is kept between runs: the WebView2 profile is a throwaway folder
     /// under %TEMP%, and the sign-in is injected afresh each time.
@@ -62,6 +64,25 @@ namespace ExplorerNative
         private static int _generation;
         private static double _seekTarget = -1;
         private static long _seekAt;
+        private static int _seekQueued;
+
+        // The song queued in Apple's player after the current one (play-on).
+        private static string? _queuedPath, _queuedId, _queuedName;
+
+        // Play next: songs chosen to come after this one, first to play first,
+        // and the list song the list goes on from once they have played.
+        private static readonly List<string> _upNext = new();
+        private static string? _anchor;
+
+        /// <summary>The newest play that has made sound (or been paused on purpose), for the start watch.</summary>
+        private static int _startedGen;
+
+        /// <summary>The output device by its Windows name; empty follows the system default.</summary>
+        private static string _deviceName = "";
+
+        /// <summary>Recent crashes of the player, so a page that keeps failing is not restarted for ever.</summary>
+        private static int _crashes;
+        private static long _lastCrashAt;
 
         private static readonly string? LogPath = Environment.GetEnvironmentVariable("EXPLORERNATIVE_APPLEMUSICLOG");
 
@@ -101,17 +122,30 @@ namespace ExplorerNative
         /// id; <paramref name="spokenName"/> is "Title by Artist".
         /// <paramref name="volumePercent"/>, when given, is the level to start at.
         /// </summary>
-        public static void Play(string path, string catalogId, string spokenName, int volumePercent = -1)
+        public static void Play(string path, string catalogId, string spokenName, int volumePercent = -1) =>
+            Start(path, catalogId, spokenName, volumePercent, startAt: 0, retried: false);
+
+        /// <summary>
+        /// Starts a song, with the one after it in its list queued in Apple's
+        /// player too, so MusicKit fetches it ahead and goes straight on to it
+        /// (a quarter of a second between songs, where starting each afresh took
+        /// up to two and a half).
+        /// </summary>
+        private static void Start(string path, string catalogId, string spokenName, int volumePercent, double startAt, bool retried)
         {
             int mine;
+            lock (Gate) BecameCurrent(path);
+            var (nextPath, nextId, nextName) = NextFor(path);
             lock (Gate)
             {
                 mine = ++_generation;
                 _currentPath = path; _currentName = spokenName;
-                _playing = false; _positionSeconds = 0; _durationSeconds = 0; _seekTarget = -1;
+                _queuedPath = nextPath; _queuedId = nextId; _queuedName = nextName;
+                _playing = false; _positionSeconds = startAt; _durationSeconds = 0; _seekTarget = -1;
                 if (volumePercent >= 0) { _volumePercent = Math.Clamp(volumePercent, 0, 100); _unmutedPercent = -1; }
             }
-            Log($"play #{mine} {catalogId}");
+            Interlocked.Increment(ref _idleTicket);   // something is loaded: no closing for idleness
+            Log($"play #{mine} {catalogId} next {nextId ?? "none"}");
             OnUi(async () =>
             {
                 try
@@ -123,28 +157,176 @@ namespace ExplorerNative
                         return;
                     }
                     if (Volatile.Read(ref _generation) != mine) return;   // a newer Enter already
-                    int volume; lock (Gate) volume = _volumePercent;
+                    int volume; string device;
+                    lock (Gate) { volume = _volumePercent; device = _deviceName; }
                     await CallAsync("volume", Gain(volume)).ConfigureAwait(true);
-                    await CallAsync("play", catalogId, mine).ConfigureAwait(true);
+                    await CallAsync("device", device).ConfigureAwait(true);
+                    await CallAsync("play", catalogId, mine, nextId, startAt).ConfigureAwait(true);
+                    WatchStart(mine, path, catalogId, spokenName, retried);
                 }
                 catch (AppleMusicException ex) { Reset(); Fail(mine, path, ex.Message); }
                 catch (Exception ex) { Fail(mine, path, "Apple Music couldn't start the song: " + ex.Message); }
             });
         }
 
+        /// <summary>
+        /// The song to come after this one, ready to queue, or nulls: the first
+        /// one chosen with Play next, otherwise the one after the list song the
+        /// list goes on from.
+        /// </summary>
+        private static (string? Path, string? Id, string? Name) NextFor(string path)
+        {
+            try
+            {
+                string? next;
+                lock (Gate) next = _upNext.Count > 0 ? _upNext[0] : null;
+                next ??= AppleMusic.NextSongAfter(ListPlace(path));
+                if (next == null) return (null, null, null);
+                return (next, AppleMusic.CatalogIdForPlaying(next), AppleMusic.SpokenName(next) ?? Path.GetFileName(next));
+            }
+            catch (AppleMusicException) { return (null, null, null); }
+        }
+
+        /// <summary>Where the list goes on from: the last list song played (a Play next song is not one).</summary>
+        private static string ListPlace(string current)
+        {
+            lock (Gate) return _anchor ?? current;
+        }
+
+        /// <summary>A song is now the one playing: taken off Play next if it was first there, otherwise the list's place. Under Gate.</summary>
+        private static void BecameCurrent(string path)
+        {
+            if (_upNext.Count > 0 && string.Equals(_upNext[0], path, StringComparison.OrdinalIgnoreCase)) _upNext.RemoveAt(0);
+            else _anchor = path;
+        }
+
+        /// <summary>
+        /// Play next on a song: it plays after the one playing now, ahead of any
+        /// chosen before it, and the list carries on afterwards. Returns what to
+        /// say, or null when nothing is playing (the caller plays it now).
+        /// </summary>
+        public static string? PlayAfterCurrent(string path)
+        {
+            string id, name; int gen;
+            try
+            {
+                id = AppleMusic.CatalogIdForPlaying(path);
+                name = AppleMusic.SpokenName(path) ?? Path.GetFileName(path);
+            }
+            catch (AppleMusicException ex) { return ex.Message; }
+            lock (Gate)
+            {
+                if (_currentPath.Length == 0) return null;
+                _upNext.Insert(0, path);
+                _queuedPath = path; _queuedId = id; _queuedName = name;
+                gen = _generation;
+            }
+            Log("play next " + id);
+            OnUi(() => _ = CallAsync("requeue", id, gen));
+            return name + " plays next";
+        }
+
+        /// <summary>
+        /// A song that has not started after this long is started again, once,
+        /// in a fresh player: a stalled page used to leave it silent for good.
+        /// </summary>
+        private const int StartWatchMs = 15_000;
+
+        private static async void WatchStart(int generation, string path, string catalogId, string name, bool retried)
+        {
+            try
+            {
+                await Task.Delay(StartWatchMs).ConfigureAwait(true);
+                if (Volatile.Read(ref _generation) != generation || Volatile.Read(ref _startedGen) == generation) return;
+                lock (Gate) if (!string.Equals(_currentPath, path, StringComparison.OrdinalIgnoreCase)) return;
+                Log($"no sound from #{generation} after {StartWatchMs}ms" + (retried ? ", giving up" : ", starting again"));
+                if (retried)
+                {
+                    Fail(generation, path, "Apple Music didn't start the song. Press Enter on it to try again.");
+                    return;
+                }
+                Reset();
+                Start(path, catalogId, name, -1, startAt: 0, retried: true);
+            }
+            catch (Exception ex) { Log("watch: " + ex.Message); }
+        }
+
         public static string TogglePlayPause()
         {
             bool playing; string name;
             lock (Gate) { playing = _playing; name = _currentName; _playing = !playing; }
+            // A pause before the first sound is a choice, not a stall.
+            Volatile.Write(ref _startedGen, Volatile.Read(ref _generation));
             OnUi(() => _ = CallAsync(playing ? "pause" : "resume"));
             return playing ? "Paused" : "Playing " + name;
         }
 
         public static string Stop()
         {
-            lock (Gate) { _currentPath = ""; _currentName = ""; _playing = false; _generation++; }
+            lock (Gate)
+            {
+                _currentPath = ""; _currentName = ""; _playing = false; _generation++; _queuedPath = null; _queuedId = null;
+                _upNext.Clear(); _anchor = null;
+            }
             OnUi(() => _ = CallAsync("stop"));
+            CloseWhenIdle();
             return "Stopped";
+        }
+
+        /// <summary>
+        /// The Windows name of the output device chosen in the Output device
+        /// list ("" for the system default), which Apple's player then plays to.
+        /// </summary>
+        public static void SetOutputDevice(string name)
+        {
+            name ??= "";
+            lock (Gate)
+            {
+                if (_deviceName == name) return;
+                _deviceName = name;
+            }
+            Log("device " + (name.Length > 0 ? name : "default"));
+            OnUi(() => _ = CallAsync("device", name));
+        }
+
+        /// <summary>
+        /// Gets the player ready in the background, called on entering Apple
+        /// Music, so the first Enter on a song does not also wait for a browser
+        /// to start. Closed again if nothing is played (CloseWhenIdle).
+        /// </summary>
+        public static void Warm()
+        {
+            if (!AppleMusic.IsSetUp) return;
+            OnUi(() =>
+            {
+                try
+                {
+                    if (_ready == null) Log("warming");
+                    _ = EnsureReadyAsync();
+                    if (!IsActive) CloseWhenIdle();
+                }
+                catch (Exception ex) { Log("warm: " + ex.Message); }
+            });
+        }
+
+        /// <summary>With nothing loaded for this long, the hidden browser is closed, so it holds no memory or processes.</summary>
+        private const int IdleCloseMs = 5 * 60_000;
+        private static int _idleTicket;
+
+        private static void CloseWhenIdle()
+        {
+            int ticket = Interlocked.Increment(ref _idleTicket);
+            OnUi(async () =>
+            {
+                try
+                {
+                    await Task.Delay(IdleCloseMs).ConfigureAwait(true);
+                    if (ticket != Volatile.Read(ref _idleTicket) || IsActive || _ready == null) return;
+                    Log("closing the idle player");
+                    Reset();
+                }
+                catch (Exception ex) { Log("idle: " + ex.Message); }
+            });
         }
 
         /// <summary>
@@ -164,7 +346,15 @@ namespace ExplorerNative
                 if (_durationSeconds > 0) target = Math.Min(target, Math.Max(0, _durationSeconds - 1));
                 _seekTarget = target; _seekAt = Environment.TickCount64; _positionSeconds = target;
             }
-            OnUi(() => _ = CallAsync("seekto", target.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture)));
+            // One send at a time, carrying the newest target when it goes: a held
+            // key runs this fifty times a second, and only where it ends matters.
+            if (Interlocked.Exchange(ref _seekQueued, 1) == 0)
+                OnUi(() =>
+                {
+                    Volatile.Write(ref _seekQueued, 0);
+                    double latest; lock (Gate) latest = _seekTarget;
+                    if (latest >= 0) _ = CallAsync("seekto", latest.ToString("0.###", System.Globalization.CultureInfo.InvariantCulture));
+                });
             return AudioPlayer.SpokenTime(target);
         }
 
@@ -234,10 +424,11 @@ namespace ExplorerNative
         {
             string path; lock (Gate) path = _currentPath;
             if (path.Length == 0) return;
-            var next = AppleMusic.NextSongAfter(path);
-            if (next == null && AppleMusic.InStation(path))
+            var next = NextFor(path).Path;
+            var place = ListPlace(path);
+            if (next == null && AppleMusic.InStation(place))
             {
-                PlayNextFromStation(path);
+                PlayNextFromStation(place);
                 return;
             }
             if (next == null)
@@ -289,6 +480,7 @@ namespace ExplorerNative
                 var id = AppleMusic.CatalogIdForPlaying(path);
                 var name = AppleMusic.SpokenName(path) ?? Path.GetFileName(path);
                 Play(path, id, name);
+                Volatile.Write(ref _autoGen, Volatile.Read(ref _generation));
                 Say?.Invoke("audio.play", name);
             }
             catch (AppleMusicException ex)
@@ -327,9 +519,58 @@ namespace ExplorerNative
         private static void Reset()
         {
             Log("reset");
+            int pid = _browserProcessId;
+            var folder = _dataFolder;
             CloseBrowser();
             _ready = null; _pendingConfig = null;
-            Wipe();
+            // The profile goes once the browser has let go of it, off this thread.
+            _ = Task.Run(() =>
+            {
+                WaitForExit(pid);
+                WipeFolder(folder);
+            });
+        }
+
+        private static void WaitForExit(int pid)
+        {
+            if (pid <= 0) return;
+            try
+            {
+                using var browser = System.Diagnostics.Process.GetProcessById(pid);
+                browser.WaitForExit(3000);
+            }
+            catch (ArgumentException) { }          // already gone
+            catch (InvalidOperationException) { }
+        }
+
+        /// <summary>
+        /// The page or browser died (a crash, or Windows ended it). The song that
+        /// was playing is started again where it was, in a fresh player; after a
+        /// third crash inside a minute it is given up on, with a sentence.
+        /// </summary>
+        private static void OnProcessFailed(CoreWebView2ProcessFailedKind kind)
+        {
+            Log("process failed: " + kind);
+            if (kind is not (CoreWebView2ProcessFailedKind.BrowserProcessExited or CoreWebView2ProcessFailedKind.RenderProcessExited
+                or CoreWebView2ProcessFailedKind.RenderProcessUnresponsive or CoreWebView2ProcessFailedKind.FrameRenderProcessExited))
+                return;
+            OnUi(() =>
+            {
+                string path, name; double at; bool playing; int gen;
+                lock (Gate) { path = _currentPath; name = _currentName; at = _positionSeconds; playing = _playing; gen = _generation; }
+                var now = Environment.TickCount64;
+                _crashes = now - _lastCrashAt < 60_000 ? _crashes + 1 : 1;
+                _lastCrashAt = now;
+                Reset();
+                if (path.Length == 0 || !playing) return;   // the next play builds a fresh one
+                if (_crashes > 2)
+                {
+                    Fail(gen, path, "Apple Music's player keeps stopping. Press Enter on the song to try again.");
+                    return;
+                }
+                try { Start(path, AppleMusic.CatalogIdForPlaying(path), name, -1, startAt: at, retried: false); }
+                catch (AppleMusicException ex) { Fail(gen, path, ex.Message); }
+            });
         }
 
         /// <summary>
@@ -407,6 +648,20 @@ namespace ExplorerNative
                 core.Settings.AreDefaultContextMenusEnabled = false;
                 core.Settings.IsStatusBarEnabled = false;
                 core.WebMessageReceived += OnWebMessage;
+                core.ProcessFailed += (_, e) => OnProcessFailed(e.ProcessFailedKind);
+
+                // Choosing a speaker (HTMLMediaElement.setSinkId) needs the
+                // page to know the devices, which Chromium allows only with the
+                // microphone permission. It is granted to this one page, which
+                // never listens (its getUserMedia is removed); anything else a
+                // page might ask for is refused.
+                core.PermissionRequested += (_, e) => e.State = CoreWebView2PermissionState.Deny;
+                try
+                {
+                    await core.Profile.SetPermissionStateAsync(CoreWebView2PermissionKind.Microphone,
+                        "https://" + PageHost, CoreWebView2PermissionState.Allow).ConfigureAwait(true);
+                }
+                catch (Exception ex) { Log("no device choice: " + ex.Message); }   // an older runtime: the default device only
 
                 // The page is our own file, served by WebView2 itself under the
                 // web player's origin: the developer token is the web player's, and
@@ -468,9 +723,10 @@ namespace ExplorerNative
         }
 
         /// <summary>Deletes this run's profile. Runs on quit; a locked file is left for the next run's sweep.</summary>
-        private static void Wipe()
+        private static void Wipe() => WipeFolder(_dataFolder);
+
+        private static void WipeFolder(string? folder)
         {
-            var folder = _dataFolder;
             if (folder == null) return;
             try { if (Directory.Exists(folder)) Directory.Delete(folder, recursive: true); }
             catch (IOException) { } catch (UnauthorizedAccessException) { }
@@ -478,14 +734,18 @@ namespace ExplorerNative
 
         private static string? _pendingConfig;
 
-        private static async Task CallAsync(string command, string? arg = null, int generation = 0)
+        private static async Task CallAsync(string command, string? arg = null, int generation = 0, string? next = null, double at = 0)
         {
             if (_ready == null || !_ready.Task.IsCompletedSuccessfully) return;   // nothing loaded to tell
             var core = _controller?.CoreWebView2;
             if (core == null) return;
-            var payload = JsonSerializer.Serialize(new { command, arg, gen = generation });
-            Log("send " + command + " " + arg);
-            await core.ExecuteScriptAsync("window.amCommand(" + payload + ")").ConfigureAwait(true);
+            var payload = JsonSerializer.Serialize(new { command, arg, gen = generation, next, at });
+            Log("send " + command + " " + arg + (next != null ? " then " + next : ""));
+            try { await core.ExecuteScriptAsync("window.amCommand(" + payload + ")").ConfigureAwait(true); }
+            catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException)
+            {
+                Log("send failed: " + ex.Message);   // the browser went away; ProcessFailed deals with it
+            }
         }
 
         /// <summary>State the page reports: ready, state, ended, error.</summary>
@@ -511,6 +771,7 @@ namespace ExplorerNative
                         {
                             if (gen != 0 && gen != _generation) break;
                             _playing = root.TryGetProperty("playing", out var p) && p.ValueKind == JsonValueKind.True;
+                            if (_playing && gen != 0) { _startedGen = gen; _skips = 0; }
                             bool settling = _seekTarget >= 0 && Environment.TickCount64 - _seekAt < SeekSettleMs;
                             if (!settling && root.TryGetProperty("position", out var pos) && pos.TryGetDouble(out var ps)) _positionSeconds = ps;
                             if (root.TryGetProperty("duration", out var dur) && dur.TryGetDouble(out var ds) && ds > 0) _durationSeconds = ds;
@@ -520,6 +781,12 @@ namespace ExplorerNative
                     case "ended":
                         Log("ended #" + gen);
                         if (gen == Volatile.Read(ref _generation)) PlayNext();
+                        break;
+                    case "advanced":
+                        OnAdvanced(gen, root.TryGetProperty("id", out var a) ? a.GetString() ?? "" : "");
+                        break;
+                    case "log":
+                        Log("page: " + (root.TryGetProperty("message", out var lm) ? lm.GetString() : ""));
                         break;
                     case "error":
                     {
@@ -533,8 +800,22 @@ namespace ExplorerNative
                                 msg.Length > 0 ? "Apple Music's player couldn't start: " + msg : "Apple Music's player couldn't start."));
                             break;
                         }
-                        string path; lock (Gate) path = _currentPath;
-                        Fail(gen == 0 ? Volatile.Read(ref _generation) : gen, path, Sentence(code, msg));
+                        string path, name; lock (Gate) { path = _currentPath; name = _currentName; }
+                        int failed = gen == 0 ? Volatile.Read(ref _generation) : gen;
+                        var sentence = Sentence(code, msg);
+                        // Playing on by itself into a song Apple won't play: say so
+                        // and go on to the next, rather than stopping the music.
+                        // A song you pressed Enter on just says why.
+                        if (failed == Volatile.Read(ref _generation) && failed == _autoGen &&
+                            sentence == Unavailable && _skips < MostSkips && path.Length > 0)
+                        {
+                            _skips++;
+                            Log("skipping unavailable #" + failed);
+                            Say?.Invoke("applemusic.failed", name + " isn't available, so it was skipped");
+                            PlayNext();
+                            break;
+                        }
+                        Fail(failed, path, sentence);
                         break;
                     }
                 }
@@ -543,10 +824,45 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// Apple's player went on to the song queued after the last one: that is
+        /// now the one playing, it is said like any song starting, and the one
+        /// after it is queued in turn.
+        /// </summary>
+        private static void OnAdvanced(int gen, string id)
+        {
+            string name, now;
+            lock (Gate)
+            {
+                if (gen != _generation || _queuedPath == null || id != _queuedId) { Log("advance ignored " + id); return; }
+                BecameCurrent(_queuedPath);
+                _currentPath = _queuedPath; _currentName = _queuedName ?? "";
+                _queuedPath = null; _queuedId = null; _queuedName = null;
+                _positionSeconds = 0; _durationSeconds = 0; _seekTarget = -1; _startedGen = gen;
+                name = _currentName; now = _currentPath;
+            }
+            Log("advanced to " + id);
+            Say?.Invoke("audio.play", name);
+            var (nextPath, nextId, nextName) = NextFor(now);
+            if (nextPath == null) return;   // the end, or a station: "ended" deals with it
+            lock (Gate)
+            {
+                if (gen != _generation) return;
+                _queuedPath = nextPath; _queuedId = nextId; _queuedName = nextName;
+            }
+            _ = CallAsync("append", nextId, gen);
+        }
+
+        /// <summary>
         /// What is said when a song will not play. MusicKit's own messages are
         /// written for developers (one is a URL), so only its code is used to
         /// choose the sentence; the message itself goes to the log.
         /// </summary>
+        private const string Unavailable = "That song isn't available to play on Apple Music.";
+
+        /// <summary>The newest play started by playing on (not by Enter), and how many unavailable songs in a row were skipped.</summary>
+        private static int _autoGen, _skips;
+        private const int MostSkips = 10;
+
         internal static string Sentence(string code, string message)
         {
             string both = (code + " " + message).ToUpperInvariant();
@@ -557,7 +873,7 @@ namespace ExplorerNative
                 return "Apple Music didn't accept your sign-in. Load a new cookies.txt in Preferences, Apple Music.";
             if (both.Contains("CONTENT_UNAVAILABLE", StringComparison.Ordinal) || both.Contains("CONTENT_RESTRICTED", StringComparison.Ordinal) ||
                 both.Contains("NOT_FOUND", StringComparison.Ordinal))
-                return "That song isn't available to play on Apple Music.";
+                return Unavailable;
             if (both.Contains("NETWORK", StringComparison.Ordinal) || both.Contains("FAILED TO FETCH", StringComparison.Ordinal))
                 return "Apple Music couldn't be reached. Check the internet connection.";
             if (both.Contains("KEY", StringComparison.Ordinal) || both.Contains("DRM", StringComparison.Ordinal) ||
@@ -599,24 +915,102 @@ namespace ExplorerNative
         private const string PlayerHtml = """
 <!doctype html>
 <html>
-<head><meta charset="utf-8"><title>Apple Music</title></head>
+<head><meta charset="utf-8"><title>Apple Music</title>
+<!-- The hosts every first play talks to, connected while the page waits, so the first song does not pay for them. -->
+<link rel="preconnect" href="https://api.music.apple.com" crossorigin>
+<link rel="preconnect" href="https://play.itunes.apple.com" crossorigin>
+<link rel="preconnect" href="https://aod-ssl.itunes.apple.com" crossorigin>
+<link rel="preconnect" href="https://universal-activity-service.itunes.apple.com" crossorigin>
+</head>
 <body>
 <script>
-let music = null, current = 0, switching = false, endedFor = -1, wantVolume = null;
+// The page may name speakers (that needs the microphone permission), but it
+// never listens: nothing here may open a microphone.
+try {
+  if (navigator.mediaDevices) navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException("Not allowed", "NotAllowedError"));
+  navigator.getUserMedia = navigator.webkitGetUserMedia = undefined;
+} catch (e) {}
+let music = null, current = 0, switching = false, endedFor = -1, wantVolume = null, wantSink = null;
+let queuedNext = null, lastState = "", seekWant = null, seeking = false, advances = 0;
 // MusicKit can reset the volume when it builds the audio for a new song (it
 // started at 0, silent), so the level asked for is kept and put back.
 function applyVolume() { if (music && wantVolume !== null && music.volume !== wantVolume) music.volume = wantVolume; }
 function post(obj) { try { window.chrome.webview.postMessage(JSON.stringify(obj)); } catch (e) {} }
+function audio() { return document.querySelector("audio"); }
 function sendState() {
   // Not while a new song is being put in: what MusicKit says then is the old one's.
   if (!music || switching) return;
-  post({ kind: "state", gen: current, playing: music.isPlaying, state: music.playbackState,
-         position: music.currentPlaybackTime || 0, duration: music.currentPlaybackDuration || 0 });
+  const position = music.currentPlaybackTime || 0, duration = music.currentPlaybackDuration || 0;
+  // Only what the app can use: a change of state, or of the whole second.
+  // MusicKit reports the time several times a second, and every report
+  // crossing to the app cost both processes for nothing.
+  const key = music.isPlaying + "|" + music.playbackState + "|" + Math.floor(position) + "|" + Math.floor(duration);
+  if (key === lastState) return;
+  lastState = key;
+  post({ kind: "state", gen: current, playing: music.isPlaying, state: music.playbackState, position, duration });
+}
+// A song as MusicKit's queue takes it. Given whole, MusicKit does not look the
+// song up in Apple's catalogue first, which cost 0.4 of a second per song.
+function item(id) {
+  const library = String(id).startsWith("i.");
+  return { id: String(id), type: library ? "library-songs" : "songs",
+           attributes: { playParams: library ? { id: String(id), kind: "song", isLibrary: true } : { id: String(id), kind: "song" } } };
+}
+// The output device the app has chosen, by its Windows name. Empty is the
+// system default, which Chromium follows by itself.
+async function applySink() {
+  const a = audio();
+  if (!a || wantSink === null || !a.setSinkId) return;
+  let id = "";
+  if (wantSink) {
+    try {
+      const all = await navigator.mediaDevices.enumerateDevices();
+      const d = all.find(x => x.kind === "audiooutput" && x.deviceId !== "default" && x.deviceId !== "communications" && x.label === wantSink);
+      if (d) id = d.deviceId;
+      else post({ kind: "log", message: "no output named " + wantSink + "; using the default" });
+    } catch (e) { post({ kind: "log", message: "devices: " + e }); }
+  }
+  if (a.sinkId !== id) {
+    try { await a.setSinkId(id); post({ kind: "log", message: "sink " + (id ? wantSink : "default") }); }
+    catch (e) { post({ kind: "log", message: "setSinkId: " + e }); }
+  }
+}
+function inBuffer(a, t) {
+  for (let i = 0; i < a.buffered.length; i++)
+    if (t >= a.buffered.start(i) && t < a.buffered.end(i) - 0.5) return true;
+  return false;
+}
+// A skip inside what is already downloaded moves the audio itself, at once.
+// Anything further goes through MusicKit, one at a time, newest target only:
+// each of its seeks downloads again, and a held key used to queue dozens.
+async function seekTo(t) {
+  const a = audio();
+  if (a && inBuffer(a, t)) { seekWant = null; a.currentTime = t; return; }
+  seekWant = t;
+  if (seeking) return;
+  seeking = true;
+  try {
+    while (seekWant !== null) {
+      const target = seekWant; seekWant = null;
+      const b = audio();
+      if (b && inBuffer(b, target)) b.currentTime = target;
+      else await music.seekToTime(target);
+    }
+  } finally { seeking = false; }
 }
 function failedToLoad() { post({ kind: "error", message: "MusicKit could not be loaded from Apple." }); }
 function codeOf(e) { return String((e && (e.errorCode || e.code || e.name)) || ""); }
+function warmDecryption() {
+  // The protected-audio module loads on first use, which the first song waited for.
+  try {
+    navigator.requestMediaKeySystemAccess("com.widevine.alpha", [{ initDataTypes: ["cenc"],
+      audioCapabilities: [{ contentType: 'audio/mp4; codecs="mp4a.40.2"' }] }])
+      .then(a => a.createMediaKeys()).catch(() => {});
+  } catch (e) {}
+}
 window.amConfigure = async function (cfg) {
   try {
+    warmDecryption();
     await new Promise(res => {
       if (window.MusicKit && window.MusicKit.configure) return res();
       document.addEventListener("musickitloaded", res, { once: true });
@@ -632,18 +1026,36 @@ window.amConfigure = async function (cfg) {
     music.addEventListener(E.playbackStateDidChange, sendState);
     music.addEventListener(E.playbackTimeDidChange, sendState);
     music.addEventListener(E.playbackDurationDidChange, sendState);
-    music.addEventListener(E.nowPlayingItemDidChange, function () { applyVolume(); sendState(); });
+    music.addEventListener(E.nowPlayingItemDidChange, function () {
+      applyVolume(); applySink();
+      // MusicKit moved on to the song queued after this one by itself: the app
+      // takes it as the one playing and queues the next.
+      const now = music.nowPlayingItem;
+      if (!switching && queuedNext !== null && now && String(now.id) === queuedNext) {
+        queuedNext = null; advances++;
+        post({ kind: "advanced", gen: current, id: String(now.id) });
+      }
+      sendState();
+    });
     music.addEventListener(E.mediaPlaybackError, function (e) {
       if (switching) return;
       post({ kind: "error", gen: current, code: codeOf(e), message: (e && (e.description || e.message)) || "Playback error" });
     });
     music.addEventListener(E.playbackStateDidChange, function () {
-      // 5 is "ended", 10 is "completed" in MusicKit's playback states.
+      // 5 is "ended", 10 is "completed" in MusicKit's playback states. With a
+      // song queued after, MusicKit says "ended" and then goes on to it by
+      // itself, so the end is only told if it has not moved on shortly after
+      // (the queued song would not play); taken at once, the app started that
+      // song again from nothing.
       const s = music.playbackState;
-      if ((s === 5 || s === 10) && !switching && endedFor !== current) {
+      if ((s !== 5 && s !== 10) || switching || endedFor === current) return;
+      const mine = current, moves = advances;
+      const tell = () => {
+        if (mine !== current || moves !== advances || endedFor === current || music.isPlaying) return;
         endedFor = current;
         post({ kind: "ended", gen: current });
-      }
+      };
+      if (queuedNext !== null) setTimeout(tell, 2500); else tell();
     });
     post({ kind: "ready", authorized: !!music.isAuthorized });
   } catch (e) { post({ kind: "error", message: String(e && e.message || e) }); }
@@ -652,17 +1064,23 @@ window.amCommand = async function (c) {
   if (!music) { post({ kind: "error", gen: c.gen || current, message: "The player isn't ready." }); return; }
   if (c.command === "play") {
     const mine = c.gen;
-    current = mine; switching = true;
+    current = mine; switching = true; queuedNext = null; seekWant = null;
     try {
-      await music.setQueue({ song: c.arg });
+      const items = [item(c.arg)];
+      if (c.next) items.push(item(c.next));
+      try { await music.setQueue({ items }); }
+      catch (e) { if (mine !== current) return; await music.setQueue({ song: c.arg }); items.length = 1; }
       if (mine !== current) return;
+      if (items.length > 1) queuedNext = String(c.next);
       applyVolume();
+      await applySink();
       await music.play();
       applyVolume();
+      if (c.at > 1 && mine === current) await music.seekToTime(c.at);
     } catch (e) {
       if (mine === current) post({ kind: "error", gen: mine, code: codeOf(e), message: String(e && e.message || e) });
     } finally {
-      if (mine === current) { switching = false; sendState(); }
+      if (mine === current) { switching = false; lastState = ""; sendState(); }
     }
     return;
   }
@@ -670,12 +1088,28 @@ window.amCommand = async function (c) {
     switch (c.command) {
       case "pause": await music.pause(); break;
       case "resume": await music.play(); break;
-      case "stop": current++; switching = false; await music.stop(); break;
-      case "seekto": await music.seekToTime(parseFloat(c.arg || "0")); break;
+      case "stop": current++; switching = false; queuedNext = null; seekWant = null; await music.stop(); break;
+      case "seekto": await seekTo(parseFloat(c.arg || "0")); break;
       case "volume": wantVolume = parseFloat(c.arg || "1"); music.volume = wantVolume; break;
+      case "device": wantSink = c.arg || ""; await applySink(); break;
+      case "append":
+        if (c.gen !== current) break;
+        await music.playLater({ items: [item(c.arg)] });
+        queuedNext = String(c.arg);
+        break;
+      case "requeue":
+        // Play next: whatever was queued after this song gives way to the new choice.
+        if (c.gen !== current) break;
+        music.queue.clearAfterCurrent();
+        await music.playLater({ items: [item(c.arg)] });
+        queuedNext = String(c.arg);
+        break;
     }
     sendState();
-  } catch (e) { post({ kind: "error", gen: current, code: codeOf(e), message: String(e && e.message || e) }); }
+  } catch (e) {
+    if (c.command === "append" || c.command === "requeue") { post({ kind: "log", message: c.command + ": " + e }); return; }
+    post({ kind: "error", gen: current, code: codeOf(e), message: String(e && e.message || e) });
+  }
 };
 </script>
 <!-- Just the player API, no web-component UI: nothing here is ever shown. -->

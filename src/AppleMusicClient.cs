@@ -38,6 +38,8 @@ namespace ExplorerNative
         public int AddedRank = -1;
         public int TrackNumber;
         public int DiscNumber;
+        /// <summary>A playlist you can add songs to (your own; not Favorite Songs or Apple's).</summary>
+        public bool CanEdit;
 
         public bool IsSong => Kind == "song";
     }
@@ -160,6 +162,8 @@ namespace ExplorerNative
                     throw new AppleMusicException("Apple Music says that isn't there any more.");
                 if (!resp.IsSuccessStatusCode)
                     throw new AppleMusicException($"Apple Music answered with an error ({(int)resp.StatusCode}).");
+                // A change (PUT, DELETE, POST) is often answered with no body at all.
+                if (string.IsNullOrWhiteSpace(body)) return JsonDocument.Parse("{}");
                 try { return JsonDocument.Parse(body); }
                 catch (JsonException) { throw new AppleMusicException("Apple Music sent back something the app can't read."); }
             }
@@ -305,7 +309,10 @@ namespace ExplorerNative
                     if (!item.IsLibrary) item.CatalogId = id;
                     break;
                 case "albums": item.Kind = "album"; item.Subtitle = Str("artistName"); break;
-                case "playlists": item.Kind = "playlist"; item.Subtitle = Str("curatorName"); break;
+                case "playlists":
+                    item.Kind = "playlist"; item.Subtitle = Str("curatorName");
+                    item.CanEdit = a.TryGetProperty("canEdit", out var ce) && ce.ValueKind == JsonValueKind.True;
+                    break;
                 case "artists": item.Kind = "artist"; break;
                 case "stations":
                     item.Kind = "station";
@@ -344,6 +351,66 @@ namespace ExplorerNative
             if (doc.RootElement.TryGetProperty("data", out var data))
                 foreach (var d in data.EnumerateArray()) Add(items, d);
             return items;
+        }
+
+        // ---- Favorites and playlists ----
+
+        /// <summary>Song ratings asked for per request; one answer covers 300 in about 0.4s.</summary>
+        private const int RatingsPerRequest = 200;
+
+        /// <summary>
+        /// Which of these catalogue songs are favorited. Apple keeps a favorite as
+        /// a rating of 1 on the catalogue song (library ids answer nothing). The
+        /// answer lists only rated songs, so every id asked about and not
+        /// returned is not a favorite.
+        /// </summary>
+        public async Task<HashSet<string>> FavoritesAmongAsync(IReadOnlyCollection<string> catalogIds, CancellationToken token)
+        {
+            await StartAsync(token).ConfigureAwait(false);
+            var favorites = new HashSet<string>(StringComparer.Ordinal);
+            var batches = catalogIds.Distinct().Chunk(RatingsPerRequest).ToList();
+            using var gate = new SemaphoreSlim(4);
+            await Task.WhenAll(batches.Select(async batch =>
+            {
+                await gate.WaitAsync(token).ConfigureAwait(false);
+                try
+                {
+                    using var doc = await GetAsync("/v1/me/ratings/songs?ids=" + string.Join(",", batch.Select(Uri.EscapeDataString)), token).ConfigureAwait(false);
+                    if (!doc.RootElement.TryGetProperty("data", out var data)) return;
+                    foreach (var d in data.EnumerateArray())
+                    {
+                        if (!d.TryGetProperty("id", out var id) || id.GetString() is not { } sid) continue;
+                        if (d.TryGetProperty("attributes", out var a) && a.TryGetProperty("value", out var v) &&
+                            v.TryGetInt32(out var value) && value == 1)
+                            lock (favorites) favorites.Add(sid);
+                    }
+                }
+                finally { gate.Release(); }
+            })).ConfigureAwait(false);
+            return favorites;
+        }
+
+        /// <summary>Favorites a catalogue song, or takes the favorite off.</summary>
+        public async Task SetFavoriteAsync(string catalogId, bool favorite, CancellationToken token)
+        {
+            await StartAsync(token).ConfigureAwait(false);
+            var url = $"{AmpApi}/v1/me/ratings/songs/{Uri.EscapeDataString(catalogId)}";
+            using var req = Request(favorite ? HttpMethod.Put : HttpMethod.Delete, url);
+            if (favorite)
+                req.Content = new StringContent("{\"type\":\"rating\",\"attributes\":{\"value\":1}}", Encoding.UTF8, "application/json");
+            using var _ = await SendAsync(req, token).ConfigureAwait(false);
+        }
+
+        /// <summary>Adds a song to the end of one of your playlists.</summary>
+        public async Task AddToPlaylistAsync(string playlistId, AppleMusicItem song, CancellationToken token)
+        {
+            await StartAsync(token).ConfigureAwait(false);
+            // A library song goes in as itself; a catalogue song (search, an
+            // album you don't have) by its catalogue id.
+            var (id, type) = song.IsLibrary ? (song.Id, "library-songs") : (song.CatalogId.Length > 0 ? song.CatalogId : song.Id, "songs");
+            using var req = Request(HttpMethod.Post, $"{AmpApi}/v1/me/library/playlists/{Uri.EscapeDataString(playlistId)}/tracks");
+            req.Content = new StringContent(JsonSerializer.Serialize(new { data = new[] { new { id, type } } }), Encoding.UTF8, "application/json");
+            using var _ = await SendAsync(req, token).ConfigureAwait(false);
         }
 
         // ---- Playing ----

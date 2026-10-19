@@ -133,8 +133,56 @@ namespace ExplorerNative
                 page.Contains("PageHost = \"music.apple.com\"", StringComparison.Ordinal), null);
             check("the player may start sound without a click",
                 page.Contains("--autoplay-policy=no-user-gesture-required", StringComparison.Ordinal), null);
-            check("an end is reported once per play and never while switching songs",
-                page.Contains("!switching && endedFor !== current", StringComparison.Ordinal), null);
+            check("an end is reported once per play, never while switching songs",
+                page.Contains("(s !== 5 && s !== 10) || switching || endedFor === current", StringComparison.Ordinal), null);
+            check("with a song queued, an end waits to see whether Apple's player went on to it",
+                page.Contains("if (queuedNext !== null) setTimeout(tell, 2500); else tell();", StringComparison.Ordinal) &&
+                page.Contains("moves !== advances", StringComparison.Ordinal), null);
+
+            // 4.0.2: Conner, "it says last to first, it should be oldest added, and then most recently added".
+            check("added orders say oldest added first and most recently added first, oldest listed first",
+                main.Contains("ascending ? \"most recently added first\" : \"oldest added first\"", StringComparison.Ordinal) &&
+                main.Contains("AppleMusic.Sort.RecentlyAdded => ascending ? \"oldest added first\" : \"most recently added first\"", StringComparison.Ordinal) &&
+                main.Contains("menu.DropDownItems.Add(newestUp ? down : up);", StringComparison.Ordinal), null);
+
+            // 4.1.0: Shift+F10 on a song.
+            var menu = Body("private void ShowOurContextMenu()", 4000);
+            check("Shift+F10 on a song offers Play next",
+                menu.Contains("_playNextItem.Visible = appleSong;", StringComparison.Ordinal), null);
+            check("Favorite or Unfavorite shows only once known, saying what it will do",
+                menu.Contains("_favoriteItem.Visible = favorite != null;", StringComparison.Ordinal) &&
+                menu.Contains("favorite == true ? \"Unfa&vorite\" : \"Fa&vorite\"", StringComparison.Ordinal), null);
+            check("Add to playlist lists your playlists, and hides when there are none",
+                menu.Contains("_addToPlaylistItem.Visible = playlists is { Count: > 0 };", StringComparison.Ordinal), null);
+            check("Play next replaces what Apple's player had queued",
+                page.Contains("music.queue.clearAfterCurrent();", StringComparison.Ordinal), null);
+
+            // 4.0.2: Conner, "the apple music doesn't follow the selected audio device".
+            check("the Output device list works while Apple Music plays",
+                tray.Contains("AudioAction.DeviceDialog => ShowDeviceDialog(),", StringComparison.Ordinal) &&
+                !System.Text.RegularExpressions.Regex.IsMatch(tray, @"or AudioAction\.DeviceDialog or AudioAction\.LimiterDialog\s*\r?\n\s*or AudioAction\.EqualiserDialog[^;]*isn't available"), null);
+            check("choosing a device moves Apple's player too",
+                tray.Contains("AppleMusicPlayer.SetOutputDevice(NameOf(id));", StringComparison.Ordinal), null);
+            check("the player page plays to the chosen device", page.Contains("a.setSinkId(id)", StringComparison.Ordinal), null);
+            check("the page can name devices but never listens",
+                page.Contains("CoreWebView2PermissionKind.Microphone", StringComparison.Ordinal) &&
+                page.Contains("getUserMedia = () => Promise.reject", StringComparison.Ordinal) &&
+                page.Contains("e.State = CoreWebView2PermissionState.Deny", StringComparison.Ordinal), null);
+
+            // 4.0.2: "the music takes forever to play", "skipping lags".
+            check("entering Apple Music starts the player in the background",
+                Body("private async Task<bool> ShowAppleMusicFolderAsync(", 1500).Contains("AppleMusicPlayer.Warm();", StringComparison.Ordinal), null);
+            check("the next song is queued in Apple's player so it goes straight on",
+                page.Contains("if (c.next) items.push(item(c.next));", StringComparison.Ordinal) &&
+                page.Contains("kind: \"advanced\"", StringComparison.Ordinal), null);
+            check("a skip inside the downloaded audio moves it directly",
+                page.Contains("if (a && inBuffer(a, t)) { seekWant = null; a.currentTime = t; return; }", StringComparison.Ordinal), null);
+            check("a held skip sends one seek at a time, the newest",
+                page.Contains("Interlocked.Exchange(ref _seekQueued, 1) == 0", StringComparison.Ordinal), null);
+            check("the page reports only whole-second changes (CPU)",
+                page.Contains("if (key === lastState) return;", StringComparison.Ordinal), null);
+            check("a crashed player is restarted where the song was",
+                page.Contains("core.ProcessFailed += (_, e) => OnProcessFailed(e.ProcessFailedKind);", StringComparison.Ordinal), null);
         }
 
         private static AppleMusicItem Song(string name, string id, string artist = "", string album = "",
@@ -247,7 +295,29 @@ namespace ExplorerNative
 
             const string songs = "::applemusic\\Library\\Songs";
             var loose = AppleMusic.SeedForTests(songs, new List<AppleMusicItem> { Song("The Song", "s1", artist: "The Band") });
-            equal("a song in a list says its artist too", loose[0].Name, "The Song, The Band");
+            // Artist first, so typing an artist's first letters moves by artist (Conner, 4.0.2).
+            equal("a song in a list says its artist first", loose[0].Name, "The Band, The Song");
+            equal("a songs list starts in artist order", AppleMusic.DefaultSort(songs).By.ToString(), "Artist");
+
+            const string albums = "::applemusic\\Library\\Albums";
+            var albumRows = AppleMusic.SeedForTests(albums, new List<AppleMusicItem>
+            {
+                new AppleMusicItem { Kind = "album", Name = "Record", Subtitle = "The Band", Id = "al1" },
+            });
+            equal("an album in a list says its artist first", albumRows[0].Name, "The Band, Record");
+
+            // 4.1.0: "it should say favorited at the end of a title if it's favorited".
+            check("a song's favorite is unknown until Apple has said", AppleMusic.IsFavorite(loose[0].Path) == null, null);
+            AppleMusic.SetFavoritesForTests(new[] { "s1" }, Array.Empty<string>());
+            var renamed = AppleMusic.ListAsync(songs, fresh: false, CancellationToken.None).GetAwaiter().GetResult();
+            equal("a favorited song says so at the end", renamed[0].Name, "The Band, The Song, favorited");
+            check("and is known to be one", AppleMusic.IsFavorite(loose[0].Path) == true, null);
+            var albumNow = AppleMusic.ListAsync(album, fresh: false, CancellationToken.None).GetAwaiter().GetResult();
+            equal("in an album too, after the title", albumNow[0].Name, "The Song, favorited");
+            AppleMusic.SetFavoritesForTests(Array.Empty<string>(), new[] { "s1" });
+            var unrenamed = AppleMusic.ListAsync(songs, fresh: false, CancellationToken.None).GetAwaiter().GetResult();
+            equal("unfavorited, the word goes", unrenamed[0].Name, "The Band, The Song");
+            check("and is known not to be one", AppleMusic.IsFavorite(loose[0].Path) == false, null);
         }
 
         private static void PlayOn(Action<string, bool, string?> check, Action<string, string, string> equal)
