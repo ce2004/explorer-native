@@ -407,6 +407,8 @@ namespace ExplorerNative
             // while the window is shown: OnVisibleChanged starts and stops it.
             _availabilityTimer = new System.Windows.Forms.Timer { Interval = 4000 };
             _availabilityTimer.Tick += (_, _) => CheckCurrentPathStillExists();
+
+            AppleMusic.Grew += OnAppleMusicGrew;
         }
 
         /// <summary>
@@ -503,12 +505,16 @@ namespace ExplorerNative
         /// <summary>
         /// The folder to come back to: inside an archive, the folder the archive
         /// is in, because the path through it is not a folder anything can open.
+        /// In Apple Music, the drives list with the cursor on the Apple Music row:
+        /// a list inside it is only known once it has been asked of Apple.
         /// </summary>
         private static string RealFolderOf(Pane pane) =>
-            pane.Archive is { } archive ? SafeParent(archive.ArchivePath) ?? pane.CurrentPath : pane.CurrentPath;
+            AppleMusic.Is(pane.CurrentPath) ? DrivesPath
+            : pane.Archive is { } archive ? SafeParent(archive.ArchivePath) ?? pane.CurrentPath : pane.CurrentPath;
 
         private static string? RealFocusOf(Pane pane) =>
-            pane.Archive is { } archive ? archive.ArchivePath : FocusedPathOf(pane);
+            AppleMusic.Is(pane.CurrentPath) ? AppleMusic.Root
+            : pane.Archive is { } archive ? archive.ArchivePath : FocusedPathOf(pane);
 
         private static string? NullIfBlank(string? value) =>
             string.IsNullOrWhiteSpace(value) ? null : value;
@@ -887,6 +893,13 @@ namespace ExplorerNative
         {
             var menu = new MenuStrip();
 
+            // A menu does not take the keyboard from the list, so the list's
+            // Leave never runs and a name held back while you moved between
+            // folders stayed held back: closing a menu, NVDA announced the list
+            // by a folder left long before ("Drives" in Apple Music's Songs).
+            // While a menu is open, renaming the list is as silent as on Leave.
+            menu.MenuActivate += (_, _) => { foreach (var p in _panes) ApplyPendingName(p); };
+
             var file = new ToolStripMenuItem("&File");
             file.DropDownItems.Add(Item("&Open", Keys.None, ActivateFocused));
             var playCd = Item("Play &CD", Keys.None, PlayCd);
@@ -928,7 +941,18 @@ namespace ExplorerNative
             file.DropDownOpening += (_, _) => ShowArchiveHidden();
 
             file.DropDownItems.Add(new ToolStripSeparator());
-            file.DropDownItems.Add(BuildSortMenu());
+            var sortMenu = BuildSortMenu();
+            file.DropDownItems.Add(sortMenu);
+            // Apple Music lists are not folders, so the item does not call them one;
+            // and where an Apple Music list has nothing to sort (its top, Library,
+            // Search) the item is not offered. A submenu whose only item is
+            // disabled leaves NVDA stuck in it.
+            file.DropDownOpening += (_, _) =>
+            {
+                bool apple = AppleMusic.Is(Active.CurrentPath);
+                sortMenu.Text = apple ? "Sort &by" : "Sort this folder &by";
+                sortMenu.Visible = !apple || AppleMusic.SortsFor(Active.CurrentPath).Count > 0;
+            };
             var properties = Item("P&roperties (Alt+Enter)", Keys.None, ShowProperties);
             file.DropDownItems.Add(properties);
             _archiveHidden.Add(properties);
@@ -946,7 +970,7 @@ namespace ExplorerNative
             menu.Items.Add(file);
 
             var edit = new ToolStripMenuItem("&Edit");
-            edit.DropDownItems.Add(Item("&Copy", Keys.Control | Keys.C, () => CopyToClipboard(false)));
+            edit.DropDownItems.Add(AppleHidden(Item("&Copy", Keys.Control | Keys.C, () => CopyToClipboard(false))));
             var cut = Item("Cu&t", Keys.Control | Keys.X, () => CopyToClipboard(true));
             var paste = Item("&Paste", Keys.Control | Keys.V, PasteClipboard);
             edit.DropDownItems.Add(cut);
@@ -954,7 +978,7 @@ namespace ExplorerNative
             _archiveHidden.Add(cut);
             _archiveHidden.Add(paste);
             edit.DropDownItems.Add(new ToolStripSeparator());
-            edit.DropDownItems.Add(Item("Copy &path", Keys.Alt | Keys.C, CopyPath));
+            edit.DropDownItems.Add(AppleHidden(Item("Copy &path", Keys.Alt | Keys.C, CopyPath)));
             edit.DropDownItems.Add(DriveLinkItem("Copy Drive &link", Keys.Alt | Keys.L, makePublic: false));
             edit.DropDownItems.Add(DriveLinkItem("Copy p&ublic Drive link", Keys.Alt | Keys.Shift | Keys.L, makePublic: true));
             edit.DropDownItems.Add(Item("Select &all", Keys.Control | Keys.A, SelectAll));
@@ -978,7 +1002,7 @@ namespace ExplorerNative
             go.DropDownItems.Add(Item("Go to &path…", Keys.Control | Keys.L, GoToPath));
             go.DropDownItems.Add(Item("&Home", Keys.Alt | Keys.Home,
                 () => Navigate(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile))));
-            var search = Item("&Search here…", Keys.F1, SearchHere);
+            var search = _searchHereItem = Item("&Search here…", Keys.F1, SearchHere);
             go.DropDownItems.Add(search);
             _archiveHidden.Add(search);
             go.DropDownOpening += (_, _) => ShowArchiveHidden();
@@ -1189,6 +1213,22 @@ namespace ExplorerNative
         private void OpenAudioPreferences() => OpenPreferences("Audio");
 
         /// <summary>
+        /// Says something chosen from a menu once the menu has gone. A menu runs
+        /// its command before it closes, and NVDA then announces the list getting
+        /// the keyboard back, which cut off what the command had just said (an
+        /// Apple Music song's details, which open no window of their own).
+        /// </summary>
+        private void AnnounceAfterMenu(string id, string text)
+        {
+            _ = Task.Delay(450).ContinueWith(_ =>
+            {
+                try { BeginInvoke(() => { if (!IsDisposed) AnnounceOperation(id, text); }); }
+                catch (ObjectDisposedException) { }
+                catch (InvalidOperationException) { }
+            }, TaskScheduler.Default);
+        }
+
+        /// <summary>
         /// Everything the file says about itself: tags, length, bitrate, sample
         /// rate. The Windows properties sheet (Alt+Enter) shows the same data in
         /// a tab that has to be found; this is one keystroke and reads as a list.
@@ -1201,14 +1241,28 @@ namespace ExplorerNative
         {
             var state = Program.AudioState;
 
+            // An Apple Music song has no file to show; what Apple says about it
+            // is said instead. The song under the cursor first, as for a file.
+            if (AppleMusic.Is(Active.CurrentPath) && FocusedPath() is { } row && AppleMusic.Details(row) is { } here)
+            {
+                AnnounceAfterMenu("applemusic.details", here);
+                return;
+            }
+
             // A row inside an archive is not a file to read tags from; what is
             // playing still is, and may well be the track taken out of it.
-            var path = Active.Archive == null ? FocusedPath() : null;
+            var path = Active.Archive == null && !AppleMusic.Is(Active.CurrentPath) ? FocusedPath() : null;
 
             if (path == null || !AudioFiles.IsAudio(path, _settings.AudioExtensions))
                 path = state is { HasTrack: true } ? state.Path : path;
 
             if (path == null) { Announce("Nothing selected"); return; }
+
+            if (AppleMusic.Is(path))
+            {
+                AnnounceAfterMenu("applemusic.details", AppleMusic.Details(path) ?? state?.Name ?? "Nothing is playing");
+                return;
+            }
 
             // The Edit tags button only where it could do something: not on
             // the Drive letter and not on an Ogg file, decided from the path.
@@ -1360,10 +1414,29 @@ namespace ExplorerNative
         /// </summary>
         private readonly List<ToolStripMenuItem> _archiveHidden = new();
 
+        /// <summary>
+        /// Entries that work in an archive (copying takes the file out first) but
+        /// can only refuse in Apple Music, which has no files: hidden there.
+        /// </summary>
+        private readonly List<ToolStripMenuItem> _appleHidden = new();
+
+        private ToolStripMenuItem AppleHidden(ToolStripMenuItem item)
+        {
+            _appleHidden.Add(item);
+            return item;
+        }
+
+        /// <summary>Go, Search here: hidden in an archive, kept in Apple Music.</summary>
+        private ToolStripMenuItem? _searchHereItem;
+
         private void ShowArchiveHidden()
         {
-            bool outside = Active.Archive == null;
-            foreach (var item in _archiveHidden) item.Visible = outside;
+            // Apple Music is read-only and not on disk either. Search here stays:
+            // there it searches Apple.
+            bool apple = AppleMusic.Is(Active.CurrentPath);
+            bool outside = Active.Archive == null && !apple;
+            foreach (var item in _archiveHidden) item.Visible = outside || (apple && item == _searchHereItem);
+            foreach (var item in _appleHidden) item.Visible = !apple;
         }
 
         private ToolStripMenuItem DriveLinkItem(string text, Keys shortcut, bool makePublic)
@@ -1406,14 +1479,15 @@ namespace ExplorerNative
         private void BuildContextMenu()
         {
             _contextMenu = new ContextMenuStrip();
+            _contextMenu.Opened += (_, _) => { foreach (var p in _panes) ApplyPendingName(p); };
             _contextMenu.Items.Add(Item("&Open", Keys.None, ActivateFocused));
             _contextMenu.Items.Add(new ToolStripSeparator());
-            _contextMenu.Items.Add(Item("&Copy", Keys.None, () => CopyToClipboard(false)));
+            _contextMenu.Items.Add(AppleHidden(Item("&Copy", Keys.None, () => CopyToClipboard(false))));
             _cutItem = ArchiveHidden(Item("Cu&t", Keys.None, () => CopyToClipboard(true)));
             _pasteItem = ArchiveHidden(Item("&Paste", Keys.None, PasteClipboard));
             _contextMenu.Items.Add(_cutItem);
             _contextMenu.Items.Add(_pasteItem);
-            _contextMenu.Items.Add(Item("Copy &path", Keys.None, CopyPath));
+            _contextMenu.Items.Add(AppleHidden(Item("Copy &path", Keys.None, CopyPath)));
             _contextMenu.Items.Add(DriveLinkItem("Copy Drive &link", Keys.None, makePublic: false));
             _contextMenu.Items.Add(DriveLinkItem("Copy p&ublic Drive link", Keys.None, makePublic: true));
             _contextMenu.Items.Add(new ToolStripSeparator());
@@ -2357,7 +2431,8 @@ namespace ExplorerNative
         private void ArmWatcher(Pane pane, string path)
         {
             // Nor inside an archive, whose folders are not on disk to watch.
-            if (string.IsNullOrEmpty(path) || path == DrivesPath || pane.Archive != null) { DisarmWatcher(pane); return; }
+            // Nor in Apple Music, which is not on disk at all.
+            if (string.IsNullOrEmpty(path) || path == DrivesPath || pane.Archive != null || AppleMusic.Is(path)) { DisarmWatcher(pane); return; }
 
             // A refresh re-navigates to the same folder, so this runs every time
             // the list is rebuilt. Tearing the watcher down and building another
@@ -2870,7 +2945,7 @@ namespace ExplorerNative
         /// it would drop the removal notification that puts it back.
         /// </summary>
         private static bool NeedsWatcher(Pane pane) =>
-            pane.Removal == null && pane.Archive == null &&
+            pane.Removal == null && pane.Archive == null && !AppleMusic.Is(pane.CurrentPath) &&
             !string.IsNullOrEmpty(pane.CurrentPath) && pane.CurrentPath != DrivesPath &&
             pane.Watcher == null && pane.ArmingPath == null && !string.IsNullOrEmpty(pane.LastLoadedPath);
 
@@ -3064,6 +3139,11 @@ namespace ExplorerNative
             // A path through an archive is not a folder on disk, and asked about
             // as one it would answer "gone" and take the pane out of it.
             if (pane.Archive != null) return;
+
+            // Apple Music paths are not folders on disk either; probed as one the
+            // answer is always "gone", which pulled the pane back to the drives a
+            // few seconds after opening any Apple Music list.
+            if (AppleMusic.Is(path)) return;
             int navigation = pane.NavigationId;
             bool Overtaken() => IsDisposed || pane.NavigationId != navigation || pane.CurrentPath != path ||
                                 pane.Probing != 0 || pane.Loading || pane.Searching;
@@ -3094,6 +3174,7 @@ namespace ExplorerNative
         private static string FolderDisplayName(string path)
         {
             if (path == DrivesPath) return "Drives";
+            if (string.Equals(path, AppleMusic.Root, StringComparison.OrdinalIgnoreCase)) return AppleMusic.RootName;
             var name = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar));
             return string.IsNullOrEmpty(name) ? path : name;
         }
@@ -4136,6 +4217,11 @@ namespace ExplorerNative
                 ascendingItem, descendingItem, new ToolStripSeparator(), useDefault,
             };
 
+            // Present from the start. A menu item with no items of its own is
+            // drawn without its arrow and is clicked rather than opened, and its
+            // DropDownOpening never runs: the submenu could not be reached at all.
+            menu.DropDownItems.AddRange(fileItems);
+
             menu.DropDownOpening += (_, _) =>
             {
                 // Inside Apple Music the orders are different (recently added,
@@ -4562,6 +4648,7 @@ namespace ExplorerNative
 
             pane.Probing = mine;
             List<AppleMusic.Row> rows;
+            bool fromMemory = AppleMusic.HasCached(full);
             // Called off once the listing is in. Cancelled, never disposed.
             var loaded = CancellationTokenSource.CreateLinkedTokenSource(token);
             _ = Task.Delay(800, loaded.Token).ContinueWith(t =>
@@ -4601,18 +4688,7 @@ namespace ExplorerNative
             if (token.IsCancellationRequested || IsDisposed || pane.NavigationId != mine) return false;
 
             var (by, ascending) = AppleSortFor(full);
-            var ordered = AppleMusic.Ordered(full, rows, by, ascending);
-            var entries = new List<Entry>(ordered.Count);
-            foreach (var row in ordered)
-            {
-                var entry = new Entry(row.Path, row.Name, row.IsFolder, 0, default)
-                {
-                    SizeOverride = "",
-                    DisplayOverride = row.Name,
-                };
-                entry.PrepareTypeAhead();
-                entries.Add(entry);
-            }
+            var entries = AppleEntries(AppleMusic.Ordered(full, rows, by, ascending));
 
             DisarmWatcher(pane);
             pane.Archive = null;
@@ -4633,9 +4709,104 @@ namespace ExplorerNative
 
             if (entries.Count == 0 && pane == Active)
                 AnnounceOperation("nav.empty", full.Equals(AppleMusic.SearchFolder, StringComparison.OrdinalIgnoreCase)
-                    ? "No searches yet. Press Enter on Search, or Ctrl+F, to search Apple Music"
-                    : "This folder is empty");
+                    ? "No searches yet. Press F1 to search Apple Music"
+                    : "This list is empty");
+
+            // Shown from memory, so it was instant; now ask Apple behind it, so a
+            // playlist changed elsewhere is noticed. Silent either way.
+            if (fromMemory && AppleMusic.CanRefresh(full))
+                _ = RefreshAppleMusicQuietlyAsync(pane, full, mine, token);
             return true;
+        }
+
+        private static List<Entry> AppleEntries(List<AppleMusic.Row> rows)
+        {
+            var entries = new List<Entry>(rows.Count);
+            foreach (var row in rows)
+            {
+                // -1: no size, so a song is not read out as "0 bytes".
+                var entry = new Entry(row.Path, row.Name, row.IsFolder, -1, default)
+                {
+                    SizeOverride = "",
+                    DisplayOverride = row.Name,
+                };
+                entry.PrepareTypeAhead();
+                entries.Add(entry);
+            }
+            return entries;
+        }
+
+        /// <summary>
+        /// Asks Apple again for a list that was just shown from memory and, if
+        /// anything changed (a song added to a playlist on the phone), puts the
+        /// new rows in place without a word: the cursor stays on the row it is
+        /// on and nothing is read out (Conner: refresh, but don't make NVDA aware
+        /// of it). Given up the moment the pane goes anywhere else, and a failure
+        /// leaves what is shown alone, also silently.
+        /// </summary>
+        private async Task RefreshAppleMusicQuietlyAsync(Pane pane, string folder, int navigation, CancellationToken token)
+        {
+            List<AppleMusic.Row> rows;
+            try { rows = await AppleMusic.ListAsync(folder, fresh: true, token); }
+            catch { return; }
+
+            if (IsDisposed || token.IsCancellationRequested || pane.NavigationId != navigation ||
+                !string.Equals(pane.CurrentPath, folder, StringComparison.OrdinalIgnoreCase)) return;
+
+            ShowAppleRowsQuietly(pane, folder, rows);
+        }
+
+        /// <summary>
+        /// A station that played on past its end has more songs in memory: if a
+        /// pane is showing it, they go on the end of the list, silently.
+        /// </summary>
+        private void OnAppleMusicGrew(string folder)
+        {
+            if (IsDisposed) return;
+            try
+            {
+                BeginInvoke(async () =>
+                {
+                    foreach (var pane in _panes)
+                    {
+                        if (IsDisposed || !string.Equals(pane.CurrentPath, folder, StringComparison.OrdinalIgnoreCase)) continue;
+                        try { ShowAppleRowsQuietly(pane, folder, await AppleMusic.ListAsync(folder, fresh: false, CancellationToken.None)); }
+                        catch (AppleMusicException) { }
+                    }
+                });
+            }
+            catch (InvalidOperationException) { }   // no window handle yet, or going away
+        }
+
+        /// <summary>
+        /// New rows for the list a pane is showing, put in place without a word:
+        /// the cursor stays on its row and nothing is read out.
+        /// </summary>
+        private void ShowAppleRowsQuietly(Pane pane, string folder, List<AppleMusic.Row> rows)
+        {
+            var (by, ascending) = AppleSortFor(folder);
+            var ordered = AppleMusic.Ordered(folder, rows, by, ascending);
+
+            // Nearly always nothing has changed, and then nothing is touched.
+            var shown = pane.Entries;
+            if (shown.Count == ordered.Count)
+            {
+                bool same = true;
+                for (int i = 0; i < shown.Count && same; i++)
+                    same = string.Equals(shown[i].Path, ordered[i].Path, StringComparison.Ordinal) &&
+                           string.Equals(shown[i].DisplayOverride, ordered[i].Name, StringComparison.Ordinal);
+                if (same) return;
+            }
+
+            // In place, so the control keeps its focus and selection states; the
+            // cursor is moved only if its row now sits somewhere else.
+            var focusedPath = FocusedPathOf(pane);
+            var selected = SelectedPathsOf(pane);
+            int before = CurrentIndex(pane);
+            ReplaceEntriesInPlace(pane, AppleEntries(ordered));
+            if (focusedPath != null && pane.IndexByPath.TryGetValue(focusedPath, out var now) &&
+                (now != before || selected.Count > 1))
+                Reselect(pane, now, selected);
         }
 
         /// <summary>The order chosen for an Apple Music folder, or its own when none has been.</summary>
@@ -4825,9 +4996,17 @@ namespace ExplorerNative
 
         private async Task GoToPathAsync()
         {
+            bool inApple = AppleMusic.Is(Active.CurrentPath);
             var typed = PromptForm.Ask(this, "Go to path", "Path:",
-                IsDrivesView ? "" : Active.CurrentPath);
+                IsDrivesView ? "" : AppleMusic.DisplayPath(Active.CurrentPath));
             if (typed == null) { RestoreListFocus(); return; }
+
+            // An Apple Music list is gone to as itself, never looked for on disk.
+            if (AppleMusic.FromTyped(typed.Trim().Trim('"'), displayForm: inApple) is { } applePath)
+            {
+                await NavigateAsync(applePath);
+                return;
+            }
 
             // Normalised for the same reason as a launch argument: someone typing
             // "D:" means the root of D, not whatever directory this process last
@@ -4981,6 +5160,18 @@ namespace ExplorerNative
 
             var pane = Active;
 
+            // In Apple Music, F5 asks Apple again rather than showing what this
+            // session already has.
+            if (AppleMusic.Is(pane.CurrentPath))
+            {
+                var folder = pane.CurrentPath;
+                AppleMusic.Forget(folder);
+                bool shown = await NavigateAsync(folder, FocusedPathOf(pane), pane, quiet: true, keepFocus: true);
+                if (!IsDisposed && shown)
+                    AnnounceOperation("nav.refreshed", $"Refreshed, {NameRules.Items(pane.Entries.Count)}");
+                return;
+            }
+
             // Inside an archive, F5 reads the archive again.
             if (pane.Archive != null)
             {
@@ -5024,6 +5215,13 @@ namespace ExplorerNative
 
             var where = Active.CurrentPath;
             if (string.IsNullOrEmpty(where)) return;
+
+            // In Apple Music, searching asks Apple, not the disk.
+            if (AppleMusic.Is(where))
+            {
+                AskAppleMusicSearch();
+                return;
+            }
 
             // A search walks the disk, and an archive's folders are not on it.
             if (Active.Archive != null)
@@ -5228,13 +5426,13 @@ namespace ExplorerNative
         private string PathLabelFor(Pane pane) =>
             pane.SearchTerm is { } term ? $"Results for \"{term}\" in {pane.CurrentPath}"
             : pane.CurrentPath == DrivesPath ? "Drives"
-            : pane.CurrentPath;
+            : AppleMusic.DisplayPath(pane.CurrentPath);
 
         /// <summary>A tab's place for the title: its path backwards (NameRules.Backwards).</summary>
         private string TitleLabelFor(Pane pane) =>
             pane.SearchTerm is { } term ? $"Results for \"{term}\" in {NameRules.Backwards(pane.CurrentPath)}"
             : pane.CurrentPath == DrivesPath ? "Drives"
-            : NameRules.Backwards(pane.CurrentPath);
+            : NameRules.Backwards(AppleMusic.DisplayPath(pane.CurrentPath));
 
         /// <summary>
         /// At Conner's request: "Explorer Native: Tate McRae, Artists, Music at
@@ -5664,7 +5862,8 @@ namespace ExplorerNative
             // the moment there is somebody waiting for an answer rather than a
             // menu waiting to be drawn.
             var focused = FocusedPath();
-            bool inArchive = Active.Archive != null;
+            // Apple Music counts as an archive here: read-only, and nothing in it is on disk.
+            bool inArchive = Active.Archive != null || AppleMusic.Is(Active.CurrentPath);
             bool looksLikeArchive = focused != null && !inArchive &&
                                     !IsDirectoryInView(focused) &&
                                     ArchiveFormats.FromName(focused) is { CanExtract: true };
@@ -5676,7 +5875,7 @@ namespace ExplorerNative
             _extractItem.Visible = looksLikeArchive;
             _extractHereItem.Visible = looksLikeArchive;
 
-            _editTagsItem.Visible = focused != null && Active.Archive == null &&
+            _editTagsItem.Visible = focused != null && !inArchive &&
                                     !IsDirectoryInView(focused) &&
                                     AudioFiles.IsAudio(focused, _settings.AudioExtensions) &&
                                     TagEditing.RefusalFor(focused, IsOnDrive, null) == null;
@@ -5684,7 +5883,7 @@ namespace ExplorerNative
             // The same rule for the audio commands: by name, no reads. Not on
             // the Drive letter or inside an archive, where nothing can be
             // written beside a file.
-            bool local = !IsDrivesView && Active.Archive == null &&
+            bool local = !IsDrivesView && !inArchive &&
                          !(Drive != null && Drive.Owns(Active.CurrentPath));
             bool focusedAudio = focused != null && !IsDirectoryInView(focused) &&
                                 AudioFiles.IsAudio(focused, _settings.AudioExtensions);
@@ -5959,7 +6158,7 @@ namespace ExplorerNative
                     // file touches the disk on this thread.
                     // Not inside an archive, where the path is not a file yet.
                     var path = FocusedPath();
-                    if (path != null && Active.Archive == null) Program.PrefetchAudioFile(path);
+                    if (path != null && Active.Archive == null && !AppleMusic.Is(path)) Program.PrefetchAudioFile(path);
                 };
             }
 
@@ -6024,8 +6223,8 @@ namespace ExplorerNative
             // Reading a placeholder downloads it.
             if (Drive is { } drive && drive.Owns(path)) return;
 
-            // A member of an archive is not on disk to describe.
-            if (pane.Archive != null) return;
+            // A member of an archive is not on disk to describe, nor is Apple Music.
+            if (pane.Archive != null || AppleMusic.Is(path)) return;
 
             int generation = _detailsGeneration;
             var audio = _settings.AudioExtensions;
@@ -6484,6 +6683,17 @@ namespace ExplorerNative
 
             var entry = Active.Entries[index];
 
+            // Apple Music is its own place, not files on disk: a folder opens, the
+            // Search row asks what to look for, and a song plays in Apple's own
+            // player. It must never reach the file player below, which would hand
+            // the made-up "...\\Song.m4a" path to whatever owns .m4a and say it
+            // could not play it.
+            if (AppleMusic.Is(entry.Path))
+            {
+                OpenAppleMusicRow(entry);
+                return;
+            }
+
             // In a set of results, Enter goes to where the thing lives and lands
             // on it, rather than opening it. A result is an answer to "where did
             // I put that", and the folder it is in is the rest of that answer —
@@ -6605,10 +6815,25 @@ namespace ExplorerNative
                 makePublic ? "Copied a public link" : "Copied the Drive link");
         }
 
+        /// <summary>
+        /// For the commands that need a real file (copy, copy path, properties,
+        /// the Windows menu, folder size): says that Apple Music is only browsed
+        /// and played here and returns true, in an Apple Music list or on its row
+        /// in the drives list. Without it they put "::applemusic" paths on the
+        /// clipboard or asked the disk about them.
+        /// </summary>
+        private bool RefuseForAppleMusic(params string?[] paths)
+        {
+            if (!AppleMusic.Is(Active.CurrentPath) && !paths.Any(AppleMusic.Is)) return false;
+            AnnounceOperation("applemusic.refused", "Apple Music can only be browsed and played here");
+            return true;
+        }
+
         private void CopyPath()
         {
             var path = FocusedPath();
             if (path == null) { AnnounceOperation("clip.nothing", "Nothing selected"); return; }
+            if (RefuseForAppleMusic(path)) return;
 
             if (!ClipboardInterop.SetText(path))
             {
@@ -6625,6 +6850,7 @@ namespace ExplorerNative
 
             var paths = SelectedPaths();
             if (paths.Length == 0) { AnnounceOperation("clip.nothing", "Nothing selected"); return; }
+            if (RefuseForAppleMusic(paths)) return;
 
             // Members of an archive are not files yet: they are taken out first,
             // and what came out goes on the clipboard.
@@ -9229,6 +9455,7 @@ namespace ExplorerNative
         {
             var path = FocusedPath();
             if (path == null) { Announce("Nothing selected"); return; }
+            if (RefuseForAppleMusic(path)) return;
 
             // The shell has nothing to show for a path through an archive.
             if (Active.Archive != null)
@@ -9265,6 +9492,8 @@ namespace ExplorerNative
 
         private async void ShowShellMenuForSelection()
         {
+            if (RefuseForAppleMusic(SelectedPaths())) return;
+
             if (Active.Archive != null)
             {
                 AnnounceOperation("archive.refused", "The Windows menu is not available inside an archive");
@@ -9364,6 +9593,7 @@ namespace ExplorerNative
 
             var path = FocusedPath();
             if (path == null) { Announce("Select a folder first"); return; }
+            if (RefuseForAppleMusic(path)) return;
 
             // Taken now: the answer belongs to this tab even if another is in
             // front by the time it arrives.
@@ -9728,7 +9958,7 @@ namespace ExplorerNative
         private void AnnounceFolder()
         {
             var count = Active.Entries.Count;
-            var where = IsDrivesView ? "Drives" : Active.CurrentPath;
+            var where = IsDrivesView ? "Drives" : AppleMusic.DisplayPath(Active.CurrentPath);
             Announce($"Tab {_activeIndex + 1}, {where}, {count} item{(count == 1 ? "" : "s")}");
         }
 
@@ -9806,7 +10036,8 @@ namespace ExplorerNative
                 return;
             }
 
-            if (selected > MaxSelectionToSum)
+            // Nothing in Apple Music has a size to add up.
+            if (selected > MaxSelectionToSum || AppleMusic.Is(pane.CurrentPath))
             {
                 SetStatusText($"{prefix}{NameRules.Items(total)}{more}, {selected} selected");
                 return;
@@ -10033,6 +10264,7 @@ namespace ExplorerNative
         {
             if (disposing)
             {
+                AppleMusic.Grew -= OnAppleMusicGrew;
                 _availabilityTimer?.Stop();
                 _availabilityTimer?.Dispose();
                 _statusTimer?.Stop();

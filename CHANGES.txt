@@ -1,3 +1,18 @@
+4.0.1
+Bug fixed: in Apple Music, pressing Enter on a song said it could not play it and tried to open it in another app. Songs now play, and Enter no longer says anything else first.
+Bug fixed: inside Apple Music, a few seconds after opening a list you were sent back to the drives list. You now stay where you are.
+Bug fixed: pressing Enter on Search in Apple Music said there were no searches yet. It now asks what to search for, and so does F1 anywhere in Apple Music.
+Bug fixed: Sort this folder by on the File menu could not be opened; clicking it just closed the menu. It opens with the right arrow again, everywhere. In Apple Music it is called Sort by, and it only shows in lists that can be sorted.
+Bug fixed: in Apple Music, pressing Enter on songs quickly one after another could stop the music or skip a song. The last one you pressed is the one that plays.
+Bug fixed: when an Apple Music song ended, the next one could be skipped. It now plays on to the very next song in the list, in track order on an album, and a station keeps finding more songs, which show up at the end of its list.
+Bug fixed: holding the skip keys in an Apple Music song stayed in the same place. It now moves through the song, and says where it lands, like it does for files.
+Bug fixed: after using a menu, NVDA could call the list by the name of a folder you had left long before. It now says the one you are in.
+Changed: Apple Music plays at your usual volume, and turning it up or down while Apple Music plays is the volume your files play at too. Mute goes back to the volume you had. The Audio menu shows what Apple Music is playing.
+Changed: lists you have already opened in Apple Music still open straight away, and are then quietly checked with Apple, so a song added to a playlist on your phone shows up without you doing anything and without anything being read out. F5 checks straight away.
+Changed: the menus in Apple Music only offer what works there. Copy, Properties and folder size say they are not available instead of failing, and Song properties tells you the song's artist, album, length and year.
+Changed: the window title, the path and Announce current folder say Apple Music, not a made-up path, and Ctrl+L can take you to an Apple Music list. Leaving Explorer Native in Apple Music brings you back to the Apple Music row in the drives list next time.
+Changed: Apple Music's player now deletes everything it used as soon as you quit, instead of leaving it in your temporary folder until the next start.
+
 4.0.0
 New feature: Apple Music. If you have an Apple Music subscription, Apple Music shows up in your list of drives. Open it with the arrow keys like any folder to reach your library, search and radio, and press Enter on a song to play it. Your play, pause, stop, skip and volume keys work on it, and it plays on through an album, a playlist or a station on its own. To set it up, go to Preferences, Apple Music, and load the cookies.txt file you export from music.apple.com while signed in. Your sign-in stays on this PC and is never put in a settings export. Speed, pitch, equaliser and silence removal do not apply to Apple Music, because Apple keeps the sound sealed.
 New feature: when you are in Apple Music, the Sort menu offers orders that suit it, like recently added, artist, release date and length, and it goes back to the usual orders everywhere else.

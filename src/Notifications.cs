@@ -128,6 +128,7 @@ namespace ExplorerNative
             Live("applemusic.failed", "Apple Music problem", AudioTransport, Say, "{0}", "Apple Music didn't accept your sign-in."),
             Live("applemusic.refused", "Not available in Apple Music", Navigation, Say, "{0}", "Apple Music can only be browsed and played here"),
             Live("applemusic.endoflist", "End of the Apple Music list", AudioTransport, Say, "{0}", "End of the list"),
+            Live("applemusic.details", "Apple Music song details", Navigation, Say, "{0}", "Apathy by Someone, from Some Album, 3 minutes 12 seconds, released 2020"),
 
             // ---- Audio: playing ----------------------------------------------
             Live("audio.play", "Started playing", AudioTransport, Bar, "Playing {0}", "Ashley Cooke - your place.flac"),

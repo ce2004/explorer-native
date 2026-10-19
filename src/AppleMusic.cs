@@ -11,13 +11,13 @@ namespace ExplorerNative
     /// <summary>
     /// Apple Music as a place in the panes: a row under the drives, folders for
     /// the library, search, stations and recently played, and songs that play
-    /// in the app's own player straight from Apple, unlocked in memory and
-    /// never written to disk.
+    /// in Apple's own player (AppleMusicPlayer), never written to disk.
     ///
     /// Every row has a path under "::applemusic", so the panes' ordinary
     /// navigation (Enter, Backspace, landing on the row you came from) works on
     /// it. What each path stands for is kept here, in memory, for the session.
-    /// Songs' paths end in ".m4a" so the player takes them as audio.
+    /// Song paths carry no extension: nothing that handles files may take one
+    /// for an audio file. Enter on a song is routed here by AppleMusic.Is.
     /// </summary>
     internal static class AppleMusic
     {
@@ -41,6 +41,21 @@ namespace ExplorerNative
             path != null && (path.Equals(Root, StringComparison.OrdinalIgnoreCase) ||
                              path.StartsWith(Root + "\\", StringComparison.OrdinalIgnoreCase));
 
+        /// <summary>
+        /// An Apple Music path typed into Go to path, or null. The "::applemusic"
+        /// form anywhere; the form shown ("Apple Music\Library") only when typed
+        /// inside Apple Music, where a folder on disk of that name cannot be meant.
+        /// </summary>
+        public static string? FromTyped(string typed, bool displayForm)
+        {
+            typed = typed.Trim().TrimEnd('\\');
+            if (Is(typed)) return typed;
+            if (displayForm && typed.StartsWith(RootName, StringComparison.OrdinalIgnoreCase) &&
+                (typed.Length == RootName.Length || typed[RootName.Length] == '\\'))
+                return Root + typed.Substring(RootName.Length);
+            return null;
+        }
+
         /// <summary>The path as shown and said: "Apple Music\Library\Albums".</summary>
         public static string DisplayPath(string path) =>
             Is(path) ? RootName + path.Substring(Root.Length) : path;
@@ -63,6 +78,7 @@ namespace ExplorerNative
                 Items.Clear();
                 Listings.Clear();
                 Displayed.Clear();
+                Fetched.Clear();
             }
         }
 
@@ -87,10 +103,27 @@ namespace ExplorerNative
             return item.Subtitle.Length > 0 ? $"{item.Name} by {item.Subtitle}" : item.Name;
         }
 
+        /// <summary>
+        /// What Song properties says for an Apple Music song, which has no file
+        /// to show: "Apathy by Someone, from Some Album, 3:12, released 2020".
+        /// Null when the path is not a song.
+        /// </summary>
+        public static string? Details(string path)
+        {
+            var item = ItemAt(path);
+            if (item == null || !item.IsSong) return null;
+            var parts = new List<string> { item.Subtitle.Length > 0 ? $"{item.Name} by {item.Subtitle}" : item.Name };
+            if (item.AlbumName.Length > 0) parts.Add("from " + item.AlbumName);
+            if (item.DurationMs > 0) parts.Add(Duration(item.DurationMs));
+            if (item.ReleaseDate.Length >= 4) parts.Add("released " + item.ReleaseDate.Substring(0, 4));
+            return string.Join(", ", parts);
+        }
+
         /// <summary>Forget a folder's listing, so the next visit asks Apple again (F5).</summary>
         public static void Forget(string folder)
         {
-            lock (Gate) Listings.Remove(folder);
+            folder = folder.TrimEnd('\\');
+            lock (Gate) { Listings.Remove(folder); Fetched.Remove(folder); }
         }
 
         // ---- Folders ----
@@ -134,8 +167,42 @@ namespace ExplorerNative
                     if (Listings.TryGetValue(folder, out var known)) return known;
 
             var rows = await BuildAsync(folder, token).ConfigureAwait(false);
-            lock (Gate) Listings[folder] = rows;
+            lock (Gate)
+            {
+                Listings[folder] = rows;
+                Fetched[folder] = Environment.TickCount64;
+            }
             return rows;
+        }
+
+        /// <summary>When each folder was last asked of Apple, for <see cref="CanRefresh"/>.</summary>
+        private static readonly Dictionary<string, long> Fetched = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>Quiet refreshes of one folder at most this often.</summary>
+        internal const int RefreshAfterMs = 30_000;
+
+        /// <summary>True when this folder's rows are already in memory, so showing it asks nothing of Apple.</summary>
+        public static bool HasCached(string folder)
+        {
+            lock (Gate) return Listings.ContainsKey(folder.TrimEnd('\\'));
+        }
+
+        /// <summary>
+        /// Whether a folder shown from memory should be asked of Apple again
+        /// behind it, so a playlist changed elsewhere is noticed: the library
+        /// lists, albums, playlists, artists and recently played, once they are
+        /// half a minute old. Not the fixed menus, which never change; not a
+        /// search, whose answer is the question's; and not a station, which is a
+        /// stream that asking again would replace with a different handful.
+        /// </summary>
+        public static bool CanRefresh(string folder)
+        {
+            folder = folder.TrimEnd('\\');
+            if (!Is(folder) || IsFixedFolder(folder)) return false;
+            if (folder.StartsWith(SearchFolder + "\\", StringComparison.OrdinalIgnoreCase)) return false;
+            if (ItemAt(folder)?.Kind == "station") return false;
+            lock (Gate)
+                return !Fetched.TryGetValue(folder, out var at) || Environment.TickCount64 - at >= RefreshAfterMs;
         }
 
         private static async Task<List<Row>> BuildAsync(string folder, CancellationToken token)
@@ -183,6 +250,21 @@ namespace ExplorerNative
                 return rows;
             }
 
+            // One kind of a search's results (Search\term\Songs): asked for again
+            // by running the search, which lists every kind at once. Without this
+            // F5 in one of them said the folder was not there any more.
+            if (parts[0].Equals("Search", StringComparison.OrdinalIgnoreCase) && parts.Length == 3)
+            {
+                var search = SearchFolder + "\\" + parts[1];
+                var kinds = await BuildAsync(search, token).ConfigureAwait(false);
+                lock (Gate)
+                {
+                    Listings[search] = kinds;
+                    if (Listings.TryGetValue(folder, out var these)) return these;
+                }
+                return new List<Row>();
+            }
+
             if (parts[0].Equals("Library", StringComparison.OrdinalIgnoreCase) && parts.Length == 2)
             {
                 var top = LibraryFolders.FirstOrDefault(f => f.Name.Equals(parts[1], StringComparison.OrdinalIgnoreCase));
@@ -222,14 +304,23 @@ namespace ExplorerNative
             var item = ItemAt(folder);
             if (item == null || item.Kind != "station") return new List<Row>();
             var more = await Client().StationTracksAsync(item, token).ConfigureAwait(false);
+            List<Row> added;
             lock (Gate)
             {
                 var have = Listings.TryGetValue(folder, out var known) ? known : new List<Row>();
-                var added = RowsFor(folder, more, sort: false, numbered: false, startAt: have.Count, taken: have);
+                added = RowsFor(folder, more, sort: false, numbered: false, startAt: have.Count, taken: have);
                 Listings[folder] = have.Concat(added).ToList();
-                return added;
             }
+            if (added.Count > 0) Grew?.Invoke(folder);
+            return added;
         }
+
+        /// <summary>
+        /// A folder's rows in memory grew without anyone opening it (a station
+        /// playing on past its end), so a pane showing it can put them on screen.
+        /// Raised on whichever thread did the fetching.
+        /// </summary>
+        public static event Action<string>? Grew;
 
         private static List<Row> RowsFor(string folder, List<AppleMusicItem> items, bool sort, bool numbered = false,
             int startAt = 0, List<Row>? taken = null)
@@ -247,10 +338,10 @@ namespace ExplorerNative
                             ? item.Name + ", " + item.Subtitle
                             : item.Name;
                     if (item.Kind == "station" && item.IsLive) name += ", live";
-                    string leaf = Safe(item.IsSong ? item.Name : item.Name);
-                    string path = folder + "\\" + leaf + (item.IsSong ? ".m4a" : "");
+                    string leaf = Safe(item.Name);
+                    string path = folder + "\\" + leaf;
                     for (int n = 2; used.Contains(path); n++)
-                        path = folder + "\\" + leaf + $" ({n})" + (item.IsSong ? ".m4a" : "");
+                        path = folder + "\\" + leaf + $" ({n})";
                     used.Add(path);
                     Items[path] = item;
                     string detail = item.IsSong && item.DurationMs > 0 ? Duration(item.DurationMs)
@@ -518,7 +609,7 @@ namespace ExplorerNative
 
         internal static void ResetForTests()
         {
-            lock (Gate) { _token = ""; _client = null; Items.Clear(); Listings.Clear(); Displayed.Clear(); }
+            lock (Gate) { _token = ""; _client = null; Items.Clear(); Listings.Clear(); Displayed.Clear(); Fetched.Clear(); }
         }
 
         /// <summary>Signs in with a fake token so the offline folders (top, Library) list.</summary>

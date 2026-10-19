@@ -1131,8 +1131,8 @@ namespace ExplorerNative
                 {
                     AudioAction.PlayPause => AppleMusicPlayer.TogglePlayPause(),
                     AudioAction.Stop => AppleMusicPlayer.Stop(),
-                    AudioAction.VolumeUp => AppleMusicPlayer.SetVolumePercent(AppleMusicPlayer.VolumePercent + Step(action, VolumeStepPercent, repeat)),
-                    AudioAction.VolumeDown => AppleMusicPlayer.SetVolumePercent(AppleMusicPlayer.VolumePercent - Step(action, VolumeStepPercent, repeat)),
+                    AudioAction.VolumeUp => ChangeAppleVolume(Step(action, VolumeStepPercent, repeat)),
+                    AudioAction.VolumeDown => ChangeAppleVolume(-Step(action, VolumeStepPercent, repeat)),
                     AudioAction.SeekBackward => AppleMusicPlayer.Seek(-Step(action, _settings.AudioSeekSeconds, repeat)),
                     AudioAction.SeekForward => AppleMusicPlayer.Seek(Step(action, _settings.AudioSeekSeconds, repeat)),
                     AudioAction.SeekBackwardLong => AppleMusicPlayer.Seek(-Step(action, _settings.AudioLongSeekSeconds, repeat)),
@@ -1142,7 +1142,7 @@ namespace ExplorerNative
                     AudioAction.SayElapsed => AppleMusicPlayer.DescribeElapsed(),
                     AudioAction.SayRemaining => AppleMusicPlayer.DescribeRemaining(),
                     AudioAction.SayTotal => AppleMusicPlayer.DescribeTotal(),
-                    AudioAction.Mute => AppleMusicPlayer.SetVolumePercent(AppleMusicPlayer.VolumePercent == 0 ? 100 : 0),
+                    AudioAction.Mute => AppleMusicPlayer.ToggleMute(),
                     AudioAction.SpeedUp or AudioAction.SpeedDown or AudioAction.ToggleRepeat
                         or AudioAction.SpeedDialog or AudioAction.DeviceDialog or AudioAction.LimiterDialog
                         or AudioAction.EqualiserDialog or AudioAction.PitchDialog or AudioAction.SilenceDialog
@@ -1531,9 +1531,13 @@ namespace ExplorerNative
         public float AudioGain => AudioPlayer.DirectGain(_audio.VolumePercent, _audio.Curve);
 
         /// <summary>What the Audio menu needs to label itself.</summary>
-        public AudioSnapshot AudioState => new(
-            _audio.HasTrack, _audio.IsPlaying, _audio.IsMuted, _audio.RepeatTrack,
-            _audio.NowPlayingPath, _audio.DisplayName);
+        public AudioSnapshot AudioState => AppleMusicPlayer.IsActive
+            // Apple's player, while a song is loaded in it: the Audio menu's
+            // Play/Pause, Mute and "Playing ..." follow the one actually sounding.
+            ? new(true, AppleMusicPlayer.IsPlaying, AppleMusicPlayer.VolumePercent == 0, false,
+                AppleMusicPlayer.CurrentPath, AppleMusicPlayer.CurrentName)
+            : new(_audio.HasTrack, _audio.IsPlaying, _audio.IsMuted, _audio.RepeatTrack,
+                _audio.NowPlayingPath, _audio.DisplayName);
 
         /// <summary>
         /// The level is kept in the settings object the window also holds, so it
@@ -1541,6 +1545,18 @@ namespace ExplorerNative
         /// on every press of the volume key is a file write per keystroke for a
         /// value nobody needs until the next launch.
         /// </summary>
+        /// <summary>
+        /// Apple's player has one volume with the built-in one: it starts at the
+        /// saved level (to at most 100, as loud as Apple goes) and a change made
+        /// while it plays is the level files play at afterwards too.
+        /// </summary>
+        private string ChangeAppleVolume(int delta)
+        {
+            var message = AppleMusicPlayer.SetVolumePercent(AppleMusicPlayer.VolumePercent + delta);
+            _settings.AudioVolumePercent = AppleMusicPlayer.VolumePercent;
+            return message;
+        }
+
         private string ChangeVolume(int delta)
         {
             var message = _audio.ChangeVolume(delta);
@@ -1715,9 +1731,11 @@ namespace ExplorerNative
             }
             _playRequest = System.Threading.Interlocked.Increment(ref _playRequest);
             _audio.CancelOpening();
-            _audio.Stop();
-            if (AppleMusicPlayer.PlayRow(path))
-                SayAudio("audio.play", AppleMusic.SpokenName(path) ?? System.IO.Path.GetFileNameWithoutExtension(path));
+            // Only when there is something to stop: with nothing loaded, Stop
+            // answers "Nothing is loaded" out loud, and every Enter on a song said it.
+            if (_audio.HasTrack) _audio.Stop();
+            if (AppleMusicPlayer.PlayRow(path, Math.Min(100, _settings.AudioVolumePercent)))
+                SayAudio("audio.play", AppleMusic.SpokenName(path) ?? System.IO.Path.GetFileName(path));
         }
 
         public bool PlayAudioFile(string path)
@@ -1800,6 +1818,7 @@ namespace ExplorerNative
         {
             if (!_settings.AudioPlayerEnabled || !_settings.PlayAudioInApp) return;
             if (_settings.AudioPrefetchKilobytes <= 0) return;
+            if (AppleMusic.Is(path)) return;   // not a file; Apple's player fetches its own
 
             // A row that is not a track lets go of the one being readied.
             if (!AudioFiles.IsAudio(path, _settings.AudioExtensions))
@@ -2343,6 +2362,10 @@ namespace ExplorerNative
                 bool gated = System.Threading.Monitor.TryEnter(_playGate, TimeSpan.FromSeconds(5));
                 try { _audio.Dispose(); }
                 finally { if (gated) System.Threading.Monitor.Exit(_playGate); }
+
+                // Apple's player too: its browser is closed and its profile in
+                // %TEMP% deleted now, not left for the next start to sweep.
+                try { AppleMusicPlayer.Shutdown(); } catch { }
 
                 // Anything the player had in flight against the letter has to
                 // have come back before the provider that answers it goes. The

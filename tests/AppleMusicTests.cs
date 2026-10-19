@@ -27,8 +27,114 @@ namespace ExplorerNative
             Sorting(check, equal);
             Naming(check, equal);
             PlayOn(check, equal);
+            Refreshing(check, equal);
+            Wiring(check);
 
             AppleMusic.ResetForTests();
+        }
+
+        /// <summary>
+        /// 4.0.0 shipped with song rows ending ".m4a", and the file player took
+        /// them for files: "Cannot play Apathy.m4a, opening it instead".
+        /// </summary>
+        private static void Refreshing(Action<string, bool, string?> check, Action<string, string, string> equal)
+        {
+            const string songs = "::applemusic\\Library\\Songs";
+            var rows = AppleMusic.SeedForTests(songs, new List<AppleMusicItem> { Song("Apathy", "ap1", artist: "Someone") });
+            check("a song's path has no extension", System.IO.Path.GetExtension(rows[0].Path).Length == 0, rows[0].Path);
+            check("a song is not an audio file to the file player",
+                !AudioFiles.IsAudio(rows[0].Path, AudioFiles.DefaultExtensions), rows[0].Path);
+            check("a song with a dot in its title has no extension either",
+                AppleMusic.SeedForTests(songs, new List<AppleMusicItem> { Song("Mr. Brightside", "mb") })[0].Path
+                    .EndsWith("\\Mr. Brightside", StringComparison.Ordinal), null);
+
+            check("a seeded list counts as in memory", AppleMusic.HasCached(songs), null);
+            check("a library list is refreshed behind its cached view", AppleMusic.CanRefresh(songs), null);
+            check("the top is never refreshed", !AppleMusic.CanRefresh("::applemusic"), null);
+            check("Library itself is never refreshed", !AppleMusic.CanRefresh("::applemusic\\Library"), null);
+            check("Search is never refreshed", !AppleMusic.CanRefresh(AppleMusic.SearchFolder), null);
+            check("a search's results are never refreshed", !AppleMusic.CanRefresh(AppleMusic.SearchPath("x") + "\\Songs"), null);
+
+            const string station = "::applemusic\\Stations\\Chill";
+            AppleMusic.SetContainerForTests(station, new AppleMusicItem { Kind = "station", Name = "Chill", Id = "st" });
+            check("a station is never refreshed (it would swap the songs)", !AppleMusic.CanRefresh(station), null);
+
+            AppleMusic.Forget(songs);
+            check("F5's Forget drops the list from memory", !AppleMusic.HasCached(songs), null);
+        }
+
+        /// <summary>
+        /// The 4.0.0 bugs were all in MainForm wiring that the model tests could
+        /// not see: Enter never reached the Apple Music handler, the four-second
+        /// "is this folder still there" probe took every Apple Music list for a
+        /// missing folder and went back to the drives, F5 and F1 treated the list
+        /// as a folder on disk, and the Sort submenu had no items until it opened,
+        /// so it had no arrow and could not be opened.
+        /// </summary>
+        private static void Wiring(Action<string, bool, string?> check)
+        {
+            var dir = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+            while (dir != null && !System.IO.Directory.Exists(System.IO.Path.Combine(dir.FullName, "src"))) dir = dir.Parent;
+            string? main = null;
+            try { if (dir != null) main = System.IO.File.ReadAllText(System.IO.Path.Combine(dir.FullName, "src", "MainForm.cs")); }
+            catch { }
+            if (main == null) { check("MainForm.cs can be read", false, null); return; }
+
+            string Body(string signature, int length = 4000)
+            {
+                int at = main.IndexOf(signature, StringComparison.Ordinal);
+                return at < 0 ? "" : main.Substring(at, Math.Min(length, main.Length - at));
+            }
+
+            var activate = Body("private void ActivateFocused(bool openExternally)");
+            int apple = activate.IndexOf("AppleMusic.Is(entry.Path)", StringComparison.Ordinal);
+            int player = activate.IndexOf("Program.PlayAudioFile", StringComparison.Ordinal);
+            check("Enter sends an Apple Music row to its own handler", apple >= 0 &&
+                activate.IndexOf("OpenAppleMusicRow(entry)", StringComparison.Ordinal) > apple, null);
+            check("...before the file player could take it", apple >= 0 && player > apple, null);
+
+            var probe = Body("private async void CheckCurrentPathStillExists()", 2500);
+            int guard = probe.IndexOf("AppleMusic.Is(path)", StringComparison.Ordinal);
+            int exists = probe.IndexOf("DirectoryExistsAsync(path)", StringComparison.Ordinal);
+            check("the folder-still-there probe leaves Apple Music alone", guard >= 0 && exists > guard, null);
+
+            check("F5 in Apple Music asks Apple again",
+                Body("private async void Refresh_()").Contains("AppleMusic.Forget(", StringComparison.Ordinal), null);
+            check("F1 in Apple Music searches Apple",
+                Body("private async void SearchHere()").Contains("AskAppleMusicSearch()", StringComparison.Ordinal), null);
+
+            var sort = Body("private ToolStripMenuItem BuildSortMenu()");
+            int added = sort.IndexOf("menu.DropDownItems.AddRange(fileItems);", StringComparison.Ordinal);
+            int opening = sort.IndexOf("menu.DropDownOpening +=", StringComparison.Ordinal);
+            check("the Sort submenu has its items before it is first opened (so it has an arrow)",
+                added >= 0 && opening > added, null);
+            check("in Apple Music the item says Sort by", main.Contains("\"Sort &by\"", StringComparison.Ordinal), null);
+            check("the empty-search hint names a key that exists",
+                !main.Contains("or Ctrl+F, to search Apple Music", StringComparison.Ordinal), null);
+            check("opening a menu applies the list's held-back name (or NVDA says a folder left long ago)",
+                main.Contains("menu.MenuActivate += (_, _) => { foreach (var p in _panes) ApplyPendingName(p); };", StringComparison.Ordinal), null);
+            check("an Apple song's details are said after the menu closes, not cut off by it",
+                Body("private void ShowSongProperties()", 2500).Contains("AnnounceAfterMenu(\"applemusic.details\"", StringComparison.Ordinal), null);
+
+            string? Other(string name)
+            {
+                try { return System.IO.File.ReadAllText(System.IO.Path.Combine(dir!.FullName, "src", name)); }
+                catch { return null; }
+            }
+            var tray = Other("TrayApplicationContext.cs") ?? "";
+            var page = Other("AppleMusicPlayer.cs") ?? "";
+            check("Enter on a song does not stop an empty file player (it said \"Nothing is loaded\")",
+                tray.Contains("if (_audio.HasTrack) _audio.Stop();", StringComparison.Ordinal), null);
+            check("quitting closes Apple's player and deletes its profile",
+                tray.Contains("AppleMusicPlayer.Shutdown()", StringComparison.Ordinal), null);
+            check("the player page is visible to Chromium (hidden, the media never loaded)",
+                page.Contains("_controller.IsVisible = true;", StringComparison.Ordinal), null);
+            check("the player page is served under the origin the web player's token works from",
+                page.Contains("PageHost = \"music.apple.com\"", StringComparison.Ordinal), null);
+            check("the player may start sound without a click",
+                page.Contains("--autoplay-policy=no-user-gesture-required", StringComparison.Ordinal), null);
+            check("an end is reported once per play and never while switching songs",
+                page.Contains("!switching && endedFor !== current", StringComparison.Ordinal), null);
         }
 
         private static AppleMusicItem Song(string name, string id, string artist = "", string album = "",

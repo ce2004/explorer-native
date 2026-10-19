@@ -39,7 +39,7 @@ Apple Music
 With an Apple Music subscription you can browse and play Apple Music inside
 Explorer Native. It appears in your list of drives. Open it with the arrow
 keys like any folder to reach your library, search and radio, and press Enter
-on a song to play it. Your play, pause, stop, skip and volume keys work on it,
+on a song to play it. F1 searches Apple Music from anywhere inside it. Your play, pause, stop, skip and volume keys work on it,
 and it plays on through an album, a playlist or a station on its own. The Sort
 menu offers orders that suit music, like recently added, artist, release date
 and length.
