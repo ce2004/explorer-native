@@ -72,6 +72,7 @@
     <Compile Include="..\src\CfApi.cs" />
     <Compile Include="..\src\DriveLetter.cs" />
     <Compile Include="..\src\GoogleAuth.cs" /><Compile Include="..\src\GoogleNet.cs" /><Compile Include="..\src\ProtectedFile.cs" />
+    <Compile Include="..\src\AppleMusicClient.cs" /><Compile Include="..\src\AppleMusic.cs" />
     <Compile Include="..\src\DriveClient.cs" /><Compile Include="..\src\DriveFolderSizes.cs" /><Compile Include="..\src\DriveWrites.cs" /><Compile Include="..\src\DriveTrash.cs" /><Compile Include="..\src\DriveHealth.cs" />
     <Compile Include="..\src\DriveFileCache.cs" />
     <Compile Include="..\src\MemoryGiveBack.cs" />
@@ -95,6 +96,7 @@
     <Compile Include="ConnectTests.cs" />
     <Compile Include="SeekTests.cs" />
     <Compile Include="Tests.cs" />
+    <Compile Include="AppleMusicTests.cs" />
     <Compile Include="ArchiveTests.cs" />
     <Compile Include="ArchiveFixTests.cs" />
     <Compile Include="InstallTests.cs" />

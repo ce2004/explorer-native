@@ -979,6 +979,9 @@ namespace ExplorerNative
         /// </summary>
         public static bool PlayAudioFile(string path) => _context?.PlayAudioFile(path) ?? false;
 
+        /// <summary>Enter on an Apple Music song row: plays it through Apple's own player.</summary>
+        public static void PlayAppleMusic(string path) => _context?.PlayAppleMusic(path);
+
         /// <summary>Runs one audio command, announcing it as the preferences ask.</summary>
         public static void RunAudioAction(AudioAction action) => _context?.RunAudioAction(action);
 

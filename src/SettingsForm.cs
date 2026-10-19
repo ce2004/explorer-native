@@ -214,6 +214,7 @@ namespace ExplorerNative
                 ("Hotkey", BuildHotkeyTab),
                 ("Audio", BuildAudioTab),
                 ("Google Drive", BuildGoogleDriveTab),
+                ("Apple Music", BuildAppleMusicTab),
                 ("Web app", BuildWebAppTab),
                 ("Integration", BuildIntegrationTab),
             };
@@ -1211,6 +1212,102 @@ namespace ExplorerNative
         /// Preferences is open. Turning the box on or off acts at once; Cancel puts
         /// it back. The port is checked when OK is pressed.
         /// </summary>
+        private FlowLayoutPanel BuildAppleMusicTab()
+        {
+            var panel = NewPage();
+            AddInfo(panel,
+                "Browse and play your Apple Music library, search and radio inside Explorer Native. " +
+                "It shows up under your drives; open it with the arrow keys and Enter like any folder, " +
+                "and press Enter on a song to play it. You need an Apple Music subscription.");
+            AddInfo(panel,
+                "To sign in, export your Apple Music cookies to a cookies.txt file while signed in at " +
+                "music.apple.com (the same file gamdl uses), then load it below. Your sign-in is kept on " +
+                "this PC only and encrypted, and is never put in a settings export.");
+
+            var tokenBox = new TextBox
+            {
+                Text = _working.AppleMusicUserToken,
+                Width = 420,
+                UseSystemPasswordChar = true,
+                AccessibleName = "Apple Music sign-in token",
+            };
+            AddLabelled(panel, "Sign-in &token", tokenBox);
+
+            var status = new Label
+            {
+                AutoSize = true,
+                Margin = new Padding(3, 8, 3, 4),
+                Text = _working.AppleMusicUserToken.Length > 0 ? "A sign-in is saved. Check it to be sure it still works." : "Not signed in yet.",
+            };
+            status.AccessibleName = "Apple Music sign-in status";
+            panel.Controls.Add(status);
+
+            var row = new FlowLayoutPanel { AutoSize = true, WrapContents = true, Margin = new Padding(0, 4, 0, 4) };
+            panel.Controls.Add(row);
+
+            var load = new Button { Text = "&Load from cookies.txt…", AutoSize = true, Margin = new Padding(3, 4, 8, 4) };
+            load.AccessibleName = "Load from cookies.txt";
+            load.Click += (_, _) =>
+            {
+                using var pick = new OpenFileDialog
+                {
+                    Title = "Choose your Apple Music cookies.txt",
+                    Filter = "Cookies file (*.txt)|*.txt|All files (*.*)|*.*",
+                    CheckFileExists = true,
+                };
+                if (pick.ShowDialog(this) != DialogResult.OK) return;
+                string text;
+                try { text = System.IO.File.ReadAllText(pick.FileName); }
+                catch (Exception ex) { Say("That file could not be read. " + ex.Message); status.Text = "That file could not be read."; return; }
+                var found = AppleMusic.TokenFromCookiesText(text);
+                if (found == null)
+                {
+                    status.Text = "No Apple Music sign-in was found in that file. Export it while signed in at music.apple.com.";
+                    Say(status.Text);
+                    return;
+                }
+                tokenBox.Text = found;
+                status.Text = "Sign-in loaded. Press Check to confirm it works, or just press OK.";
+                Say(status.Text);
+            };
+            row.Controls.Add(load);
+
+            var check = new Button { Text = "C&heck sign-in", AutoSize = true, Margin = new Padding(3, 4, 8, 4) };
+            check.AccessibleName = "Check sign-in";
+            check.Click += async (_, _) =>
+            {
+                try
+                {
+                    status.Text = "Checking with Apple Music…";
+                    Say(status.Text);
+                    check.Enabled = false;
+                    using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(30));
+                    var said = await AppleMusic.CheckSignInAsync(tokenBox.Text.Trim(), cts.Token);
+                    if (IsDisposed) return;
+                    status.Text = said;
+                    Say(said);
+                }
+                catch (AppleMusicException ex) { if (!IsDisposed) { status.Text = ex.Message; Say(ex.Message); } }
+                catch (Exception ex) { if (!IsDisposed) { status.Text = "Could not check: " + ex.Message; Say(status.Text); } }
+                finally { if (!IsDisposed) check.Enabled = true; }
+            };
+            row.Controls.Add(check);
+
+            var forget = new Button { Text = "&Forget sign-in", AutoSize = true, Margin = new Padding(3, 4, 8, 4) };
+            forget.AccessibleName = "Forget sign-in";
+            forget.Click += (_, _) =>
+            {
+                tokenBox.Text = "";
+                status.Text = "Sign-in cleared. Press OK to save.";
+                Say(status.Text);
+            };
+            row.Controls.Add(forget);
+
+            // Saved into the working settings at OK, like every other page.
+            _applies.Add(() => _working.AppleMusicUserToken = tokenBox.Text.Trim());
+            return panel;
+        }
+
         private FlowLayoutPanel BuildWebAppTab()
         {
             var panel = NewPage();

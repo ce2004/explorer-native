@@ -161,6 +161,11 @@ namespace ExplorerNative
             // back here rather than calling across an apartment boundary.
             _audio.Post = work => PostUi(() => work());
 
+            // Apple Music's player (a WebView2) lives on this UI thread too, and
+            // speaks through the same catalogue.
+            AppleMusicPlayer.BindUiThread();
+            AppleMusicPlayer.Say = (id, msg) => PostUi(() => SayAudio(id, msg));
+
             // The four notification hooks the layers below expose. Each is null
             // until something subscribes, and each layer checks that before
             // building a string — the fetch callback alone runs 891 times for one
@@ -209,6 +214,9 @@ namespace ExplorerNative
 
             // A track on the Drive letter downloads straight from Google.
             AudioPlayer.RangeSourceFor = path => _drive.OpenRange(path);
+
+            // Apple Music's browsing sign-in; the player signs in on its own.
+            AppleMusic.Configure(_settings.AppleMusicUserToken);
 
             StartConnect();
 
@@ -545,6 +553,7 @@ namespace ExplorerNative
             bool portSettingChanged = settings.WebAppPort != _settings.WebAppPort;
             int savedPortWas = _settings.WebAppPort;
             _settings = settings;
+            AppleMusic.Configure(settings.AppleMusicUserToken);
             bool portMoved = false;
             if (_connect != null && portSettingChanged && settings.WebAppPort != portWas)
             {
@@ -1113,6 +1122,37 @@ namespace ExplorerNative
 
         private void RunAudioActionCore(AudioAction action, int repeat)
         {
+            // Apple Music plays in its own player, so the same keys drive it while
+            // it is the thing playing. The sound is sealed, so the processing
+            // commands (speed, pitch, EQ, silence) have nothing to act on.
+            if (AppleMusicPlayer.IsActive)
+            {
+                string m = action switch
+                {
+                    AudioAction.PlayPause => AppleMusicPlayer.TogglePlayPause(),
+                    AudioAction.Stop => AppleMusicPlayer.Stop(),
+                    AudioAction.VolumeUp => AppleMusicPlayer.SetVolumePercent(AppleMusicPlayer.VolumePercent + Step(action, VolumeStepPercent, repeat)),
+                    AudioAction.VolumeDown => AppleMusicPlayer.SetVolumePercent(AppleMusicPlayer.VolumePercent - Step(action, VolumeStepPercent, repeat)),
+                    AudioAction.SeekBackward => AppleMusicPlayer.Seek(-Step(action, _settings.AudioSeekSeconds, repeat)),
+                    AudioAction.SeekForward => AppleMusicPlayer.Seek(Step(action, _settings.AudioSeekSeconds, repeat)),
+                    AudioAction.SeekBackwardLong => AppleMusicPlayer.Seek(-Step(action, _settings.AudioLongSeekSeconds, repeat)),
+                    AudioAction.SeekForwardLong => AppleMusicPlayer.Seek(Step(action, _settings.AudioLongSeekSeconds, repeat)),
+                    AudioAction.RestartTrack => AppleMusicPlayer.SeekToStart(),
+                    AudioAction.WhatIsPlaying => AppleMusicPlayer.Describe(),
+                    AudioAction.SayElapsed => AppleMusicPlayer.DescribeElapsed(),
+                    AudioAction.SayRemaining => AppleMusicPlayer.DescribeRemaining(),
+                    AudioAction.SayTotal => AppleMusicPlayer.DescribeTotal(),
+                    AudioAction.Mute => AppleMusicPlayer.SetVolumePercent(AppleMusicPlayer.VolumePercent == 0 ? 100 : 0),
+                    AudioAction.SpeedUp or AudioAction.SpeedDown or AudioAction.ToggleRepeat
+                        or AudioAction.SpeedDialog or AudioAction.DeviceDialog or AudioAction.LimiterDialog
+                        or AudioAction.EqualiserDialog or AudioAction.PitchDialog or AudioAction.SilenceDialog
+                        => "That isn't available for Apple Music",
+                    _ => "",
+                };
+                if (m.Length > 0) SayAudio(AudioActions.For(action).NotificationId, m);
+                return;
+            }
+
             string message = action switch
             {
                 AudioAction.PlayPause => _audio.TogglePlayPause(),
@@ -1661,9 +1701,31 @@ namespace ExplorerNative
         /// the fallback to whatever else owns the extension moves in here with
         /// it, because by the time that is known the caller has long returned.
         /// </summary>
+        /// <summary>
+        /// Enter on an Apple Music song: Apple's own player takes it. Stops the
+        /// built-in player first, so the two never play at once, and says the
+        /// song's name the way the built-in player does.
+        /// </summary>
+        public void PlayAppleMusic(string path)
+        {
+            if (!_settings.AudioPlayerEnabled)
+            {
+                Notify("applemusic.failed", "Turn the audio player on in Preferences to play Apple Music");
+                return;
+            }
+            _playRequest = System.Threading.Interlocked.Increment(ref _playRequest);
+            _audio.CancelOpening();
+            _audio.Stop();
+            if (AppleMusicPlayer.PlayRow(path))
+                SayAudio("audio.play", AppleMusic.SpokenName(path) ?? System.IO.Path.GetFileNameWithoutExtension(path));
+        }
+
         public bool PlayAudioFile(string path)
         {
             if (!_settings.AudioPlayerEnabled) return false;
+
+            // The two players never sound at once: Apple's stops when a file plays.
+            if (AppleMusicPlayer.IsActive) AppleMusicPlayer.Stop();
 
             ApplyAudioSettings();
 

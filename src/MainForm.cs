@@ -2007,6 +2007,20 @@ namespace ExplorerNative
             // the last one say nothing about this one.
             _consecutiveProbeFailures = 0;
 
+            // Apple Music: folders listed by Apple, nothing on disk to probe or watch.
+            if (AppleMusic.Is(path))
+            {
+                try
+                {
+                    return await ShowAppleMusicFolderAsync(pane, path, preferPath, cameFrom, mine, quiet, keepFocus);
+                }
+                catch (Exception ex)
+                {
+                    Announce($"Could not open {FolderDisplayName(path)}: {ex.Message}", isError: true);
+                    return false;
+                }
+            }
+
             // Inside the archive the pane is already in: a folder of a listing
             // held in memory, so nothing is probed, watched or read.
             if (path != DrivesPath && pane.Archive is { } archive &&
@@ -3000,6 +3014,8 @@ namespace ExplorerNative
         private static string? SafePathRoot(string? path)
         {
             if (string.IsNullOrEmpty(path) || path == DrivesPath) return null;
+            // Coming up out of Apple Music lands back on its row, not on a drive.
+            if (AppleMusic.Is(path)) return AppleMusic.Root;
             try { return Path.GetPathRoot(path); } catch { return null; }
         }
 
@@ -3100,6 +3116,14 @@ namespace ExplorerNative
                     DisplayOverride = DriveRowName(d.Name, "checking"),
                 })
                 .ToList();
+
+            // Apple Music sits after the drives, browsed with the same keys.
+            if (AppleMusic.IsSetUp)
+                entries.Add(new Entry(AppleMusic.Root, AppleMusic.RootName, true, 0, default)
+                {
+                    SizeOverride = "",
+                    DisplayOverride = AppleMusic.RootName,
+                });
 
             SetEntries(pane, entries, preferPath);   // totals the status bar itself
             pane.LastLoadedPath = DrivesPath;
@@ -4106,14 +4130,25 @@ namespace ExplorerNative
             descendingItem.Click += (_, _) => Direction(false);
             useDefault.Click += (_, _) => { if (HasFolder()) SetFolderSort(Active.CurrentPath, null); };
 
-            menu.DropDownItems.AddRange(new ToolStripItem[]
+            var fileItems = new ToolStripItem[]
             {
                 byName, bySize, byDate, new ToolStripSeparator(),
                 ascendingItem, descendingItem, new ToolStripSeparator(), useDefault,
-            });
+            };
 
             menu.DropDownOpening += (_, _) =>
             {
+                // Inside Apple Music the orders are different (recently added,
+                // artist, release date…), so the whole submenu is built for the
+                // folder on screen; everywhere else it is the file columns.
+                menu.DropDownItems.Clear();
+                if (AppleMusic.Is(Active.CurrentPath))
+                {
+                    PopulateAppleSortMenu(menu, Active.CurrentPath);
+                    return;
+                }
+
+                menu.DropDownItems.AddRange(fileItems);
                 var (by, ascending) = SortFor(Active.CurrentPath);
                 var shown = NameRules.SortsAs(by);
                 byName.Checked = shown == SortColumn.Name;
@@ -4124,6 +4159,66 @@ namespace ExplorerNative
                 useDefault.Checked = FolderSortOf(Active.CurrentPath) == null;
             };
             return menu;
+        }
+
+        /// <summary>
+        /// The Sort submenu for an Apple Music folder: the orders that folder
+        /// offers (name, recently added, artist, release date, length…), the two
+        /// directions worded for the chosen order, and the default. Built fresh
+        /// each time it opens, from what the folder holds.
+        /// </summary>
+        private void PopulateAppleSortMenu(ToolStripMenuItem menu, string folder)
+        {
+            var sorts = AppleMusic.SortsFor(folder);
+            if (sorts.Count == 0)
+            {
+                menu.DropDownItems.Add(new ToolStripMenuItem("No sorting here") { Enabled = false });
+                return;
+            }
+
+            var (currentBy, currentAsc) = AppleSortFor(folder);
+            foreach (var sort in sorts)
+            {
+                string label = sort == AppleMusic.Sort.Apple
+                    ? AppleMusic.AppleOrderName(folder) ?? "Apple's order"
+                    : Capitalise(AppleMusic.SortName(sort));
+                var item = new ToolStripMenuItem(label) { Checked = sort == currentBy };
+                var chosen = sort;
+                item.Click += (_, _) =>
+                {
+                    // A new order starts the way round that suits it; the same
+                    // order keeps the direction it already had.
+                    bool asc = chosen == currentBy ? currentAsc : AppleMusic.StartsAscending(chosen);
+                    SetAppleSort(folder, (chosen, asc));
+                };
+                menu.DropDownItems.Add(item);
+            }
+
+            menu.DropDownItems.Add(new ToolStripSeparator());
+            var up = new ToolStripMenuItem(Capitalise(AppleDirection(currentBy, true))) { Checked = currentAsc };
+            var down = new ToolStripMenuItem(Capitalise(AppleDirection(currentBy, false))) { Checked = !currentAsc };
+            up.Click += (_, _) => SetAppleSort(folder, (currentBy, true));
+            down.Click += (_, _) => SetAppleSort(folder, (currentBy, false));
+            menu.DropDownItems.Add(up);
+            menu.DropDownItems.Add(down);
+
+            menu.DropDownItems.Add(new ToolStripSeparator());
+            var def = new ToolStripMenuItem("Use the default order") { Checked = AppleSortIsDefault(folder) };
+            def.Click += (_, _) => SetAppleSort(folder, null);
+            menu.DropDownItems.Add(def);
+        }
+
+        private static string Capitalise(string s) => s.Length == 0 ? s : char.ToUpperInvariant(s[0]) + s.Substring(1);
+
+        /// <summary>True when the folder is on its own default order (nothing chosen for it).</summary>
+        private bool AppleSortIsDefault(string folder)
+        {
+            var key = FolderSortKey(folder);
+            foreach (var pair in _settings.FolderSorts ?? new())
+                if (string.Equals(FolderSortKey(pair.Key), key, StringComparison.OrdinalIgnoreCase)
+                    && pair.Value.StartsWith(AppleSortPrefix, StringComparison.Ordinal))
+                    return false;
+            return true;
         }
 
         private Comparison<Entry> ListOrder(string? folder)
@@ -4213,6 +4308,12 @@ namespace ExplorerNative
         /// </summary>
         private bool RefuseInArchive()
         {
+            if (AppleMusic.Is(Active.CurrentPath))
+            {
+                AnnounceOperation("applemusic.refused", "Apple Music can only be browsed and played here");
+                RestoreListFocus();
+                return true;
+            }
             if (Active.Archive == null) return false;
             AnnounceOperation("archive.refused", ArchiveBrowser.ReadOnlyMessage);
             RestoreListFocus();
@@ -4432,6 +4533,182 @@ namespace ExplorerNative
 
             if (entries.Count == 0 && pane == Active) AnnounceOperation("nav.empty", "This folder is empty");
             return true;
+        }
+
+        /// <summary>
+        /// One Apple Music folder, listed by Apple (or from this session's memory
+        /// of it), in the order chosen for it from File, Sort this folder by.
+        /// The same landing rules as a real folder. Slow answers say so after a
+        /// moment, so a search that takes two seconds is not two seconds of silence.
+        /// </summary>
+        private async Task<bool> ShowAppleMusicFolderAsync(Pane pane, string path, string? preferPath,
+            string cameFrom, int mine, bool quiet, bool keepFocus)
+        {
+            var full = path.TrimEnd('\\');
+            var token = BeginPaneWork(pane);
+            pane.Searching = false;
+
+            bool sameFolder = string.Equals(pane.LastLoadedPath, full, StringComparison.OrdinalIgnoreCase);
+            var previousRow = sameFolder ? FocusedPathOf(pane) : null;
+            if (keepFocus && sameFolder) preferPath = previousRow ?? preferPath;
+
+            // Up out of a folder lands on it; back into one lands where you were.
+            if (preferPath == null && cameFrom.StartsWith(full + "\\", StringComparison.OrdinalIgnoreCase))
+            {
+                int next = cameFrom.IndexOf('\\', full.Length + 1);
+                preferPath = next < 0 ? cameFrom : cameFrom.Substring(0, next);
+            }
+            preferPath ??= pane.Positions.Recall(full);
+
+            pane.Probing = mine;
+            List<AppleMusic.Row> rows;
+            // Called off once the listing is in. Cancelled, never disposed.
+            var loaded = CancellationTokenSource.CreateLinkedTokenSource(token);
+            _ = Task.Delay(800, loaded.Token).ContinueWith(t =>
+            {
+                if (t.IsCanceled) return;
+                try
+                {
+                    BeginInvoke(() =>
+                    {
+                        if (pane.NavigationId == mine && pane == Active && !IsDisposed)
+                            AnnounceOperation("applemusic.loading", "Loading from Apple Music");
+                    });
+                }
+                catch (ObjectDisposedException) { }
+                catch (InvalidOperationException) { }
+            }, TaskScheduler.Default);
+            try
+            {
+                rows = await AppleMusic.ListAsync(full, fresh: false, token);
+            }
+            catch (OperationCanceledException) { return false; }
+            catch (AppleMusicException ex)
+            {
+                if (pane.NavigationId == mine && !IsDisposed)
+                {
+                    AnnounceOperation("applemusic.failed", ex.Message);
+                    RestoreListFocus();
+                }
+                return false;
+            }
+            finally
+            {
+                if (pane.Probing == mine) pane.Probing = 0;
+                loaded.Cancel();
+            }
+
+            if (token.IsCancellationRequested || IsDisposed || pane.NavigationId != mine) return false;
+
+            var (by, ascending) = AppleSortFor(full);
+            var ordered = AppleMusic.Ordered(full, rows, by, ascending);
+            var entries = new List<Entry>(ordered.Count);
+            foreach (var row in ordered)
+            {
+                var entry = new Entry(row.Path, row.Name, row.IsFolder, 0, default)
+                {
+                    SizeOverride = "",
+                    DisplayOverride = row.Name,
+                };
+                entry.PrepareTypeAhead();
+                entries.Add(entry);
+            }
+
+            DisarmWatcher(pane);
+            pane.Archive = null;
+            pane.CurrentPath = full;
+            if (pane == Active) _pathLabel.Text = AppleMusic.DisplayPath(full);
+            UpdateTitle();
+
+            var selectedNow = keepFocus && sameFolder ? SelectedPathsOf(pane) : null;
+            SetEntries(pane, entries, preferPath);
+            pane.LastLoadedPath = full;
+            if (selectedNow is { Count: > 1 } && FocusedPathOf(pane) is { } focusedNow &&
+                pane.IndexByPath.TryGetValue(focusedNow, out var keptAt))
+                Reselect(pane, keptAt, selectedNow);
+
+            bool sameRow = sameFolder && previousRow != null &&
+                           string.Equals(previousRow, FocusedPathOf(pane), StringComparison.OrdinalIgnoreCase);
+            FocusListAndRow(pane, readRowAloud: !(quiet && sameRow));
+
+            if (entries.Count == 0 && pane == Active)
+                AnnounceOperation("nav.empty", full.Equals(AppleMusic.SearchFolder, StringComparison.OrdinalIgnoreCase)
+                    ? "No searches yet. Press Enter on Search, or Ctrl+F, to search Apple Music"
+                    : "This folder is empty");
+            return true;
+        }
+
+        /// <summary>The order chosen for an Apple Music folder, or its own when none has been.</summary>
+        private (AppleMusic.Sort By, bool Ascending) AppleSortFor(string folder)
+        {
+            var key = FolderSortKey(folder);
+            foreach (var pair in _settings.FolderSorts ?? new())
+            {
+                if (!string.Equals(FolderSortKey(pair.Key), key, StringComparison.OrdinalIgnoreCase)) continue;
+                var words = pair.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (words.Length > 0 && words[0].StartsWith(AppleSortPrefix, StringComparison.Ordinal) &&
+                    Enum.TryParse<AppleMusic.Sort>(words[0].Substring(AppleSortPrefix.Length), out var by))
+                    return (by, words.Length < 2 || !words[1].Equals("descending", StringComparison.OrdinalIgnoreCase));
+            }
+            return AppleMusic.DefaultSort(folder);
+        }
+
+        /// <summary>Marks an Apple Music order in FolderSorts, where a file folder's SortColumn would be.</summary>
+        private const string AppleSortPrefix = "apple:";
+
+        /// <summary>Gives an Apple Music folder its own order (null: its default), and shows it at once.</summary>
+        private void SetAppleSort(string folder, (AppleMusic.Sort By, bool Ascending)? sort)
+        {
+            var key = FolderSortKey(folder);
+            var sorts = new Dictionary<string, string>();
+            foreach (var pair in _settings.FolderSorts ?? new())
+                if (!string.Equals(FolderSortKey(pair.Key), key, StringComparison.OrdinalIgnoreCase))
+                    sorts[pair.Key] = pair.Value;
+            if (sort is { } s)
+                sorts[key] = AppleSortPrefix + s.By + (s.Ascending ? " ascending" : " descending");
+            _settings.FolderSorts = sorts;
+            _settings.Save();
+
+            var pane = Active;
+            _ = NavigateAsync(folder, FocusedPathOf(pane), pane, quiet: true, keepFocus: true);
+
+            var (by, ascending) = AppleSortFor(folder);
+            AnnounceOperation("nav.sorted", by == AppleMusic.Sort.Apple
+                ? AppleMusic.AppleOrderName(folder) ?? "Apple's order"
+                : $"Sorted by {AppleMusic.SortName(by)}, {AppleDirection(by, ascending)}");
+        }
+
+        /// <summary>"newest first" says more than "descending" for a date.</summary>
+        private static string AppleDirection(AppleMusic.Sort by, bool ascending) => by switch
+        {
+            AppleMusic.Sort.RecentlyAdded or AppleMusic.Sort.RecentlyUpdated or AppleMusic.Sort.ReleaseDate =>
+                ascending ? "oldest first" : "newest first",
+            AppleMusic.Sort.Length => ascending ? "shortest first" : "longest first",
+            AppleMusic.Sort.Apple => ascending ? "first to last" : "last to first",
+            _ => ascending ? "A to Z" : "Z to A",
+        };
+
+        /// <summary>Enter on an Apple Music row: open a folder, ask what to search for, or play a song.</summary>
+        private void OpenAppleMusicRow(Entry entry)
+        {
+            if (string.Equals(entry.Path, AppleMusic.SearchFolder, StringComparison.OrdinalIgnoreCase))
+            {
+                AskAppleMusicSearch();
+                return;
+            }
+            if (entry.IsDir) { Navigate(entry.Path); return; }
+            Program.PlayAppleMusic(entry.Path);
+        }
+
+        private string _lastAppleSearch = "";
+
+        /// <summary>Search, in Apple Music: asks what for, then opens the results.</summary>
+        private void AskAppleMusicSearch()
+        {
+            var term = PromptForm.Ask(this, "Search Apple Music", "Search Apple Music for:", _lastAppleSearch);
+            if (string.IsNullOrWhiteSpace(term)) { RestoreListFocus(); return; }
+            _lastAppleSearch = term.Trim();
+            Navigate(AppleMusic.SearchPath(_lastAppleSearch));
         }
 
         /// <summary>
@@ -5818,6 +6095,9 @@ namespace ExplorerNative
 
         private void List_ColumnClick(object? sender, ColumnClickEventArgs e)
         {
+            // Apple Music has its own orders (File, Sort), not the file columns.
+            if (AppleMusic.Is(Active.CurrentPath)) return;
+
             var header = Active.List.Columns[e.Column].Text;
             var col = header switch
             {

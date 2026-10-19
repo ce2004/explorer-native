@@ -1,3 +1,7 @@
+4.0.0
+New feature: Apple Music. If you have an Apple Music subscription, Apple Music shows up in your list of drives. Open it with the arrow keys like any folder to reach your library, search and radio, and press Enter on a song to play it. Your play, pause, stop, skip and volume keys work on it, and it plays on through an album, a playlist or a station on its own. To set it up, go to Preferences, Apple Music, and load the cookies.txt file you export from music.apple.com while signed in. Your sign-in stays on this PC and is never put in a settings export. Speed, pitch, equaliser and silence removal do not apply to Apple Music, because Apple keeps the sound sealed.
+New feature: when you are in Apple Music, the Sort menu offers orders that suit it, like recently added, artist, release date and length, and it goes back to the usual orders everywhere else.
+
 3.1.1
 Bug fixed: in 3.1.0, NVDA read only the name of each file and folder in the list, with no size and no date. The list reads a whole row again, as it did before.
 

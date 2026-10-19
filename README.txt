@@ -34,6 +34,29 @@ Everything Explorer Native saves in AppData (settings, the client ID and
 secret, the sign-in, logs) is encrypted for your Windows account.
 
 
+Apple Music
+
+With an Apple Music subscription you can browse and play Apple Music inside
+Explorer Native. It appears in your list of drives. Open it with the arrow
+keys like any folder to reach your library, search and radio, and press Enter
+on a song to play it. Your play, pause, stop, skip and volume keys work on it,
+and it plays on through an album, a playlist or a station on its own. The Sort
+menu offers orders that suit music, like recently added, artist, release date
+and length.
+
+No Apple credentials ship with the app. Sign in at music.apple.com in a
+browser, export your cookies to a cookies.txt file (the same kind gamdl uses),
+then in Explorer Native open Preferences (Ctrl+P), Apple Music, and load that
+file. Your sign-in is saved encrypted on this PC only and is never put in a
+settings export.
+
+Playing goes through Apple's own player (MusicKit), so it uses the Microsoft
+Edge WebView2 runtime that ships with Windows 11. Nothing is installed and
+nothing is left on disk between runs. Because Apple keeps the sound sealed,
+the speed, pitch, equaliser and silence-removal tools do not apply to Apple
+Music.
+
+
 Updates
 
 Help menu (Alt, then H), Check for updates. It asks GitHub whether a newer

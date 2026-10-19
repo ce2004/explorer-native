@@ -165,6 +165,13 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "applemusic")
+            {
+                await AppleMusicTests.RunAll(Check, Equal);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "drivemount")
             {
                 await DriveMountTests.RunAll(Check, Equal);
@@ -361,6 +368,7 @@ namespace ExplorerNative
             EdgeCaseTests();
             ConfigIntegrityTests();
             GoogleDriveTests();
+            await Guard("AppleMusicTests", () => AppleMusicTests.RunAll(Check, Equal));
             await Guard("ArchiveTests", () => ArchiveTests.RunAll(Check, Equal));
             await Guard("InstallTests", () => { InstallTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("DriveCopyTests", () => DriveCopyTests.RunAll(Check, Equal));

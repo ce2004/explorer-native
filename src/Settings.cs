@@ -537,6 +537,12 @@ namespace ExplorerNative
         public string ConnectCode { get; set; } = "";
 
         /// <summary>
+        /// The media-user-token from music.apple.com (what gamdl reads from
+        /// cookies.txt), set in Preferences, Apple Music. A secret; this PC only.
+        /// </summary>
+        public string AppleMusicUserToken { get; set; } = "";
+
+        /// <summary>
         /// The Explorer Connect web app on https://&lt;this pc&gt;.&lt;tailnet&gt;.ts.net/, through
         /// Tailscale Serve (Preferences, Web app). Off by default.
         /// </summary>
@@ -1456,6 +1462,7 @@ namespace ExplorerNative
             nameof(WindowX), nameof(WindowY), nameof(WindowWidth), nameof(WindowHeight),
             nameof(StartPath), nameof(LastFolder), nameof(LastFolderTab2), nameof(ActiveTab),
             nameof(FocusedPathTab1), nameof(FocusedPathTab2), nameof(AudioLastPath), nameof(AudioOutputDeviceId),
+            nameof(AppleMusicUserToken),
         };
 
         /// <summary>

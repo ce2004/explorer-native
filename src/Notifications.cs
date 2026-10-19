@@ -123,6 +123,12 @@ namespace ExplorerNative
 
         public static readonly IReadOnlyList<NotificationInfo> All = new[]
         {
+            // ---- Apple Music -------------------------------------------------
+            Live("applemusic.loading", "Loading from Apple Music", Navigation, Say, "Loading from Apple Music"),
+            Live("applemusic.failed", "Apple Music problem", AudioTransport, Say, "{0}", "Apple Music didn't accept your sign-in."),
+            Live("applemusic.refused", "Not available in Apple Music", Navigation, Say, "{0}", "Apple Music can only be browsed and played here"),
+            Live("applemusic.endoflist", "End of the Apple Music list", AudioTransport, Say, "{0}", "End of the list"),
+
             // ---- Audio: playing ----------------------------------------------
             Live("audio.play", "Started playing", AudioTransport, Bar, "Playing {0}", "Ashley Cooke - your place.flac"),
             Live("audio.pause", "Paused", AudioTransport, Bar, "Paused"),

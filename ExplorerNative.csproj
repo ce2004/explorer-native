@@ -12,7 +12,7 @@
     <!-- ARM64 by default; "dotnet publish -r win-x64" builds the x64 copy.
          Release builds stamp Version from the git tag (see .github\workflows). -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-arm64</RuntimeIdentifier>
-    <Version>3.1.1</Version>
+    <Version>4.0.0</Version>
     <!-- .NET 9+ checks properties for the forms designer, which nothing here uses. -->
     <NoWarn>$(NoWarn);WFO1000</NoWarn>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
@@ -97,6 +97,17 @@
     <PackageReference Include="NVorbis" Version="0.10.5" />
     <PackageReference Include="Concentus" Version="2.2.2" />
     <PackageReference Include="Concentus.OggFile" Version="1.0.7" />
+
+    <!-- The second exception to "no third-party packages", for the same reason
+         as the first: there is no other way. Apple Music's audio is protected,
+         and the only sanctioned way to play it is Apple's own MusicKit player,
+         which runs in a browser. WebView2 is the way a .NET app hosts that
+         player; there is no in-box API for it. The browser engine itself ships
+         with Windows 11 (the Edge WebView2 runtime, already present here), so
+         nobody installs anything — this package is only the managed loader.
+         The player is hidden and created only when a song is first played; if
+         Apple Music is never used, none of it loads. See AppleMusicPlayer.cs. -->
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4258.31" />
   </ItemGroup>
 
   <!-- The NVDA controller client must match THIS process's architecture
