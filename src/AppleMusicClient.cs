@@ -159,7 +159,7 @@ namespace ExplorerNative
                 if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
                     throw new AppleMusicException("Apple Music didn't accept your sign-in. Set it up again in Preferences, Apple Music.", signIn: true);
                 if (resp.StatusCode == HttpStatusCode.NotFound)
-                    throw new AppleMusicException("Apple Music says that isn't there any more.");
+                    throw new AppleMusicException("Apple Music says that isn't there any more.") { NotFound = true };
                 if (!resp.IsSuccessStatusCode)
                     throw new AppleMusicException($"Apple Music answered with an error ({(int)resp.StatusCode}).");
                 // A change (PUT, DELETE, POST) is often answered with no body at all.
@@ -221,10 +221,13 @@ namespace ExplorerNative
             path = path.Replace("{sf}", Storefront);
             var first = await PageAsync(path, token).ConfigureAwait(false);
             if (first.Next == null) return first.Items;
-            if (first.Total <= first.Items.Count || first.Items.Count == 0)
+            if (first.Total <= first.Raw || first.Raw == 0)
                 return await ListAsync(path, token, most).ConfigureAwait(false);
 
-            int pageSize = first.Items.Count;
+            // Apple's page size, counted before anything was dropped: a playlist's
+            // music video is skipped by Parse, and paging by what was kept made
+            // every page start one early, so songs showed twice and played twice.
+            int pageSize = first.Raw;
             int total = Math.Min(first.Total, most);
             var offsets = new List<int>();
             for (int o = pageSize; o < total; o += pageSize) offsets.Add(o);
@@ -243,16 +246,17 @@ namespace ExplorerNative
             return all;
         }
 
-        private async Task<(List<AppleMusicItem> Items, string? Next, int Total)> PageAsync(string path, CancellationToken token)
+        private async Task<(List<AppleMusicItem> Items, string? Next, int Total, int Raw)> PageAsync(string path, CancellationToken token)
         {
             using var doc = await GetAsync(path, token).ConfigureAwait(false);
             var items = new List<AppleMusicItem>();
             var root = doc.RootElement;
+            int raw = 0;
             if (root.TryGetProperty("data", out var data))
-                foreach (var d in data.EnumerateArray()) Add(items, d);
+                foreach (var d in data.EnumerateArray()) { raw++; Add(items, d); }
             string? next = root.TryGetProperty("next", out var n) && n.ValueKind == JsonValueKind.String ? n.GetString() : null;
             int total = root.TryGetProperty("meta", out var meta) && meta.TryGetProperty("total", out var t) && t.TryGetInt32(out var tv) ? tv : -1;
-            return (items, next, total);
+            return (items, next, total, raw);
         }
 
         /// <summary>Your own station first, then the stations you played lately, then Apple's live radio.</summary>
@@ -280,9 +284,10 @@ namespace ExplorerNative
 
         internal static AppleMusicItem? Parse(JsonElement d)
         {
-            string type = d.TryGetProperty("type", out var t) ? t.GetString() ?? "" : "";
-            string id = d.TryGetProperty("id", out var i) ? i.GetString() ?? "" : "";
-            if (!d.TryGetProperty("attributes", out var a) || id.Length == 0) return null;
+            if (d.ValueKind != JsonValueKind.Object) return null;
+            string type = d.TryGetProperty("type", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() ?? "" : "";
+            string id = d.TryGetProperty("id", out var i) && i.ValueKind == JsonValueKind.String ? i.GetString() ?? "" : "";
+            if (!d.TryGetProperty("attributes", out var a) || a.ValueKind != JsonValueKind.Object || id.Length == 0) return null;
             string Str(string name) => a.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() ?? "" : "";
 
             var item = new AppleMusicItem
@@ -364,30 +369,40 @@ namespace ExplorerNative
         /// answer lists only rated songs, so every id asked about and not
         /// returned is not a favorite.
         /// </summary>
-        public async Task<HashSet<string>> FavoritesAmongAsync(IReadOnlyCollection<string> catalogIds, CancellationToken token)
+        public async Task<(HashSet<string> Favorites, HashSet<string> Answered)> FavoritesAmongAsync(IReadOnlyCollection<string> catalogIds, CancellationToken token)
         {
             await StartAsync(token).ConfigureAwait(false);
             var favorites = new HashSet<string>(StringComparer.Ordinal);
+            var answered = new HashSet<string>(StringComparer.Ordinal);
             var batches = catalogIds.Distinct().Chunk(RatingsPerRequest).ToList();
             using var gate = new SemaphoreSlim(4);
+            // Each batch stands alone: one that fails leaves only its own songs
+            // unknown (one failure used to leave the whole list unknown, and
+            // Favorite missing from every song's menu).
             await Task.WhenAll(batches.Select(async batch =>
             {
                 await gate.WaitAsync(token).ConfigureAwait(false);
                 try
                 {
                     using var doc = await GetAsync("/v1/me/ratings/songs?ids=" + string.Join(",", batch.Select(Uri.EscapeDataString)), token).ConfigureAwait(false);
+                    lock (favorites) answered.UnionWith(batch);
                     if (!doc.RootElement.TryGetProperty("data", out var data)) return;
                     foreach (var d in data.EnumerateArray())
                     {
-                        if (!d.TryGetProperty("id", out var id) || id.GetString() is not { } sid) continue;
+                        if (!d.TryGetProperty("id", out var id) || id.ValueKind != JsonValueKind.String || id.GetString() is not { } sid) continue;
                         if (d.TryGetProperty("attributes", out var a) && a.TryGetProperty("value", out var v) &&
                             v.TryGetInt32(out var value) && value == 1)
                             lock (favorites) favorites.Add(sid);
                     }
                 }
+                catch (AppleMusicException ex) when (ex.NotFound)
+                {
+                    lock (favorites) answered.UnionWith(batch);   // none of them rated
+                }
+                catch (AppleMusicException) { }   // these stay unknown; the next listing asks again
                 finally { gate.Release(); }
             })).ConfigureAwait(false);
-            return favorites;
+            return (favorites, answered);
         }
 
         /// <summary>Favorites a catalogue song, or takes the favorite off.</summary>
@@ -399,6 +414,16 @@ namespace ExplorerNative
             if (favorite)
                 req.Content = new StringContent("{\"type\":\"rating\",\"attributes\":{\"value\":1}}", Encoding.UTF8, "application/json");
             using var _ = await SendAsync(req, token).ConfigureAwait(false);
+        }
+
+        /// <summary>Every song in one of your playlists, as Apple has it now. Empty for an empty playlist (which Apple answers with 404).</summary>
+        public async Task<List<AppleMusicItem>> PlaylistSongsAsync(string playlistId, CancellationToken token)
+        {
+            try
+            {
+                return await ListAllAsync($"/v1/me/library/playlists/{Uri.EscapeDataString(playlistId)}/tracks?limit=100", token).ConfigureAwait(false);
+            }
+            catch (AppleMusicException ex) when (ex.NotFound) { return new List<AppleMusicItem>(); }
         }
 
         /// <summary>Adds a song to the end of one of your playlists.</summary>
@@ -431,6 +456,8 @@ namespace ExplorerNative
     {
         /// <summary>True when setting up again in Preferences is the fix.</summary>
         public bool SignIn { get; }
+        /// <summary>Apple answered 404. An empty playlist's tracks answer this too.</summary>
+        public bool NotFound { get; init; }
         public AppleMusicException(string message, bool signIn = false) : base(message) => SignIn = signIn;
     }
 }

@@ -898,7 +898,8 @@ namespace ExplorerNative
             // folders stayed held back: closing a menu, NVDA announced the list
             // by a folder left long before ("Drives" in Apple Music's Songs).
             // While a menu is open, renaming the list is as silent as on Leave.
-            menu.MenuActivate += (_, _) => { foreach (var p in _panes) ApplyPendingName(p); };
+            menu.MenuActivate += (_, _) => { _menuOpen = true; foreach (var p in _panes) ApplyPendingName(p); };
+            menu.MenuDeactivate += (_, _) => { _menuOpen = false; _menuClosedAt = Environment.TickCount64; };
 
             var file = new ToolStripMenuItem("&File");
             file.DropDownItems.Add(Item("&Open", Keys.None, ActivateFocused));
@@ -951,7 +952,8 @@ namespace ExplorerNative
             {
                 bool apple = AppleMusic.Is(Active.CurrentPath);
                 sortMenu.Text = apple ? "Sort &by" : "Sort this folder &by";
-                sortMenu.Visible = !apple || AppleMusic.SortsFor(Active.CurrentPath).Count > 0;
+                // Not in the drives list either, where its items could only do nothing.
+                sortMenu.Visible = !IsDrivesView && (!apple || AppleMusic.SortsFor(Active.CurrentPath).Count > 0);
             };
             var properties = Item("P&roperties (Alt+Enter)", Keys.None, ShowProperties);
             file.DropDownItems.Add(properties);
@@ -1013,7 +1015,7 @@ namespace ExplorerNative
             menu.Items.Add(BuildAudioMenu());
 
             var tools = new ToolStripMenuItem("T&ools");
-            tools.DropDownItems.Add(Item("Calculate folder &size", Keys.Control | Keys.Shift | Keys.S, CalculateFocusedFolderSize));
+            tools.DropDownItems.Add(AppleHidden(Item("Calculate folder &size", Keys.Control | Keys.Shift | Keys.S, CalculateFocusedFolderSize)));
             var windowsMenu = Item("&Windows context menu", Keys.None, ShowShellMenuForSelection);
             tools.DropDownItems.Add(windowsMenu);
             _archiveHidden.Add(windowsMenu);
@@ -1047,6 +1049,7 @@ namespace ExplorerNative
         private ToolStripMenuItem _equaliserItem = null!;
         private ToolStripMenuItem _silenceItem = null!;
         private ToolStripMenuItem _pitchItem = null!;
+        private ToolStripMenuItem _speedItem = null!;
         private ToolStripMenuItem _nowPlayingItem = null!;
 
         /// <summary>
@@ -1094,7 +1097,8 @@ namespace ExplorerNative
             // something you do with a key while listening, not something you go
             // to a menu for; the menu offers the list instead, which is the thing
             // a menu is good at.
-            audio.DropDownItems.Add(AudioItem(AudioAction.SpeedDialog));
+            _speedItem = AudioItem(AudioAction.SpeedDialog);
+            audio.DropDownItems.Add(_speedItem);
 
             // Beside the speed, because they are the pair somebody thinks of
             // together and the whole point of the audio path keeping a stretcher
@@ -1205,9 +1209,17 @@ namespace ExplorerNative
             // which is what it is for on the two entries above.
             _pitchItem.Checked = _settings.AudioPitchSemitones != 0;
 
+            // "&" in a song or artist is a letter, not an access key.
             _nowPlayingItem.Text = state is { HasTrack: true }
-                ? (playing ? "Playing " : "Paused: ") + state.Name
+                ? ((playing ? "Playing " : "Paused: ") + state.Name).Replace("&", "&&")
                 : "Nothing is playing";
+
+            // Apple Music's sound is sealed: what changes the sound itself, and
+            // repeat, could only say "That isn't available for Apple Music", so
+            // they are left off while it plays. Output device stays: it works.
+            bool apple = AppleMusicPlayer.IsActive;
+            foreach (var item in new[] { _speedItem, _pitchItem, _limiterItem, _equaliserItem, _silenceItem, _repeatItem })
+                item.Visible = !apple;
         }
 
         private void OpenAudioPreferences() => OpenPreferences("Audio");
@@ -1260,7 +1272,8 @@ namespace ExplorerNative
 
             if (AppleMusic.Is(path))
             {
-                AnnounceAfterMenu("applemusic.details", AppleMusic.Details(path) ?? state?.Name ?? "Nothing is playing");
+                var said = AppleMusic.Details(path) ?? state?.Name;
+                AnnounceAfterMenu("applemusic.details", string.IsNullOrEmpty(said) ? "Nothing is playing" : said);
                 return;
             }
 
@@ -1434,9 +1447,14 @@ namespace ExplorerNative
             // Apple Music is read-only and not on disk either. Search here stays:
             // there it searches Apple.
             bool apple = AppleMusic.Is(Active.CurrentPath);
-            bool outside = Active.Archive == null && !apple;
-            foreach (var item in _archiveHidden) item.Visible = outside || (apple && item == _searchHereItem);
-            foreach (var item in _appleHidden) item.Visible = !apple;
+            // The Apple Music row in the drives list is not a drive or a file
+            // either: Copy, Cut, Rename, Delete, Properties and the rest on it
+            // could only refuse.
+            bool appleRow = apple || (IsDrivesView && FocusedPath() is { } row && AppleMusic.Is(row));
+            bool outside = Active.Archive == null && !appleRow;
+            foreach (var item in _archiveHidden)
+                item.Visible = item == _searchHereItem ? Active.Archive == null : outside;
+            foreach (var item in _appleHidden) item.Visible = !appleRow;
         }
 
         private ToolStripMenuItem DriveLinkItem(string text, Keys shortcut, bool makePublic)
@@ -1479,7 +1497,8 @@ namespace ExplorerNative
         private void BuildContextMenu()
         {
             _contextMenu = new ContextMenuStrip();
-            _contextMenu.Opened += (_, _) => { foreach (var p in _panes) ApplyPendingName(p); };
+            _contextMenu.Opened += (_, _) => { _menuOpen = true; foreach (var p in _panes) ApplyPendingName(p); };
+            _contextMenu.Closed += (_, _) => { _menuOpen = false; _menuClosedAt = Environment.TickCount64; };
             _contextOpenItem = Item("&Open", Keys.None, ActivateFocused);
             _contextMenu.Items.Add(_contextOpenItem);
 
@@ -4792,8 +4811,10 @@ namespace ExplorerNative
                     foreach (var pane in _panes)
                     {
                         if (IsDisposed || !string.Equals(pane.CurrentPath, folder, StringComparison.OrdinalIgnoreCase)) continue;
+                        // Any failure here is only a list not updated: an exception
+                        // out of this async lambda would take the window down.
                         try { ShowAppleRowsQuietly(pane, folder, await AppleMusic.ListAsync(folder, fresh: false, CancellationToken.None)); }
-                        catch (AppleMusicException) { }
+                        catch (Exception) { }
                     }
                 });
             }
@@ -4826,9 +4847,17 @@ namespace ExplorerNative
             var selected = SelectedPathsOf(pane);
             int before = CurrentIndex(pane);
             ReplaceEntriesInPlace(pane, AppleEntries(ordered));
-            if (focusedPath != null && pane.IndexByPath.TryGetValue(focusedPath, out var now) &&
-                (now != before || selected.Count > 1))
-                Reselect(pane, now, selected);
+            if (focusedPath != null && pane.IndexByPath.TryGetValue(focusedPath, out var now))
+            {
+                if (now != before || selected.Count > 1) Reselect(pane, now, selected);
+            }
+            else if (ordered.Count > 0 && before >= 0)
+            {
+                // The row the cursor was on is gone (taken out on the phone): the
+                // cursor stays where it was, on whatever is there now, rather than
+                // off the end of a shorter list with no row focused.
+                Reselect(pane, Math.Min(before, ordered.Count - 1), selected);
+            }
         }
 
         /// <summary>The order chosen for an Apple Music folder, or its own when none has been.</summary>
@@ -5914,15 +5943,21 @@ namespace ExplorerNative
             var favorite = appleSong ? AppleMusic.IsFavorite(focused!) : null;
             _favoriteItem.Visible = favorite != null;
             _favoriteItem.Text = favorite == true ? "Unfa&vorite" : "Fa&vorite";
-            var playlists = appleSong ? AppleMusic.EditablePlaylists : null;
+            // Not the playlist you are in: the song is already there.
+            var here = AppleMusic.ItemAt(Active.CurrentPath);
+            var playlists = appleSong
+                ? AppleMusic.EditablePlaylists?.Where(p => !(here is { Kind: "playlist" } && here.Id == p.Id)).ToList()
+                : null;
             _addToPlaylistItem.Visible = playlists is { Count: > 0 };
             if (playlists is { Count: > 0 })
             {
+                foreach (ToolStripItem old in _addToPlaylistItem.DropDownItems.Cast<ToolStripItem>().ToList()) old.Dispose();
                 _addToPlaylistItem.DropDownItems.Clear();
                 foreach (var playlist in playlists)
                 {
                     var chosen = playlist;
-                    _addToPlaylistItem.DropDownItems.Add(new ToolStripMenuItem(playlist.Name, null,
+                    // "&" in a name is a letter, not an access key ("R&B" read as "RB").
+                    _addToPlaylistItem.DropDownItems.Add(new ToolStripMenuItem(playlist.Name.Replace("&", "&&"), null,
                         (_, _) => AddFocusedAppleSongToPlaylist(chosen)));
                 }
             }
@@ -5996,9 +6031,14 @@ namespace ExplorerNative
         /// <summary>Favorite or Unfavorite on the focused Apple Music song: changed at Apple, then said, and the row renamed quietly.</summary>
         private async void ToggleFocusedAppleFavorite()
         {
+            string? busy = null;
             try
             {
                 if (FocusedPath() is not { } path || AppleMusic.IsFavorite(path) is not { } now) return;
+                // A second press while the first is on its way would send the same
+                // change again and say it twice.
+                if (!_favoriteBusy.Add(path)) return;
+                busy = path;
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
                 var said = await AppleMusic.SetFavoriteAsync(path, !now, cts.Token);
                 AnnounceAfterMenu("applemusic.favorite", said);
@@ -6006,7 +6046,10 @@ namespace ExplorerNative
             catch (AppleMusicException ex) { AnnounceAfterMenu("applemusic.failed", ex.Message); }
             catch (OperationCanceledException) { AnnounceAfterMenu("applemusic.failed", "Apple Music took too long to answer."); }
             catch (Exception ex) { AnnounceAfterMenu("applemusic.failed", "Apple Music couldn't change that: " + ex.Message); }
+            finally { if (busy != null) _favoriteBusy.Remove(busy); }
         }
+
+        private readonly HashSet<string> _favoriteBusy = new(StringComparer.OrdinalIgnoreCase);
 
         private async void AddFocusedAppleSongToPlaylist(AppleMusicItem playlist)
         {
@@ -6641,11 +6684,22 @@ namespace ExplorerNative
 
             if (pane.List.AccessibleName == name) { pane.PendingName = null; return; }
 
-            if (pane.List.Focused) { pane.PendingName = name; return; }
+            // A command chosen from a menu (Go, Up one level) changes folder just
+            // after the menu closes, when the list counts as focused again but
+            // NVDA has yet to read it: held back then, the list was read out by
+            // the folder just left ("C:\ list" with the drives on screen). While
+            // a menu is open and just after, the name goes on at once.
+            bool menuMoment = _menuOpen || Environment.TickCount64 - _menuClosedAt < MenuNameWindowMs;
+            if (pane.List.Focused && !menuMoment) { pane.PendingName = name; return; }
 
             pane.PendingName = null;
             pane.List.AccessibleName = name;
         }
+
+        /// <summary>Whether one of the menus (the menu bar or Shift+F10) is open, and when one last closed.</summary>
+        private static bool _menuOpen;
+        private static long _menuClosedAt = -MenuNameWindowMs;
+        private const int MenuNameWindowMs = 3000;
 
         /// <summary>
         /// Puts the deferred name on once the keyboard has gone, where changing

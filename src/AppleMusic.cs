@@ -75,15 +75,28 @@ namespace ExplorerNative
                 if (userToken == _token) return;
                 _token = userToken;
                 _client = userToken.Length > 0 ? new AppleMusicClient(userToken) : null;
+                _account++;
                 Items.Clear();
                 Listings.Clear();
                 Displayed.Clear();
                 Fetched.Clear();
                 Favorited.Clear();
                 RatingKnown.Clear();
-                _playlists = null;
+                Searches.Clear();
+                _playlists = null; _playlistsAt = 0; _playlistsLoading = null;
+                AddedTo.Clear();
             }
         }
+
+        /// <summary>
+        /// Moves on with every sign-in change. Anything fetched for the old
+        /// account that lands after the change is dropped, not cached: old rows,
+        /// favorites and playlists used to come back after switching.
+        /// </summary>
+        private static int _account;
+
+        /// <summary>Searches made this session, newest first, for the Search folder.</summary>
+        private static readonly List<string> Searches = new();
 
         private static AppleMusicClient Client()
         {
@@ -165,13 +178,21 @@ namespace ExplorerNative
         public static async Task<List<Row>> ListAsync(string folder, bool fresh, CancellationToken token)
         {
             folder = folder.TrimEnd('\\');
-            if (!fresh)
-                lock (Gate)
-                    if (Listings.TryGetValue(folder, out var known)) return known;
+            // The Search folder is made from the searches themselves, every time:
+            // kept like other folders, it went on showing the searches made
+            // before it was first opened.
+            bool searchFolder = folder.Equals(SearchFolder, StringComparison.OrdinalIgnoreCase);
+            int account;
+            lock (Gate)
+            {
+                account = _account;
+                if (!fresh && !searchFolder && Listings.TryGetValue(folder, out var known)) return known;
+            }
 
             var rows = await BuildAsync(folder, token).ConfigureAwait(false);
             lock (Gate)
             {
+                if (account != _account) return rows;   // signed in as someone else meanwhile
                 Listings[folder] = rows;
                 Fetched[folder] = Environment.TickCount64;
             }
@@ -231,12 +252,7 @@ namespace ExplorerNative
             {
                 // Earlier searches this session, newest first.
                 lock (Gate)
-                    return Listings.Keys
-                        .Where(k => k.StartsWith(SearchFolder + "\\", StringComparison.OrdinalIgnoreCase) &&
-                                    k.IndexOf('\\', SearchFolder.Length + 1) < 0)
-                        .Reverse()
-                        .Select(k => new Row(k, k.Substring(SearchFolder.Length + 1), true, ""))
-                        .ToList();
+                    return Searches.Select(k => new Row(k, k.Substring(SearchFolder.Length + 1), true, "")).ToList();
             }
 
             var parts = rel.Split('\\');
@@ -257,6 +273,11 @@ namespace ExplorerNative
                     var sub = folder + "\\" + kind;
                     lock (Gate) Listings[sub] = RowsFor(sub, these, sort: false);
                     rows.Add(new Row(sub, kind, true, Count(these.Count, k)));
+                }
+                lock (Gate)
+                {
+                    Searches.RemoveAll(s => s.Equals(folder, StringComparison.OrdinalIgnoreCase));
+                    Searches.Insert(0, folder);
                 }
                 return rows;
             }
@@ -305,7 +326,13 @@ namespace ExplorerNative
                 return RowsFor(folder, await client.StationTracksAsync(item, token).ConfigureAwait(false), sort: false, numbered: false);
             var path = client.ChildrenPath(item);
             if (path.Length == 0) throw new AppleMusicException("That can't be opened.");
-            var children = await client.ListAllAsync(path, token).ConfigureAwait(false);
+            List<AppleMusicItem> children;
+            try { children = await client.ListAllAsync(path, token).ConfigureAwait(false); }
+            catch (AppleMusicException ex) when (ex.NotFound && item.Kind == "playlist")
+            {
+                // Apple answers an empty playlist with "not found".
+                children = new List<AppleMusicItem>();
+            }
             return RowsFor(folder, children, sort: false, numbered: item.Kind == "album");
         }
 
@@ -342,14 +369,41 @@ namespace ExplorerNative
             var rows = new List<Row>(items.Count);
             lock (Gate)
             {
-                foreach (var item in items)
+                // A song (or album) keeps the path it had in this folder's last
+                // listing. Handed out afresh, two songs of one name swapped " (2)"
+                // when another was added, and the cursor, play-on and "what is
+                // playing" quietly moved to the other song.
+                var kept = new string?[items.Count];
+                if (taken == null && Listings.TryGetValue(folder, out var before))
                 {
+                    var byId = new Dictionary<string, Queue<string>>(StringComparer.Ordinal);
+                    foreach (var r in before)
+                        if (Items.TryGetValue(r.Path, out var was) && was.Id.Length > 0)
+                        {
+                            var key = was.Kind + ":" + was.Id;
+                            if (!byId.TryGetValue(key, out var q)) byId[key] = q = new Queue<string>();
+                            q.Enqueue(r.Path);
+                        }
+                    for (int i = 0; i < items.Count; i++)
+                        if (items[i].Id.Length > 0 && byId.TryGetValue(items[i].Kind + ":" + items[i].Id, out var q) && q.Count > 0)
+                        {
+                            var p = q.Dequeue();
+                            if (used.Add(p)) kept[i] = p;
+                        }
+                }
+                for (int i = 0; i < items.Count; i++)
+                {
+                    var item = items[i];
                     string name = RowName(item, folder);
-                    string leaf = Safe(item.Name);
-                    string path = folder + "\\" + leaf;
-                    for (int n = 2; used.Contains(path); n++)
-                        path = folder + "\\" + leaf + $" ({n})";
-                    used.Add(path);
+                    string? path = kept[i];
+                    if (path == null)
+                    {
+                        string leaf = Safe(item.Name);
+                        path = folder + "\\" + leaf;
+                        for (int n = 2; used.Contains(path); n++)
+                            path = folder + "\\" + leaf + $" ({n})";
+                        used.Add(path);
+                    }
                     Items[path] = item;
                     string detail = item.IsSong && item.DurationMs > 0 ? Duration(item.DurationMs)
                         : item.Kind is "album" or "playlist" && item.Subtitle.Length > 0 ? item.Subtitle : "";
@@ -417,9 +471,10 @@ namespace ExplorerNative
         {
             try
             {
-                List<string> ids;
+                List<string> ids; int account;
                 lock (Gate)
                 {
+                    account = _account;
                     ids = Listings
                         .Where(l => l.Key.Equals(folder, StringComparison.OrdinalIgnoreCase) ||
                                     (folder.StartsWith(SearchFolder + "\\", StringComparison.OrdinalIgnoreCase) &&
@@ -431,13 +486,16 @@ namespace ExplorerNative
                         .ToList();
                 }
                 if (ids.Count == 0) return;
-                var favorites = await Client().FavoritesAmongAsync(ids, CancellationToken.None).ConfigureAwait(false);
+                var (favorites, answered) = await Client().FavoritesAmongAsync(ids, CancellationToken.None).ConfigureAwait(false);
                 lock (Gate)
-                    foreach (var id in ids)
+                {
+                    if (account != _account) return;
+                    foreach (var id in answered)
                     {
                         RatingKnown.Add(id);
                         if (favorites.Contains(id)) Favorited.Add(id); else Favorited.Remove(id);
                     }
+                }
                 RenameAll();
             }
             catch (AppleMusicException) { }
@@ -491,6 +549,21 @@ namespace ExplorerNative
 
         private static List<AppleMusicItem>? _playlists;
         private static long _playlistsAt;
+
+        /// <summary>Per playlist: one add at a time, and the songs added to it this session.</summary>
+        private static readonly Dictionary<string, SemaphoreSlim> PlaylistGates = new(StringComparer.Ordinal);
+        private static readonly Dictionary<string, Dictionary<string, long>> AddedTo = new(StringComparer.Ordinal);
+        private const int AddedTrustMs = 60_000;
+
+        /// <summary>Everything that names this song: its catalogue id and its library id. Two rows are the same song when any match.</summary>
+        internal static HashSet<string> SongKeys(AppleMusicItem song)
+        {
+            var keys = new HashSet<string>(StringComparer.Ordinal);
+            if (song.CatalogId.Length > 0) keys.Add("c:" + song.CatalogId);
+            if (song.IsLibrary && song.Id.Length > 0) keys.Add("l:" + song.Id);
+            else if (!song.IsLibrary && song.Id.Length > 0) keys.Add("c:" + song.Id);
+            return keys;
+        }
         private static Task? _playlistsLoading;
 
         /// <summary>Your own playlists by name, for Add to playlist; null until they have been fetched.</summary>
@@ -506,11 +579,13 @@ namespace ExplorerNative
             {
                 if (!IsSetUp || _playlistsLoading is { IsCompleted: false }) return;
                 if (_playlists != null && Environment.TickCount64 - _playlistsAt < 5 * 60_000) return;
+                int account = _account;
                 _playlistsLoading = Task.Run(async () =>
                 {
                     try
                     {
                         var all = await Client().ListAllAsync("/v1/me/library/playlists?limit=100", CancellationToken.None).ConfigureAwait(false);
+                        lock (Gate) if (account != _account) return;
                         KeepPlaylists(all);
                     }
                     catch (AppleMusicException) { }
@@ -531,7 +606,53 @@ namespace ExplorerNative
         {
             var item = ItemAt(path);
             if (item == null || !item.IsSong) throw new AppleMusicException("That isn't a song.");
-            await Client().AddToPlaylistAsync(playlist.Id, item, token).ConfigureAwait(false);
+
+            // A song goes in a playlist once (Conner, 4.1.1). One add per playlist
+            // at a time, so a second press while the first is on its way waits for
+            // it and is then refused, not sent twice.
+            SemaphoreSlim gate;
+            lock (Gate)
+            {
+                if (!PlaylistGates.TryGetValue(playlist.Id, out gate!))
+                    PlaylistGates[playlist.Id] = gate = new SemaphoreSlim(1, 1);
+            }
+            await gate.WaitAsync(token).ConfigureAwait(false);
+            try
+            {
+                var keys = SongKeys(item);
+                // What was added in the last minute counts too: Apple's listing
+                // takes a few seconds to show a song just added. After that Apple's
+                // word is taken, so a song taken out on the phone can go back in.
+                bool added;
+                long now = Environment.TickCount64;
+                lock (Gate)
+                    added = AddedTo.TryGetValue(playlist.Id, out var mine) &&
+                            keys.Any(k => mine.TryGetValue(k, out var at) && now - at < AddedTrustMs);
+                if (!added)
+                {
+                    try
+                    {
+                        var songs = await Client().PlaylistSongsAsync(playlist.Id, token).ConfigureAwait(false);
+                        added = songs.Any(s => SongKeys(s).Overlaps(keys));
+                        if (!added) await Client().AddToPlaylistAsync(playlist.Id, item, token).ConfigureAwait(false);
+                    }
+                    catch (AppleMusicException ex) when (ex.NotFound)
+                    {
+                        // Deleted on another device since the menu was made.
+                        lock (Gate) _playlists?.RemoveAll(p => p.Id == playlist.Id);
+                        throw new AppleMusicException($"{playlist.Name} isn't in your library any more");
+                    }
+                }
+                if (added) throw new AppleMusicException($"{item.Name} is already in {playlist.Name}");
+
+                lock (Gate)
+                {
+                    if (!AddedTo.TryGetValue(playlist.Id, out var set)) AddedTo[playlist.Id] = set = new Dictionary<string, long>(StringComparer.Ordinal);
+                    foreach (var k in keys) set[k] = Environment.TickCount64;
+                }
+            }
+            finally { gate.Release(); }
+
             lock (Gate)
                 foreach (var key in Listings.Keys.ToList())
                     if (Items.TryGetValue(key, out var shown) && shown.Kind == "playlist" && shown.Id == playlist.Id)
@@ -795,7 +916,7 @@ namespace ExplorerNative
             lock (Gate)
             {
                 _token = ""; _client = null; Items.Clear(); Listings.Clear(); Displayed.Clear(); Fetched.Clear();
-                Favorited.Clear(); RatingKnown.Clear(); _playlists = null;
+                Favorited.Clear(); RatingKnown.Clear(); _playlists = null; AddedTo.Clear();
             }
         }
 

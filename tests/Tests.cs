@@ -3828,7 +3828,7 @@ namespace ExplorerNative
                 assignments == 2, assignments + " found");
 
             Check("and one of those refuses while the list has focus",
-                main.Contains("if (pane.List.Focused)", StringComparison.Ordinal));
+                main.Contains("if (pane.List.Focused", StringComparison.Ordinal));
 
             Check("the deferred name has somewhere to wait",
                 main.Contains("public string? PendingName", StringComparison.Ordinal));

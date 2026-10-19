@@ -1,3 +1,20 @@
+4.1.1
+Bug fixed: Add to playlist would add the same song to a playlist again and again. It now says the song is already in that playlist, whether you found it in your library or in a search, and pressing it twice quickly adds it once. The playlist you are in is no longer offered.
+Bug fixed: pressing Space right after Enter on an Apple Music song said Playing and the song played anyway. It now pauses.
+Bug fixed: if Apple Music's player crashed while paused, every key did nothing until you played another song. It now comes back paused at the same place.
+Bug fixed: Play next chosen while the song before it was still starting could queue the wrong song, and a song chosen with Play next that was next in the list anyway played twice.
+Bug fixed: after End of the list, Play next said the song would play next and nothing played. It now plays it straight away.
+Bug fixed: in Apple Music, a skip or pause that went wrong made the app forget the song while it kept playing, out of reach of your keys.
+Bug fixed: turning the volume down while Apple Music was muted saved the volume as 0, so everything after started silent, and a volume change made while Apple Music played was lost when you quit.
+Bug fixed: the Search folder in Apple Music kept showing the searches from the first time you opened it.
+Bug fixed: in a playlist that has a music video in it, songs could show and play twice.
+Bug fixed: an empty Apple Music playlist couldn't be opened.
+Bug fixed: when two songs in a list had the same name, a refresh could quietly move the cursor, or what was playing, to the other one.
+Bug fixed: when a song you were on was removed from a playlist on another device, the cursor could be left on no row at all.
+Bug fixed: a name with an ampersand in it, like R&B or Simon & Garfunkel, lost the ampersand in the menus.
+Bug fixed: after using a menu to go somewhere, like Go, Up one level, NVDA called the list by the folder you had just left. It now says the one you are in.
+Changed: while Apple Music plays, the Audio menu leaves out speed, pitch, limiter, equaliser, silence reduction and repeat, which can't work on it. On the Apple Music row in your drives, and in Apple Music, menu items that could only refuse are left out.
+
 4.1.0
 New feature: in Apple Music, songs you have favorited say favorited at the end, and Shift+F10 on a song has Favorite or Unfavorite, whichever it isn't yet.
 New feature: Shift+F10 on an Apple Music song has Add to playlist, listing your own playlists. The song goes on the end of the one you pick.

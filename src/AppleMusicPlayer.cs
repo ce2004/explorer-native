@@ -74,6 +74,15 @@ namespace ExplorerNative
         private static readonly List<string> _upNext = new();
         private static string? _anchor;
 
+        /// <summary>What was queued before Play next took its place, in case Apple's player was already moving on to it.</summary>
+        private static string? _displacedPath, _displacedId;
+
+        /// <summary>Playing or paused as last asked (Enter, Space), which Space goes by; _playing is what the page last said.</summary>
+        private static bool _wantPlaying;
+
+        /// <summary>The list (or station) ran out after the song shown as current.</summary>
+        private static bool _ended;
+
         /// <summary>The newest play that has made sound (or been paused on purpose), for the start watch.</summary>
         private static int _startedGen;
 
@@ -122,30 +131,55 @@ namespace ExplorerNative
         /// id; <paramref name="spokenName"/> is "Title by Artist".
         /// <paramref name="volumePercent"/>, when given, is the level to start at.
         /// </summary>
+        /// <summary>Enter on a song (or anything else the person chose): the list's place moves to it.</summary>
         public static void Play(string path, string catalogId, string spokenName, int volumePercent = -1) =>
-            Start(path, catalogId, spokenName, volumePercent, startAt: 0, retried: false);
+            Start(path, catalogId, spokenName, volumePercent, startAt: 0, retried: false, how: StartKind.Chosen);
+
+        /// <summary>Why a song is being started, which decides what happens to the list's place and Play next.</summary>
+        private enum StartKind
+        {
+            /// <summary>Enter: this song becomes the list's place, and comes off Play next if it was on it.</summary>
+            Chosen,
+            /// <summary>Playing on by itself: off Play next if it was first there, otherwise the list's place.</summary>
+            PlayedOn,
+            /// <summary>The same song again after a crash or a stall: nothing about the list changes.</summary>
+            Restarted,
+        }
 
         /// <summary>
         /// Starts a song, with the one after it in its list queued in Apple's
         /// player too, so MusicKit fetches it ahead and goes straight on to it
         /// (a quarter of a second between songs, where starting each afresh took
-        /// up to two and a half).
+        /// up to two and a half). <paramref name="paused"/> loads it without
+        /// sound (a crash while paused), to go on from <paramref name="startAt"/>.
         /// </summary>
-        private static void Start(string path, string catalogId, string spokenName, int volumePercent, double startAt, bool retried)
+        private static void Start(string path, string catalogId, string spokenName, int volumePercent, double startAt, bool retried,
+            StartKind how, bool paused = false)
         {
             int mine;
-            lock (Gate) BecameCurrent(path);
+            lock (Gate)
+            {
+                if (how == StartKind.Chosen)
+                {
+                    _upNext.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+                    _anchor = path;
+                }
+                else if (how == StartKind.PlayedOn) BecameCurrent(path);
+            }
             var (nextPath, nextId, nextName) = NextFor(path);
             lock (Gate)
             {
                 mine = ++_generation;
                 _currentPath = path; _currentName = spokenName;
                 _queuedPath = nextPath; _queuedId = nextId; _queuedName = nextName;
-                _playing = false; _positionSeconds = startAt; _durationSeconds = 0; _seekTarget = -1;
+                _displacedPath = null; _displacedId = null;
+                _playing = false; _wantPlaying = !paused; _ended = false;
+                _positionSeconds = startAt; _durationSeconds = 0; _seekTarget = -1;
                 if (volumePercent >= 0) { _volumePercent = Math.Clamp(volumePercent, 0, 100); _unmutedPercent = -1; }
             }
+            if (paused) Volatile.Write(ref _startedGen, mine);   // no sound is wanted, so none is waited for
             Interlocked.Increment(ref _idleTicket);   // something is loaded: no closing for idleness
-            Log($"play #{mine} {catalogId} next {nextId ?? "none"}");
+            Log($"play #{mine} {catalogId} next {nextId ?? "none"}" + (paused ? " paused" : ""));
             OnUi(async () =>
             {
                 try
@@ -157,11 +191,13 @@ namespace ExplorerNative
                         return;
                     }
                     if (Volatile.Read(ref _generation) != mine) return;   // a newer Enter already
-                    int volume; string device;
-                    lock (Gate) { volume = _volumePercent; device = _deviceName; }
+                    // Read now, not when Start began: a pause or a Play next chosen
+                    // while the player was still starting has to go with the song.
+                    int volume; string device; string? queued; bool hold;
+                    lock (Gate) { volume = _volumePercent; device = _deviceName; queued = _queuedId; hold = !_wantPlaying; }
                     await CallAsync("volume", Gain(volume)).ConfigureAwait(true);
                     await CallAsync("device", device).ConfigureAwait(true);
-                    await CallAsync("play", catalogId, mine, nextId, startAt).ConfigureAwait(true);
+                    await CallAsync("play", catalogId, mine, queued, startAt, hold).ConfigureAwait(true);
                     WatchStart(mine, path, catalogId, spokenName, retried);
                 }
                 catch (AppleMusicException ex) { Reset(); Fail(mine, path, ex.Message); }
@@ -196,7 +232,14 @@ namespace ExplorerNative
         /// <summary>A song is now the one playing: taken off Play next if it was first there, otherwise the list's place. Under Gate.</summary>
         private static void BecameCurrent(string path)
         {
-            if (_upNext.Count > 0 && string.Equals(_upNext[0], path, StringComparison.OrdinalIgnoreCase)) _upNext.RemoveAt(0);
+            if (_upNext.Count > 0 && string.Equals(_upNext[0], path, StringComparison.OrdinalIgnoreCase))
+            {
+                _upNext.RemoveAt(0);
+                // A Play next song that was the list's own next song anyway: the
+                // list goes on past it, rather than playing it a second time.
+                if (_anchor != null && string.Equals(AppleMusic.NextSongAfter(_anchor), path, StringComparison.OrdinalIgnoreCase))
+                    _anchor = path;
+            }
             else _anchor = path;
         }
 
@@ -216,8 +259,14 @@ namespace ExplorerNative
             catch (AppleMusicException ex) { return ex.Message; }
             lock (Gate)
             {
-                if (_currentPath.Length == 0) return null;
+                // Nothing playing, or the list has ended: it plays now instead.
+                if (_currentPath.Length == 0 || _ended) return null;
+                // Once in Play next is enough; choosing it again moves it to the front.
+                _upNext.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
                 _upNext.Insert(0, path);
+                // What was queued may be what Apple's player is moving on to at
+                // this very moment; kept, so that move is still recognised.
+                if (_queuedPath != null && _queuedId != id) { _displacedPath = _queuedPath; _displacedId = _queuedId; }
                 _queuedPath = path; _queuedId = id; _queuedName = name;
                 gen = _generation;
             }
@@ -246,26 +295,37 @@ namespace ExplorerNative
                     return;
                 }
                 Reset();
-                Start(path, catalogId, name, -1, startAt: 0, retried: true);
+                Start(path, catalogId, name, -1, startAt: 0, retried: true, how: StartKind.Restarted);
             }
             catch (Exception ex) { Log("watch: " + ex.Message); }
         }
 
+        /// <summary>
+        /// Pauses or plays, going by what was last asked for rather than what the
+        /// page last reported: right after Enter the page has not said "playing"
+        /// yet, and Space then said "Playing" and lost the pause.
+        /// </summary>
         public static string TogglePlayPause()
         {
-            bool playing; string name;
-            lock (Gate) { playing = _playing; name = _currentName; _playing = !playing; }
+            bool pausing; string name; int gen;
+            lock (Gate)
+            {
+                pausing = _wantPlaying;
+                _wantPlaying = !pausing; _playing = !pausing;
+                name = _currentName; gen = _generation;
+            }
             // A pause before the first sound is a choice, not a stall.
-            Volatile.Write(ref _startedGen, Volatile.Read(ref _generation));
-            OnUi(() => _ = CallAsync(playing ? "pause" : "resume"));
-            return playing ? "Paused" : "Playing " + name;
+            if (pausing) Volatile.Write(ref _startedGen, gen);
+            OnUi(() => _ = CallAsync(pausing ? "pause" : "resume", null, gen));
+            return pausing ? "Paused" : "Playing " + name;
         }
 
         public static string Stop()
         {
             lock (Gate)
             {
-                _currentPath = ""; _currentName = ""; _playing = false; _generation++; _queuedPath = null; _queuedId = null;
+                _currentPath = ""; _currentName = ""; _playing = false; _wantPlaying = false; _generation++;
+                _queuedPath = null; _queuedId = null; _displacedPath = null; _displacedId = null;
                 _upNext.Clear(); _anchor = null;
             }
             OnUi(() => _ = CallAsync("stop"));
@@ -384,6 +444,13 @@ namespace ExplorerNative
 
         public static int VolumePercent { get { lock (Gate) return _volumePercent; } }
 
+        /// <summary>
+        /// The level a volume step counts from: while muted, the level before
+        /// mute. Counting from 0, Volume down while muted saved 0 as the volume,
+        /// and every song and file after started silent.
+        /// </summary>
+        public static int VolumeToStepFrom { get { lock (Gate) return _unmutedPercent >= 0 ? _unmutedPercent : _volumePercent; } }
+
         private static string Gain(int percent) =>
             (percent / 100.0).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
 
@@ -433,11 +500,27 @@ namespace ExplorerNative
             }
             if (next == null)
             {
-                lock (Gate) _playing = false;
+                EndOfList();
                 Say?.Invoke("applemusic.endoflist", "End of the list");
                 return;
             }
             StartPath(next);
+        }
+
+        /// <summary>
+        /// Nothing more to play: like Stop, but quietly, so Play next or Enter
+        /// starts a song at once (Play next said "plays next" and nothing came),
+        /// and the idle player can close.
+        /// </summary>
+        private static void EndOfList()
+        {
+            lock (Gate)
+            {
+                _currentPath = ""; _currentName = ""; _playing = false; _wantPlaying = false; _ended = true;
+                _queuedPath = null; _queuedId = null; _displacedPath = null; _displacedId = null;
+                _upNext.Clear(); _anchor = null;
+            }
+            CloseWhenIdle();
         }
 
         private static async void PlayNextFromStation(string finished)
@@ -451,11 +534,14 @@ namespace ExplorerNative
                 if (Volatile.Read(ref _generation) != mine) return;   // something else was played meanwhile
                 foreach (var row in more)
                     if (!row.IsFolder) { StartPath(row.Path); return; }
+                EndOfList();
                 Say?.Invoke("applemusic.endoflist", "The station has no more songs");
             }
             catch (Exception)
             {
-                if (Volatile.Read(ref _generation) == mine) Say?.Invoke("applemusic.endoflist", "The station has no more songs");
+                if (Volatile.Read(ref _generation) != mine) return;
+                EndOfList();
+                Say?.Invoke("applemusic.endoflist", "The station has no more songs");
             }
         }
 
@@ -479,13 +565,13 @@ namespace ExplorerNative
             {
                 var id = AppleMusic.CatalogIdForPlaying(path);
                 var name = AppleMusic.SpokenName(path) ?? Path.GetFileName(path);
-                Play(path, id, name);
+                Start(path, id, name, -1, startAt: 0, retried: false, how: StartKind.PlayedOn);
                 Volatile.Write(ref _autoGen, Volatile.Read(ref _generation));
                 Say?.Invoke("audio.play", name);
             }
             catch (AppleMusicException ex)
             {
-                lock (Gate) { _currentPath = ""; _playing = false; }
+                EndOfList();
                 Say?.Invoke("applemusic.failed", ex.Message);
             }
         }
@@ -556,19 +642,21 @@ namespace ExplorerNative
                 return;
             OnUi(() =>
             {
-                string path, name; double at; bool playing; int gen;
-                lock (Gate) { path = _currentPath; name = _currentName; at = _positionSeconds; playing = _playing; gen = _generation; }
+                string path, name; double at; bool wanted; int gen;
+                lock (Gate) { path = _currentPath; name = _currentName; at = _positionSeconds; wanted = _wantPlaying; gen = _generation; }
                 var now = Environment.TickCount64;
                 _crashes = now - _lastCrashAt < 60_000 ? _crashes + 1 : 1;
                 _lastCrashAt = now;
                 Reset();
-                if (path.Length == 0 || !playing) return;   // the next play builds a fresh one
+                if (path.Length == 0) return;   // the next play builds a fresh one
                 if (_crashes > 2)
                 {
                     Fail(gen, path, "Apple Music's player keeps stopping. Press Enter on the song to try again.");
                     return;
                 }
-                try { Start(path, AppleMusic.CatalogIdForPlaying(path), name, -1, startAt: at, retried: false); }
+                // Paused stays paused, at the same place: left as it was, every key
+                // went to a player that was gone and said nothing.
+                try { Start(path, AppleMusic.CatalogIdForPlaying(path), name, -1, startAt: at, retried: false, how: StartKind.Restarted, paused: !wanted); }
                 catch (AppleMusicException ex) { Fail(gen, path, ex.Message); }
             });
         }
@@ -632,8 +720,19 @@ namespace ExplorerNative
                 // engine may refuse to start sound at all.
                 var dataFolder = NewThrowawayProfile();
                 var options = new CoreWebView2EnvironmentOptions("--autoplay-policy=no-user-gesture-required");
+                var host = _host;
                 var env = await CoreWebView2Environment.CreateAsync(null, dataFolder, options).ConfigureAwait(true);
-                _controller = await env.CreateCoreWebView2ControllerAsync(parent).ConfigureAwait(true);
+                // A start given up on (Reset) while it waited must not take over
+                // from the one started after it: it closes what it made and goes.
+                if (_ready != ready) { if (_host != host) host.Dispose(); return; }
+                var controller = await env.CreateCoreWebView2ControllerAsync(parent).ConfigureAwait(true);
+                if (_ready != ready)
+                {
+                    try { controller.Close(); } catch { }
+                    if (_host != host) host.Dispose();
+                    return;
+                }
+                _controller = controller;
                 _controller.Bounds = new System.Drawing.Rectangle(0, 0, 320, 240);
 
                 // Visible to the page, though no window is on screen. Hosted in
@@ -674,6 +773,7 @@ namespace ExplorerNative
                     CoreWebView2HostResourceAccessKind.Allow);
 
                 var token = await AppleMusic.DeveloperTokenAsync(CancellationToken.None).ConfigureAwait(true);
+                if (_ready != ready) return;   // Reset closed this one meanwhile
                 var userToken = AppleMusic.UserToken;
                 _pendingConfig = JsonSerializer.Serialize(new { developerToken = token, userToken });
 
@@ -734,12 +834,13 @@ namespace ExplorerNative
 
         private static string? _pendingConfig;
 
-        private static async Task CallAsync(string command, string? arg = null, int generation = 0, string? next = null, double at = 0)
+        private static async Task CallAsync(string command, string? arg = null, int generation = 0, string? next = null, double at = 0,
+            bool paused = false)
         {
             if (_ready == null || !_ready.Task.IsCompletedSuccessfully) return;   // nothing loaded to tell
             var core = _controller?.CoreWebView2;
             if (core == null) return;
-            var payload = JsonSerializer.Serialize(new { command, arg, gen = generation, next, at });
+            var payload = JsonSerializer.Serialize(new { command, arg, gen = generation, next, at, paused });
             Log("send " + command + " " + arg + (next != null ? " then " + next : ""));
             try { await core.ExecuteScriptAsync("window.amCommand(" + payload + ")").ConfigureAwait(true); }
             catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException)
@@ -751,6 +852,8 @@ namespace ExplorerNative
         /// <summary>State the page reports: ready, state, ended, error.</summary>
         private static void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
         {
+            // Only the page in use now: one being closed may still be talking.
+            if (!ReferenceEquals(sender, _controller?.CoreWebView2)) return;
             string json;
             try { json = e.TryGetWebMessageAsString(); }
             catch { return; }
@@ -806,14 +909,38 @@ namespace ExplorerNative
                         // Playing on by itself into a song Apple won't play: say so
                         // and go on to the next, rather than stopping the music.
                         // A song you pressed Enter on just says why.
-                        if (failed == Volatile.Read(ref _generation) && failed == _autoGen &&
-                            sentence == Unavailable && _skips < MostSkips && path.Length > 0)
+                        if (failed == Volatile.Read(ref _generation) && sentence == Unavailable && _skips < MostSkips && path.Length > 0)
                         {
-                            _skips++;
-                            Log("skipping unavailable #" + failed);
-                            Say?.Invoke("applemusic.failed", name + " isn't available, so it was skipped");
-                            PlayNext();
-                            break;
+                            if (failed == _autoGen)
+                            {
+                                _skips++;
+                                Log("skipping unavailable #" + failed);
+                                Say?.Invoke("applemusic.failed", name + " isn't available, so it was skipped");
+                                PlayNext();
+                                break;
+                            }
+                            if (Volatile.Read(ref _startedGen) == failed)
+                            {
+                                // This play already made sound, so it is a later song
+                                // in the chain Apple won't play. While this one still
+                                // plays, its end deals with it (ended, then skipped);
+                                // stuck on it, it is skipped now.
+                                bool playingNow; string? queuedPath, queuedName;
+                                lock (Gate) { playingNow = _playing; queuedPath = _queuedPath; queuedName = _queuedName; }
+                                if (playingNow) { Log("a later song is unavailable; its turn will skip it"); break; }
+                                if (queuedPath != null)
+                                    lock (Gate)
+                                    {
+                                        BecameCurrent(queuedPath);
+                                        _currentPath = queuedPath; _currentName = queuedName ?? ""; name = _currentName;
+                                        _queuedPath = null; _queuedId = null; _queuedName = null;
+                                    }
+                                _skips++;
+                                Log("skipping unavailable (played on) #" + failed);
+                                Say?.Invoke("applemusic.failed", name + " isn't available, so it was skipped");
+                                PlayNext();
+                                break;
+                            }
                         }
                         Fail(failed, path, sentence);
                         break;
@@ -833,10 +960,26 @@ namespace ExplorerNative
             string name, now;
             lock (Gate)
             {
-                if (gen != _generation || _queuedPath == null || id != _queuedId) { Log("advance ignored " + id); return; }
+                if (gen != _generation) { Log("advance ignored " + id); return; }
+                if (_displacedPath != null && id == _displacedId && id != _queuedId)
+                {
+                    // Apple's player had already moved on to the song Play next was
+                    // replacing. That one is playing; the Play next choice, already
+                    // sent, stays queued after it.
+                    BecameCurrent(_displacedPath);
+                    _currentPath = _displacedPath;
+                    _currentName = AppleMusic.SpokenName(_displacedPath) ?? Path.GetFileName(_displacedPath);
+                    _displacedPath = null; _displacedId = null;
+                    _positionSeconds = 0; _durationSeconds = 0; _seekTarget = -1; _startedGen = gen;
+                    name = _currentName;
+                    Log("advanced to the displaced " + id);
+                    Say?.Invoke("audio.play", name);
+                    return;
+                }
+                if (_queuedPath == null || id != _queuedId) { Log("advance ignored " + id); return; }
                 BecameCurrent(_queuedPath);
                 _currentPath = _queuedPath; _currentName = _queuedName ?? "";
-                _queuedPath = null; _queuedId = null; _queuedName = null;
+                _queuedPath = null; _queuedId = null; _queuedName = null; _displacedPath = null; _displacedId = null;
                 _positionSeconds = 0; _durationSeconds = 0; _seekTarget = -1; _startedGen = gen;
                 name = _currentName; now = _currentPath;
             }
@@ -885,10 +1028,24 @@ namespace ExplorerNative
         /// <summary>Says why a play failed, unless a newer play has taken over since: then it is nobody's news.</summary>
         private static void Fail(int generation, string path, string message)
         {
+            bool cleared = false;
             lock (Gate)
             {
                 if (generation != _generation) { Log("stale error ignored"); return; }
-                if (string.Equals(_currentPath, path, StringComparison.OrdinalIgnoreCase)) { _currentPath = ""; _playing = false; }
+                if (string.Equals(_currentPath, path, StringComparison.OrdinalIgnoreCase))
+                {
+                    _currentPath = ""; _currentName = ""; _playing = false; _wantPlaying = false;
+                    _queuedPath = null; _queuedId = null; _displacedPath = null; _displacedId = null;
+                    _generation++;
+                    cleared = true;
+                }
+            }
+            // The page is told to stop too: a song given up on here that started
+            // late anyway played on with no key able to reach it.
+            if (cleared)
+            {
+                OnUi(() => _ = CallAsync("stop"));
+                CloseWhenIdle();
             }
             Say?.Invoke("applemusic.failed", message);
         }
@@ -932,6 +1089,7 @@ try {
 } catch (e) {}
 let music = null, current = 0, switching = false, endedFor = -1, wantVolume = null, wantSink = null;
 let queuedNext = null, lastState = "", seekWant = null, seeking = false, advances = 0;
+let holdPaused = false, pendingRequeue = null, resumeAt = 0;
 // MusicKit can reset the volume when it builds the audio for a new song (it
 // started at 0, silent), so the level asked for is kept and put back.
 function applyVolume() { if (music && wantVolume !== null && music.volume !== wantVolume) music.volume = wantVolume; }
@@ -1065,6 +1223,7 @@ window.amCommand = async function (c) {
   if (c.command === "play") {
     const mine = c.gen;
     current = mine; switching = true; queuedNext = null; seekWant = null;
+    holdPaused = !!c.paused; pendingRequeue = null; resumeAt = 0;
     try {
       const items = [item(c.arg)];
       if (c.next) items.push(item(c.next));
@@ -1072,11 +1231,24 @@ window.amCommand = async function (c) {
       catch (e) { if (mine !== current) return; await music.setQueue({ song: c.arg }); items.length = 1; }
       if (mine !== current) return;
       if (items.length > 1) queuedNext = String(c.next);
+      // A Play next chosen while this song was being put in.
+      if (pendingRequeue !== null) {
+        music.queue.clearAfterCurrent();
+        await music.playLater({ items: [item(pendingRequeue)] });
+        queuedNext = pendingRequeue; pendingRequeue = null;
+      }
       applyVolume();
       await applySink();
-      await music.play();
-      applyVolume();
-      if (c.at > 1 && mine === current) await music.seekToTime(c.at);
+      if (holdPaused) {
+        // Paused before it started (Space right after Enter, or a crash while
+        // paused): loaded, silent, and going on from the right place on resume.
+        resumeAt = c.at > 1 ? c.at : 0;
+      } else {
+        await music.play();
+        applyVolume();
+        if (c.at > 1 && mine === current) await music.seekToTime(c.at);
+        if (holdPaused && mine === current) await music.pause();   // paused while play() was starting
+      }
     } catch (e) {
       if (mine === current) post({ kind: "error", gen: mine, code: codeOf(e), message: String(e && e.message || e) });
     } finally {
@@ -1084,10 +1256,21 @@ window.amCommand = async function (c) {
     }
     return;
   }
+  // While a song is being put in, a pause, a resume or a Play next waits for it.
+  if (switching && c.gen === current) {
+    if (c.command === "pause") { holdPaused = true; return; }
+    if (c.command === "resume") { holdPaused = false; return; }
+    if (c.command === "requeue") { pendingRequeue = String(c.arg); return; }
+  }
   try {
     switch (c.command) {
-      case "pause": await music.pause(); break;
-      case "resume": await music.play(); break;
+      case "pause": holdPaused = true; await music.pause(); break;
+      case "resume":
+        holdPaused = false;
+        await music.play();
+        applyVolume();
+        if (resumeAt > 1) { const t = resumeAt; resumeAt = 0; await music.seekToTime(t); }
+        break;
       case "stop": current++; switching = false; queuedNext = null; seekWant = null; await music.stop(); break;
       case "seekto": await seekTo(parseFloat(c.arg || "0")); break;
       case "volume": wantVolume = parseFloat(c.arg || "1"); music.volume = wantVolume; break;
@@ -1107,8 +1290,11 @@ window.amCommand = async function (c) {
     }
     sendState();
   } catch (e) {
-    if (c.command === "append" || c.command === "requeue") { post({ kind: "log", message: c.command + ": " + e }); return; }
-    post({ kind: "error", gen: current, code: codeOf(e), message: String(e && e.message || e) });
+    // Only a song failing to play is a failure (MusicKit's playback error and
+    // "play" above). A pause, a skip or a queue change that went wrong is
+    // logged: told as a failure, it emptied the app's player while the music
+    // went on, out of reach of every key.
+    post({ kind: "log", message: c.command + " failed: " + codeOf(e) + " " + String(e && e.message || e) });
   }
 };
 </script>

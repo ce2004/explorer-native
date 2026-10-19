@@ -112,7 +112,10 @@ namespace ExplorerNative
             check("the empty-search hint names a key that exists",
                 !main.Contains("or Ctrl+F, to search Apple Music", StringComparison.Ordinal), null);
             check("opening a menu applies the list's held-back name (or NVDA says a folder left long ago)",
-                main.Contains("menu.MenuActivate += (_, _) => { foreach (var p in _panes) ApplyPendingName(p); };", StringComparison.Ordinal), null);
+                main.Contains("menu.MenuActivate += (_, _) => { _menuOpen = true; foreach (var p in _panes) ApplyPendingName(p); };", StringComparison.Ordinal), null);
+            check("a folder changed from a menu names the list at once (NVDA said the folder just left)",
+                main.Contains("if (pane.List.Focused && !menuMoment)", StringComparison.Ordinal) &&
+                main.Contains("menu.MenuDeactivate += (_, _) => { _menuOpen = false;", StringComparison.Ordinal), null);
             check("an Apple song's details are said after the menu closes, not cut off by it",
                 Body("private void ShowSongProperties()", 2500).Contains("AnnounceAfterMenu(\"applemusic.details\"", StringComparison.Ordinal), null);
 
@@ -318,6 +321,29 @@ namespace ExplorerNative
             var unrenamed = AppleMusic.ListAsync(songs, fresh: false, CancellationToken.None).GetAwaiter().GetResult();
             equal("unfavorited, the word goes", unrenamed[0].Name, "The Band, The Song");
             check("and is known not to be one", AppleMusic.IsFavorite(loose[0].Path) == false, null);
+
+            // 4.1.1: "adding a song to a playlist many times... it shouldn't let you".
+            var mine = new AppleMusicItem { Kind = "song", Name = "X", Id = "i.abc", CatalogId = "123", IsLibrary = true };
+            var found = new AppleMusicItem { Kind = "song", Name = "X", Id = "123", CatalogId = "123" };
+            var inList = new AppleMusicItem { Kind = "song", Name = "X", Id = "i.abc", IsLibrary = true };
+            var other = new AppleMusicItem { Kind = "song", Name = "X", Id = "999", CatalogId = "999" };
+            check("a library song and the same song found in search are one song",
+                AppleMusic.SongKeys(mine).Overlaps(AppleMusic.SongKeys(found)), null);
+            check("a playlist entry naming only the library id is the same song",
+                AppleMusic.SongKeys(mine).Overlaps(AppleMusic.SongKeys(inList)), null);
+            check("a different song with the same title is not",
+                !AppleMusic.SongKeys(mine).Overlaps(AppleMusic.SongKeys(other)), null);
+
+            // 4.1.1: a refresh must not move a path to another song of the same name.
+            const string mix = "::applemusic\\Library\\Playlists\\Mix";
+            var firstRows = AppleMusic.SeedForTests(mix, new List<AppleMusicItem> { Song("Intro", "A"), Song("Intro", "B") });
+            string pathOf(List<AppleMusic.Row> rows, string id) => rows.First(r => AppleMusic.ItemAt(r.Path)!.Id == id).Path;
+            string aBefore = pathOf(firstRows, "A"), bBefore = pathOf(firstRows, "B");
+            var secondRows = AppleMusic.SeedForTests(mix, new List<AppleMusicItem> { Song("Intro", "C"), Song("Intro", "A"), Song("Intro", "B") });
+            equal("a song keeps its path when another of the same name arrives", pathOf(secondRows, "A"), aBefore);
+            equal("and so does the other one", pathOf(secondRows, "B"), bBefore);
+            check("the new one gets a path of its own",
+                pathOf(secondRows, "C") != aBefore && pathOf(secondRows, "C") != bBefore, pathOf(secondRows, "C"));
         }
 
         private static void PlayOn(Action<string, bool, string?> check, Action<string, string, string> equal)

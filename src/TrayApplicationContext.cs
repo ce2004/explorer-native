@@ -1303,9 +1303,21 @@ namespace ExplorerNative
         private static string OutputDeviceName(string id)
         {
             if (string.IsNullOrEmpty(id)) return "";
-            try { return AudioPlayer.OutputDevices().Where(d => d.Id == id).Select(d => d.Name).FirstOrDefault() ?? ""; }
+            // Asked on every Enter on a song: the devices are listed once per
+            // chosen device, not every time (listing them is a COM round trip on
+            // the UI thread).
+            if (id == _deviceNameFor && _deviceName.Length > 0) return _deviceName;
+            try
+            {
+                var name = AudioPlayer.OutputDevices().Where(d => d.Id == id).Select(d => d.Name).FirstOrDefault() ?? "";
+                _deviceNameFor = id; _deviceName = name;
+                return name;
+            }
             catch { return ""; }
         }
+
+        private static string? _deviceNameFor;
+        private static string _deviceName = "";
 
         private string ShowDeviceDialog()
         {
@@ -1571,8 +1583,12 @@ namespace ExplorerNative
         /// </summary>
         private string ChangeAppleVolume(int delta)
         {
-            var message = AppleMusicPlayer.SetVolumePercent(AppleMusicPlayer.VolumePercent + delta);
+            // From the level before mute while muted (stepping from 0 saved 0).
+            var message = AppleMusicPlayer.SetVolumePercent(AppleMusicPlayer.VolumeToStepFrom + delta);
             _settings.AudioVolumePercent = AppleMusicPlayer.VolumePercent;
+            // The file player holds the volume Quit saves; without this the
+            // change was put back on the next start.
+            _audio.VolumePercent = AppleMusicPlayer.VolumePercent;
             return message;
         }
 
