@@ -4931,8 +4931,38 @@ namespace ExplorerNative
                 AskAppleMusicSearch();
                 return;
             }
+            // A station plays (Conner, 4.1.2): its songs are a stream, not a list
+            // anyone wants to read through first.
+            if (AppleMusic.ItemAt(entry.Path) is { Kind: "station" }) { PlayAppleStation(entry.Path); return; }
             if (entry.IsDir) { Navigate(entry.Path); return; }
             Program.PlayAppleMusic(entry.Path);
+        }
+
+        /// <summary>
+        /// Enter on a station: asks Apple for its next songs and plays the first,
+        /// and it plays on through the station from there (fetching more at the
+        /// end, as before). The cursor stays on the station.
+        /// </summary>
+        private async void PlayAppleStation(string station)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                var rows = await AppleMusic.ListAsync(station, fresh: true, cts.Token);
+                if (IsDisposed) return;
+                // Station order is the order it plays on in.
+                var ordered = AppleMusic.Ordered(station, rows, AppleMusic.Sort.Apple, true);
+                var first = ordered.FirstOrDefault(r => !r.IsFolder);
+                if (first.Path == null)
+                {
+                    AnnounceOperation("applemusic.failed", "That station has nothing to play right now");
+                    return;
+                }
+                Program.PlayAppleMusic(first.Path);
+            }
+            catch (AppleMusicException ex) { AnnounceOperation("applemusic.failed", ex.Message); }
+            catch (OperationCanceledException) { AnnounceOperation("applemusic.failed", "Apple Music took too long to answer."); }
+            catch (Exception ex) { AnnounceOperation("applemusic.failed", "Apple Music couldn't start the station: " + ex.Message); }
         }
 
         private string _lastAppleSearch = "";
@@ -6018,6 +6048,25 @@ namespace ExplorerNative
 
         private ToolStripMenuItem _formatItem = null!;
         private ToolStripMenuItem _contextOpenItem = null!;
+
+        /// <summary>
+        /// The audio files of a folder in the order a pane is showing them, for
+        /// next and previous track; null when no pane shows that folder (the
+        /// caller then reads it off the UI thread). No reads: the rows on screen.
+        /// </summary>
+        public List<string>? AudioFilesShown(string folder)
+        {
+            folder = folder.TrimEnd('\\');
+            foreach (var pane in _panes)
+            {
+                if (pane.Archive != null || pane.SearchTerm != null || string.IsNullOrEmpty(pane.CurrentPath) ||
+                    AppleMusic.Is(pane.CurrentPath) || pane.CurrentPath == DrivesPath) continue;
+                if (!string.Equals(pane.CurrentPath.TrimEnd('\\'), folder, StringComparison.OrdinalIgnoreCase)) continue;
+                return pane.Entries.Where(e => !e.IsDir && AudioFiles.IsAudio(e.Path, _settings.AudioExtensions))
+                    .Select(e => e.Path).ToList();
+            }
+            return null;
+        }
         private ToolStripMenuItem _playNextItem = null!;
         private ToolStripMenuItem _favoriteItem = null!;
         private ToolStripMenuItem _addToPlaylistItem = null!;

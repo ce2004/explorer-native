@@ -1138,6 +1138,8 @@ namespace ExplorerNative
                     AudioAction.SeekBackwardLong => AppleMusicPlayer.Seek(-Step(action, _settings.AudioLongSeekSeconds, repeat)),
                     AudioAction.SeekForwardLong => AppleMusicPlayer.Seek(Step(action, _settings.AudioLongSeekSeconds, repeat)),
                     AudioAction.RestartTrack => AppleMusicPlayer.SeekToStart(),
+                    AudioAction.NextTrack => AppleMusicPlayer.SkipToNext(),
+                    AudioAction.PreviousTrack => AppleMusicPlayer.SkipToPrevious(),
                     AudioAction.WhatIsPlaying => AppleMusicPlayer.Describe(),
                     AudioAction.SayElapsed => AppleMusicPlayer.DescribeElapsed(),
                     AudioAction.SayRemaining => AppleMusicPlayer.DescribeRemaining(),
@@ -1167,6 +1169,8 @@ namespace ExplorerNative
                 AudioAction.SeekBackwardLong => _audio.Seek(-Step(action, _settings.AudioLongSeekSeconds, repeat)),
                 AudioAction.SeekForwardLong => _audio.Seek(Step(action, _settings.AudioLongSeekSeconds, repeat)),
                 AudioAction.RestartTrack => _audio.SeekToFraction(0),
+                AudioAction.NextTrack => PlayNeighbourFile(+1),
+                AudioAction.PreviousTrack => PlayNeighbourFile(-1),
                 AudioAction.SpeedUp => StepSpeed(1),
                 AudioAction.SpeedDown => StepSpeed(-1),
                 AudioAction.ToggleRepeat => ToggleRepeat(),
@@ -1773,6 +1777,62 @@ namespace ExplorerNative
             AppleMusicPlayer.SetOutputDevice(OutputDeviceName(_settings.AudioOutputDeviceId));
             if (AppleMusicPlayer.PlayRow(path, Math.Min(100, _settings.AudioVolumePercent)))
                 SayAudio("audio.play", AppleMusic.SpokenName(path) ?? System.IO.Path.GetFileName(path));
+        }
+
+        /// <summary>
+        /// Next or previous track for files: the audio file after or before the
+        /// one loaded, in its folder. In the order a pane shows that folder when
+        /// one does; otherwise in name order, read off the UI thread. Returns what
+        /// to say: the file's name, or why not ("" when the answer comes later).
+        /// </summary>
+        private string PlayNeighbourFile(int direction)
+        {
+            var state = AudioState;
+            if (!state.HasTrack || string.IsNullOrEmpty(state.Path)) return "Nothing is loaded";
+            var current = state.Path;
+            var folder = System.IO.Path.GetDirectoryName(current);
+            if (string.IsNullOrEmpty(folder)) return "That track has no folder to move through";
+
+            var shown = _form?.AudioFilesShown(folder);
+            if (shown != null) return PlayNeighbourIn(shown, current, direction);
+
+            int ticket = ++_neighbourTicket;
+            var extensions = _settings.AudioExtensions;
+            var id = direction > 0 ? "audio.next" : "audio.previous";
+            _ = System.Threading.Tasks.Task.Run(() =>
+            {
+                List<string> files;
+                try
+                {
+                    files = new System.IO.DirectoryInfo(folder).EnumerateFiles()
+                        .Where(f => (f.Attributes & (System.IO.FileAttributes.Hidden | System.IO.FileAttributes.System)) == 0 &&
+                                    AudioFiles.IsAudio(f.FullName, extensions))
+                        .Select(f => f.FullName)
+                        .ToList();
+                    files.Sort((a, b) => NameRules.CompareNames(System.IO.Path.GetFileName(a), a, System.IO.Path.GetFileName(b), b));
+                }
+                catch (Exception) { files = new List<string>(); }
+                PostUi(() =>
+                {
+                    if (ticket != _neighbourTicket) return;   // pressed again meanwhile
+                    var said = PlayNeighbourIn(files, current, direction);
+                    if (said.Length > 0) SayAudio(id, said);
+                });
+            });
+            return "";
+        }
+
+        private int _neighbourTicket;
+
+        private string PlayNeighbourIn(List<string> files, string current, int direction)
+        {
+            int at = files.FindIndex(p => string.Equals(p, current, StringComparison.OrdinalIgnoreCase));
+            if (at < 0) return "That track isn't in its folder any more";
+            int to = at + direction;
+            if (to < 0) return "That's the first audio file in the folder";
+            if (to >= files.Count) return "That's the last audio file in the folder";
+            if (!PlayAudioFile(files[to])) return "That file can't be played here";
+            return System.IO.Path.GetFileName(files[to]);
         }
 
         /// <summary>

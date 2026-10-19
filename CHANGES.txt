@@ -1,3 +1,7 @@
+4.1.2
+New feature: Next track and Previous track. In Apple Music they move through the list the song came from, starting with anything you chose with Play next; for your own files they move through the audio files in the track's folder. They have no keys until you choose some in Preferences, Audio, Configure keyboard shortcuts.
+Changed: pressing Enter on an Apple Music station starts playing it straight away, and it keeps playing on through the station. The cursor stays on the station.
+
 4.1.1
 Bug fixed: Add to playlist would add the same song to a playlist again and again. It now says the song is already in that playlist, whether you found it in your library or in a search, and pressing it twice quickly adds it once. The playlist you are in is no longer offered.
 Bug fixed: pressing Space right after Enter on an Apple Music song said Playing and the song played anyway. It now pauses.

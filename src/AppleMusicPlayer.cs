@@ -276,6 +276,49 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// Next track: the song that would play on after this one (a Play next
+        /// choice first), now. Returns what to say: the song's name, or why not.
+        /// </summary>
+        public static string SkipToNext()
+        {
+            string path; lock (Gate) path = _currentPath;
+            if (path.Length == 0) return "Nothing is playing";
+            var (next, id, name) = NextFor(path);
+            if (next == null || id == null)
+            {
+                var place = ListPlace(path);
+                if (AppleMusic.InStation(place)) { PlayNextFromStation(place); return ""; }   // says the song it finds
+                return "That's the last song in the list";
+            }
+            Start(next, id, name ?? next, -1, startAt: 0, retried: false, how: StartKind.PlayedOn);
+            Volatile.Write(ref _autoGen, Volatile.Read(ref _generation));   // an unavailable one is skipped too
+            return name ?? next;
+        }
+
+        /// <summary>
+        /// Previous track: the list song before this one, now. From a Play next
+        /// song, back to the list song it came after. Returns what to say.
+        /// </summary>
+        public static string SkipToPrevious()
+        {
+            string path, place;
+            lock (Gate) { path = _currentPath; place = _anchor ?? _currentPath; }
+            if (path.Length == 0) return "Nothing is playing";
+            var previous = !string.Equals(path, place, StringComparison.OrdinalIgnoreCase)
+                ? place
+                : AppleMusic.PreviousSongBefore(place);
+            if (previous == null) return "That's the first song in the list";
+            try
+            {
+                var id = AppleMusic.CatalogIdForPlaying(previous);
+                var name = AppleMusic.SpokenName(previous) ?? Path.GetFileName(previous);
+                Start(previous, id, name, -1, startAt: 0, retried: false, how: StartKind.Chosen);
+                return name;
+            }
+            catch (AppleMusicException ex) { return ex.Message; }
+        }
+
+        /// <summary>
         /// A song that has not started after this long is started again, once,
         /// in a fresh player: a stalled page used to leave it silent for good.
         /// </summary>

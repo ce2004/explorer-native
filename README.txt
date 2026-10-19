@@ -56,7 +56,13 @@ nothing is left on disk between runs. It plays through the device chosen in
 Output device on the Audio menu, like your files. Songs and albums read the
 artist first, so typing an artist's first letters takes you to their songs.
 Songs you have favorited say so at the end. Shift+F10 on a song has Play
-next, Favorite or Unfavorite, and Add to playlist. Because Apple keeps the sound sealed,
+next, Favorite or Unfavorite, and Add to playlist. Enter on a station starts
+playing it.
+
+Next track and Previous track have no keys until you choose them in
+Preferences, Audio, Configure keyboard shortcuts. In Apple Music they move
+through the song's list; for your own files, through the audio files in the
+track's folder. Because Apple keeps the sound sealed,
 the speed, pitch, equaliser and silence-removal tools do not apply to Apple
 Music.
 

@@ -148,6 +148,21 @@ namespace ExplorerNative
                 main.Contains("AppleMusic.Sort.RecentlyAdded => ascending ? \"oldest added first\" : \"most recently added first\"", StringComparison.Ordinal) &&
                 main.Contains("menu.DropDownItems.Add(newestUp ? down : up);", StringComparison.Ordinal), null);
 
+            // 4.1.2: "when you click a station, it should just start playing" and
+            // "a previous and next keyboard shortcut, no preset set by default".
+            check("Enter on a station plays it",
+                main.Contains("if (AppleMusic.ItemAt(entry.Path) is { Kind: \"station\" }) { PlayAppleStation(entry.Path); return; }", StringComparison.Ordinal), null);
+            var fresh = new Settings();
+            check("Next and Previous track exist as shortcuts with no key set",
+                AudioActions.All.Any(a => a.Action == AudioAction.NextTrack) &&
+                AudioActions.All.Any(a => a.Action == AudioAction.PreviousTrack) &&
+                fresh.AudioNextTrackShortcut == "" && fresh.AudioPreviousTrackShortcut == "", null);
+            check("older actions keep their hotkey ids (new ones go at the end)",
+                (int)AudioAction.SilenceDialog == 22 && (int)AudioAction.NextTrack == 23 && (int)AudioAction.PreviousTrack == 24, null);
+            check("both players answer Next and Previous",
+                tray.Contains("AudioAction.NextTrack => AppleMusicPlayer.SkipToNext(),", StringComparison.Ordinal) &&
+                tray.Contains("AudioAction.NextTrack => PlayNeighbourFile(+1),", StringComparison.Ordinal), null);
+
             // 4.1.0: Shift+F10 on a song.
             var menu = Body("private void ShowOurContextMenu()", 4000);
             check("Shift+F10 on a song offers Play next",

@@ -29,6 +29,9 @@ namespace ExplorerNative
         EqualiserDialog,
         PitchDialog,
         SilenceDialog,
+        // At the end, so every older action keeps its hotkey id (HotkeyId).
+        NextTrack,
+        PreviousTrack,
     }
 
     /// <summary>
@@ -130,9 +133,9 @@ namespace ExplorerNative
     /// an action added here appears in all three without any of them being
     /// edited.
     ///
-    /// There is no next or previous. This plays a file, not a playlist — the
-    /// list of what to play next is the folder you are standing in, and it is
-    /// already on screen with the keyboard in it.
+    /// Next and previous track (Conner, 4.1.2) go through the list a song came
+    /// from in Apple Music, and through the audio files of the track's folder
+    /// for files. They have no key until one is chosen.
     /// </summary>
     public static class AudioActions
     {
@@ -263,6 +266,18 @@ namespace ExplorerNative
             new AudioActionInfo(AudioAction.RestartTrack, "Back to the start", false,
                 s => s.AudioRestartTrackShortcut, (s, v) => s.AudioRestartTrackShortcut = v)
                 { NotificationId = "audio.restart", MenuText = "Back to the s&tart" },
+
+            // Shortcuts only, like Speed up and Slow down, with no key set until
+            // one is chosen (Conner: "no preset set by default"). Not in the
+            // Audio menu: every letter of "Previous track" is already one of its
+            // access keys, and a shared letter cycles instead of acting.
+            new AudioActionInfo(AudioAction.NextTrack, "Next track", false,
+                s => s.AudioNextTrackShortcut, (s, v) => s.AudioNextTrackShortcut = v)
+                { NotificationId = "audio.next" },
+
+            new AudioActionInfo(AudioAction.PreviousTrack, "Previous track", false,
+                s => s.AudioPreviousTrackShortcut, (s, v) => s.AudioPreviousTrackShortcut = v)
+                { NotificationId = "audio.previous" },
 
             // E and L rather than the obvious P and D: both were already taken by
             // Pause and Volume down, and two items sharing a letter means the key

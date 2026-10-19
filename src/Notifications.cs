@@ -146,6 +146,8 @@ namespace ExplorerNative
             Live("audio.restart", "Back to the start", AudioTransport, Bar, "Back to the start"),
             Live("audio.nothing", "Nothing is loaded", AudioTransport, Say, "Nothing is loaded"),
             Live("audio.whatisplaying", "What is playing", AudioTransport, Say, "Playing {0}, {1} of {2}", "your place", "1:44", "3:02"),
+            Live("audio.next", "Next track", AudioTransport, Say, "{0}", "your place by Ashley Cooke"),
+            Live("audio.previous", "Previous track", AudioTransport, Say, "{0}", "your place by Ashley Cooke"),
             Live("audio.speed.up", "Playback faster", AudioTransport, Bar, "Speed {0} percent", 125),
             Live("audio.speed.down", "Playback slower", AudioTransport, Bar, "Speed {0} percent", 75),
             Live("audio.speed.normal", "Playback back to normal", AudioTransport, Bar, "Speed normal"),

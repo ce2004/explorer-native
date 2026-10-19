@@ -652,6 +652,9 @@ namespace ExplorerNative
         public string AudioSpeedUpShortcut { get; set; } = "";
         public string AudioSpeedDownShortcut { get; set; } = "";
         public string AudioRestartTrackShortcut { get; set; } = "";
+        // No key by default: chosen in Preferences, Shortcuts (Conner, 4.1.2).
+        public string AudioNextTrackShortcut { get; set; } = "";
+        public string AudioPreviousTrackShortcut { get; set; } = "";
         public string AudioRepeatShortcut { get; set; } = "";
 
         /// <summary>
