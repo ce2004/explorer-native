@@ -543,6 +543,12 @@ namespace ExplorerNative
         public string AppleMusicUserToken { get; set; } = "";
 
         /// <summary>
+        /// When an Apple Music playlist or album ends, songs like the last one
+        /// play on (4.1.4). Off: it stops with "End of the list".
+        /// </summary>
+        public bool AppleMusicAutoplay { get; set; } = true;
+
+        /// <summary>
         /// The Explorer Connect web app on https://&lt;this pc&gt;.&lt;tailnet&gt;.ts.net/, through
         /// Tailscale Serve (Preferences, Web app). Off by default.
         /// </summary>

@@ -502,16 +502,15 @@ namespace ExplorerNative
         public async Task Trash(string fileId, CancellationToken token)
         {
             using var request = await Request(HttpMethod.Patch,
-                $"{Files}/{fileId}?fields=id", token);
+                $"{Files}/{fileId}?fields=" + Uri.EscapeDataString("id,name,mimeType,size,trashedTime,md5Checksum,driveId"), token);
             request.Content = new StringContent("{\"trashed\":true}", Encoding.UTF8, "application/json");
 
             using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token);
+            var body = await response.Content.ReadAsStringAsync(token);
             if (!response.IsSuccessStatusCode)
-            {
-                var body = await response.Content.ReadAsStringAsync(token);
                 throw new DriveStatusException((int)response.StatusCode, body,
                     $"trash failed {(int)response.StatusCode}: " + Explain((int)response.StatusCode, body));
-            }
+            NoteTrashed(body);   // the Trash folder shows it at once
         }
 
         /// <summary>

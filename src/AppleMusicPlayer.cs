@@ -558,6 +558,7 @@ namespace ExplorerNative
         private static async void PlayAutoplay(string finished)
         {
             int mine = Volatile.Read(ref _generation);
+            if (AppleMusic.Autoplay)   // Preferences, Apple Music
             try
             {
                 using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));

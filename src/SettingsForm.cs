@@ -1219,6 +1219,9 @@ namespace ExplorerNative
                 "Browse and play your Apple Music library, search and radio inside Explorer Native. " +
                 "It shows up under your drives; open it with the arrow keys and Enter like any folder, " +
                 "and press Enter on a song to play it. You need an Apple Music subscription.");
+
+            AddCheck(panel, "&Autoplay: when a playlist or album ends, keep playing songs like it",
+                _working.AppleMusicAutoplay, v => _working.AppleMusicAutoplay = v);
             AddInfo(panel,
                 "To sign in, export your Apple Music cookies to a cookies.txt file while signed in at " +
                 "music.apple.com (the same file gamdl uses), then load it below. Your sign-in is kept on " +

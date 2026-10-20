@@ -246,7 +246,7 @@ namespace ExplorerNative
             if (ShowTrash == show) return;
             ShowTrash = show;
             string? root;
-            lock (_gate) root = _mount?.Letter ?? _mount?.Root;
+            lock (_gate) { root = _mount?.Letter ?? _mount?.Root; if (show) _client?.WarmTrash(); }
             if (root != null) Forget(root.TrimEnd('\\') + "\\");
         }
 
@@ -630,6 +630,9 @@ namespace ExplorerNative
                 {
                     mount.Start("root", assignLetter: true,
                         preferred: PreferredLetter(settings.GoogleDriveLetter), token: token);
+
+                    // A big trash takes over a minute to list; started now, Trash opens at once later.
+                    if (ShowTrash) drive.WarmTrash();
                 }
                 catch
                 {

@@ -1,3 +1,7 @@
+4.1.5
+New: you can turn Autoplay off. It's in Preferences, Apple Music. With it off, music stops at the end of a playlist or album like before.
+Bug fixed: opening Trash in Google Drive kept saying "Could not read Trash: The operation was canceled." Google takes over a minute to list a big trash, so it's now gathered in the background when Google Drive connects and opens straight away. Things you delete, restore or delete forever show up in it at once.
+
 4.1.4
 New feature: Autoplay. When an Apple Music playlist or album ends, songs like the last one keep playing, the way Apple Music does it. Next track at the end of a list goes there too.
 

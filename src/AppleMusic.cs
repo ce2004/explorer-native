@@ -66,6 +66,9 @@ namespace ExplorerNative
             get { lock (Gate) return _token.Length > 0; }
         }
 
+        /// <summary>Preferences, Apple Music, Autoplay: whether a finished list plays on.</summary>
+        public static volatile bool Autoplay = true;
+
         /// <summary>From settings, at start and whenever Preferences are saved.</summary>
         public static void Configure(string userToken)
         {

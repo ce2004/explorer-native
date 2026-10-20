@@ -217,6 +217,7 @@ namespace ExplorerNative
 
             // Apple Music's browsing sign-in; the player signs in on its own.
             AppleMusic.Configure(_settings.AppleMusicUserToken);
+            AppleMusic.Autoplay = _settings.AppleMusicAutoplay;
 
             StartConnect();
 
@@ -554,6 +555,7 @@ namespace ExplorerNative
             int savedPortWas = _settings.WebAppPort;
             _settings = settings;
             AppleMusic.Configure(settings.AppleMusicUserToken);
+            AppleMusic.Autoplay = settings.AppleMusicAutoplay;
             bool portMoved = false;
             if (_connect != null && portSettingChanged && settings.WebAppPort != portWas)
             {

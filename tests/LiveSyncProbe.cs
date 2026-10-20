@@ -51,6 +51,20 @@ namespace ExplorerNative
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_LIVESYNC_NEW") == "1")
                 return await NewFeatures(client);
 
+            // EXPLORERNATIVE_LIVESYNC_TRASHLIST=1: lists the trash, read only, and
+            // says how long it took and how much is there.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_LIVESYNC_TRASHLIST") == "1")
+            {
+                using var quick = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                var binned = await client.ListTrash(quick.Token, interactive: false);
+                Console.WriteLine($"Trash: {binned.Count} items in {clock.Elapsed.TotalSeconds:0.0}s");
+                clock.Restart();
+                binned = await client.ListTrash(quick.Token, interactive: true);
+                Console.WriteLine($"Trash, interactive: {binned.Count} items in {clock.Elapsed.TotalSeconds:0.0}s");
+                return 0;
+            }
+
             // EXPLORERNATIVE_LIVESYNC_TRASH=1: the test folder goes to the Drive
             // trash (one request, recoverable) and the local copy is deleted.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_LIVESYNC_TRASH") == "1")
