@@ -1,3 +1,9 @@
+4.1.3
+New feature: Keep on Drive only. Press Shift+F10 on a folder inside a synced folder and choose Keep on Drive only. Every file in it is checked against Google Drive first, then it's removed from this PC and stays in Google Drive, while the rest of the synced folder keeps syncing both ways. Nothing is removed if any file isn't in Google Drive yet.
+New feature: Put back on PC. Press Shift+F10 on that folder in Google Drive and choose Put back on PC, and it downloads again and syncs both ways like before.
+New feature: the settings for a synced folder list the folders kept on Google Drive only. You can add one there, or put one back on this PC, and it happens when you press Save.
+Bug fixed: in the window for adding or changing a synced folder, Alt+S unticked Include subfolders instead of pressing Start syncing or Save. Include subfolders is now Alt+I.
+
 4.1.2
 New feature: Next track and Previous track. In Apple Music they move through the list the song came from, starting with anything you chose with Play next; for your own files they move through the audio files in the track's folder. They have no keys until you choose some in Preferences, Audio, Configure keyboard shortcuts.
 Changed: pressing Enter on an Apple Music station starts playing it straight away, and it keeps playing on through the station. The cursor stays on the station.

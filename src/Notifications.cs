@@ -250,6 +250,8 @@ namespace ExplorerNative
             Live("sync.lowspace", "Drive getting full", DriveOperations, Say, "{0}", "C: is getting full: only 40 gigabytes left. Your synced folders keep going, but you may want to make some room"),
             Live("sync.all", "Syncing or pausing all folders", DriveOperations, Say, "{0}", "Syncing all three folders now"),
             Live("sync.checking","Checking what is already there", DriveOperations, Say, "Checking which of {0} files in {1} are already in Google Drive", "3,120", "Music"),
+            Live("sync.driveonly", "Folder kept on Google Drive only", DriveOperations, Say, "{0}", "School is on Google Drive only now, and was cleared off this PC"),
+            Live("sync.putback", "Folder put back on this PC", DriveOperations, Say, "{0}", "Putting School back on this PC"),
             Live("drive.folder.loading", "Fetching a folder", DriveOperations, Bar, "Fetching {0} from Google Drive", "artists"),
             Live("drive.folder.loaded", "Folder fetched", DriveOperations, Off, "{0}: {1} items", "artists", 2118),
             Live("drive.folder.slow", "Folder is taking a while", DriveOperations, Bar, "{0} is large; still fetching", "artists"),

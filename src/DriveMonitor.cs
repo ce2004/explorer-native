@@ -36,7 +36,7 @@ namespace ExplorerNative
     /// root are never walked. <see cref="SyncPlanner"/> decides; this carries
     /// it out.
     /// </summary>
-    internal sealed class DriveMonitor : IDisposable
+    internal sealed partial class DriveMonitor : IDisposable
     {
         /// <summary>The running monitor, for the Preferences dialog. Null before the tray starts it.</summary>
         public static DriveMonitor? Current { get; private set; }
@@ -1123,9 +1123,24 @@ namespace ExplorerNative
                 {
                     await AfterAnUnfinishedPassAsync(pair, token).ConfigureAwait(false);
                     long allocatedBefore = GC.GetTotalAllocatedBytes();
+                    // The pair's records are its pass's alone: Keep on Drive
+                    // only and Put back on PC change them only between passes.
+                    var records = RecordsLock(pair.Id);
                     try
                     {
-                        await SyncPairAsync(client, pair, token).ConfigureAwait(false);
+                        await records.WaitAsync(token).ConfigureAwait(false);
+                        // Kept on Drive only as it is now: Put back changes it while
+                        // holding the lock, and a pass that waited for it with the
+                        // old list listed Drive afresh and skipped the folder for good.
+                        DriveSyncPair? live;
+                        lock (_gate) live = _pairs.FirstOrDefault(p => p.Id == pair.Id);
+                        if (live != null)
+                        {
+                            pair = pair.Copy();
+                            pair.DriveOnlyFolders = new List<string>(live.DriveOnlyFolders ?? new());
+                        }
+                        try { await SyncPairAsync(client, pair, token).ConfigureAwait(false); }
+                        finally { records.Release(); }
                     }
                     finally
                     {
@@ -2136,6 +2151,11 @@ namespace ExplorerNative
                 return;
             }
 
+            // Folders kept on Drive only have no records, whichever way the pass
+            // goes (a batch reads only the folders it visits).
+            if (DropRecords(pair.Id, state, path => DriveOnlyFolders.Covers(pair.DriveOnlyFolders, path)))
+                SaveState(pair.Id, state);
+
             var root = pair.LocalFolder;
             state.Remembered = new Dictionary<string, string>(state.FolderIds, SyncNameComparer.Instance);
 
@@ -2537,7 +2557,7 @@ namespace ExplorerNative
                                            FileAttributes.ReadOnly;
             var root = pair.LocalFolder;
             if (string.IsNullOrEmpty(was.RemoteId) || string.IsNullOrEmpty(was.RemoteMd5)) return false;
-            if (SyncPlanner.IsSkippedPath(path) || rules.SkipsType(path) || skips.Covers(path)) return false;
+            if (SyncPlanner.IsSkippedPath(path) || rules.LeavesOut(path) || skips.Covers(path)) return false;
             if (rules.MaxBytes > 0 && was.LocalSize > rules.MaxBytes) return false;
             var localPath = LocalPathFor(root, path);
             if (!IsInside(root, localPath)) return false;
@@ -2647,7 +2667,7 @@ namespace ExplorerNative
 
         /// <summary>A folder the pair leaves out: by name, by the skip list, or hidden, system or clashing.</summary>
         internal static bool IsLeftOutFolder(string folder, SyncRules rules, SyncSkips skips) =>
-            SyncPlanner.IsSkippedPath(folder) || rules.SkipsType(folder) || skips.Covers(folder + "/");
+            SyncPlanner.IsSkippedPath(folder) || rules.LeavesOut(folder) || skips.Covers(folder + "/");
 
         // ---------------- large pairs: a batch of folders at a time ----------------
 

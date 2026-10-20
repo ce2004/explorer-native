@@ -175,6 +175,7 @@ namespace ExplorerNative
         /// <param name="all">After a folder is added, edited or removed: every line, the one being read too, since the rows have moved.</param>
         private void Fill(bool all = false)
         {
+            TakeLiveDriveOnly();
             var rows = _pairs.Count == 0
                 ? new List<string> { "No folders are synced yet. Press Add a folder to choose one." }
                 : _pairs.Select(p => Describe(p, _monitor?.StatusIfLoaded(p.Id), DateTime.UtcNow)).ToList();
@@ -319,7 +320,10 @@ namespace ExplorerNative
             }
             else state = "waiting to sync";
 
-            return $"{DriveMonitor.DisplayName(pair)}, {state}. {does}{deletes}";
+            var kept = pair.DriveOnlyFolders is { Count: > 0 } only
+                ? $" Kept on Google Drive only: {string.Join(", ", only.Select(f => DriveOnlyFolders.Normal(f).Replace('/', '\\')))}."
+                : "";
+            return $"{DriveMonitor.DisplayName(pair)}, {state}. {does}{deletes}{kept}";
         }
 
         /// <summary>"3 hours, 20 minutes", "12 minutes", "1 day, 4 hours": the two biggest parts, rounded.</summary>
@@ -569,16 +573,52 @@ namespace ExplorerNative
             catch { }
         }
 
-        private void EditPair()
+        private async void EditPair()
         {
+          // An async void handler: nothing may escape it, or the application ends.
+          try
+          {
             int at = _list.SelectedIndex;
             if (at < 0 || at >= _pairs.Count) return;
+            TakeLiveDriveOnly();
             using var dialog = new DrivePairForm(_pairs[at].Copy(), "Change a synced folder")
                 { Others = _pairs.Where((_, i) => i != at).ToList() };
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
             _pairs[at] = dialog.Pair;
             Commit();
             ShowSaved(at);
+
+            // Kept on Google Drive only, as changed in the window: each put back
+            // or checked and cleared by the monitor, and said when it is done.
+            if (_monitor == null || dialog.ToKeep.Count + dialog.ToPutBack.Count == 0) return;
+            var id = dialog.Pair.Id;
+            foreach (var folder in dialog.ToPutBack)
+                Say((await _monitor.PutBackOnPcAsync(id, folder, CancellationToken.None)).Message);
+            foreach (var folder in dialog.ToKeep)
+            {
+                Say($"Checking {SyncMoves.Leaf(folder)} against Google Drive");
+                Say((await _monitor.KeepOnDriveOnlyAsync(id, folder, CancellationToken.None)).Message);
+            }
+            if (!IsDisposed)
+            {
+                TakeLiveDriveOnly();
+                Fill(all: true);
+            }
+          }
+          catch (Exception ex) { Say("Kept on Google Drive only could not be changed: " + ex.Message); }
+        }
+
+        /// <summary>
+        /// Kept on Google Drive only as the monitor has it now. Shift+F10 in the
+        /// main window changes it while this window is open, and a save from here
+        /// with the list as it was would undo that.
+        /// </summary>
+        private void TakeLiveDriveOnly()
+        {
+            if (_monitor == null) return;
+            foreach (var live in _monitor.Pairs)
+                if (_pairs.FirstOrDefault(p => p.Id == live.Id) is { } mine)
+                    mine.DriveOnlyFolders = new List<string>(live.DriveOnlyFolders ?? new());
         }
 
         private async void RemovePair()
@@ -604,6 +644,7 @@ namespace ExplorerNative
         /// <summary>Saves straight away, and keeps Preferences' copy in step so its OK does not undo it.</summary>
         private void Commit()
         {
+            TakeLiveDriveOnly();
             _working.Clear();
             _working.AddRange(_pairs.Select(p => p.Copy()));
             _monitor?.SetPairs(_pairs);
@@ -670,6 +711,31 @@ namespace ExplorerNative
         private readonly Button _ok;
 
         public DriveSyncPair Pair { get; }
+
+        /// <summary>Folders added to Kept on Google Drive only, for the caller to check and clear once saved.</summary>
+        public List<string> ToKeep { get; } = new();
+
+        /// <summary>Folders taken off it, for the caller to put back on the PC once saved.</summary>
+        public List<string> ToPutBack { get; } = new();
+
+        /// <summary>The list as it stands in the window: each folder, and whether it was added just now.</summary>
+        private readonly List<(string Relative, bool New)> _driveOnly = new();
+        private ListBox _driveOnlyList = null!;
+        private Button _putBack = null!;
+
+        /// <summary>"School\2024", and "(added when you save)" for one added just now; "None" when empty.</summary>
+        private void ShowDriveOnly(string? select = null)
+        {
+            _driveOnlyList.BeginUpdate();
+            _driveOnlyList.Items.Clear();
+            foreach (var (relative, added) in _driveOnly)
+                _driveOnlyList.Items.Add(relative.Replace('/', '\\') + (added ? " (added when you save)" : ""));
+            if (_driveOnly.Count == 0) _driveOnlyList.Items.Add("None");
+            _driveOnlyList.EndUpdate();
+            _putBack.Enabled = _driveOnly.Count > 0;
+            int at = select == null ? -1 : _driveOnly.FindIndex(d => SyncNameComparer.Instance.Equals(d.Relative, select));
+            _driveOnlyList.SelectedIndex = at >= 0 ? at : 0;
+        }
 
         private static readonly (SyncMode Mode, string Text)[] Modes =
         {
@@ -887,7 +953,7 @@ namespace ExplorerNative
 
             // ---- Options ----
             var (options, o) = Group("Options");
-            _subfolders = Tick(o, "Include &subfolders", pair.IncludeSubfolders);
+            _subfolders = Tick(o, "&Include subfolders", pair.IncludeSubfolders);
             _sizes = SizeChoices(pair.MaxFileMegabytes);
             _maxSize = Choice(o, "Skip files &larger than:", _sizes.Select(s => s.Text),
                 Array.FindIndex(_sizes, s => s.Megabytes == pair.MaxFileMegabytes));
@@ -898,6 +964,99 @@ namespace ExplorerNative
                 "with that ending or name, and everything inside a skipped folder";
             Skip(o);
             _paused = Tick(o, "Pa&use this folder for now", pair.Paused);
+
+            // ---- Kept on Google Drive only (Conner, 4.1.3) ----
+            // Only for a folder that is already synced: what goes on the list is
+            // checked against Drive and cleared off the PC once Save is pressed,
+            // and what comes off it is downloaded again.
+            GroupBox? driveOnlyBox = null;
+            if (!_adding)
+            {
+                var (box, k) = Group("Kept on Google Drive only");
+                driveOnlyBox = box;
+                foreach (var folder in pair.DriveOnlyFolders ?? new())
+                    _driveOnly.Add((DriveOnlyFolders.Normal(folder), false));
+                k.Controls.Add(Caption("&Kept on Google Drive only:"));
+                _driveOnlyList = new ListBox
+                {
+                    Dock = DockStyle.Fill, Height = 96, Margin = new Padding(3, 4, 3, 4), IntegralHeight = false,
+                    AccessibleName = "Kept on Google Drive only",
+                    AccessibleDescription = "Folders in this synced folder that are in Google Drive but not on this PC. " +
+                                            "The rest of the folder syncs as usual",
+                };
+                k.Controls.Add(_driveOnlyList);
+                var side = new FlowLayoutPanel
+                {
+                    FlowDirection = FlowDirection.TopDown, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                    Margin = new Padding(3, 0, 0, 0), WrapContents = false,
+                };
+                var add = new Button { Text = "Add fold&er...", AutoSize = true, MinimumSize = new Size(110, 28), Margin = new Padding(3) };
+                _putBack = new Button { Text = "Put b&ack on PC", AutoSize = true, MinimumSize = new Size(110, 28), Margin = new Padding(3) };
+                side.Controls.Add(add);
+                side.Controls.Add(_putBack);
+                k.Controls.Add(side);
+                ShowDriveOnly();
+
+                add.Click += async (_, _) =>
+                {
+                    try
+                    {
+                        var root = DriveMonitor.FolderPathOf(_local.Text.Trim());
+                        var mode = Modes[Math.Max(0, _mode.SelectedIndex)].Mode;
+                        if (mode == SyncMode.UploadOnly || !_subfolders.Checked)
+                        {
+                            MessageBox.Show(this, mode == SyncMode.UploadOnly
+                                    ? "A folder that only uploads cannot keep folders on Google Drive only. Free up space does that for the whole folder."
+                                    : "Tick Include subfolders first: without it, no folder inside is in Google Drive.",
+                                Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            return;
+                        }
+                        var start = await FolderIfThereAsync(root);
+                        if (IsDisposed) return;
+                        using var dialog = new FolderBrowserDialog
+                        {
+                            Description = "Folder to keep on Google Drive only",
+                            UseDescriptionForTitle = true,
+                            SelectedPath = start,
+                        };
+                        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                        var inside = DriveOnlyFolders.OnPc(dialog.SelectedPath,
+                            new[] { new DriveSyncPair { LocalFolder = root } });
+                        if (inside == null)
+                        {
+                            MessageBox.Show(this, $"Choose a folder inside {root}.", Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            return;
+                        }
+                        var relative = inside.Value.Relative;
+                        if (DriveOnlyFolders.Covers(_driveOnly.Select(d => d.Relative).ToList(), relative))
+                        {
+                            MessageBox.Show(this, $"{Path.GetFileName(dialog.SelectedPath)} is already kept on Google Drive only.",
+                                Text, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            return;
+                        }
+                        // A folder inside it that was on the list becomes part of it.
+                        _driveOnly.RemoveAll(d => DriveOnlyFolders.Covers(new[] { relative }, d.Relative));
+                        _driveOnly.Add((relative, true));
+                        ShowDriveOnly(relative);
+                    }
+                    catch { }
+                    finally { if (!IsDisposed) _driveOnlyList?.Focus(); }
+                };
+
+                _putBack.Click += (_, _) =>
+                {
+                    int at = _driveOnlyList.SelectedIndex;
+                    if (_driveOnly.Count == 0 || at < 0 || at >= _driveOnly.Count) return;
+                    _driveOnly.RemoveAt(at);
+                    ShowDriveOnly();
+                    if (_driveOnly.Count > 0) _driveOnlyList.SelectedIndex = Math.Min(at, _driveOnly.Count - 1);
+                    _driveOnlyList.Focus();
+                };
+                _driveOnlyList.KeyDown += (_, e) =>
+                {
+                    if (e.KeyCode == Keys.Delete) { _putBack.PerformClick(); e.Handled = true; }
+                };
+            }
 
             // ---- the buttons ----
             _ok = new Button { AutoSize = true, MinimumSize = new Size(120, 32), Margin = new Padding(6, 2, 0, 0) };
@@ -927,6 +1086,7 @@ namespace ExplorerNative
             page.Controls.Add(folders);
             page.Controls.Add(how);
             page.Controls.Add(options);
+            if (driveOnlyBox != null) page.Controls.Add(driveOnlyBox);
             page.Controls.Add(buttons);
             Controls.Add(page);
             AcceptButton = _ok;
@@ -1080,6 +1240,16 @@ namespace ExplorerNative
                     Pair.CopyDeletes = edited.CopyDeletes;
                     Pair.DeleteAfterUpload = edited.DeleteAfterUpload;
                     Pair.Paused = edited.Paused;
+
+                    // Not saved here: Keep on Drive only checks and clears each
+                    // new one first, and Put back on PC makes sure nothing old is
+                    // remembered (see DriveMonitorForm.EditPair).
+                    var was = (Pair.DriveOnlyFolders ?? new()).Select(DriveOnlyFolders.Normal).ToList();
+                    ToKeep.Clear();
+                    ToPutBack.Clear();
+                    ToKeep.AddRange(_driveOnly.Where(d => d.New).Select(d => d.Relative));
+                    ToPutBack.AddRange(was.Where(w => !_driveOnly.Any(d => !d.New && SyncNameComparer.Instance.Equals(d.Relative, w))
+                                                      && !ToKeep.Any(n => DriveOnlyFolders.Covers(new[] { n }, w))));
                     DialogResult = DialogResult.OK;
                     Close();
                 }

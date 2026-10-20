@@ -88,7 +88,126 @@ namespace ExplorerNative
         [JsonIgnore]
         public int CheckMinutes { get; set; } = 1;
 
-        public DriveSyncPair Copy() => (DriveSyncPair)MemberwiseClone();
+        /// <summary>
+        /// Folders inside the pair kept on Google Drive only (Conner, 4.1.3), as
+        /// paths from the pair's folder with forward slashes ("School/2024").
+        /// Cleared off the PC once Drive was checked to hold every file, then
+        /// left out of the sync both ways, so they are neither downloaded again
+        /// nor taken for deleted. Taking one off the list puts it back on the PC.
+        /// </summary>
+        public List<string> DriveOnlyFolders { get; set; } = new();
+
+        /// <summary>A copy that shares nothing: the list too, or an edit to one copy's list was every copy's.</summary>
+        public DriveSyncPair Copy()
+        {
+            var copy = (DriveSyncPair)MemberwiseClone();
+            copy.DriveOnlyFolders = new List<string>(DriveOnlyFolders ?? new());
+            return copy;
+        }
+    }
+
+    /// <summary>
+    /// Folders kept on Google Drive only: matching a path to them, and finding
+    /// which pair and which of its folders a path is. Pure, so tested directly.
+    /// </summary>
+    public static class DriveOnlyFolders
+    {
+        /// <summary>"School\2024\" as the list keeps it: "School/2024".</summary>
+        public static string Normal(string relative) => relative.Replace('\\', '/').Trim('/');
+
+        /// <summary>Whether <paramref name="path"/> (a pair's relative path) is one of the folders or inside one.</summary>
+        public static bool Covers(IReadOnlyList<string>? folders, string path)
+        {
+            if (folders == null || folders.Count == 0 || path.Length == 0) return false;
+            var key = SyncNameComparer.Key(Normal(path));
+            foreach (var folder in folders)
+            {
+                var f = SyncNameComparer.Key(Normal(folder ?? ""));
+                if (f.Length == 0) continue;
+                if (key.Length == f.Length ? key.Equals(f, StringComparison.OrdinalIgnoreCase)
+                    : key.Length > f.Length && key[f.Length] == '/' && key.StartsWith(f, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            }
+            return false;
+        }
+
+        /// <summary>Whether the list names this very folder (not one above it).</summary>
+        public static bool Names(IReadOnlyList<string>? folders, string relative) =>
+            folders != null && folders.Any(f => SyncNameComparer.Instance.Equals(Normal(f ?? ""), Normal(relative)));
+
+        private static string Norm(string p) => p.Replace('/', '\\').TrimEnd('\\');
+
+        /// <summary>
+        /// The pair whose PC folder holds <paramref name="path"/> (strictly inside
+        /// it, never the pair's own folder), and the path from there. The deepest
+        /// pair wins, though pairs do not overlap.
+        /// </summary>
+        public static (DriveSyncPair Pair, string Relative)? OnPc(string path, IEnumerable<DriveSyncPair> pairs)
+        {
+            var full = Norm(path);
+            (DriveSyncPair, string)? best = null;
+            int bestLength = -1;
+            foreach (var pair in pairs)
+            {
+                if (string.IsNullOrEmpty(pair.LocalFolder)) continue;
+                var root = Norm(pair.LocalFolder);
+                if (full.Length <= root.Length + 1 || full[root.Length] != '\\' ||
+                    !full.StartsWith(root, StringComparison.OrdinalIgnoreCase)) continue;
+                if (root.Length <= bestLength) continue;
+                best = (pair, Normal(full[(root.Length + 1)..]));
+                bestLength = root.Length;
+            }
+            return best;
+        }
+
+        /// <summary>
+        /// The pair whose Google Drive folder holds <paramref name="path"/> on the
+        /// Drive letter (strictly inside it), and the path from there: by the
+        /// folder ids the mount already knows, walking up, else by the pair's
+        /// Drive path mapped onto the letter (see SyncSafety.PairsTouchedBy).
+        /// </summary>
+        public static (DriveSyncPair Pair, string Relative)? OnDrive(string path, IEnumerable<DriveSyncPair> pairs,
+            string? driveLetter, Func<string, string?> idOf)
+        {
+            if (string.IsNullOrEmpty(driveLetter)) return null;
+            var letter = Norm(driveLetter);
+            var full = Norm(path);
+            if (full.Length <= letter.Length + 1 || full[letter.Length] != '\\' ||
+                !full.StartsWith(letter, StringComparison.OrdinalIgnoreCase)) return null;
+            var list = pairs.Where(p => !string.IsNullOrEmpty(p.DriveFolderId)).ToList();
+
+            // Walking up by id: the folder above the path whose id is a pair's.
+            for (var up = Path.GetDirectoryName(full); up != null && up.Length > letter.Length; up = Path.GetDirectoryName(up))
+            {
+                var id = idOf(up);
+                if (id == null) continue;
+                var pair = list.FirstOrDefault(p => p.DriveFolderId == id);
+                if (pair != null) return (pair, Normal(full[(up.Length + 1)..]));
+            }
+
+            // "My Drive/Documents" is G:\Documents; a shared drive keeps its name.
+            foreach (var pair in list)
+            {
+                var drivePath = pair.DriveFolderPath ?? "";
+                if (drivePath.Length == 0) continue;
+                var rest = drivePath.StartsWith("My Drive", StringComparison.OrdinalIgnoreCase)
+                    ? drivePath["My Drive".Length..].TrimStart('/')
+                    : drivePath;
+                var mapped = rest.Length == 0 ? letter : letter + "\\" + Norm(rest);
+                if (full.Length > mapped.Length + 1 && full[mapped.Length] == '\\' &&
+                    full.StartsWith(mapped, StringComparison.OrdinalIgnoreCase))
+                {
+                    // A folder at that path whose id is known and is not the pair's is another folder.
+                    var id = idOf(mapped);
+                    if (id != null && id != pair.DriveFolderId) continue;
+                    return (pair, Normal(full[(mapped.Length + 1)..]));
+                }
+            }
+            return null;
+        }
+
+        /// <summary>Whether a pair can keep folders on Drive only: subfolders synced, and Drive's side comes down.</summary>
+        public static bool Offered(DriveSyncPair pair) => pair.IncludeSubfolders && pair.Mode != SyncMode.UploadOnly;
     }
 
     /// <summary>A file as one side sees it now.</summary>
@@ -103,11 +222,19 @@ namespace ExplorerNative
     /// <summary>Everything about a pair the planner needs.</summary>
     public sealed record SyncRules(
         SyncMode Mode, bool CopyDeletes, ConflictChoice WhenBothChanged = ConflictChoice.KeepBoth,
-        bool IncludeSubfolders = true, string SkipExtensions = "", long MaxBytes = 0)
+        bool IncludeSubfolders = true, string SkipExtensions = "", long MaxBytes = 0,
+        IReadOnlyList<string>? DriveOnly = null)
     {
         public static SyncRules For(DriveSyncPair pair) => new(
             pair.Mode, pair.CopyDeletes, pair.WhenBothChanged, pair.IncludeSubfolders, pair.SkipExtensions ?? "",
-            pair.MaxFileMegabytes > 0 ? pair.MaxFileMegabytes * 1024L * 1024 : 0);
+            pair.MaxFileMegabytes > 0 ? pair.MaxFileMegabytes * 1024L * 1024 : 0,
+            pair.DriveOnlyFolders is { Count: > 0 } kept ? kept.ToList() : null);
+
+        /// <summary>In a folder kept on Google Drive only (see <see cref="DriveSyncPair.DriveOnlyFolders"/>).</summary>
+        public bool OnDriveOnly(string path) => DriveOnlyFolders.Covers(DriveOnly, path);
+
+        /// <summary>Left out of the sync by the pair's own settings: the skip list, or kept on Drive only.</summary>
+        public bool LeavesOut(string path) => SkipsType(path) || OnDriveOnly(path);
 
         private HashSet<string>? _skipped;
 
@@ -348,7 +475,7 @@ namespace ExplorerNative
             foreach (var (path, l) in local)
             {
                 if (!remote.TryGetValue(path, out var r) || r.Md5 == null || r.Size != l.Size) continue;
-                if (IsSkippedPath(path) || (!rules.IncludeSubfolders && path.Contains('/')) || rules.SkipsType(path)) continue;
+                if (IsSkippedPath(path) || (!rules.IncludeSubfolders && path.Contains('/')) || rules.LeavesOut(path)) continue;
                 if (rules.MaxBytes > 0 && l.Size > rules.MaxBytes) continue;
                 if (last.TryGetValue(path, out var b) &&
                     !(Changed(l, b.LocalSize, b.LocalModifiedUtc) && RemoteChanged(r, b))) continue;
@@ -441,6 +568,14 @@ namespace ExplorerNative
 
             foreach (var path in paths)
             {
+                // Kept on Drive only: never copied either way, and never taken
+                // for deleted. A record left from before is dropped, so putting
+                // the folder back later finds nothing to copy a delete from.
+                if (rules.OnDriveOnly(path))
+                {
+                    if (last.ContainsKey(path)) Do(SyncActionKind.Forget, path);
+                    continue;
+                }
                 if (IsSkippedPath(path)) continue;
                 if (skipped != null && skipped.Covers(path)) continue;
                 if (!rules.IncludeSubfolders && path.Contains('/')) continue;
@@ -586,6 +721,8 @@ namespace ExplorerNative
                 var twice = new HashSet<string>(StringComparer.Ordinal);
                 foreach (var (path, was) in last)
                 {
+                    // Kept on Drive only: forgotten, never one end of a move.
+                    if (rules.OnDriveOnly(path)) continue;
                     if (string.IsNullOrEmpty(was.RemoteId) || remote.ContainsKey(path)) continue;
                     if (!local.TryGetValue(path, out var l) || SyncPlanner.LocalChanged(l, was)) continue;
                     if (!kinds.TryGetValue(path, out var k) ||
@@ -596,7 +733,7 @@ namespace ExplorerNative
                 if (gone.Count > 0)
                     foreach (var (path, r) in remote)
                     {
-                        if (r.Id == null || !gone.TryGetValue(r.Id, out var from)) continue;
+                        if (r.Id == null || rules.OnDriveOnly(path) || !gone.TryGetValue(r.Id, out var from)) continue;
                         if (last.ContainsKey(path) || local.ContainsKey(path)) continue;
                         if (!kinds.TryGetValue(path, out var k) || k != SyncActionKind.Download) continue;
                         if (SyncPlanner.RemoteChanged(r, from.Was)) continue;      // moved and edited: left to the plan
@@ -611,6 +748,7 @@ namespace ExplorerNative
                 var vanished = new Dictionary<(long, DateTime), List<string>>();
                 foreach (var (path, was) in last)
                 {
+                    if (rules.OnDriveOnly(path)) continue;
                     if (local.ContainsKey(path) || string.IsNullOrEmpty(was.RemoteId)) continue;
                     if (!remote.TryGetValue(path, out var r) || r.Id != was.RemoteId || SyncPlanner.RemoteChanged(r, was)) continue;
                     if (!kinds.TryGetValue(path, out var k) ||
@@ -624,7 +762,7 @@ namespace ExplorerNative
                     var arrived = new Dictionary<(long, DateTime), List<string>>();
                     foreach (var (path, l) in local)
                     {
-                        if (last.ContainsKey(path) || remote.ContainsKey(path)) continue;
+                        if (last.ContainsKey(path) || remote.ContainsKey(path) || rules.OnDriveOnly(path)) continue;
                         if (!kinds.TryGetValue(path, out var k) || k != SyncActionKind.Upload) continue;
                         var key = (l.Size, l.ModifiedUtc);
                         if (!vanished.ContainsKey(key)) continue;

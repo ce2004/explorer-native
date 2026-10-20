@@ -1523,6 +1523,14 @@ namespace ExplorerNative
             _contextMenu.Items.Add(AppleHidden(Item("Copy &path", Keys.None, CopyPath)));
             _contextMenu.Items.Add(DriveLinkItem("Copy Drive &link", Keys.None, makePublic: false));
             _contextMenu.Items.Add(DriveLinkItem("Copy p&ublic Drive link", Keys.None, makePublic: true));
+
+            // A folder inside a two-way synced folder (Conner, 4.1.3): kept in
+            // Google Drive alone, or brought back. Shown only where it applies.
+            _keepOnDriveItem = Item("&Keep on Drive only", Keys.None, KeepFocusedOnDriveOnly);
+            _putBackItem = Item("Put &back on PC", Keys.None, PutFocusedBackOnPc);
+            _keepOnDriveItem.Visible = _putBackItem.Visible = false;
+            _contextMenu.Items.Add(_keepOnDriveItem);
+            _contextMenu.Items.Add(_putBackItem);
             _contextMenu.Items.Add(new ToolStripSeparator());
 
             // Where Explorer puts it, between the clipboard and the two commands
@@ -6013,6 +6021,7 @@ namespace ExplorerNative
                 SelectedPaths().Any(p => IsDirectoryInView(p) || AudioFiles.IsAudio(p, _settings.AudioExtensions));
 
             ShowDriveLinkItems();
+            ShowDriveOnlyItems(focused, inArchive);
 
             // A shortcut is a file, and a file written into the Drive letter by
             // hand is invisible and then gone — the sync root is built from the
@@ -6070,6 +6079,98 @@ namespace ExplorerNative
         private ToolStripMenuItem _playNextItem = null!;
         private ToolStripMenuItem _favoriteItem = null!;
         private ToolStripMenuItem _addToPlaylistItem = null!;
+        private ToolStripMenuItem _keepOnDriveItem = null!;
+        private ToolStripMenuItem _putBackItem = null!;
+
+        /// <summary>
+        /// The synced folder a focused folder belongs to, and its path inside
+        /// it, from the PC side or the Drive letter. Path comparisons and the
+        /// mount's own id map only: this runs while the menu is drawn.
+        /// </summary>
+        private (DriveSyncPair Pair, string Relative)? SyncedFolderOf(string path)
+        {
+            var monitor = DriveMonitor.Current;
+            if (monitor == null) return null;
+            var pairs = monitor.Pairs;
+            if (pairs.Count == 0) return null;
+            var drive = Drive;
+            if (drive != null && drive.Owns(path))
+                return DriveOnlyFolders.OnDrive(path, pairs, drive.Letter, p => drive.KnownIdOf(p));
+            return DriveOnlyFolders.OnPc(path, pairs);
+        }
+
+        /// <summary>
+        /// Keep on Drive only over a folder inside a synced folder on the PC;
+        /// Put back on PC over one that is kept on Drive only, from the Drive
+        /// letter (where it still is) or the PC (where something was left).
+        /// </summary>
+        private void ShowDriveOnlyItems(string? focused, bool inArchive)
+        {
+            _keepOnDriveItem.Visible = _putBackItem.Visible = false;
+            if (focused == null || inArchive || IsDrivesView || !IsDirectoryInView(focused)) return;
+            if (SyncedFolderOf(focused) is not { } synced) return;
+            bool kept = DriveOnlyFolders.Covers(synced.Pair.DriveOnlyFolders, synced.Relative);
+            bool onDrive = Drive != null && Drive.Owns(focused);
+            _putBackItem.Visible = kept;
+            _keepOnDriveItem.Visible = !kept && !onDrive && DriveOnlyFolders.Offered(synced.Pair);
+        }
+
+        /// <summary>One Keep on Drive only or Put back on PC at a time.</summary>
+        private bool _driveOnlyBusy;
+
+        private async void KeepFocusedOnDriveOnly()
+        {
+            try
+            {
+                if (_driveOnlyBusy || FocusedPath() is not { } path || DriveMonitor.Current is not { } monitor) return;
+                if (SyncedFolderOf(path) is not { } synced) return;
+                var name = Path.GetFileName(path.TrimEnd('\\'));
+                if (MessageBox.Show(this,
+                        $"Keep {name} on Google Drive only? Every file in it is checked against Google Drive first. " +
+                        $"Then it is removed from this PC, and stays in Google Drive. The rest of {DriveMonitor.DisplayName(synced.Pair)} " +
+                        "keeps syncing both ways. Put back on PC brings it back.",
+                        "Keep on Drive only", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                {
+                    RestoreListFocus();
+                    return;
+                }
+                _driveOnlyBusy = true;
+                RestoreListFocus();
+                AnnounceOperation("sync.driveonly", $"Checking {name} against Google Drive");
+                var origin = Active.CurrentPath;
+                var landOn = RowAfterRemoving(new[] { path });
+                DriveMonitor.DriveOnlyOutcome outcome;
+                RunningTransfers++;
+                try { outcome = await monitor.KeepOnDriveOnlyAsync(synced.Pair.Id, synced.Relative, CancellationToken.None); }
+                finally { RunningTransfers--; }
+                if (IsDisposed) return;
+                AnnounceOperation("sync.driveonly", outcome.Message);
+                if (outcome.Done) await RefreshAsync(landOn, folder: origin);
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) Announce("Could not keep it on Google Drive only: " + ex.Message, isError: true);
+            }
+            finally { _driveOnlyBusy = false; }
+        }
+
+        private async void PutFocusedBackOnPc()
+        {
+            try
+            {
+                if (_driveOnlyBusy || FocusedPath() is not { } path || DriveMonitor.Current is not { } monitor) return;
+                if (SyncedFolderOf(path) is not { } synced) return;
+                _driveOnlyBusy = true;
+                var outcome = await monitor.PutBackOnPcAsync(synced.Pair.Id, synced.Relative, CancellationToken.None);
+                if (IsDisposed) return;
+                AnnounceOperation("sync.putback", outcome.Message);
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) Announce("Could not put it back on this PC: " + ex.Message, isError: true);
+            }
+            finally { _driveOnlyBusy = false; }
+        }
 
         private void PlayFocusedAppleSongNext()
         {

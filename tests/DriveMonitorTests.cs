@@ -64,6 +64,7 @@ namespace ExplorerNative
                 await EmptyFolderTests(sandbox);
                 await SettleWakeTests(sandbox);
                 await FreeUpTests(sandbox);
+                await DriveOnlyTests(sandbox);
                 NoDialogTests();
                 await CheckClientCancelTests();
             }
@@ -1873,6 +1874,179 @@ namespace ExplorerNative
                 outcome = "cancelled";
             }
             Equal("checking a client, called off, is a cancellation and not \"could not be reached\"", "cancelled", outcome);
+        }
+
+        // ---------------- kept on Google Drive only (4.1.3) ----------------
+
+        private static void DriveOnlyPureTests()
+        {
+            var school = new List<string> { "School" };
+            Check("drive only: the folder itself is covered", DriveOnlyFolders.Covers(school, "school"));
+            Check("and what is inside it, any depth", DriveOnlyFolders.Covers(school, "School/2024/notes.txt"));
+            Check("but not a folder whose name starts the same", !DriveOnlyFolders.Covers(school, "Schoolwork/notes.txt"));
+            Check("nor the pair's own folder", !DriveOnlyFolders.Covers(school, ""));
+            Check("a list written with backslashes matches too", DriveOnlyFolders.Covers(new[] { "School\\2024\\" }, "School/2024/a.txt"));
+
+            var pair = new DriveSyncPair { LocalFolder = @"C:\Users\Morgan\Documents", DriveFolderId = "D1", DriveFolderPath = "My Drive/Documents" };
+            var others = new[] { pair };
+            Equal("a folder inside a synced PC folder is found, with its path inside",
+                "School/2024", DriveOnlyFolders.OnPc(@"C:\Users\Morgan\Documents\School\2024\", others)?.Relative ?? "(none)");
+            Check("the synced folder itself is not a folder inside it", DriveOnlyFolders.OnPc(@"C:\Users\Morgan\Documents", others) == null);
+            Check("nor is one beside it whose name starts the same", DriveOnlyFolders.OnPc(@"C:\Users\Morgan\Documents2\a", others) == null);
+
+            Equal("on the Drive letter, by the pair's Drive path", "School",
+                DriveOnlyFolders.OnDrive(@"G:\Documents\School", others, "G:", _ => null)?.Relative ?? "(none)");
+            Equal("by the id the mount knows for a folder above it", "School/2024",
+                DriveOnlyFolders.OnDrive(@"G:\Renamed\School\2024", others, "G:", p => p == @"G:\Renamed" ? "D1" : null)?.Relative ?? "(none)");
+            Check("a folder at the pair's old path that is another folder is not the pair's",
+                DriveOnlyFolders.OnDrive(@"G:\Documents\School", others, "G:", p => p == @"G:\Documents" ? "OTHER" : null) == null);
+            Check("off the Drive letter, nothing", DriveOnlyFolders.OnDrive(@"C:\Documents\School", others, "G:", _ => null) == null);
+
+            var copy = pair.Copy();
+            copy.DriveOnlyFolders.Add("School");
+            Check("a copied pair has its own list (the window's edits stay its own)", pair.DriveOnlyFolders.Count == 0);
+
+            Check("offered in two-way", DriveOnlyFolders.Offered(new DriveSyncPair { Mode = SyncMode.TwoWay }));
+            Check("not in upload only, where Drive's side never comes down", !DriveOnlyFolders.Offered(new DriveSyncPair { Mode = SyncMode.UploadOnly }));
+            Check("nor without subfolders", !DriveOnlyFolders.Offered(new DriveSyncPair { Mode = SyncMode.TwoWay, IncludeSubfolders = false }));
+
+            // The planner: deletes copied, a recorded file gone from the PC in a
+            // kept folder is forgotten, never a delete in Drive.
+            var rules = new SyncRules(SyncMode.TwoWay, CopyDeletes: true, DriveOnly: new[] { "School" });
+            var file = new SyncFile(5, T0, "f1", "abc");
+            var was = new SyncBase(5, T0, 5, T0, "f1", "abc");
+            var plan = SyncPlanner.Plan(rules,
+                local: new Dictionary<string, SyncFile>(SyncNameComparer.Instance) { ["new.txt"] = new SyncFile(3, T0) },
+                remote: new Dictionary<string, SyncFile>(SyncNameComparer.Instance) { ["School/a.txt"] = file, ["School/b.txt"] = file with { Id = "f2" } },
+                last: new Dictionary<string, SyncBase>(SyncNameComparer.Instance) { ["School/a.txt"] = was });
+            Equal("drive only: the kept folder's record is forgotten, its new file not downloaded, the rest syncs",
+                "Forget School/a.txt, Upload new.txt",
+                string.Join(", ", plan.OrderBy(a => a.Path, StringComparer.Ordinal).Select(a => $"{a.Kind} {a.Path}")));
+            var control = SyncPlanner.Plan(rules with { DriveOnly = null },
+                local: new Dictionary<string, SyncFile>(SyncNameComparer.Instance),
+                remote: new Dictionary<string, SyncFile>(SyncNameComparer.Instance) { ["School/a.txt"] = file },
+                last: new Dictionary<string, SyncBase>(SyncNameComparer.Instance) { ["School/a.txt"] = was });
+            Check("control: without the list, the same file would be deleted in Drive",
+                control.Any(a => a.Kind == SyncActionKind.DeleteRemote));
+
+            // Never one end of a move: a kept file gone, and the same file new
+            // elsewhere on the PC, is not Drive's copy pulled out of the folder.
+            var moves = SyncMoves.Find(rules, plan.Concat(new[] { new SyncAction(SyncActionKind.Upload, "copy/a.txt") }).ToList(),
+                new Dictionary<string, SyncFile>(SyncNameComparer.Instance) { ["copy/a.txt"] = new SyncFile(5, T0) },
+                new Dictionary<string, SyncFile>(SyncNameComparer.Instance) { ["School/a.txt"] = file },
+                new Dictionary<string, SyncBase>(SyncNameComparer.Instance) { ["School/a.txt"] = was });
+            Check("a kept folder's file is never taken for moved", moves.Count == 0, string.Join(", ", moves));
+
+            var described = DriveMonitorForm.Describe(new DriveSyncPair
+                { Name = "Documents", LocalFolder = @"C:\Docs", DriveFolderPath = "My Drive/Documents", DriveOnlyFolders = { "School/2024" } },
+                null, T0);
+            Check("the sync window says which folders are kept on Drive only", described.Contains(@"Kept on Google Drive only: School\2024."), described);
+        }
+
+        private static async Task DriveOnlyTests(string sandbox)
+        {
+            DriveOnlyPureTests();
+            var (large, batch) = (DriveMonitor.LargePairFiles, DriveMonitor.BatchFiles);
+            try
+            {
+                foreach (var batched in new[] { false, true })
+                {
+                    DriveMonitor.LargePairFiles = batched ? 0 : int.MaxValue;
+                    DriveMonitor.BatchFiles = batched ? 2 : batch;
+                    var how = batched ? " (a batch at a time)" : "";
+                    using var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true);
+                    rig.Monitor.DriveOnlySyncWait = TimeSpan.FromMilliseconds(300);
+                    rig.Write("School/one.txt", "one", T0);
+                    rig.Write("School/2024/two.txt", "two", T0);
+                    rig.Write("Work/three.txt", "three", T0);
+                    var hidden = Path.Combine(rig.Local, "School", "desktop.ini");
+                    File.WriteAllText(hidden, "[.ShellClassInfo]");
+                    File.SetAttributes(hidden, FileAttributes.Hidden | FileAttributes.System);
+                    await rig.Pass();
+                    Equal("drive only: everything went up first" + how, "School/2024/two.txt,School/one.txt,Work/three.txt", Names(rig.DriveTree()));
+                    rig.Monitor.Reload(new[] { rig.Pair });
+                    void Live() => rig.Pair.DriveOnlyFolders = rig.Monitor.Pairs.First(p => p.Id == rig.Pair.Id).DriveOnlyFolders;
+
+                    // A file only on the PC: nothing happens at all.
+                    rig.Write("School/2024/draft.txt", "not sent yet", T0.AddMinutes(1));
+                    var refused = await rig.Monitor.KeepOnDriveOnlyAsync(rig.Pair.Id, "School", default, rig.Client);
+                    Check("a folder with a file Drive does not have is refused" + how, !refused.Done, refused.Message);
+                    Check("and says which", refused.Message.Contains("draft.txt"), refused.Message);
+                    Check("and nothing was removed", File.Exists(Path.Combine(rig.Local, "School", "one.txt")));
+                    Live();
+                    Check("and it is not on the list", rig.Pair.DriveOnlyFolders.Count == 0);
+                    await rig.Pass();
+
+                    // A PC file that differs from Drive's, the same size: refused too.
+                    rig.Write("School/one.txt", "ONE", T0.AddMinutes(2));
+                    var differs = await rig.Monitor.KeepOnDriveOnlyAsync(rig.Pair.Id, "School", default, rig.Client);
+                    Check("a file that differs from Drive's copy is refused" + how, !differs.Done && differs.Message.Contains("one.txt"), differs.Message);
+                    await rig.Pass();
+                    Equal("which the sync then sends", "ONE", Text(rig.DriveTree(), "School/one.txt"));
+
+                    int trashes = rig.Drive.Trashes;
+                    var kept = await rig.Monitor.KeepOnDriveOnlyAsync(rig.Pair.Id, "School", default, rig.Client);
+                    Check("once everything is in Drive, it is kept on Drive only" + how, kept.Done, kept.Message);
+                    Check("the folder is gone from the PC, desktop.ini and all", !Directory.Exists(Path.Combine(rig.Local, "School")));
+                    Live();
+                    Equal("and it is on the pair's list", "School", string.Join(",", rig.Pair.DriveOnlyFolders));
+
+                    await rig.Pass();
+                    await rig.Pass();
+                    Equal("with deletes copied, Drive keeps every file of it" + how,
+                        "School/2024/draft.txt,School/2024/two.txt,School/one.txt,Work/three.txt", Names(rig.DriveTree()));
+                    Equal("nothing went to the Drive trash", trashes.ToString(), rig.Drive.Trashes.ToString());
+                    Check("and nothing came back down", !Directory.Exists(Path.Combine(rig.Local, "School")));
+
+                    // Changes in Drive stay in Drive; the rest still syncs both ways.
+                    rig.Put("School/added.txt", "added in Drive", T0.AddMinutes(5));
+                    rig.Put("Work/four.txt", "four", T0.AddMinutes(5));
+                    rig.Write("Work/five.txt", "five", T0.AddMinutes(5));
+                    await rig.Pass();
+                    Check("a file added to it in Drive is not downloaded" + how, !Directory.Exists(Path.Combine(rig.Local, "School")));
+                    Check("the rest of the folder still comes down", File.Exists(Path.Combine(rig.Local, "Work", "four.txt")));
+                    Check("and goes up", rig.DriveTree().ContainsKey("Work/five.txt"));
+
+                    // Put back: everything comes down, nothing is trashed.
+                    var back = await rig.Monitor.PutBackOnPcAsync(rig.Pair.Id, "School/2024", default);
+                    Check("put back from a folder inside it puts back the whole kept folder" + how, back.Done, back.Message);
+                    Equal("and says which", "Putting School back on this PC", back.Message);
+                    Live();
+                    Check("it is off the list", rig.Pair.DriveOnlyFolders.Count == 0);
+                    await rig.Pass();
+                    Equal("put back: the whole folder is on the PC again" + how,
+                        "School/2024/draft.txt,School/2024/two.txt,School/added.txt,School/one.txt,Work/five.txt,Work/four.txt,Work/three.txt",
+                        Names(rig.LocalTree()));
+                    Equal("as Drive has it", "ONE", Text(rig.LocalTree(), "School/one.txt"));
+                    Equal("and still nothing went to the Drive trash", trashes.ToString(), rig.Drive.Trashes.ToString());
+                    await rig.Pass();
+                    Equal("a pass after that has nothing to do", "School/2024/draft.txt,School/2024/two.txt,School/added.txt,School/one.txt,Work/five.txt,Work/four.txt,Work/three.txt",
+                        Names(rig.DriveTree()));
+
+                    var again = await rig.Monitor.PutBackOnPcAsync(rig.Pair.Id, "School", default);
+                    Check("putting back one that is not kept says so", !again.Done && again.Message.Contains("not kept"), again.Message);
+                }
+
+                // The danger it guards: records left from before, then put back
+                // with deletes copied, would trash Drive's copy. Drop the list by
+                // hand with the records still there, and Drive's files go.
+                DriveMonitor.LargePairFiles = int.MaxValue;
+                DriveMonitor.BatchFiles = batch;
+                using (var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true))
+                {
+                    rig.Write("School/one.txt", "one", T0);
+                    await rig.Pass();
+                    Directory.Delete(Path.Combine(rig.Local, "School"), true);
+                    await rig.Pass();
+                    Check("control: a folder simply removed from the PC with deletes on is trashed in Drive",
+                        !rig.DriveTree().ContainsKey("School/one.txt"));
+                }
+            }
+            finally
+            {
+                DriveMonitor.LargePairFiles = large;
+                DriveMonitor.BatchFiles = batch;
+            }
         }
     }
 }

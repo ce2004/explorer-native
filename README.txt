@@ -30,6 +30,12 @@ OAuth client of type Desktop app. Then in Explorer Native open Preferences
 fields. When you press OK they are checked with Google; if Google accepts
 them they are saved encrypted and the browser opens for you to sign in.
 
+In a folder you sync both ways, press Shift+F10 on a folder inside it and
+choose Keep on Drive only. Once every file in it is checked to be in Google
+Drive, it is removed from this PC and stays in Google Drive, and the rest
+keeps syncing both ways. Put back on PC, on the same folder in Google Drive,
+brings it back. The synced folder's settings list these folders too.
+
 Everything Explorer Native saves in AppData (settings, the client ID and
 secret, the sign-in, logs) is encrypted for your Windows account.
 
