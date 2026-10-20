@@ -288,7 +288,8 @@ namespace ExplorerNative
             {
                 var place = ListPlace(path);
                 if (AppleMusic.InStation(place)) { PlayNextFromStation(place); return ""; }   // says the song it finds
-                return "That's the last song in the list";
+                PlayAutoplay(path);   // says the song it finds, or "End of the list"
+                return "";
             }
             Start(next, id, name ?? next, -1, startAt: 0, retried: false, how: StartKind.PlayedOn);
             Volatile.Write(ref _autoGen, Volatile.Read(ref _generation));   // an unavailable one is skipped too
@@ -543,11 +544,36 @@ namespace ExplorerNative
             }
             if (next == null)
             {
-                EndOfList();
-                Say?.Invoke("applemusic.endoflist", "End of the list");
+                PlayAutoplay(path);
                 return;
             }
             StartPath(next);
+        }
+
+        /// <summary>
+        /// Autoplay: a list has ended, so songs like its last one play on, from
+        /// a station Apple makes of it. "End of the list" only when there is none
+        /// (an upload, or Apple has nothing).
+        /// </summary>
+        private static async void PlayAutoplay(string finished)
+        {
+            int mine = Volatile.Read(ref _generation);
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                var rows = await AppleMusic.StartAutoplayAsync(finished, cts.Token).ConfigureAwait(true);
+                if (Volatile.Read(ref _generation) != mine) return;   // something else was played meanwhile
+                foreach (var row in rows)
+                    if (!row.IsFolder && !string.Equals(AppleMusic.CatalogIdOrNull(row.Path), AppleMusic.CatalogIdOrNull(finished), StringComparison.Ordinal))
+                    {
+                        StartPath(row.Path);
+                        return;
+                    }
+            }
+            catch (Exception) { }
+            if (Volatile.Read(ref _generation) != mine) return;
+            EndOfList();
+            Say?.Invoke("applemusic.endoflist", "End of the list");
         }
 
         /// <summary>

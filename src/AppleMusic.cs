@@ -354,6 +354,41 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// Autoplay (Conner, 4.1.4): where songs play on from once a playlist or
+        /// album ends. A station Apple makes from the last song ("ra." and its
+        /// catalogue id), kept as a folder of its own that no list shows, so it
+        /// plays on and tops itself up like any station.
+        /// </summary>
+        public static string AutoplayFolder => Root + "\\Autoplay";
+
+        /// <summary>The catalogue id that plays a row, or null when it can't be played.</summary>
+        public static string? CatalogIdOrNull(string path)
+        {
+            try { return CatalogIdForPlaying(path); }
+            catch (AppleMusicException) { return null; }
+        }
+
+        /// <summary>Starts autoplay from the song a list ended on: its first handful of songs, or none.</summary>
+        public static async Task<List<Row>> StartAutoplayAsync(string lastSong, CancellationToken token)
+        {
+            var catalogId = CatalogIdForPlaying(lastSong);
+            var station = new AppleMusicItem { Kind = "station", Id = "ra." + catalogId, Name = "Autoplay" };
+            var tracks = await Client().StationTracksAsync(station, token).ConfigureAwait(false);
+            var folder = AutoplayFolder;
+            List<Row> rows;
+            lock (Gate)
+            {
+                Items[folder] = station;
+                Listings.Remove(folder);
+                Displayed.Remove(folder);
+                rows = RowsFor(folder, tracks, sort: false, numbered: false);
+                Listings[folder] = rows;
+            }
+            if (rows.Count > 0) { Grew?.Invoke(folder); _ = RateAsync(folder); }
+            return rows;
+        }
+
+        /// <summary>
         /// A folder's rows in memory grew without anyone opening it (a station
         /// playing on past its end), so a pane showing it can put them on screen.
         /// Raised on whichever thread did the fetching.
