@@ -553,15 +553,22 @@ namespace ExplorerNative
             _listQueue = all.Skip(chosenCount).Select(s => s.Path).ToList();
         }
 
-        /// <summary>Moves the song at <paramref name="index"/> one place up (-1) or down (+1). Returns its new place, or -1.</summary>
-        public static int MoveUpNext(int index, int delta)
+        /// <summary>
+        /// Whether Up next still has <paramref name="expected"/> at <paramref name="index"/>:
+        /// a song ending while the window is open moves everything up one.
+        /// </summary>
+        private static bool Still(List<(string Path, bool Chosen)> all, int index, string expected) =>
+            index >= 0 && index < all.Count && string.Equals(all[index].Path, expected, StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>Moves the song at <paramref name="index"/> one place up (-1) or down (+1). Returns its new place, or -1 when Up next has changed under it.</summary>
+        public static int MoveUpNext(int index, int delta, string expected)
         {
             lock (Gate)
             {
                 if (_currentPath.Length == 0 || _ended) return -1;
                 var all = Combined();
                 int to = index + delta;
-                if (index < 0 || index >= all.Count || to < 0 || to >= all.Count) return -1;
+                if (!Still(all, index, expected) || to < 0 || to >= all.Count) return -1;
                 (all[index], all[to]) = (all[to], all[index]);
                 PutBack(all, _upNext.Count);
             }
@@ -570,13 +577,13 @@ namespace ExplorerNative
         }
 
         /// <summary>Takes the song at <paramref name="index"/> out of Up next.</summary>
-        public static bool RemoveUpNext(int index)
+        public static bool RemoveUpNext(int index, string expected)
         {
             lock (Gate)
             {
                 if (_currentPath.Length == 0 || _ended) return false;
                 var all = Combined();
-                if (index < 0 || index >= all.Count) return false;
+                if (!Still(all, index, expected)) return false;
                 int chosen = _upNext.Count - (all[index].Chosen ? 1 : 0);
                 all.RemoveAt(index);
                 PutBack(all, chosen);
@@ -597,15 +604,15 @@ namespace ExplorerNative
             Requeue();
         }
 
-        /// <summary>Plays the song at <paramref name="index"/> now; the ones before it are passed over. Returns what to say.</summary>
-        public static string PlayUpNext(int index)
+        /// <summary>Plays the song at <paramref name="index"/> now; the ones before it are passed over. Returns what to say, or null when Up next has changed under it.</summary>
+        public static string? PlayUpNext(int index, string expected)
         {
             string path;
             lock (Gate)
             {
                 if (_currentPath.Length == 0 || _ended) return "Nothing is playing";
                 var all = Combined();
-                if (index < 0 || index >= all.Count) return "";
+                if (!Still(all, index, expected)) return null;
                 path = all[index].Path;
                 bool wasChosen = all[index].Chosen;
                 int chosen = all.Take(index + 1).Count(s => s.Chosen);

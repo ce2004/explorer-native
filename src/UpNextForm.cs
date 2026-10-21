@@ -63,19 +63,25 @@ namespace ExplorerNative
             Shown += (_, _) => _list.Focus();
         }
 
+        /// <summary>What the rows show, kept beside them: a library can put thousands here, so changes touch only their rows.</summary>
+        private System.Collections.Generic.List<AppleMusicPlayer.UpNextSong> _songs = new();
+
         /// <summary>Reads Up next from the player and puts the cursor on <paramref name="select"/>.</summary>
         private void Fill(int select)
         {
-            var songs = AppleMusicPlayer.UpNext();
+            _songs = AppleMusicPlayer.UpNext();
             _list.BeginUpdate();
             _list.Items.Clear();
-            _empty = songs.Count == 0;
+            _empty = _songs.Count == 0;
             if (_empty) _list.Items.Add(AppleMusicPlayer.IsActive ? "Nothing is up next" : "Nothing is playing");
-            // "&" in a song is a letter; a list box shows it as it is.
-            foreach (var song in songs) _list.Items.Add(song.Chosen ? song.Name + ", play next" : song.Name);
+            var rows = new object[_songs.Count];
+            for (int i = 0; i < rows.Length; i++) rows[i] = Label(_songs[i]);
+            _list.Items.AddRange(rows);
             _list.EndUpdate();
             _list.SelectedIndex = Math.Clamp(select, 0, _list.Items.Count - 1);
         }
+
+        private static string Label(AppleMusicPlayer.UpNextSong song) => song.Chosen ? song.Name + ", play next" : song.Name;
 
         private void List_KeyDown(object? sender, KeyEventArgs e)
         {
@@ -100,10 +106,15 @@ namespace ExplorerNative
 
         private void MoveSong(int delta)
         {
-            int at = Selected;
-            if (at < 0) return;
-            int now = AppleMusicPlayer.MoveUpNext(at, delta);
-            Fill(now >= 0 ? now : at);
+            int at = Selected, to = at + delta;
+            if (at < 0 || to < 0 || to >= _songs.Count) return;
+            int now = AppleMusicPlayer.MoveUpNext(at, delta, _songs[at].Path);
+            if (now < 0) { Fill(at); _list.Focus(); return; }   // a song ended meanwhile: shown afresh
+            // Each keeps the kind of its place: Play next choices stay in front.
+            (_songs[at], _songs[to]) = (_songs[to] with { Chosen = _songs[at].Chosen }, _songs[at] with { Chosen = _songs[to].Chosen });
+            _list.Items[at] = Label(_songs[at]);
+            _list.Items[to] = Label(_songs[to]);
+            _list.SelectedIndex = to;
             _list.Focus();
         }
 
@@ -111,8 +122,11 @@ namespace ExplorerNative
         {
             int at = Selected;
             if (at < 0) return;
-            AppleMusicPlayer.RemoveUpNext(at);
-            Fill(at);
+            if (!AppleMusicPlayer.RemoveUpNext(at, _songs[at].Path)) { Fill(at); _list.Focus(); return; }
+            _songs.RemoveAt(at);
+            if (_songs.Count == 0) { Fill(0); _list.Focus(); return; }
+            _list.Items.RemoveAt(at);
+            _list.SelectedIndex = Math.Min(at, _songs.Count - 1);
             _list.Focus();
         }
 
@@ -128,7 +142,8 @@ namespace ExplorerNative
         {
             int at = Selected;
             if (at < 0) return;
-            var said = AppleMusicPlayer.PlayUpNext(at);
+            var said = AppleMusicPlayer.PlayUpNext(at, _songs[at].Path);
+            if (said == null) { Fill(0); _list.Focus(); return; }
             Close();
             if (said.Length > 0) AppleMusicPlayer.Say?.Invoke("audio.play", said);
         }
