@@ -51,6 +51,33 @@ namespace ExplorerNative
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_LIVESYNC_NEW") == "1")
                 return await NewFeatures(client);
 
+            // EXPLORERNATIVE_LIVESYNC_PEEK=.ext: files in My Drive's root with that
+            // extension, with their first bytes. Read only.
+            var peek = Environment.GetEnvironmentVariable("EXPLORERNATIVE_LIVESYNC_PEEK");
+            if (!string.IsNullOrEmpty(peek))
+            {
+                using var quick = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+                foreach (var e in await client.ListChildren("root", quick.Token))
+                {
+                    if (e.Name.IndexOf(peek.Trim('.'), StringComparison.OrdinalIgnoreCase) < 0) continue;
+                    Console.WriteLine($"{e.Name}  {e.MimeType}  {e.Size} bytes");
+                    if (e.Size <= 0) continue;
+                    var head = await client.ReadRange(e.Id, 0, (int)Math.Min(64, e.Size), quick.Token);
+                    Console.WriteLine("  hex   " + Convert.ToHexString(head));
+                    Console.WriteLine("  text  " + new string(head.Select(b => b >= 32 && b < 127 ? (char)b : '.').ToArray()));
+                    // EXPLORERNATIVE_LIVESYNC_PEEKSAVE=folder: a copy of each, under 50MB, saved there.
+                    var save = Environment.GetEnvironmentVariable("EXPLORERNATIVE_LIVESYNC_PEEKSAVE");
+                    if (!string.IsNullOrEmpty(save) && e.Size < 50 << 20)
+                    {
+                        var whole = await client.ReadRange(e.Id, 0, (int)e.Size, quick.Token);
+                        Directory.CreateDirectory(save);
+                        File.WriteAllBytes(Path.Combine(save, e.Name.Trim('‎')), whole);
+                        Console.WriteLine($"  saved {whole.Length} bytes");
+                    }
+                }
+                return 0;
+            }
+
             // EXPLORERNATIVE_LIVESYNC_TRASHLIST=1: lists the trash, read only, and
             // says how long it took and how much is there.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_LIVESYNC_TRASHLIST") == "1")

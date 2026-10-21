@@ -54,7 +54,7 @@ namespace ExplorerNative
                 box.InUse = candidate => WhoUses(candidate, action.Action);
                 _boxes[action.Action] = box;
 
-                var global = new CheckBox
+                var global = new SpokenCheckBox
                 {
                     Text = "Global",
                     AutoSize = true,

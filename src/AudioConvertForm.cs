@@ -78,7 +78,7 @@ namespace ExplorerNative
 
             if (offerSubfolders)
             {
-                _subfolders = new CheckBox
+                _subfolders = new SpokenCheckBox
                 {
                     Text = "Include &subfolders",
                     Checked = subfolders,

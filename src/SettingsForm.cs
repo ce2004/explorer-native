@@ -720,7 +720,7 @@ namespace ExplorerNative
             // No switch: Drive is on whenever you are signed in. Connect and OK
             // (with an accepted client ID and secret) turn it on, Sign out turns
             // it off. The box is never shown; it carries that state to OK.
-            var driveBox = new CheckBox { Checked = _working.GoogleDriveEnabled };
+            var driveBox = new SpokenCheckBox { Checked = _working.GoogleDriveEnabled };
             _applies.Add(() => _working.GoogleDriveEnabled = driveBox.Checked);
 
             AddDriveLetter(panel);
@@ -1341,7 +1341,7 @@ namespace ExplorerNative
             panel.Controls.Add(row);
 
             bool original = _working.WebAppEnabled;
-            var enable = new CheckBox
+            var enable = new SpokenCheckBox
             {
                 Text = "&Turn on the web app", Checked = _working.WebAppEnabled, AutoSize = true, Enabled = false,
                 Margin = new Padding(3, 8, 3, 4),
@@ -1618,7 +1618,7 @@ namespace ExplorerNative
             // The takeover is the one setting in here that changes how the whole
             // desktop behaves, so it is confirmed at the moment it is ticked
             // rather than silently applied when the dialog is dismissed.
-            var takeover = new CheckBox
+            var takeover = new SpokenCheckBox
             {
                 Text = "Open every folder in Explorer Native instead of File Explorer",
                 Checked = _working.SetAsDefaultFileExplorer,
@@ -1673,7 +1673,7 @@ namespace ExplorerNative
 
         private CheckBox AddCheck(Control parent, string text, bool value, Action<bool> apply)
         {
-            var box = new CheckBox { Text = text, Checked = value, AutoSize = true, Margin = new Padding(3, 4, 3, 4) };
+            var box = new SpokenCheckBox { Text = text, Checked = value, AutoSize = true, Margin = new Padding(3, 4, 3, 4) };
             box.AccessibleName = text;
             parent.Controls.Add(box);
             _applies.Add(() => apply(box.Checked));

@@ -700,6 +700,126 @@ namespace ExplorerNative
             return $"Added {item.Name} to {playlist.Name}";
         }
 
+        // ---- Go to album or artist, library, new playlist (Conner, 4.1.6) ----
+
+        /// <summary>
+        /// The folder for a song's album or artist, ready to open: inside the
+        /// folder the song is in, so Backspace goes back to it. Library songs go
+        /// to what you have of it, other songs to Apple's catalogue.
+        /// </summary>
+        public static async Task<string> GoToAsync(string songPath, bool album, CancellationToken token)
+        {
+            var song = ItemAt(songPath);
+            if (song == null || !song.IsSong) throw new AppleMusicException("That isn't a song.");
+            var (foundAlbum, foundArtist) = await Client().SongHomeAsync(song, token).ConfigureAwait(false);
+            var target = album ? foundAlbum : foundArtist;
+            if (target == null)
+                throw new AppleMusicException(album ? $"Apple Music doesn't say which album {song.Name} is on." : $"Apple Music doesn't say who {song.Name} is by.");
+            var folder = Path.GetDirectoryName(songPath) ?? Root;
+            lock (Gate)
+            {
+                // Its own name, unless a row of this folder already has that path.
+                string leaf = Safe(target.Name), path = folder + "\\" + leaf;
+                for (int n = 2; Items.TryGetValue(path, out var there) && !(there.Kind == target.Kind && there.Id == target.Id); n++)
+                    path = folder + "\\" + leaf + $" ({n})";
+                Items[path] = target;
+                return path;
+            }
+        }
+
+        /// <summary>True when the song is one of your library's (Remove from library), false for one from Apple's catalogue (Add to library).</summary>
+        public static bool? InLibrary(string path)
+        {
+            var item = ItemAt(path);
+            return item is { IsSong: true } ? item.IsLibrary : null;
+        }
+
+        /// <summary>Adds a song to your library. Returns what to say.</summary>
+        public static async Task<string> AddToLibraryAsync(string path, CancellationToken token)
+        {
+            var item = ItemAt(path);
+            if (item == null || !item.IsSong) throw new AppleMusicException("That isn't a song.");
+            var id = CatalogKey(item);
+            if (id.Length == 0) throw new AppleMusicException($"{item.Name} is already in your library.");
+            await Client().AddToLibraryAsync(id, token).ConfigureAwait(false);
+            ForgetLibraryLists();
+            return $"Added {item.Name} to your library";
+        }
+
+        /// <summary>Takes a song out of your library, and its row out of every list showing it. Returns what to say.</summary>
+        public static async Task<string> RemoveFromLibraryAsync(string path, CancellationToken token)
+        {
+            var item = ItemAt(path);
+            if (item == null || !item.IsSong) throw new AppleMusicException("That isn't a song.");
+            string? libraryId = item.IsLibrary ? item.Id
+                : item.CatalogId.Length > 0 ? await Client().LibraryIdOfAsync(item.CatalogId, token).ConfigureAwait(false) : null;
+            if (libraryId == null) throw new AppleMusicException($"{item.Name} isn't in your library.");
+            await Client().RemoveFromLibraryAsync(libraryId, token).ConfigureAwait(false);
+
+            // Gone from the library's lists and your playlists at once; a playlist
+            // is asked again next time it opens.
+            var changed = new List<string>();
+            lock (Gate)
+            {
+                foreach (var key in Listings.Keys.ToList())
+                {
+                    var rows = Listings[key];
+                    var kept = rows.Where(r => !(Items.TryGetValue(r.Path, out var i) && i.IsSong && i.IsLibrary && i.Id == libraryId)).ToList();
+                    if (kept.Count == rows.Count) continue;
+                    Listings[key] = kept;
+                    if (Displayed.TryGetValue(key, out var shown))
+                        Displayed[key] = shown.Where(p => kept.Any(r => string.Equals(r.Path, p, StringComparison.OrdinalIgnoreCase))).ToList();
+                    changed.Add(key);
+                }
+            }
+            ForgetLibraryLists();
+            foreach (var folder in changed) Grew?.Invoke(folder);
+            return $"Removed {item.Name} from your library";
+        }
+
+        /// <summary>Library lists are asked again on their next visit, after the library changed.</summary>
+        private static void ForgetLibraryLists()
+        {
+            lock (Gate)
+                foreach (var name in new[] { "Recently added", "Albums", "Artists", "Songs" })
+                    Fetched.Remove(Root + "\\Library\\" + name);
+        }
+
+        /// <summary>A new playlist of yours holding this song. Returns what to say.</summary>
+        public static async Task<string> CreatePlaylistAsync(string path, string name, CancellationToken token)
+        {
+            var item = ItemAt(path);
+            if (item == null || !item.IsSong) throw new AppleMusicException("That isn't a song.");
+            name = name.Trim();
+            if (name.Length == 0) throw new AppleMusicException("A playlist needs a name.");
+            var made = await Client().CreatePlaylistAsync(name, item, token).ConfigureAwait(false);
+            lock (Gate)
+            {
+                if (_playlists != null)
+                {
+                    _playlists.Add(made);
+                    _playlists = _playlists.OrderBy(p => p.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+                }
+                if (!AddedTo.TryGetValue(made.Id, out var set)) AddedTo[made.Id] = set = new Dictionary<string, long>(StringComparer.Ordinal);
+                foreach (var k in SongKeys(item)) set[k] = Environment.TickCount64;
+                Listings.Remove(Root + "\\Library\\Playlists");
+                Fetched.Remove(Root + "\\Library\\Playlists");
+            }
+            return $"Made the playlist {made.Name} with {item.Name} in it";
+        }
+
+        /// <summary>A folder's songs in the order shown (or listed), for the player's queue. Null when it was never listed.</summary>
+        public static List<string>? SongsShown(string folder)
+        {
+            folder = folder.TrimEnd('\\');
+            lock (Gate)
+            {
+                if (Displayed.TryGetValue(folder, out var shown))
+                    return shown.Where(p => Items.TryGetValue(p, out var i) && i.IsSong).ToList();
+                return Listings.TryGetValue(folder, out var rows) ? rows.Where(r => !r.IsFolder).Select(r => r.Path).ToList() : null;
+            }
+        }
+
         internal static string Duration(long ms)
         {
             var t = TimeSpan.FromMilliseconds(ms);

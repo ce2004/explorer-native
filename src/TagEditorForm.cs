@@ -89,7 +89,7 @@ namespace ExplorerNative
 
             if (fileCount > 1)
             {
-                _numberInOrder = new CheckBox
+                _numberInOrder = new SpokenCheckBox
                 {
                     Text = "&Number them in list order",
                     AutoSize = true,

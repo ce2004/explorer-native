@@ -438,6 +438,89 @@ namespace ExplorerNative
             using var _ = await SendAsync(req, token).ConfigureAwait(false);
         }
 
+        // ---- Going to a song's album or artist, and the library (4.1.6) ----
+
+        /// <summary>
+        /// The album and the artist a song belongs to: from the library for a
+        /// library song (what you have of it), otherwise from the catalogue. Either
+        /// may be null. Measured live: a library song answers its own
+        /// /albums and /artists; a catalogue song its relationships with include.
+        /// </summary>
+        public async Task<(AppleMusicItem? Album, AppleMusicItem? Artist)> SongHomeAsync(AppleMusicItem song, CancellationToken token)
+        {
+            await StartAsync(token).ConfigureAwait(false);
+            AppleMusicItem? album = null, artist = null;
+            if (song.IsLibrary)
+            {
+                var id = Uri.EscapeDataString(song.Id);
+                try { album = (await ListAsync($"/v1/me/library/songs/{id}/albums", token, most: 1).ConfigureAwait(false)).FirstOrDefault(); }
+                catch (AppleMusicException ex) when (!ex.SignIn) { }
+                try { artist = (await ListAsync($"/v1/me/library/songs/{id}/artists", token, most: 1).ConfigureAwait(false)).FirstOrDefault(); }
+                catch (AppleMusicException ex) when (!ex.SignIn) { }
+                if ((album != null && artist != null) || song.CatalogId.Length == 0) return (album, artist);
+            }
+            var catalogId = song.CatalogId.Length > 0 ? song.CatalogId : song.Id;
+            using var doc = await GetAsync($"/v1/catalog/{Storefront}/songs/{Uri.EscapeDataString(catalogId)}?include=albums,artists", token).ConfigureAwait(false);
+            if (doc.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array && data.GetArrayLength() > 0 &&
+                data[0].TryGetProperty("relationships", out var rel))
+            {
+                AppleMusicItem? First(string name) =>
+                    rel.TryGetProperty(name, out var r) && r.TryGetProperty("data", out var d) && d.ValueKind == JsonValueKind.Array && d.GetArrayLength() > 0
+                        ? Parse(d[0]) : null;
+                album ??= First("albums");
+                artist ??= First("artists");
+            }
+            return (album, artist);
+        }
+
+        /// <summary>Adds a catalogue song to your library. Apple takes it a moment later (it answers 202).</summary>
+        public async Task AddToLibraryAsync(string catalogId, CancellationToken token)
+        {
+            await StartAsync(token).ConfigureAwait(false);
+            using var req = Request(HttpMethod.Post, $"{AmpApi}/v1/me/library?ids[songs]={Uri.EscapeDataString(catalogId)}");
+            using var _ = await SendAsync(req, token).ConfigureAwait(false);
+        }
+
+        /// <summary>The library id of a catalogue song you have, or null when it isn't in your library.</summary>
+        public async Task<string?> LibraryIdOfAsync(string catalogId, CancellationToken token)
+        {
+            await StartAsync(token).ConfigureAwait(false);
+            using var doc = await GetAsync($"/v1/catalog/{Storefront}/songs/{Uri.EscapeDataString(catalogId)}?relate=library", token).ConfigureAwait(false);
+            if (doc.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array && data.GetArrayLength() > 0 &&
+                data[0].TryGetProperty("relationships", out var rel) && rel.TryGetProperty("library", out var lib) &&
+                lib.TryGetProperty("data", out var d) && d.ValueKind == JsonValueKind.Array && d.GetArrayLength() > 0 &&
+                d[0].TryGetProperty("id", out var id) && id.ValueKind == JsonValueKind.String)
+                return id.GetString();
+            return null;
+        }
+
+        /// <summary>Takes a song out of your library, by its library id. Its playlists lose it too, as in Apple Music.</summary>
+        public async Task RemoveFromLibraryAsync(string libraryId, CancellationToken token)
+        {
+            await StartAsync(token).ConfigureAwait(false);
+            using var req = Request(HttpMethod.Delete, $"{AmpApi}/v1/me/library/songs/{Uri.EscapeDataString(libraryId)}");
+            using var _ = await SendAsync(req, token).ConfigureAwait(false);
+        }
+
+        /// <summary>Makes a new playlist in your library holding one song, and returns it.</summary>
+        public async Task<AppleMusicItem> CreatePlaylistAsync(string name, AppleMusicItem song, CancellationToken token)
+        {
+            await StartAsync(token).ConfigureAwait(false);
+            var (id, type) = song.IsLibrary ? (song.Id, "library-songs") : (song.CatalogId.Length > 0 ? song.CatalogId : song.Id, "songs");
+            using var req = Request(HttpMethod.Post, $"{AmpApi}/v1/me/library/playlists");
+            req.Content = new StringContent(JsonSerializer.Serialize(new
+            {
+                attributes = new { name },
+                relationships = new { tracks = new { data = new[] { new { id, type } } } },
+            }), Encoding.UTF8, "application/json");
+            using var doc = await SendAsync(req, token).ConfigureAwait(false);
+            var made = doc.RootElement.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Array && data.GetArrayLength() > 0
+                ? Parse(data[0]) : null;
+            if (made == null) throw new AppleMusicException("Apple Music didn't say whether the playlist was made. Look in Library, Playlists.");
+            made.CanEdit = true;
+            return made;
+        }
+
         // ---- Playing ----
 
         /// <summary>

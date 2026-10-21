@@ -1,3 +1,12 @@
+4.1.6
+New feature: shuffle and repeat for Apple Music. Shift+F10 anywhere in Apple Music has Shuffle and Repeat, and so does the Audio menu while a song plays. Repeat goes from off to all to this song. With shuffle on, the song you press Enter on plays first and the rest of its list follows in a random order. Previous track goes back through what actually played. Both are remembered for next time, and you can give them keys in Preferences, Audio, Configure keyboard shortcuts.
+New feature: Up next. While Apple Music plays, Shift+F10 or the Audio menu has Up next, a list of the songs to come. Alt+Up and Alt+Down move a song, Delete takes it out, Enter plays it now, and Clear all empties it.
+New feature: Go to artist and Go to album. Press Shift+F10 on an Apple Music song to open its artist or its album. Backspace takes you back to where you were.
+New feature: Add to library and Remove from library on an Apple Music song's Shift+F10 menu. Remove asks first, and the song comes out of your playlists too, the same as in Apple Music.
+New feature: New playlist. Add to playlist on a song's Shift+F10 menu starts with New playlist, which asks for a name and makes the playlist with that song in it.
+Bug fixed: pressing Space on a check box didn't tell NVDA whether it was now checked or not checked, so you had to Tab away and back to find out. Every check box in the app says it now.
+Bug fixed: iPhone voice messages (CAF files with Opus sound in them, like "Audio message from ....caf") wouldn't play. They play now, at the right volume, and you can skip through them.
+
 4.1.5
 New: you can turn Autoplay off. It's in Preferences, Apple Music. With it off, music stops at the end of a playlist or album like before.
 Bug fixed: opening Trash in Google Drive kept saying "Could not read Trash: The operation was canceled." Google takes over a minute to list a big trash, so it's now gathered in the background when Google Drive connects and opens straight away. Things you delete, restore or delete forever show up in it at once.

@@ -548,6 +548,10 @@ namespace ExplorerNative
         /// </summary>
         public bool AppleMusicAutoplay { get; set; } = true;
 
+        /// <summary>Apple Music's shuffle and repeat ("off", "all", "one"), kept between runs like Apple's own (4.1.6).</summary>
+        public bool AppleMusicShuffle { get; set; }
+        public string AppleMusicRepeat { get; set; } = "off";
+
         /// <summary>
         /// The Explorer Connect web app on https://&lt;this pc&gt;.&lt;tailnet&gt;.ts.net/, through
         /// Tailscale Serve (Preferences, Web app). Off by default.
@@ -662,6 +666,9 @@ namespace ExplorerNative
         public string AudioNextTrackShortcut { get; set; } = "";
         public string AudioPreviousTrackShortcut { get; set; } = "";
         public string AudioRepeatShortcut { get; set; } = "";
+        // Apple Music's shuffle and Up next (4.1.6): no key until one is chosen.
+        public string AudioShuffleShortcut { get; set; } = "";
+        public string AudioUpNextShortcut { get; set; } = "";
 
         /// <summary>
         /// Audio actions whose shortcut works only while one of this application's

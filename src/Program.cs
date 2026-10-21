@@ -985,6 +985,9 @@ namespace ExplorerNative
         /// <summary>Play next on an Apple Music song: after the one playing, or now when nothing is.</summary>
         public static void PlayAppleMusicNext(string path) => _context?.PlayAppleMusicNext(path);
 
+        /// <summary>Apple Music's repeat: off, all, one, from its menu whether or not anything plays.</summary>
+        public static void CycleAppleRepeat() => _context?.CycleAppleRepeat();
+
         /// <summary>Runs one audio command, announcing it as the preferences ask.</summary>
         public static void RunAudioAction(AudioAction action) => _context?.RunAudioAction(action);
 

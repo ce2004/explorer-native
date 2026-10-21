@@ -132,6 +132,10 @@ namespace ExplorerNative
             Live("applemusic.playnext", "Apple Music song chosen to play next", AudioTransport, Say, "{0}", "Apathy by Someone plays next"),
             Live("applemusic.favorite", "Apple Music song favorited or unfavorited", Navigation, Say, "{0}", "Favorited Apathy"),
             Live("applemusic.playlist", "Apple Music song added to a playlist", Navigation, Say, "{0}", "Added Apathy to Road trip"),
+            Live("applemusic.library", "Apple Music song added to or removed from your library", Navigation, Say, "{0}", "Added Apathy to your library"),
+            Live("applemusic.shuffle", "Apple Music shuffle turned on or off", AudioTransport, Say, "{0}", "Shuffle on"),
+            Live("applemusic.repeat", "Apple Music repeat changed", AudioTransport, Say, "{0}", "Repeat all"),
+            Live("applemusic.upnext", "Apple Music's Up next", AudioTransport, Say, "{0}", "Nothing is up next"),
 
             // ---- Audio: playing ----------------------------------------------
             Live("audio.play", "Started playing", AudioTransport, Bar, "Playing {0}", "Ashley Cooke - your place.flac"),

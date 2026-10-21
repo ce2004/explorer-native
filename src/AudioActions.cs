@@ -32,6 +32,8 @@ namespace ExplorerNative
         // At the end, so every older action keeps its hotkey id (HotkeyId).
         NextTrack,
         PreviousTrack,
+        ToggleShuffle,
+        UpNext,
     }
 
     /// <summary>
@@ -278,6 +280,17 @@ namespace ExplorerNative
             new AudioActionInfo(AudioAction.PreviousTrack, "Previous track", false,
                 s => s.AudioPreviousTrackShortcut, (s, v) => s.AudioPreviousTrackShortcut = v)
                 { NotificationId = "audio.previous" },
+
+            // Apple Music's (4.1.6). Shortcuts only, with no key until one is
+            // chosen; the Audio menu shows them while Apple Music plays, and
+            // Shift+F10 in Apple Music has them too (the menu builds those items).
+            new AudioActionInfo(AudioAction.ToggleShuffle, "Shuffle on or off (Apple Music)", false,
+                s => s.AudioShuffleShortcut, (s, v) => s.AudioShuffleShortcut = v)
+                { NotificationId = "applemusic.shuffle" },
+
+            new AudioActionInfo(AudioAction.UpNext, "Up next (Apple Music)", false,
+                s => s.AudioUpNextShortcut, (s, v) => s.AudioUpNextShortcut = v)
+                { NotificationId = "applemusic.upnext" },
 
             // E and L rather than the obvious P and D: both were already taken by
             // Pause and Volume down, and two items sharing a letter means the key

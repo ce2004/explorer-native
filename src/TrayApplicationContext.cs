@@ -218,6 +218,8 @@ namespace ExplorerNative
             // Apple Music's browsing sign-in; the player signs in on its own.
             AppleMusic.Configure(_settings.AppleMusicUserToken);
             AppleMusic.Autoplay = _settings.AppleMusicAutoplay;
+            AppleMusicPlayer.SetModes(_settings.AppleMusicShuffle,
+                Enum.TryParse<AppleMusicPlayer.RepeatMode>(_settings.AppleMusicRepeat, true, out var repeatMode) ? repeatMode : AppleMusicPlayer.RepeatMode.Off);
 
             StartConnect();
 
@@ -1086,7 +1088,7 @@ namespace ExplorerNative
             // for the whole of a dialog, that mark swallowed everything the player
             // said in the meantime but the last.
             if (action is AudioAction.SpeedDialog or AudioAction.DeviceDialog or AudioAction.LimiterDialog
-                or AudioAction.EqualiserDialog or AudioAction.PitchDialog or AudioAction.SilenceDialog)
+                or AudioAction.EqualiserDialog or AudioAction.PitchDialog or AudioAction.SilenceDialog or AudioAction.UpNext)
             {
                 if (_audioDialogOpen) return;
                 if (_form?.PreferencesOpen == true)
@@ -1124,11 +1126,30 @@ namespace ExplorerNative
 
         private void RunAudioActionCore(AudioAction action, int repeat)
         {
+            // Apple Music's shuffle can be set before anything plays, like in Apple Music itself.
+            if (action == AudioAction.ToggleShuffle)
+            {
+                var said = AppleMusicPlayer.ToggleShuffle();
+                _settings.AppleMusicShuffle = AppleMusicPlayer.Shuffle;
+                SayAudio("applemusic.shuffle", said);
+                return;
+            }
+            if (action == AudioAction.UpNext)
+            {
+                ShowUpNext();
+                return;
+            }
+
             // Apple Music plays in its own player, so the same keys drive it while
             // it is the thing playing. The sound is sealed, so the processing
             // commands (speed, pitch, EQ, silence) have nothing to act on.
             if (AppleMusicPlayer.IsActive)
             {
+                if (action == AudioAction.ToggleRepeat)
+                {
+                    CycleAppleRepeat();
+                    return;
+                }
                 string m = action switch
                 {
                     AudioAction.PlayPause => AppleMusicPlayer.TogglePlayPause(),
@@ -1149,7 +1170,7 @@ namespace ExplorerNative
                     AudioAction.Mute => AppleMusicPlayer.ToggleMute(),
                     // The output device is the one thing here both players share.
                     AudioAction.DeviceDialog => ShowDeviceDialog(),
-                    AudioAction.SpeedUp or AudioAction.SpeedDown or AudioAction.ToggleRepeat
+                    AudioAction.SpeedUp or AudioAction.SpeedDown
                         or AudioAction.SpeedDialog or AudioAction.LimiterDialog
                         or AudioAction.EqualiserDialog or AudioAction.PitchDialog or AudioAction.SilenceDialog
                         => "That isn't available for Apple Music",
@@ -1324,6 +1345,20 @@ namespace ExplorerNative
 
         private static string? _deviceNameFor;
         private static string _deviceName = "";
+
+        /// <summary>Apple Music's Up next: the songs to come, to reorder, take out, play or clear (4.1.6).</summary>
+        private void ShowUpNext()
+        {
+            if (!AppleMusicPlayer.IsActive)
+            {
+                SayAudio("applemusic.upnext", "Nothing is playing in Apple Music");
+                return;
+            }
+            using var dialog = new UpNextForm();
+            if (_form is { IsDisposed: false, Visible: true }) dialog.ShowDialog(_form);
+            else dialog.ShowDialog();
+            _form?.RestoreListFocusExternally();
+        }
 
         private string ShowDeviceDialog()
         {
@@ -1841,6 +1876,13 @@ namespace ExplorerNative
         /// Play next on an Apple Music song (Shift+F10): after the song playing
         /// now, or straight away when nothing is.
         /// </summary>
+        public void CycleAppleRepeat()
+        {
+            var said = AppleMusicPlayer.CycleRepeat();
+            _settings.AppleMusicRepeat = AppleMusicPlayer.Repeat.ToString().ToLowerInvariant();
+            Notify("applemusic.repeat", said);
+        }
+
         public void PlayAppleMusicNext(string path)
         {
             var said = AppleMusicPlayer.PlayAfterCurrent(path);

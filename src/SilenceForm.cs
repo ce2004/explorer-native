@@ -180,7 +180,7 @@ namespace ExplorerNative
             // The switch, after the five numbers in the tab order: the dialog
             // opens on the first number, and this is the answer to "is this
             // doing anything" — the way to compare the effect against none.
-            var onBox = new CheckBox
+            var onBox = new SpokenCheckBox
             {
                 Text = "Silence reduction &on",
                 Checked = on,

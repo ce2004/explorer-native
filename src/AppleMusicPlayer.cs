@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Threading;
@@ -74,6 +75,31 @@ namespace ExplorerNative
         private static readonly List<string> _upNext = new();
         private static string? _anchor;
 
+        // The rest of the list a song was chosen from, in the order it will play
+        // (shuffled or not), written out when the song is chosen (4.1.6), so
+        // shuffle, repeat and Up next have one queue to work on. Null for a
+        // station, which grows as it plays and goes on through its folder.
+        private static List<string>? _listQueue;
+        private static string? _listFolder;
+
+        /// <summary>The list songs played this time through, oldest first: what Previous track goes back to.</summary>
+        private static readonly List<string> _history = new();
+
+        public enum RepeatMode { Off, All, One }
+
+        /// <summary>Shuffle and repeat, from settings (Preferences keeps them between runs).</summary>
+        private static bool _shuffle;
+        private static RepeatMode _repeat;
+
+        public static bool Shuffle { get { lock (Gate) return _shuffle; } }
+        public static RepeatMode Repeat { get { lock (Gate) return _repeat; } }
+
+        /// <summary>Set at start from settings, without saying anything.</summary>
+        public static void SetModes(bool shuffle, RepeatMode repeat)
+        {
+            lock (Gate) { _shuffle = shuffle; _repeat = repeat; }
+        }
+
         /// <summary>What was queued before Play next took its place, in case Apple's player was already moving on to it.</summary>
         private static string? _displacedPath, _displacedId;
 
@@ -144,6 +170,8 @@ namespace ExplorerNative
             PlayedOn,
             /// <summary>The same song again after a crash or a stall: nothing about the list changes.</summary>
             Restarted,
+            /// <summary>Previous track, or a song played from Up next: the queue was set up by the caller.</summary>
+            Back,
         }
 
         /// <summary>
@@ -163,10 +191,12 @@ namespace ExplorerNative
                 {
                     _upNext.RemoveAll(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
                     _anchor = path;
+                    BuildListQueue(path);
                 }
                 else if (how == StartKind.PlayedOn) BecameCurrent(path);
             }
-            var (nextPath, nextId, nextName) = NextFor(path);
+            // Repeat one plays this song again when it ends, so nothing is queued after it.
+            var (nextPath, nextId, nextName) = Repeat == RepeatMode.One ? (null, null, null) : NextFor(path);
             lock (Gate)
             {
                 mine = ++_generation;
@@ -215,8 +245,20 @@ namespace ExplorerNative
             try
             {
                 string? next;
-                lock (Gate) next = _upNext.Count > 0 ? _upNext[0] : null;
-                next ??= AppleMusic.NextSongAfter(ListPlace(path));
+                bool listed;
+                lock (Gate)
+                {
+                    next = _upNext.Count > 0 ? _upNext[0] : null;
+                    listed = _listQueue != null;
+                    if (next == null && _listQueue != null)
+                    {
+                        // Repeat all: an ended list starts over (shuffled afresh if shuffle is on).
+                        if (_listQueue.Count == 0 && _repeat == RepeatMode.All && _listFolder != null && !AppleMusic.InStation(path))
+                            Refill();
+                        next = _listQueue.Count > 0 ? _listQueue[0] : null;
+                    }
+                }
+                if (!listed) next ??= AppleMusic.NextSongAfter(ListPlace(path));
                 if (next == null) return (null, null, null);
                 return (next, AppleMusic.CatalogIdForPlaying(next), AppleMusic.SpokenName(next) ?? Path.GetFileName(next));
             }
@@ -235,12 +277,67 @@ namespace ExplorerNative
             if (_upNext.Count > 0 && string.Equals(_upNext[0], path, StringComparison.OrdinalIgnoreCase))
             {
                 _upNext.RemoveAt(0);
+                if (_listQueue != null)
+                {
+                    // A Play next song that is in the list too: played now, not again later.
+                    int i = _listQueue.FindIndex(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+                    if (i >= 0) _listQueue.RemoveAt(i);
+                }
                 // A Play next song that was the list's own next song anyway: the
                 // list goes on past it, rather than playing it a second time.
-                if (_anchor != null && string.Equals(AppleMusic.NextSongAfter(_anchor), path, StringComparison.OrdinalIgnoreCase))
+                else if (_anchor != null && string.Equals(AppleMusic.NextSongAfter(_anchor), path, StringComparison.OrdinalIgnoreCase))
                     _anchor = path;
+                return;
             }
-            else _anchor = path;
+            _anchor = path;
+            if (_listQueue != null)
+            {
+                int at = _listQueue.FindIndex(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+                if (at >= 0) _listQueue.RemoveAt(at);
+                _history.Add(path);
+            }
+        }
+
+        /// <summary>
+        /// Enter on a song: the rest of its list becomes the queue, in the order
+        /// shown, or every other song of it shuffled. A station keeps no queue: it
+        /// grows as it plays. Under Gate.
+        /// </summary>
+        private static void BuildListQueue(string path)
+        {
+            _history.Clear();
+            var folder = Path.GetDirectoryName(path);
+            var songs = folder == null || AppleMusic.InStation(path) ? null : AppleMusic.SongsShown(folder);
+            int at = songs?.FindIndex(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase)) ?? -1;
+            if (songs == null || at < 0) { _listQueue = null; _listFolder = null; return; }
+            _listFolder = folder;
+            _history.Add(path);
+            if (_shuffle)
+            {
+                songs.RemoveAt(at);
+                Shuffled(songs);
+                _listQueue = songs;
+            }
+            else _listQueue = songs.Skip(at + 1).ToList();
+        }
+
+        /// <summary>Repeat all, at the end of the list: all of it again. Under Gate.</summary>
+        private static void Refill()
+        {
+            var songs = AppleMusic.SongsShown(_listFolder!);
+            if (songs == null) return;
+            if (_shuffle) Shuffled(songs);
+            _listQueue = songs;
+            _history.Clear();
+        }
+
+        private static void Shuffled(List<string> songs)
+        {
+            for (int i = songs.Count - 1; i > 0; i--)
+            {
+                int j = Random.Shared.Next(i + 1);
+                (songs[i], songs[j]) = (songs[j], songs[i]);
+            }
         }
 
         /// <summary>
@@ -303,17 +400,225 @@ namespace ExplorerNative
         public static string SkipToPrevious()
         {
             string path, place;
-            lock (Gate) { path = _currentPath; place = _anchor ?? _currentPath; }
-            if (path.Length == 0) return "Nothing is playing";
-            var previous = !string.Equals(path, place, StringComparison.OrdinalIgnoreCase)
-                ? place
-                : AppleMusic.PreviousSongBefore(place);
+            string? previous = null;
+            var how = StartKind.Chosen;
+            lock (Gate)
+            {
+                path = _currentPath; place = _anchor ?? _currentPath;
+                if (path.Length == 0) return "Nothing is playing";
+                if (!string.Equals(path, place, StringComparison.OrdinalIgnoreCase))
+                {
+                    // From a Play next song, back to the list song it came after.
+                    previous = place; how = StartKind.Back;
+                }
+                else if (_listQueue != null && _history.Count >= 2 &&
+                         string.Equals(_history[^1], path, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Back through what played, which under shuffle is not the list's order:
+                    // this song goes back to the front of what is to come.
+                    previous = _history[^2];
+                    _history.RemoveAt(_history.Count - 1);
+                    _listQueue.Insert(0, path);
+                    _anchor = previous;
+                    how = StartKind.Back;
+                }
+                else if (_shuffle && _listQueue != null) return "That's the first song played";
+            }
+            // Started part way down a list in order: the song above it, and the list goes on from there.
+            previous ??= AppleMusic.PreviousSongBefore(place);
             if (previous == null) return "That's the first song in the list";
             try
             {
                 var id = AppleMusic.CatalogIdForPlaying(previous);
                 var name = AppleMusic.SpokenName(previous) ?? Path.GetFileName(previous);
-                Start(previous, id, name, -1, startAt: 0, retried: false, how: StartKind.Chosen);
+                Start(previous, id, name, -1, startAt: 0, retried: false, how: how);
+                return name;
+            }
+            catch (AppleMusicException ex) { return ex.Message; }
+        }
+
+        // ---- Shuffle, repeat and Up next (Conner, 4.1.6) ----
+
+        /// <summary>
+        /// Shuffle on or off. On, what is left of the list is shuffled; off, the
+        /// list goes on in its own order from the song playing. Returns what to say.
+        /// </summary>
+        public static string ToggleShuffle()
+        {
+            bool on;
+            lock (Gate)
+            {
+                on = _shuffle = !_shuffle;
+                if (_listQueue != null && _listFolder != null)
+                {
+                    if (on) Shuffled(_listQueue);
+                    else
+                    {
+                        var songs = AppleMusic.SongsShown(_listFolder);
+                        int at = songs?.FindIndex(p => string.Equals(p, _anchor, StringComparison.OrdinalIgnoreCase)) ?? -1;
+                        if (songs != null) _listQueue = songs.Skip(at + 1).ToList();
+                    }
+                }
+            }
+            Requeue();
+            return on ? "Shuffle on" : "Shuffle off";
+        }
+
+        /// <summary>Repeat off, then all, then one, then off again. Returns what to say.</summary>
+        public static string CycleRepeat()
+        {
+            RepeatMode now;
+            lock (Gate) now = _repeat = _repeat switch { RepeatMode.Off => RepeatMode.All, RepeatMode.All => RepeatMode.One, _ => RepeatMode.Off };
+            Requeue();
+            return RepeatWords(now);
+        }
+
+        public static string RepeatWords(RepeatMode mode) => mode switch
+        {
+            RepeatMode.All => "Repeat all",
+            RepeatMode.One => "Repeat this song",
+            _ => "Repeat off",
+        };
+
+        /// <summary>
+        /// After the queue changed: the song Apple's player has lined up next is
+        /// replaced with the one now due, or taken away when nothing is.
+        /// </summary>
+        private static void Requeue()
+        {
+            string path; int gen;
+            lock (Gate)
+            {
+                if (_currentPath.Length == 0 || _ended) return;
+                path = _currentPath; gen = _generation;
+            }
+            var (next, id, name) = Repeat == RepeatMode.One ? (null, null, null) : NextFor(path);
+            lock (Gate)
+            {
+                if (gen != _generation || id == _queuedId) return;
+                // What was queued may be what Apple's player is moving on to at
+                // this very moment; kept, so that move is still recognised.
+                if (_queuedPath != null) { _displacedPath = _queuedPath; _displacedId = _queuedId; }
+                _queuedPath = next; _queuedId = id; _queuedName = name;
+            }
+            Log("requeue " + (id ?? "nothing"));
+            OnUi(() => _ = CallAsync(id != null ? "requeue" : "clearnext", id, gen));
+        }
+
+        /// <summary>One song in Up next: its row path, what is said for it, and whether it was chosen with Play next.</summary>
+        public readonly record struct UpNextSong(string Path, string Name, bool Chosen);
+
+        /// <summary>
+        /// Up next: songs chosen with Play next, then the rest of the list. A
+        /// station shows the songs it already has; changing them keeps them as a
+        /// list, and the station adds more after.
+        /// </summary>
+        public static List<UpNextSong> UpNext()
+        {
+            List<string> chosen, listed;
+            lock (Gate)
+            {
+                if (_currentPath.Length == 0 || _ended) return new List<UpNextSong>();
+                chosen = new List<string>(_upNext);
+                listed = _listQueue != null ? new List<string>(_listQueue) : StationAhead(_anchor ?? _currentPath);
+            }
+            return chosen.Select(p => new UpNextSong(p, NameOf(p), true))
+                .Concat(listed.Select(p => new UpNextSong(p, NameOf(p), false))).ToList();
+        }
+
+        private static string NameOf(string path) => AppleMusic.SpokenName(path) ?? Path.GetFileName(path);
+
+        /// <summary>The songs after this one in its (station's) folder, at most a couple of hundred. Under Gate.</summary>
+        private static List<string> StationAhead(string from)
+        {
+            var ahead = new List<string>();
+            for (var p = AppleMusic.NextSongAfter(from); p != null && ahead.Count < 200; p = AppleMusic.NextSongAfter(p)) ahead.Add(p);
+            return ahead;
+        }
+
+        /// <summary>The whole of Up next as one list, to change and put back. Under Gate.</summary>
+        private static List<(string Path, bool Chosen)> Combined()
+        {
+            var all = _upNext.Select(p => (p, true)).ToList();
+            _listQueue ??= StationAhead(_anchor ?? _currentPath);   // a station's songs, kept as a list from now on
+            all.AddRange(_listQueue.Select(p => (p, false)));
+            return all;
+        }
+
+        /// <summary>Puts a changed Up next back: the chosen part stays in front, so a song takes the kind of the place it lands in. Under Gate.</summary>
+        private static void PutBack(List<(string Path, bool Chosen)> all, int chosenCount)
+        {
+            _upNext.Clear();
+            _upNext.AddRange(all.Take(chosenCount).Select(s => s.Path));
+            _listQueue = all.Skip(chosenCount).Select(s => s.Path).ToList();
+        }
+
+        /// <summary>Moves the song at <paramref name="index"/> one place up (-1) or down (+1). Returns its new place, or -1.</summary>
+        public static int MoveUpNext(int index, int delta)
+        {
+            lock (Gate)
+            {
+                if (_currentPath.Length == 0 || _ended) return -1;
+                var all = Combined();
+                int to = index + delta;
+                if (index < 0 || index >= all.Count || to < 0 || to >= all.Count) return -1;
+                (all[index], all[to]) = (all[to], all[index]);
+                PutBack(all, _upNext.Count);
+            }
+            Requeue();
+            return index + delta;
+        }
+
+        /// <summary>Takes the song at <paramref name="index"/> out of Up next.</summary>
+        public static bool RemoveUpNext(int index)
+        {
+            lock (Gate)
+            {
+                if (_currentPath.Length == 0 || _ended) return false;
+                var all = Combined();
+                if (index < 0 || index >= all.Count) return false;
+                int chosen = _upNext.Count - (all[index].Chosen ? 1 : 0);
+                all.RemoveAt(index);
+                PutBack(all, chosen);
+            }
+            Requeue();
+            return true;
+        }
+
+        /// <summary>Empties Up next: the song playing is the last, then Autoplay (or a station's next handful).</summary>
+        public static void ClearUpNext()
+        {
+            lock (Gate)
+            {
+                if (_currentPath.Length == 0 || _ended) return;
+                _upNext.Clear();
+                _listQueue = new List<string>();
+            }
+            Requeue();
+        }
+
+        /// <summary>Plays the song at <paramref name="index"/> now; the ones before it are passed over. Returns what to say.</summary>
+        public static string PlayUpNext(int index)
+        {
+            string path;
+            lock (Gate)
+            {
+                if (_currentPath.Length == 0 || _ended) return "Nothing is playing";
+                var all = Combined();
+                if (index < 0 || index >= all.Count) return "";
+                path = all[index].Path;
+                bool wasChosen = all[index].Chosen;
+                int chosen = all.Take(index + 1).Count(s => s.Chosen);
+                all.RemoveRange(0, index + 1);
+                PutBack(all, _upNext.Count - chosen);
+                // A list song is the list's place now; a Play next song is not.
+                if (!wasChosen) { _anchor = path; _history.Add(path); }
+            }
+            try
+            {
+                var name = NameOf(path);
+                Start(path, AppleMusic.CatalogIdForPlaying(path), name, -1, 0, false, StartKind.Back);
+                Volatile.Write(ref _autoGen, Volatile.Read(ref _generation));
                 return name;
             }
             catch (AppleMusicException ex) { return ex.Message; }
@@ -370,7 +675,7 @@ namespace ExplorerNative
             {
                 _currentPath = ""; _currentName = ""; _playing = false; _wantPlaying = false; _generation++;
                 _queuedPath = null; _queuedId = null; _displacedPath = null; _displacedId = null;
-                _upNext.Clear(); _anchor = null;
+                _upNext.Clear(); _anchor = null; _listQueue = null; _listFolder = null; _history.Clear();
             }
             OnUi(() => _ = CallAsync("stop"));
             CloseWhenIdle();
@@ -535,6 +840,14 @@ namespace ExplorerNative
         {
             string path; lock (Gate) path = _currentPath;
             if (path.Length == 0) return;
+            // Only a song that played: one Apple won't play is skipped, not tried for ever.
+            if (Repeat == RepeatMode.One && Volatile.Read(ref _startedGen) == Volatile.Read(ref _generation))
+            {
+                // The same song again, quietly: nothing about the list moves.
+                try { Start(path, AppleMusic.CatalogIdForPlaying(path), AppleMusic.SpokenName(path) ?? Path.GetFileName(path), -1, 0, false, StartKind.Restarted); }
+                catch (AppleMusicException ex) { EndOfList(); Say?.Invoke("applemusic.failed", ex.Message); }
+                return;
+            }
             var next = NextFor(path).Path;
             var place = ListPlace(path);
             if (next == null && AppleMusic.InStation(place))
@@ -567,6 +880,8 @@ namespace ExplorerNative
                 foreach (var row in rows)
                     if (!row.IsFolder && !string.Equals(AppleMusic.CatalogIdOrNull(row.Path), AppleMusic.CatalogIdOrNull(finished), StringComparison.Ordinal))
                     {
+                        // The finished list's queue goes: Autoplay goes on like a station.
+                        lock (Gate) { _listQueue = null; _listFolder = null; _history.Clear(); }
                         StartPath(row.Path);
                         return;
                     }
@@ -588,7 +903,7 @@ namespace ExplorerNative
             {
                 _currentPath = ""; _currentName = ""; _playing = false; _wantPlaying = false; _ended = true;
                 _queuedPath = null; _queuedId = null; _displacedPath = null; _displacedId = null;
-                _upNext.Clear(); _anchor = null;
+                _upNext.Clear(); _anchor = null; _listQueue = null; _listFolder = null; _history.Clear();
             }
             CloseWhenIdle();
         }
@@ -602,6 +917,8 @@ namespace ExplorerNative
                 var folder = Path.GetDirectoryName(finished)!;
                 var more = await AppleMusic.MoreFromStationAsync(folder, cts.Token).ConfigureAwait(true);
                 if (Volatile.Read(ref _generation) != mine) return;   // something else was played meanwhile
+                // A station changed in Up next keeps a list of its own: the new songs join it.
+                lock (Gate) _listQueue?.AddRange(more.Where(r => !r.IsFolder).Select(r => r.Path));
                 foreach (var row in more)
                     if (!row.IsFolder) { StartPath(row.Path); return; }
                 EndOfList();
@@ -1159,7 +1476,7 @@ try {
 } catch (e) {}
 let music = null, current = 0, switching = false, endedFor = -1, wantVolume = null, wantSink = null;
 let queuedNext = null, lastState = "", seekWant = null, seeking = false, advances = 0;
-let holdPaused = false, pendingRequeue = null, resumeAt = 0;
+let holdPaused = false, pendingRequeue = null, pendingClear = false, resumeAt = 0;
 // MusicKit can reset the volume when it builds the audio for a new song (it
 // started at 0, silent), so the level asked for is kept and put back.
 function applyVolume() { if (music && wantVolume !== null && music.volume !== wantVolume) music.volume = wantVolume; }
@@ -1293,7 +1610,7 @@ window.amCommand = async function (c) {
   if (c.command === "play") {
     const mine = c.gen;
     current = mine; switching = true; queuedNext = null; seekWant = null;
-    holdPaused = !!c.paused; pendingRequeue = null; resumeAt = 0;
+    holdPaused = !!c.paused; pendingRequeue = null; pendingClear = false; resumeAt = 0;
     try {
       const items = [item(c.arg)];
       if (c.next) items.push(item(c.next));
@@ -1301,6 +1618,8 @@ window.amCommand = async function (c) {
       catch (e) { if (mine !== current) return; await music.setQueue({ song: c.arg }); items.length = 1; }
       if (mine !== current) return;
       if (items.length > 1) queuedNext = String(c.next);
+      // Up next changed while this song was being put in: nothing after it now.
+      if (pendingClear) { music.queue.clearAfterCurrent(); queuedNext = null; pendingClear = false; }
       // A Play next chosen while this song was being put in.
       if (pendingRequeue !== null) {
         music.queue.clearAfterCurrent();
@@ -1330,7 +1649,8 @@ window.amCommand = async function (c) {
   if (switching && c.gen === current) {
     if (c.command === "pause") { holdPaused = true; return; }
     if (c.command === "resume") { holdPaused = false; return; }
-    if (c.command === "requeue") { pendingRequeue = String(c.arg); return; }
+    if (c.command === "requeue") { pendingRequeue = String(c.arg); pendingClear = false; return; }
+    if (c.command === "clearnext") { pendingRequeue = null; pendingClear = true; return; }
   }
   try {
     switch (c.command) {
@@ -1356,6 +1676,12 @@ window.amCommand = async function (c) {
         music.queue.clearAfterCurrent();
         await music.playLater({ items: [item(c.arg)] });
         queuedNext = String(c.arg);
+        break;
+      case "clearnext":
+        // Nothing comes next (Up next cleared, repeat one): the song's end is told as an end.
+        if (c.gen !== current) break;
+        music.queue.clearAfterCurrent();
+        queuedNext = null;
         break;
     }
     sendState();

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
@@ -48,6 +49,7 @@ namespace ExplorerNative
                 WithWatchdog("the editor when the source refuses a seek", EditedRefusedSeekTests);
                 WithWatchdog("FLAC in Ogg damaged at the end", () => OggFlacDamageTests(dir));
                 WithWatchdog("Media Foundation reads are bounded", SourceShapeTests);
+                WithWatchdog("Opus in CAF", () => CafOpusTests(dir));
             }
             finally
             {
@@ -299,6 +301,96 @@ namespace ExplorerNative
                     Equal("and every counted frame decodes", (65 * blocks).ToString(), ReadAll(adpcm).Count.ToString());
                 }
             }
+        }
+
+        /// <summary>
+        /// An iPhone voice message: Opus in CAF, 24kHz mono, 20ms packets (4.1.6,
+        /// Conner's "Audio message from ....caf" said CAF holding 'opus' sound).
+        /// </summary>
+        internal static void CafOpusTests(string dir)
+        {
+            const int rate = 24000, perPacket = 480, seconds = 2;
+            var encoder = Concentus.OpusCodecFactory.CreateEncoder(rate, 1, Concentus.Enums.OpusApplication.OPUS_APPLICATION_AUDIO, null);
+            var packets = new List<byte[]>();
+            var pcm = new float[perPacket];
+            var outBuf = new byte[1500];
+            for (int p = 0; p < rate * seconds / perPacket; p++)
+            {
+                for (int i = 0; i < perPacket; i++) pcm[i] = 0.5f * (float)Math.Sin(2 * Math.PI * 440 * (p * perPacket + i) / rate);
+                int n = encoder.Encode(pcm, perPacket, outBuf, outBuf.Length);
+                packets.Add(outBuf.AsSpan(0, n).ToArray());
+            }
+
+            var path = Path.Combine(dir, "Audio message.caf");
+            using (var file = new MemoryStream())
+            {
+                file.Write("caff"u8); file.Write(BE16(1)); file.Write(BE16(0));
+                var desc = new MemoryStream();
+                desc.Write(BE64(BitConverter.DoubleToInt64Bits(rate)));
+                desc.Write("opus"u8);
+                desc.Write(BE32(0)); desc.Write(BE32(0)); desc.Write(BE32(perPacket)); desc.Write(BE32(1)); desc.Write(BE32(0));
+                Chunk(file, "desc", desc.ToArray());
+                var pakt = new MemoryStream();
+                pakt.Write(BE64(packets.Count)); pakt.Write(BE64(rate * seconds)); pakt.Write(BE32(0)); pakt.Write(BE32(0));
+                foreach (var packet in packets)
+                {
+                    int v = packet.Length;
+                    if (v >= 128) pakt.WriteByte((byte)(0x80 | v >> 7));
+                    pakt.WriteByte((byte)(v & 0x7F));
+                }
+                Chunk(file, "pakt", pakt.ToArray());
+                var data = new MemoryStream();
+                data.Write(BE32(0));
+                foreach (var packet in packets) data.Write(packet);
+                Chunk(file, "data", data.ToArray());
+                File.WriteAllBytes(path, file.ToArray());
+            }
+
+            // EXPLORERNATIVE_CAFFILE=a real one: how loud it decodes, second by second.
+            var real = Environment.GetEnvironmentVariable("EXPLORERNATIVE_CAFFILE");
+            if (!string.IsNullOrEmpty(real))
+            {
+                using var r = new WavDecoder();
+                Console.WriteLine($"  {Path.GetFileName(real)}: opens {r.Open(real, null)} ({r.Diagnostic}), {r.SampleRate} Hz, {r.Channels} ch, {r.Duration:F2} s");
+                var samples = ReadAll(r);
+                double all2 = 0, allPeak = 0;
+                foreach (var x in samples) { all2 += x * x; allPeak = Math.Max(allPeak, Math.Abs(x)); }
+                Console.WriteLine($"    whole file: mean {10 * Math.Log10(all2 / Math.Max(1, samples.Count)):F1} dB, max {20 * Math.Log10(allPeak):F1} dB");
+                for (int s = 0; s * r.SampleRate < samples.Count; s += 5)
+                {
+                    double sum = 0, peak = 0; int n = 0;
+                    for (int i = s * r.SampleRate; i < Math.Min(samples.Count, (s + 1) * r.SampleRate); i++) { sum += samples[i] * samples[i]; peak = Math.Max(peak, Math.Abs(samples[i])); n++; }
+                    Console.WriteLine($"    second {s}: rms {Math.Sqrt(sum / Math.Max(1, n)):F4}, peak {peak:F3}");
+                }
+            }
+
+            using var caf = new WavDecoder();
+            bool opened = caf.Open(path, null);
+            Check("Opus in CAF opens", opened, caf.Diagnostic);
+            if (!opened) return;
+            const int played = 48000;   // Opus is decoded at its own rate
+            Equal("at Opus's own rate, in its channels", "48000 1", $"{caf.SampleRate} {caf.Channels}");
+            Equal("two seconds long", "2.00", caf.Duration.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
+            var all = ReadAll(caf);
+            Equal("every frame decodes", (played * seconds).ToString(), all.Count.ToString());
+            double tone = Goertzel(all, played, 440), off = Goertzel(all, played, 1234);
+            Check($"and it is the tone ({tone:F3} against {off:F5})", tone > 20 * off && tone > 0.01);
+            double top = 0;
+            foreach (var x in all.Skip(played / 2)) top = Math.Max(top, Math.Abs(x));
+            Check($"at the level it went in at (peak {top:F2}, made at 0.5)", top > 0.35 && top < 0.7);
+
+            Check("a seek to one second", caf.SeekTo(1.0));
+            Equal("lands there", "1.00", caf.Position.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture));
+            var rest = ReadAll(caf);
+            Equal("and the rest decodes", (played * seconds / 2).ToString(), rest.Count.ToString());
+            Check("still the tone after the seek", Goertzel(rest, played, 440) > 20 * Goertzel(rest, played, 1234));
+        }
+
+        private static double Goertzel(List<float> samples, int rate, double frequency)
+        {
+            double k = 2 * Math.Cos(2 * Math.PI * frequency / rate), s1 = 0, s2 = 0;
+            foreach (var x in samples) { double s0 = x + k * s1 - s2; s2 = s1; s1 = s0; }
+            return Math.Sqrt(s1 * s1 + s2 * s2 - k * s1 * s2) / samples.Count;
         }
 
         /// <summary>A CAF of ALAC with a valid cookie and packet table, and 'desc' saying <paramref name="framesPerPacket"/>.</summary>

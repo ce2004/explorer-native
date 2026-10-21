@@ -914,7 +914,7 @@ namespace ExplorerNative
 
             CheckBox Tick(TableLayoutPanel grid, string text, bool value)
             {
-                var box = new CheckBox { Text = text, Checked = value, AutoSize = true, Margin = new Padding(3, 6, 3, 3) };
+                var box = new SpokenCheckBox { Text = text, Checked = value, AutoSize = true, Margin = new Padding(3, 6, 3, 3) };
                 box.AccessibleName = text.Replace("&", "");
                 grid.Controls.Add(box);
                 grid.SetColumnSpan(box, 3);

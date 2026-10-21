@@ -170,8 +170,16 @@ namespace ExplorerNative
             check("Favorite or Unfavorite shows only once known, saying what it will do",
                 menu.Contains("_favoriteItem.Visible = favorite != null;", StringComparison.Ordinal) &&
                 menu.Contains("favorite == true ? \"Unfa&vorite\" : \"Fa&vorite\"", StringComparison.Ordinal), null);
-            check("Add to playlist lists your playlists, and hides when there are none",
-                menu.Contains("_addToPlaylistItem.Visible = playlists is { Count: > 0 };", StringComparison.Ordinal), null);
+            // 4.1.6: New playlist is always in it, so it shows on every song.
+            check("Add to playlist is on every song, starting with New playlist",
+                menu.Contains("_addToPlaylistItem.Visible = appleSong;", StringComparison.Ordinal) &&
+                menu.Contains("\"&New playlist…\"", StringComparison.Ordinal), null);
+            check("Go to artist and Go to album are on every song",
+                menu.Contains("_goToArtistItem.Visible = _goToAlbumItem.Visible = appleSong;", StringComparison.Ordinal), null);
+            check("Up next is offered only while Apple Music plays",
+                menu.Contains("_appleUpNextItem.Visible = inApple && AppleMusicPlayer.IsActive;", StringComparison.Ordinal), null);
+            check("nothing queued after a song is told to the page (Up next cleared, repeat one)",
+                page.Contains("case \"clearnext\":", StringComparison.Ordinal), null);
             check("Play next replaces what Apple's player had queued",
                 page.Contains("music.queue.clearAfterCurrent();", StringComparison.Ordinal), null);
 

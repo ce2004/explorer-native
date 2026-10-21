@@ -99,7 +99,7 @@ namespace ExplorerNative
             // while listening and judge by ear. It is also the one most worth
             // toggling back and forth — at ordinary volumes it is the difference
             // between the limiter doing very little and doing a great deal.
-            var wholeRangeBox = new CheckBox
+            var wholeRangeBox = new SpokenCheckBox
             {
                 Text = "Same lift at &any volume",
                 Checked = wholeRange,
@@ -119,7 +119,7 @@ namespace ExplorerNative
             // After the lists in the tab order, one Tab from the list the dialog
             // opens on: it is the answer to "is this doing anything", and the
             // quickest way to compare the effect against none.
-            var onBox = new CheckBox
+            var onBox = new SpokenCheckBox
             {
                 Text = "Limiter &on",
                 Checked = on,

@@ -24,7 +24,11 @@ namespace ExplorerNative
     /// </summary>
     internal sealed class WavDecoder : ITrackDecoder
     {
-        private enum Codec { Pcm, Float, ALaw, MuLaw, ImaWav, MsAdpcm, Ima4, Alac }
+        private enum Codec { Pcm, Float, ALaw, MuLaw, ImaWav, MsAdpcm, Ima4, Alac, Opus }
+
+        /// <summary>CAF holding Opus (iPhone voice messages): the decoder, and how many packets a seek decodes first to settle it.</summary>
+        private Concentus.IOpusDecoder? _opus;
+        private const int OpusPreroll = 4;
 
         private Stream? _source;
         private readonly object _gate = new();
@@ -353,6 +357,32 @@ namespace ExplorerNative
                     long most = (long)packetSizes.Count * _samplesPerBlock;
                     _totalFrames = validFrames >= 0 ? Math.Min(validFrames, most) : most;
                     return null;
+                case "opus":
+                {
+                    // An iPhone voice message (Messages saves them as Opus in CAF).
+                    // Opus decodes at these rates only; anything else plays at 48k.
+                    if (Channels is < 1 or > 2) return "Opus sound in CAF with more than two channels, which this player does not decode";
+                    if (packetSizes.Count == 0 && bytesPerPacket > 0)
+                        for (long at = 0; at + bytesPerPacket <= _dataLength; at += bytesPerPacket) packetSizes.Add(bytesPerPacket);
+                    if (packetSizes.Count == 0) return "the Opus sound has no packet table";
+                    // Decoded at Opus's own 48kHz, whatever 'desc' says (an iPhone's
+                    // says 24000): asked for 24kHz, the decoder gave Conner's message
+                    // 30dB too quiet, where 48kHz matches ffmpeg. The CAF counts
+                    // frames at its own rate, so they are scaled up.
+                    int descRate = SampleRate is 8000 or 12000 or 16000 or 24000 or 48000 ? SampleRate : 48000;
+                    int scale = 48000 / descRate;
+                    SampleRate = 48000;
+                    if (framesPerPacket * scale > 48000 * 120 / 1000) return "the CAF file's packet size is damaged";   // 120ms at most
+                    _samplesPerBlock = framesPerPacket > 0 ? (int)framesPerPacket * scale : 960;
+                    if (validFrames >= 0) validFrames *= scale;
+                    _opus = Concentus.OpusCodecFactory.CreateDecoder(48000, Channels, null);
+                    _codec = Codec.Opus;
+                    _packetStarts = new long[packetSizes.Count + 1];
+                    for (int i = 0; i < packetSizes.Count; i++) _packetStarts[i + 1] = _packetStarts[i] + packetSizes[i];
+                    long held = (long)packetSizes.Count * _samplesPerBlock;
+                    _totalFrames = validFrames >= 0 ? Math.Min(validFrames, held) : held;
+                    return null;
+                }
                 default:
                     return $"CAF holding '{format.Trim()}' sound, which this player does not decode";
             }
@@ -533,19 +563,25 @@ namespace ExplorerNative
                 }
                 case Codec.Ima4:
                 case Codec.Alac:
+                case Codec.Opus:
                     break;
                 default:
                     return $"a sound format this player does not decode ({_codec}, {_bits} bits)";
             }
 
-            if (_codec != Codec.Alac) _totalFrames = _dataLength / _blockAlign * _samplesPerBlock;
+            if (_codec is not (Codec.Alac or Codec.Opus)) _totalFrames = _dataLength / _blockAlign * _samplesPerBlock;
             // A last ADPCM block cut short still decodes: its frames count too.
             // ALAC has no block size (its packets differ), and dividing by it
             // refused every ALAC .caf with "divide by zero".
             long rest = _blockAlign > 0 ? _dataLength % _blockAlign : 0;
             if (_codec == Codec.ImaWav && rest > 4 * Channels) _totalFrames += (rest - 4 * Channels) * 2 / Channels + 1;
             if (_codec == Codec.MsAdpcm && rest > 7 * Channels) _totalFrames += (rest - 7 * Channels) * 2 / Channels + 2;
-            int perBlock = _codec == Codec.Alac ? Math.Max(_samplesPerBlock, _alac!.FrameLength) : _samplesPerBlock;
+            int perBlock = _codec switch
+            {
+                Codec.Alac => Math.Max(_samplesPerBlock, _alac!.FrameLength),
+                Codec.Opus => Math.Max(_samplesPerBlock, SampleRate * 120 / 1000),
+                _ => _samplesPerBlock,
+            };
             _decoded = new float[Math.Max(perBlock, 4096) * Channels];
             _block = new byte[Math.Max(_blockAlign, 4096)];
             return null;
@@ -588,6 +624,15 @@ namespace ExplorerNative
             _decodedFrames = _decodedTaken = 0;
             _frame = block * _samplesPerBlock;
             if (_codec == Codec.Alac) _packet = Math.Min(block, _packetStarts!.Length - 1);
+            else if (_codec == Codec.Opus)
+            {
+                // Opus carries state from packet to packet: a few before the one
+                // wanted are decoded and thrown away, or a seek starts with a click.
+                _opus!.ResetState();
+                _packet = Math.Max(0, Math.Min(block, _packetStarts!.Length - 1) - OpusPreroll);
+                while (_packet < Math.Min(block, _packetStarts.Length - 1) && DecodeBlock()) { }
+                _decodedFrames = _decodedTaken = 0;
+            }
             else _dataPosition = block * _blockAlign;
             int skip = (int)(frame - _frame);
             if (skip > 0 && DecodeBlock())
@@ -637,6 +682,26 @@ namespace ExplorerNative
         private bool DecodeBlock()
         {
             _decodedTaken = 0;
+            if (_codec == Codec.Opus)
+            {
+                if (_packet >= _packetStarts!.Length - 1) return false;
+                long start = _packetStarts[_packet], length = _packetStarts[_packet + 1] - start;
+                if (_block.Length < length) _block = new byte[length];
+                _source!.Position = _dataStart + start;
+                int got = ReadFully(_source, _block, (int)length);
+                if (got < length) return false;
+                _packet++;
+                int room = _decoded.Length / Channels;
+                try { _decodedFrames = _opus!.Decode(new ReadOnlySpan<byte>(_block, 0, got), _decoded.AsSpan(), room, false); }
+                catch (Exception) { _decodedFrames = 0; }
+                // A damaged packet is a packet's worth of silence, not the end.
+                if (_decodedFrames <= 0)
+                {
+                    _decodedFrames = _samplesPerBlock;
+                    Array.Clear(_decoded, 0, _decodedFrames * Channels);
+                }
+                return true;
+            }
             if (_codec == Codec.Alac)
             {
                 if (_packet >= _packetStarts!.Length - 1) return false;

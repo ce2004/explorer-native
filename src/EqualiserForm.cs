@@ -170,7 +170,7 @@ namespace ExplorerNative
             _readout.AccessibleRole = AccessibleRole.StaticText;
             Controls.Add(_readout);
 
-            var onBox = new CheckBox
+            var onBox = new SpokenCheckBox
             {
                 Text = "Equaliser &on",
                 Checked = enabled,

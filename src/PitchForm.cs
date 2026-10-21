@@ -75,7 +75,7 @@ namespace ExplorerNative
             }
             list.SelectedIndex = chosen;
 
-            var tempoBox = new CheckBox
+            var tempoBox = new SpokenCheckBox
             {
                 Text = "Change the &tempo with it",
                 Checked = movesTempo,

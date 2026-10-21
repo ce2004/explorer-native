@@ -1135,6 +1135,16 @@ namespace ExplorerNative
             audio.DropDownItems.Add(_silenceItem);
 
             audio.DropDownItems.Add(_repeatItem);
+
+            // Apple Music's, shown only while it plays (4.1.6): H and X are free
+            // then, because Pitch (H) is hidden while Apple Music plays and X was
+            // never used. Repeat above becomes Apple's off, all, this song.
+            _shuffleItem = AudioItem(AudioAction.ToggleShuffle);
+            _shuffleItem.Text = "S&huffle";
+            _upNextItem = AudioItem(AudioAction.UpNext);
+            _upNextItem.Text = "Up ne&xt…";
+            audio.DropDownItems.Add(_shuffleItem);
+            audio.DropDownItems.Add(_upNextItem);
             audio.DropDownItems.Add(new ToolStripSeparator());
 
             audio.DropDownItems.Add(AudioItem(AudioAction.WhatIsPlaying));
@@ -1218,9 +1228,28 @@ namespace ExplorerNative
             // repeat, could only say "That isn't available for Apple Music", so
             // they are left off while it plays. Output device stays: it works.
             bool apple = AppleMusicPlayer.IsActive;
-            foreach (var item in new[] { _speedItem, _pitchItem, _limiterItem, _equaliserItem, _silenceItem, _repeatItem })
+            foreach (var item in new[] { _speedItem, _pitchItem, _limiterItem, _equaliserItem, _silenceItem })
                 item.Visible = !apple;
+
+            // Repeat is Apple's own while it plays: off, all, or this song.
+            _shuffleItem.Visible = _upNextItem.Visible = apple;
+            _shuffleItem.Checked = AppleMusicPlayer.Shuffle;
+            if (apple)
+            {
+                var repeat = AppleMusicPlayer.Repeat;
+                _repeatItem.Text = repeat switch
+                {
+                    AppleMusicPlayer.RepeatMode.All => "&Repeat: all",
+                    AppleMusicPlayer.RepeatMode.One => "&Repeat: this song",
+                    _ => "&Repeat: off",
+                };
+                _repeatItem.Checked = repeat != AppleMusicPlayer.RepeatMode.Off;
+            }
+            else _repeatItem.Text = AudioActions.For(AudioAction.ToggleRepeat).MenuText;
         }
+
+        private ToolStripMenuItem _shuffleItem = null!;
+        private ToolStripMenuItem _upNextItem = null!;
 
         private void OpenAudioPreferences() => OpenPreferences("Audio");
 
@@ -1514,6 +1543,21 @@ namespace ExplorerNative
             _contextMenu.Items.Add(_playNextItem);
             _contextMenu.Items.Add(_favoriteItem);
             _contextMenu.Items.Add(_addToPlaylistItem);
+
+            // 4.1.6 (Conner): a song's album and artist, your library, and the
+            // player's shuffle, repeat and Up next, from anywhere in Apple Music.
+            // The letters are free here: what uses them elsewhere is hidden in Apple Music.
+            _goToArtistItem = Item("Go to &artist", Keys.None, () => GoToFocusedApple(album: false));
+            _goToAlbumItem = Item("Go to al&bum", Keys.None, () => GoToFocusedApple(album: true));
+            _libraryItem = Item("Add to librar&y", Keys.None, ToggleFocusedAppleLibrary);
+            _appleShuffleItem = Item("&Shuffle", Keys.None, () => Program.RunAudioAction(AudioAction.ToggleShuffle));
+            _appleRepeatItem = Item("&Repeat", Keys.None, Program.CycleAppleRepeat);
+            _appleUpNextItem = Item("&Up next…", Keys.None, () => Program.RunAudioAction(AudioAction.UpNext));
+            foreach (var item in new[] { _goToArtistItem, _goToAlbumItem, _libraryItem, _appleShuffleItem, _appleRepeatItem, _appleUpNextItem })
+            {
+                item.Visible = false;
+                _contextMenu.Items.Add(item);
+            }
             _contextMenu.Items.Add(new ToolStripSeparator());
             _contextMenu.Items.Add(AppleHidden(Item("&Copy", Keys.None, () => CopyToClipboard(false))));
             _cutItem = ArchiveHidden(Item("Cu&t", Keys.None, () => CopyToClipboard(true)));
@@ -5986,12 +6030,14 @@ namespace ExplorerNative
             var playlists = appleSong
                 ? AppleMusic.EditablePlaylists?.Where(p => !(here is { Kind: "playlist" } && here.Id == p.Id)).ToList()
                 : null;
-            _addToPlaylistItem.Visible = playlists is { Count: > 0 };
-            if (playlists is { Count: > 0 })
+            // New playlist is always there for a song, so the submenu is too.
+            _addToPlaylistItem.Visible = appleSong;
+            if (appleSong)
             {
                 foreach (ToolStripItem old in _addToPlaylistItem.DropDownItems.Cast<ToolStripItem>().ToList()) old.Dispose();
                 _addToPlaylistItem.DropDownItems.Clear();
-                foreach (var playlist in playlists)
+                _addToPlaylistItem.DropDownItems.Add(new ToolStripMenuItem("&New playlist…", null, (_, _) => NewPlaylistForFocusedAppleSong()));
+                foreach (var playlist in playlists ?? new List<AppleMusicItem>())
                 {
                     var chosen = playlist;
                     // "&" in a name is a letter, not an access key ("R&B" read as "RB").
@@ -6000,6 +6046,22 @@ namespace ExplorerNative
                 }
             }
             if (appleSong && playlists == null) AppleMusic.LoadPlaylistsSoon();   // ready by the next time
+
+            _goToArtistItem.Visible = _goToAlbumItem.Visible = appleSong;
+            var inLibrary = appleSong ? AppleMusic.InLibrary(focused!) : null;
+            _libraryItem.Visible = inLibrary != null;
+            _libraryItem.Text = inLibrary == true ? "Remove from librar&y" : "Add to librar&y";
+            bool inApple = AppleMusic.Is(Active.CurrentPath);
+            _appleShuffleItem.Visible = _appleRepeatItem.Visible = _appleUpNextItem.Visible = inApple;
+            _appleUpNextItem.Visible = inApple && AppleMusicPlayer.IsActive;
+            _appleShuffleItem.Checked = AppleMusicPlayer.Shuffle;
+            var repeat = AppleMusicPlayer.Repeat;
+            _appleRepeatItem.Text = repeat switch
+            {
+                AppleMusicPlayer.RepeatMode.All => "&Repeat: all",
+                AppleMusicPlayer.RepeatMode.One => "&Repeat: this song",
+                _ => "&Repeat: off",
+            };
 
             _extractItem.Visible = looksLikeArchive;
             _extractHereItem.Visible = looksLikeArchive;
@@ -6079,6 +6141,67 @@ namespace ExplorerNative
         private ToolStripMenuItem _playNextItem = null!;
         private ToolStripMenuItem _favoriteItem = null!;
         private ToolStripMenuItem _addToPlaylistItem = null!;
+        private ToolStripMenuItem _goToArtistItem = null!;
+        private ToolStripMenuItem _goToAlbumItem = null!;
+        private ToolStripMenuItem _libraryItem = null!;
+        private ToolStripMenuItem _appleShuffleItem = null!;
+        private ToolStripMenuItem _appleRepeatItem = null!;
+        private ToolStripMenuItem _appleUpNextItem = null!;
+
+        /// <summary>Go to album or Go to artist on the focused Apple Music song: asks Apple which, then opens it.</summary>
+        private async void GoToFocusedApple(bool album)
+        {
+            try
+            {
+                if (FocusedPath() is not { } path || AppleMusic.ItemAt(path) is not { IsSong: true }) return;
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                var folder = await AppleMusic.GoToAsync(path, album, cts.Token);
+                if (!IsDisposed) Navigate(folder);
+            }
+            catch (AppleMusicException ex) { AnnounceAfterMenu("applemusic.failed", ex.Message); }
+            catch (OperationCanceledException) { AnnounceAfterMenu("applemusic.failed", "Apple Music took too long to answer."); }
+            catch (Exception ex) { AnnounceAfterMenu("applemusic.failed", "Apple Music couldn't open it: " + ex.Message); }
+        }
+
+        /// <summary>Add to library on a song from Apple's catalogue, Remove from library on one of yours.</summary>
+        private async void ToggleFocusedAppleLibrary()
+        {
+            try
+            {
+                if (FocusedPath() is not { } path || AppleMusic.InLibrary(path) is not { } mine) return;
+                if (mine && MessageBox.Show(this, $"Remove {AppleMusic.ItemAt(path)?.Name} from your Apple Music library? It comes out of your playlists too.",
+                        "Remove from library", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+                {
+                    RestoreListFocus();
+                    return;
+                }
+                if (mine) RestoreListFocus();
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                var said = mine ? await AppleMusic.RemoveFromLibraryAsync(path, cts.Token) : await AppleMusic.AddToLibraryAsync(path, cts.Token);
+                AnnounceAfterMenu("applemusic.library", said);
+            }
+            catch (AppleMusicException ex) { AnnounceAfterMenu("applemusic.failed", ex.Message); }
+            catch (OperationCanceledException) { AnnounceAfterMenu("applemusic.failed", "Apple Music took too long to answer."); }
+            catch (Exception ex) { AnnounceAfterMenu("applemusic.failed", "Apple Music couldn't change your library: " + ex.Message); }
+        }
+
+        /// <summary>Add to playlist, New playlist: asks for a name, then makes it with the song in it.</summary>
+        private async void NewPlaylistForFocusedAppleSong()
+        {
+            try
+            {
+                if (FocusedPath() is not { } path || AppleMusic.ItemAt(path) is not { IsSong: true }) return;
+                var name = PromptForm.Ask(this, "New playlist", "Playlist name:");
+                RestoreListFocus();
+                if (string.IsNullOrWhiteSpace(name)) return;
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                var said = await AppleMusic.CreatePlaylistAsync(path, name, cts.Token);
+                AnnounceAfterMenu("applemusic.playlist", said);
+            }
+            catch (AppleMusicException ex) { AnnounceAfterMenu("applemusic.failed", ex.Message); }
+            catch (OperationCanceledException) { AnnounceAfterMenu("applemusic.failed", "Apple Music took too long to answer."); }
+            catch (Exception ex) { AnnounceAfterMenu("applemusic.failed", "Apple Music couldn't make the playlist: " + ex.Message); }
+        }
         private ToolStripMenuItem _keepOnDriveItem = null!;
         private ToolStripMenuItem _putBackItem = null!;
 
