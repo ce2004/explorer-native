@@ -558,6 +558,10 @@ namespace ExplorerNative
             _settings = settings;
             AppleMusic.Configure(settings.AppleMusicUserToken);
             AppleMusic.Autoplay = settings.AppleMusicAutoplay;
+            // Import, Reset or an outside reload: the player takes the modes too.
+            AppleMusicPlayer.SetModes(settings.AppleMusicShuffle,
+                Enum.TryParse<AppleMusicPlayer.RepeatMode>(settings.AppleMusicRepeat, true, out var reloadedRepeat)
+                    ? reloadedRepeat : AppleMusicPlayer.RepeatMode.Off);
             bool portMoved = false;
             if (_connect != null && portSettingChanged && settings.WebAppPort != portWas)
             {

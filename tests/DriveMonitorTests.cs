@@ -1988,6 +1988,10 @@ namespace ExplorerNative
                     var kept = await rig.Monitor.KeepOnDriveOnlyAsync(rig.Pair.Id, "School", default, rig.Client);
                     Check("once everything is in Drive, it is kept on Drive only" + how, kept.Done, kept.Message);
                     Check("the folder is gone from the PC, desktop.ini and all", !Directory.Exists(Path.Combine(rig.Local, "School")));
+                    Check("Keep on Drive only never deletes a .tmp, a lock file or a download in progress",
+                        !DriveMonitor.IsWindowsLeftover("a.tmp") && !DriveMonitor.IsWindowsLeftover("~$doc.docx") &&
+                        !DriveMonitor.IsWindowsLeftover("song.flac.!sync") && DriveMonitor.IsLeftOnPc("a.tmp") &&
+                        DriveMonitor.IsWindowsLeftover("Thumbs.db") && !DriveMonitor.IsLeftOnPc("Thumbs.db"));
                     Live();
                     Equal("and it is on the pair's list", "School", string.Join(",", rig.Pair.DriveOnlyFolders));
 

@@ -797,8 +797,9 @@ namespace ExplorerNative
             {
                 if (_playlists != null)
                 {
-                    _playlists.Add(made);
-                    _playlists = _playlists.OrderBy(p => p.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
+                    // A new list, never the shared one changed in place: the menu
+                    // may be reading it on the UI thread right now.
+                    _playlists = _playlists.Append(made).OrderBy(p => p.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
                 }
                 if (!AddedTo.TryGetValue(made.Id, out var set)) AddedTo[made.Id] = set = new Dictionary<string, long>(StringComparer.Ordinal);
                 foreach (var k in SongKeys(item)) set[k] = Environment.TickCount64;

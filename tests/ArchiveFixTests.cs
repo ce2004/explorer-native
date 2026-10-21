@@ -24,6 +24,58 @@ namespace ExplorerNative
 
         private static void Check(string what, bool ok, string? detail = null) => _check(what, ok, detail);
 
+        /// <summary>
+        /// Where the chosen tar is the libarchive 3.8.8 that crashes on a
+        /// non-ASCII name: the crash put "tar.exe - Application Error" over
+        /// everything and the compress hung behind it until OK was clicked.
+        /// Now the tar dies quietly and the result says why in words.
+        /// </summary>
+        private static async Task CrashShowsNoBoxTests()
+        {
+            if (!BsdTar.Available) return;
+            var dir = Path.Combine(Path.GetTempPath(), "EN-crashbox-" + Guid.NewGuid().ToString("N")[..8]);
+            try
+            {
+                Directory.CreateDirectory(dir);
+                var file = Path.Combine(dir, "日本語.txt");
+                File.WriteAllText(file, "probe");
+                var archive = Path.Combine(dir, "out.7z");
+                var run = ArchiveEngine.CompressAsync(new[] { file }, archive, ArchiveFormats.SevenZip,
+                    ArchiveLevel.Balanced, 2, null, CancellationToken.None);
+                bool finished = await Task.WhenAny(run, Task.Delay(20_000)) == run;
+                string said = "";
+                if (finished)
+                {
+                    try
+                    {
+                        var result = await run;
+                        said = result.Failed > 0 ? string.Join("; ", result.Errors) : "";
+                    }
+                    catch (IOException ex) { said = ex.Message; }
+                }
+                var box = FindWindowW(null, "tar.exe - Application Error");
+                if (box != IntPtr.Zero) PostMessageW(box, 0x0010, IntPtr.Zero, IntPtr.Zero);
+                Check("a crashing tar puts up no Windows error box", box == IntPtr.Zero);
+                Check("and the compress finishes instead of waiting on one", finished);
+                if (finished)
+                    Check("and says in words that Windows' tool crashed", said.Contains("crashed", StringComparison.Ordinal), said);
+                else
+                {
+                    foreach (var tar in Process.GetProcessesByName("tar")) try { tar.Kill(); } catch { }
+                }
+            }
+            finally
+            {
+                try { Directory.Delete(dir, recursive: true); } catch { }
+            }
+        }
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern IntPtr FindWindowW(string? className, string title);
+
+        [DllImport("user32.dll")]
+        private static extern bool PostMessageW(IntPtr window, uint message, IntPtr w, IntPtr l);
+
         public static async Task RunAll(Action<string, bool, string?> check)
         {
             _check = check;
@@ -50,7 +102,11 @@ namespace ExplorerNative
             await ReadOnlyArchiveReplacedTests();
             ExtractionLaneCapTests();
 
-            if (!BsdTar.HandlesNames) return;
+            if (!BsdTar.HandlesNames)
+            {
+                await CrashShowsNoBoxTests();
+                return;
+            }
 
             await ManyLockedFilesTests();
             await LookalikeNamesThroughBsdTarTests();

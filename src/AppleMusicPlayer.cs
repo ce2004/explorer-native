@@ -326,9 +326,17 @@ namespace ExplorerNative
         {
             var songs = AppleMusic.SongsShown(_listFolder!);
             if (songs == null) return;
-            if (_shuffle) Shuffled(songs);
+            if (_shuffle)
+            {
+                Shuffled(songs);
+                // Not the song just heard, straight away again.
+                if (songs.Count > 1 && string.Equals(songs[0], _currentPath, StringComparison.OrdinalIgnoreCase))
+                    (songs[0], songs[^1]) = (songs[^1], songs[0]);
+            }
             _listQueue = songs;
-            _history.Clear();
+            // History is kept, so Previous goes back across the start of a new
+            // round (clearing it left the last song unable to go back at all).
+            if (_history.Count > 1000) _history.RemoveRange(0, _history.Count - 1000);
         }
 
         private static void Shuffled(List<string> songs)
@@ -385,7 +393,9 @@ namespace ExplorerNative
             {
                 var place = ListPlace(path);
                 if (AppleMusic.InStation(place)) { PlayNextFromStation(place); return ""; }   // says the song it finds
-                PlayAutoplay(path);   // says the song it finds, or "End of the list"
+                // A skip never ends the list: the song playing goes on.
+                if (!AppleMusic.Autoplay) return "That's the last song in the list";
+                PlayAutoplay(path, fromSkip: true);   // says the song it finds, or that this is the last
                 return "";
             }
             Start(next, id, name ?? next, -1, startAt: 0, retried: false, how: StartKind.PlayedOn);
@@ -600,6 +610,9 @@ namespace ExplorerNative
                 if (_currentPath.Length == 0 || _ended) return;
                 _upNext.Clear();
                 _listQueue = new List<string>();
+                // No list to refill from: Repeat all put the whole list straight
+                // back, and Shuffle off rebuilt it, so Clear all did nothing.
+                _listFolder = null;
             }
             Requeue();
         }
@@ -607,10 +620,22 @@ namespace ExplorerNative
         /// <summary>Plays the song at <paramref name="index"/> now; the ones before it are passed over. Returns what to say, or null when Up next has changed under it.</summary>
         public static string? PlayUpNext(int index, string expected)
         {
+            // The song is looked up first, so a failure changes nothing and is spoken.
+            string id;
+            try { id = AppleMusic.CatalogIdForPlaying(expected); }
+            catch (AppleMusicException ex)
+            {
+                Say?.Invoke("applemusic.failed", ex.Message);
+                return "";
+            }
             string path;
             lock (Gate)
             {
-                if (_currentPath.Length == 0 || _ended) return "Nothing is playing";
+                if (_currentPath.Length == 0 || _ended)
+                {
+                    Say?.Invoke("applemusic.upnext", "Nothing is playing");
+                    return "";
+                }
                 var all = Combined();
                 if (!Still(all, index, expected)) return null;
                 path = all[index].Path;
@@ -618,17 +643,19 @@ namespace ExplorerNative
                 int chosen = all.Take(index + 1).Count(s => s.Chosen);
                 all.RemoveRange(0, index + 1);
                 PutBack(all, _upNext.Count - chosen);
+                if (wasChosen)
+                {
+                    // A Play next song that is in the list too: played now, not again later.
+                    int dup = _listQueue?.FindIndex(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase)) ?? -1;
+                    if (dup >= 0) _listQueue!.RemoveAt(dup);
+                }
                 // A list song is the list's place now; a Play next song is not.
-                if (!wasChosen) { _anchor = path; _history.Add(path); }
+                else { _anchor = path; _history.Add(path); }
             }
-            try
-            {
-                var name = NameOf(path);
-                Start(path, AppleMusic.CatalogIdForPlaying(path), name, -1, 0, false, StartKind.Back);
-                Volatile.Write(ref _autoGen, Volatile.Read(ref _generation));
-                return name;
-            }
-            catch (AppleMusicException ex) { return ex.Message; }
+            var name = NameOf(path);
+            Start(path, id, name, -1, 0, false, StartKind.Back);
+            Volatile.Write(ref _autoGen, Volatile.Read(ref _generation));
+            return name;
         }
 
         /// <summary>
@@ -875,7 +902,7 @@ namespace ExplorerNative
         /// a station Apple makes of it. "End of the list" only when there is none
         /// (an upload, or Apple has nothing).
         /// </summary>
-        private static async void PlayAutoplay(string finished)
+        private static async void PlayAutoplay(string finished, bool fromSkip = false)
         {
             int mine = Volatile.Read(ref _generation);
             if (AppleMusic.Autoplay)   // Preferences, Apple Music
@@ -895,6 +922,13 @@ namespace ExplorerNative
             }
             catch (Exception) { }
             if (Volatile.Read(ref _generation) != mine) return;
+            if (fromSkip)
+            {
+                // Next track with nothing after: the song keeps playing and the
+                // player stays in charge of the keys.
+                Say?.Invoke("applemusic.endoflist", "That's the last song in the list");
+                return;
+            }
             EndOfList();
             Say?.Invoke("applemusic.endoflist", "End of the list");
         }
@@ -1379,6 +1413,9 @@ namespace ExplorerNative
             }
             Log("advanced to " + id);
             Say?.Invoke("audio.play", name);
+            // Repeat one: its "ended" starts it again, so nothing goes after it
+            // (a Play next song that started here used to lose the repeat).
+            if (Repeat == RepeatMode.One) return;
             var (nextPath, nextId, nextName) = NextFor(now);
             if (nextPath == null) return;   // the end, or a station: "ended" deals with it
             lock (Gate)

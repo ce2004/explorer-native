@@ -73,13 +73,17 @@ namespace ExplorerNative
         /// <summary>Whether the archive stopped making sense part way, so only the start of it is shown.</summary>
         public bool Damaged { get; internal set; }
 
+        /// <summary>Why only part of it could be taken out (Windows' tar crashed or stalled), or null.</summary>
+        public string? Partial { get; internal set; }
+
         /// <summary>Something worth saying once the archive is open, or null.</summary>
         public string? Warning
         {
             get
             {
                 var parts = new List<string>();
-                if (Damaged) parts.Add("This archive is damaged, so only part of it is shown.");
+                if (Partial != null) parts.Add($"Only part of this archive is shown. {Partial.TrimEnd('.')}.");
+                else if (Damaged) parts.Add("This archive is damaged, so only part of it is shown.");
                 if (Unsafe > 0)
                     parts.Add($"{NameRules.Items(Unsafe)} with {(Unsafe == 1 ? "a name" : "names")} that would land " +
                               $"outside the archive or that Windows cannot store {(Unsafe == 1 ? "is" : "are")} not shown.");
@@ -419,6 +423,7 @@ namespace ExplorerNative
             string tree, string finished, IProgress<TransferProgress>? progress, CancellationToken token)
         {
             bool damaged = false;
+            string? partial = null;
             if (!File.Exists(finished) || !Directory.Exists(tree))
             {
                 if (Directory.Exists(tree)) DeleteTree(tree);
@@ -432,9 +437,15 @@ namespace ExplorerNative
                         reporter, errors, token);
                     token.ThrowIfCancellationRequested();
 
-                    if (done == 0 && errors.Count > 0)
-                        throw new InvalidDataException(errors[^1].TrimEnd('.') + ".");
+                    // The reason, not a per-entry line ("name: not extracted ..."):
+                    // a crash used to be said as one file's line, or as a
+                    // temporary folder that could not be removed.
+                    var reason = errors.FirstOrDefault(e => !e.Contains(": ", StringComparison.Ordinal)) ??
+                                 errors.FirstOrDefault();
+                    if (done == 0 && reason != null)
+                        throw new InvalidDataException(reason.TrimEnd('.') + ".");
                     damaged = errors.Any(e => e.Contains("damaged", StringComparison.OrdinalIgnoreCase));
+                    if (!damaged && reason != null) partial = reason;
                 }
                 catch
                 {
@@ -442,7 +453,9 @@ namespace ExplorerNative
                     throw;
                 }
 
-                File.WriteAllText(finished, damaged ? "damaged" : "");
+                // A tree tar did not finish is never kept as the whole archive:
+                // shown once with the reason, and taken out again next time.
+                if (partial == null) File.WriteAllText(finished, damaged ? "damaged" : "");
             }
             else
             {
@@ -451,6 +464,7 @@ namespace ExplorerNative
 
             var listing = ArchiveListing.Build(archivePath, format, tree, key, WalkTree(tree, token), token);
             listing.Damaged = damaged;
+            listing.Partial = partial;
             return listing;
         }
 

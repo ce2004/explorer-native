@@ -760,10 +760,16 @@ namespace ExplorerNative
             // than before it — and every name in it is correct.
             if (format.Engine == ArchiveEngineKind.BsdTar)
             {
+                bool existed = Directory.Exists(destinationDir);
                 try
                 {
                     var (moved, collisions) = BsdTar.Extract(
                         archivePath, destinationDir, policy, ask, reporter, errors, token);
+
+                    // Nothing came out (tar crashed on the first name): the new
+                    // folder made for it is not left behind empty.
+                    if (moved == 0 && !existed)
+                        try { Directory.Delete(destinationDir, recursive: false); } catch { }
 
                     reporter.Done();
                     RoboCopyEngine.Trace($"archive: extracted {moved} entries, {errors.Count} failed");

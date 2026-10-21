@@ -218,6 +218,30 @@ namespace ExplorerNative
         /// </summary>
         public async Task DeleteForever(string fileId, CancellationToken token)
         {
+            // Drive deletes a live file for good just as readily, and the Trash
+            // folder answers from a copy minutes old: something restored from
+            // the phone or the web still showed here. So ask Drive first.
+            using (var check = await Request(HttpMethod.Get,
+                       $"{Files}/{Uri.EscapeDataString(fileId)}?fields=id,trashed", token))
+            using (var answer = await Send(check, HttpCompletionOption.ResponseContentRead, token))
+            {
+                var text = await answer.Content.ReadAsStringAsync(token);
+                if ((int)answer.StatusCode == 404)
+                {
+                    EditHeldTrash(l => l.RemoveAll(e => e.Id == fileId));
+                    return;
+                }
+                if (!answer.IsSuccessStatusCode)
+                    throw new DriveStatusException((int)answer.StatusCode, text,
+                        $"delete failed {(int)answer.StatusCode}: " + Explain((int)answer.StatusCode, text));
+                using var doc = JsonDocument.Parse(text);
+                if (!(doc.RootElement.TryGetProperty("trashed", out var trashed) && trashed.ValueKind == JsonValueKind.True))
+                {
+                    EditHeldTrash(l => l.RemoveAll(e => e.Id == fileId));
+                    throw new InvalidOperationException("it has been restored from the trash, so it was left alone");
+                }
+            }
+
             using var request = await Request(HttpMethod.Delete, $"{Files}/{Uri.EscapeDataString(fileId)}", token);
             using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token);
             if (response.IsSuccessStatusCode || (int)response.StatusCode == 404)

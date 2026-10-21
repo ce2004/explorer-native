@@ -1,3 +1,18 @@
+4.1.7
+Bug fixed: compressing, extracting or opening a 7z, xz or other archive with a file name in another language or with emoji could put up a "tar.exe - Application Error" box, and everything waited behind it until you clicked OK. Windows' own archiving tool still can't handle those names on this version of Windows, but now Explorer Native just tells you so.
+Bug fixed: opening an archive that Windows' tool could only take part of showed it as if it were complete. Now it says only part is shown and why, and tries again next time you open it.
+Bug fixed: if extracting to a new folder failed straight away, an empty folder was left behind and you heard "Extracted 0 items, but 1 failed". Now the empty folder is removed and you hear why it couldn't be extracted.
+Bug fixed: if you restored something from the Google Drive trash on the web or your phone, it could still show in Trash here for a few minutes, and Delete permanently would delete the live copy for good. Now it checks with Google first and leaves it alone.
+Bug fixed: Keep on Drive only deleted .tmp files, Office lock files and downloads Resilio was still writing, even though none of them were in Google Drive. Now those stay on your PC.
+Bug fixed: Keep on Drive only on a folder with hidden files, like album art Windows Media Player made, waited five minutes and then asked you to try again later, which could never work. Now it tells you straight away which hidden files are in the way.
+Bug fixed: pressing Keep on Drive only or Put back on PC a second time while the first was still working let both run at once. Now it tells you it's still working.
+Bug fixed: Next track on the last song of an Apple Music list, with Autoplay off or nothing for Autoplay to find, said "End of the list" while the song kept playing, and your play, pause and volume keys stopped controlling it. Now the song keeps playing and you hear that it's the last one.
+Bug fixed: Clear all in Up next did nothing with Repeat all on. Now it clears the list.
+Bug fixed: with Repeat this song on, a song you chose with Play next didn't repeat. Now it does.
+Bug fixed: with shuffle and Repeat all on, Previous track on the last song of a round said it was the first song played, and a new round could start with the song you just heard.
+Bug fixed: choosing Play now in Up next for a song that was also further down the list played it twice. And if it couldn't play, nothing was said and the songs before it were lost from Up next. Now you hear why and Up next is left as it was.
+Bug fixed: after importing or resetting settings, shuffle and repeat kept their old state until you restarted.
+
 4.1.6
 New feature: shuffle and repeat for Apple Music. Shift+F10 anywhere in Apple Music has Shuffle and Repeat, and so does the Audio menu while a song plays. Repeat goes from off to all to this song. With shuffle on, the song you press Enter on plays first and the rest of its list follows in a random order. Previous track goes back through what actually played. Both are remembered for next time, and you can give them keys in Preferences, Audio, Configure keyboard shortcuts.
 New feature: Up next. While Apple Music plays, Shift+F10 or the Audio menu has Up next, a list of the songs to come. Alt+Up and Alt+Down move a song, Delete takes it out, Enter plays it now, and Clear all empties it.

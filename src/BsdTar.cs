@@ -230,7 +230,9 @@ namespace ExplorerNative
                 RedirectStandardOutput = true,
             };
             foreach (var a in args) info.ArgumentList.Add(a);
-            using var p = Process.Start(info)!;
+            using var p = new Process { StartInfo = info };
+            StartQuietly(p);
+            KeepWithUs(p);
             _ = p.StandardOutput.ReadToEndAsync();
             _ = p.StandardError.ReadToEndAsync();
             if (!p.WaitForExit(15_000))
@@ -1745,12 +1747,46 @@ namespace ExplorerNative
                     if (collected.Length < 64 * 1024) collected.AppendLine(e.Data);
             };
 
-            process.Start();
+            StartQuietly(process);
             KeepWithUs(process);
             process.BeginErrorReadLine();
 
             return new Run { Process = process, Errors = collected };
         }
+
+        // ---------- Crashing without a box ----------
+
+        /// <summary>
+        /// Starts a tar with Windows' crash box switched off for it.
+        ///
+        /// The libarchive 3.8.8 build crashes on non-ASCII names, and Windows
+        /// then put up "tar.exe - Application Error ... The memory could not be
+        /// read" over everything, and the tar hung behind it until somebody
+        /// clicked OK. A child takes its error mode from its parent at creation,
+        /// so it is raised here for the moment of the start and put back: the
+        /// tar then just dies with 0xC0000005, which <see cref="Explain"/> turns
+        /// into a sentence. Measured on this build: box before, none after.
+        /// </summary>
+        private static void StartQuietly(Process process)
+        {
+            lock (ErrorModeGate)
+            {
+                uint old = GetErrorMode();
+                SetErrorMode(old | SemNoGpFaultErrorBox | SemFailCriticalErrors);
+                try { process.Start(); }
+                finally { SetErrorMode(old); }
+            }
+        }
+
+        private static readonly object ErrorModeGate = new();
+        private const uint SemFailCriticalErrors = 0x0001;
+        private const uint SemNoGpFaultErrorBox = 0x0002;
+
+        [DllImport("kernel32.dll")]
+        private static extern uint SetErrorMode(uint mode);
+
+        [DllImport("kernel32.dll")]
+        private static extern uint GetErrorMode();
 
         // ---------- Dying with the app ----------
 
@@ -1780,7 +1816,9 @@ namespace ExplorerNative
             }
 
             var limits = new JobExtendedLimits();
-            limits.Basic.LimitFlags = JobObjectLimitKillOnJobClose;
+            // Die on an unhandled exception: Windows then shows no crash box for
+            // anything in the job, a second guard behind StartQuietly.
+            limits.Basic.LimitFlags = JobObjectLimitKillOnJobClose | JobObjectLimitDieOnUnhandledException;
             if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, ref limits,
                     Marshal.SizeOf<JobExtendedLimits>()))
             {
@@ -1814,6 +1852,7 @@ namespace ExplorerNative
         }
 
         private const uint JobObjectLimitKillOnJobClose = 0x2000;
+        private const uint JobObjectLimitDieOnUnhandledException = 0x0400;
         private const int JobObjectExtendedLimitInformation = 9;
 
         [StructLayout(LayoutKind.Sequential)]
@@ -1961,7 +2000,7 @@ namespace ExplorerNative
                     ? "This archive is damaged or incomplete."
                     : process.ExitCode == AccessViolation
                         ? "Windows' own archiving tool crashed, which this version of Windows does on names " +
-                          "with emoji or in some languages. Zip and tar.gz still work."
+                          "with emoji or in some languages. Zip, tar and tar.gz files are not affected."
                         : $"the system tar stopped with code {process.ExitCode}";
 
             return new Outcome(process.ExitCode, first, delayed, messages);

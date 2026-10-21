@@ -143,14 +143,21 @@ namespace ExplorerNative
             name.Equals("desktop.ini", StringComparison.OrdinalIgnoreCase) ||
             name.Equals("thumbs.db", StringComparison.OrdinalIgnoreCase) ||
             name.Equals(".DS_Store", StringComparison.OrdinalIgnoreCase) ||
-            SyncPlanner.IsSkippedPath(name);
+            name.EndsWith(".partial", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Never synced, but somebody's: a .tmp, an Office lock file, a download
+        /// Resilio is still writing. Not on Drive, so never deleted; left on the
+        /// PC (its folder stays). 4.1.3 deleted them with the leftovers.
+        /// </summary>
+        internal static bool IsLeftOnPc(string name) => !IsWindowsLeftover(name) && SyncPlanner.IsSkippedPath(name);
 
         /// <summary>One PC file checked against Drive's copy: as it was when its MD5 was read.</summary>
         private sealed record CheckedFile(string FullPath, long Size, DateTime ModifiedUtc);
 
         /// <summary>What checking a PC folder against Drive found.</summary>
         private sealed record FolderCheck(List<CheckedFile> Matching, List<string> Leftovers, List<string> NotOnDrive,
-            string? Link);
+            string? Link, List<string> NeverSynced);
 
         /// <summary>
         /// Every file under <paramref name="pcFolder"/>, hidden ones included,
@@ -164,6 +171,7 @@ namespace ExplorerNative
             var matching = new List<CheckedFile>();
             var leftovers = new List<string>();
             var notOnDrive = new List<string>();
+            var neverSynced = new List<string>();
             var folders = new Stack<string>();
             folders.Push(pcFolder);
             while (folders.Count > 0)
@@ -174,13 +182,18 @@ namespace ExplorerNative
                 {
                     var relative = DriveOnlyFolders.Normal(Path.GetRelativePath(pcFolder, entry.FullName));
                     if ((entry.Attributes & FileAttributes.ReparsePoint) != 0)
-                        return new FolderCheck(matching, leftovers, notOnDrive, relative);
+                        return new FolderCheck(matching, leftovers, notOnDrive, relative, neverSynced);
                     if (entry is DirectoryInfo) { folders.Push(entry.FullName); continue; }
                     if (IsWindowsLeftover(entry.Name)) { leftovers.Add(entry.FullName); continue; }
+                    if (IsLeftOnPc(entry.Name)) continue;
 
                     var file = (FileInfo)entry;
                     if (!remote.TryGetValue(relative, out var onDrive) || onDrive.Md5 == null || onDrive.Size != file.Length)
                     {
+                        // Hidden and system files are never uploaded (the scan leaves
+                        // them out), so waiting for a pass to send them was 5 minutes
+                        // for a refusal that could never come right.
+                        if ((file.Attributes & (FileAttributes.Hidden | FileAttributes.System)) != 0) neverSynced.Add(relative);
                         notOnDrive.Add(relative);
                         continue;
                     }
@@ -206,7 +219,7 @@ namespace ExplorerNative
                         notOnDrive.Add(relative);
                 }
             }
-            return new FolderCheck(matching, leftovers, notOnDrive, null);
+            return new FolderCheck(matching, leftovers, notOnDrive, null, neverSynced);
         }
 
         /// <summary>
@@ -284,6 +297,12 @@ namespace ExplorerNative
                 if (check.Link != null)
                     return new(false, $"{name} holds a link to somewhere else ({Leaf(check.Link)}), so it was left as it is");
                 if (check.NotOnDrive.Count == 0 && folderId != null) break;
+                if (check.NeverSynced.Count > 0)
+                {
+                    var hidden = NameRules.Counted(check.NeverSynced.Count, "hidden file");
+                    return new(false, $"{hidden} in {name} {(check.NeverSynced.Count == 1 ? "is" : "are")} never synced ({SomeOf(check.NeverSynced)}), " +
+                                      "so it can't be kept on Google Drive only. Nothing was removed");
+                }
                 if (round > 0 || pair.Paused || !await SyncPairNowAsync(pairId, DriveOnlySyncWait, token).ConfigureAwait(false))
                 {
                     if (check.NotOnDrive.Count == 0)

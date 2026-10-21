@@ -6243,9 +6243,16 @@ namespace ExplorerNative
 
         private async void KeepFocusedOnDriveOnly()
         {
+            // Checked outside the try: a second press used to clear the first one's flag in its finally.
+            if (_driveOnlyBusy)
+            {
+                Announce("Still working on the last one. Try again when it has finished");
+                return;
+            }
+            bool mine = false;
             try
             {
-                if (_driveOnlyBusy || FocusedPath() is not { } path || DriveMonitor.Current is not { } monitor) return;
+                if (FocusedPath() is not { } path || DriveMonitor.Current is not { } monitor) return;
                 if (SyncedFolderOf(path) is not { } synced) return;
                 var name = Path.GetFileName(path.TrimEnd('\\'));
                 if (MessageBox.Show(this,
@@ -6257,7 +6264,7 @@ namespace ExplorerNative
                     RestoreListFocus();
                     return;
                 }
-                _driveOnlyBusy = true;
+                _driveOnlyBusy = mine = true;
                 RestoreListFocus();
                 AnnounceOperation("sync.driveonly", $"Checking {name} against Google Drive");
                 var origin = Active.CurrentPath;
@@ -6274,16 +6281,23 @@ namespace ExplorerNative
             {
                 if (!IsDisposed) Announce("Could not keep it on Google Drive only: " + ex.Message, isError: true);
             }
-            finally { _driveOnlyBusy = false; }
+            finally { if (mine) _driveOnlyBusy = false; }
         }
 
         private async void PutFocusedBackOnPc()
         {
+            // Checked outside the try: a second press used to clear the first one's flag in its finally.
+            if (_driveOnlyBusy)
+            {
+                Announce("Still working on the last one. Try again when it has finished");
+                return;
+            }
+            bool mine = false;
             try
             {
-                if (_driveOnlyBusy || FocusedPath() is not { } path || DriveMonitor.Current is not { } monitor) return;
+                if (FocusedPath() is not { } path || DriveMonitor.Current is not { } monitor) return;
                 if (SyncedFolderOf(path) is not { } synced) return;
-                _driveOnlyBusy = true;
+                _driveOnlyBusy = mine = true;
                 var outcome = await monitor.PutBackOnPcAsync(synced.Pair.Id, synced.Relative, CancellationToken.None);
                 if (IsDisposed) return;
                 AnnounceOperation("sync.putback", outcome.Message);
@@ -6292,7 +6306,7 @@ namespace ExplorerNative
             {
                 if (!IsDisposed) Announce("Could not put it back on this PC: " + ex.Message, isError: true);
             }
-            finally { _driveOnlyBusy = false; }
+            finally { if (mine) _driveOnlyBusy = false; }
         }
 
         private void PlayFocusedAppleSongNext()
@@ -9033,6 +9047,14 @@ namespace ExplorerNative
                 await RefreshDestination(intoNewFolder ? here : destination);
 
                 if (result.Cancelled) AnnounceOperation("extract.cancelled", "Extracting cancelled");
+                else if (result.Items == 0 && result.Failed > 0)
+                {
+                    // Nothing came out: a failure, not "Extracted 0 items, but 3 failed".
+                    var reason = result.Errors.FirstOrDefault(e => !e.Contains(": ", StringComparison.Ordinal)) ??
+                                 result.Errors.FirstOrDefault() ?? "";
+                    AnnounceOperation("extract.failed", $"Could not extract {Path.GetFileName(archive)}: {reason.TrimEnd('.')}");
+                    ShowErrors(result.Errors);
+                }
                 else if (result.Failed > 0)
                 {
                     AnnounceOperation("extract.partial",

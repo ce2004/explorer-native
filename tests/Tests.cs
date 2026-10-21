@@ -153,6 +153,15 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            // Just compressing, extracting and browsing archives.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "archives")
+            {
+                await ArchiveTests.RunAll(Check, Equal);
+                await ArchiveBrowserTests.RunAll(Check, Equal);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "transfers")
             {
                 await RoboCopyTests();

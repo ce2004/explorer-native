@@ -137,6 +137,17 @@ namespace ExplorerNative
                     gone && fake.Get(album) == null && fake.Get(track) == null && fake.PermanentDeletes == 1);
                 lock (said) Check("and says so", said.Any(m => m == "drive.deleted: Deleted Old album permanently"), string.Join(" | ", said));
 
+                // Restored elsewhere (the web, the phone) while the Trash folder
+                // still shows it: Delete permanently must not delete a live file.
+                var noted = fake.Get(note)!;
+                noted.Trashed = noted.ExplicitlyTrashed = false;
+                bool deletedLive;
+                try { deletedLive = drive.DeleteForever(P("Trash", "note.txt")).GetAwaiter().GetResult(); }
+                catch (Exception) { deletedLive = false; }
+                Check("Delete permanently leaves alone something restored elsewhere",
+                    !deletedLive && fake.Get(note) != null, $"permanent deletes {fake.PermanentDeletes}");
+                noted.Trashed = noted.ExplicitlyTrashed = true;
+
                 // ---- Empty ----
                 bool emptied = drive.EmptyTrash().GetAwaiter().GetResult();
                 Check("Empty Google Drive trash deletes what is left in it",
