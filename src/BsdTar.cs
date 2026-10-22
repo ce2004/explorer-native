@@ -819,8 +819,13 @@ namespace ExplorerNative
             Func<IReadOnlyList<string>, FileOperations.ConflictChoice>? ask,
             ArchiveEngine.Reporter reporter,
             List<string> errors,
-            CancellationToken token)
+            CancellationToken token,
+            Action? stoppedShort = null)
         {
+            // stoppedShort: called when bsdtar did not get to the end of the
+            // archive (a stall, a crash, an exit that was not "delayed"). The
+            // errors alone cannot say that: a link not made or a repeated name
+            // is a note about one entry, not an archive taken only in part.
             RequireAvailable();
 
             Directory.CreateDirectory(destination);
@@ -965,6 +970,7 @@ namespace ExplorerNative
                 }
 
                 if (damaged) errors.Add(ArchiveEngine.DamagedMessage(done));
+                if (unfinished) stoppedShort?.Invoke();
 
                 return (done, conflicts);
             }

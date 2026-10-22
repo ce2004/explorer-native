@@ -1,3 +1,19 @@
+4.2.0
+New: searching (F1) is smarter. Type words in any order, like greedy tate, and capitals and accents don't matter. A word can also be the name of a folder the file is in, so tate greedy finds greedy.flac in your Tate McRae folder. Quotes keep words together, a star stands for anything (a star followed by .flac finds every FLAC file), and a minus sign leaves things out, like love -remix. It works the same on your PC and in Google Drive.
+New: Help, Keyboard shortcuts (Ctrl+F1) lists every key built into Explorer Native, from new folder to search. Arrow through it, and Ctrl+Down and Ctrl+Up jump between sections.
+Bug fixed: when files appeared or changed in the folder you were in, NVDA read the file you were on again every single time. Now the list updates quietly and stays on your file.
+Bug fixed: if you pressed F1 to search a big folder, Escape couldn't stop it until it finished. Now Escape stops it straight away.
+Bug fixed: if you went into another folder while a search was still running, that folder could end up called "Results for" whatever you searched, and F5 searched again instead of refreshing it.
+Bug fixed: renaming, deleting or making a folder in search results jumped you back to the top and made you wait for the whole search again before telling you it was done. Now it tells you at once and keeps your place.
+Bug fixed: after pressing Escape to leave search results, the results could stay on screen for a moment, and Enter on one did the wrong thing.
+Bug fixed: searching Google Drive could miss files in a folder made in the last few minutes, even after F5. Now it checks for new folders.
+Bug fixed: searching the Google Drive trash or shared drives list could go quiet if Google was slow. Now it tells you it couldn't search.
+Bug fixed: a search that found exactly 10,000 things said there were more.
+Bug fixed: if you opened a 7z, rar or tar.xz archive that had a link or two files with the same name in it, it said only part of the archive was shown and unpacked the whole archive again every time you opened it. Now it opens once and shows all of it.
+Bug fixed: if you chose Keep on Drive only on a folder with a hidden folder inside it, it waited five minutes and then asked you to try again once it had synced, which it never would. Now it tells you straight away which files never sync.
+Bug fixed: Keep on Drive only said a folder was cleared off this PC even when temporary files or unfinished downloads were still in it. Now it tells you how many were left and why.
+Bug fixed: with Shuffle and Repeat all on in Apple Music, skipping to the last song of a round could play that song again right after itself. Now a new round never starts with the song you just heard.
+
 4.1.7
 Bug fixed: compressing, extracting or opening a 7z, xz or other archive with a file name in another language or with emoji could put up a "tar.exe - Application Error" box, and everything waited behind it until you clicked OK. Windows' own archiving tool still can't handle those names on this version of Windows, but now Explorer Native just tells you so.
 Bug fixed: opening an archive that Windows' tool could only take part of showed it as if it were complete. Now it says only part is shown and why, and tries again next time you open it.

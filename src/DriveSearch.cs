@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -100,6 +101,41 @@ namespace ExplorerNative
             var graph = new Dictionary<string, string?>(StringComparer.Ordinal);
             foreach (var folder in folders) graph[folder.Id] = folder.ParentId;
             return graph;
+        }
+
+        /// <summary>Every folder's name, by id.</summary>
+        public static Dictionary<string, string> NameGraph(IEnumerable<DriveFound> folders)
+        {
+            var graph = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var folder in folders) graph[folder.Id] = folder.Name;
+            return graph;
+        }
+
+        /// <summary>
+        /// The items Google found that answer <paramref name="query"/>, judged
+        /// with the folders between the searched folder and each item. Items
+        /// not under the searched folder are kept for the caller to drop, and
+        /// judged on their name alone.
+        /// </summary>
+        public static List<DriveFound> Answering(
+            SearchQuery query, IEnumerable<DriveFound> found, string rootId,
+            IReadOnlyDictionary<string, string?> parentOf, IReadOnlyDictionary<string, string> nameOf)
+        {
+            var folded = new Dictionary<string, string>(StringComparer.Ordinal);
+            var kept = new List<DriveFound>();
+            foreach (var item in found)
+            {
+                var key = item.ParentId ?? "";
+                if (!folded.TryGetValue(key, out var folders))
+                {
+                    var chain = ChainUnder(rootId, item.ParentId, parentOf);
+                    folders = chain == null ? "" : SearchQuery.FoldName(string.Join('\\',
+                        chain.Select(id => nameOf.TryGetValue(id, out var n) ? n : "")));
+                    folded[key] = folders;
+                }
+                if (query.MatchesFolded(item.Name, folders)) kept.Add(item);
+            }
+            return kept;
         }
 
         /// <summary>

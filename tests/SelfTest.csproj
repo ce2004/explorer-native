@@ -91,8 +91,11 @@
     <Compile Include="..\src\GoogleDrive.cs" />
     <Compile Include="..\src\DriveUpload.cs" />
     <Compile Include="..\src\FileSearch.cs" />
+    <Compile Include="..\src\BuiltInShortcuts.cs" />
+    <Compile Include="..\src\KeyboardShortcutsForm.cs" />
     <Compile Include="..\src\ConnectServer.cs" /><Compile Include="..\src\ConnectFiles.cs" /><Compile Include="..\src\ConnectAudio.cs" /><Compile Include="..\src\ConnectUploads.cs" /><Compile Include="..\src\ConnectClipboard.cs" /><Compile Include="..\src\ClipboardInterop.cs" /><Compile Include="..\src\ConnectDetails.cs" /><Compile Include="..\src\TailscaleWeb.cs" /><Compile Include="..\src\WebAssets.cs" />
     <Compile Include="SearchTests.cs" />
+    <Compile Include="Fix418Tests.cs" />
     <Compile Include="ConnectTests.cs" />
     <Compile Include="SeekTests.cs" />
     <Compile Include="Tests.cs" />

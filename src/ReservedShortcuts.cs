@@ -70,6 +70,7 @@ namespace ExplorerNative
             new(Keys.Control | Keys.Shift | Keys.Tab, "Switch tab"),
             new(Keys.Shift | Keys.F10, "The Windows context menu"),
             new(Keys.Shift | Keys.F1, "The changelog"),
+            new(Keys.Control | Keys.F1, "The list of keyboard shortcuts"),
 
             // ---- choosing what is selected ----
             //

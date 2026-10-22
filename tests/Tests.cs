@@ -153,6 +153,15 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            // Just searching, the shortcuts list and the 4.2.0 fixes.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "search")
+            {
+                SearchTests.RunAll(Check, Equal);
+                Fix418Tests.RunAll(Check, Equal);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             // Just compressing, extracting and browsing archives.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "archives")
             {
@@ -403,6 +412,7 @@ namespace ExplorerNative
             await Guard("SettingsFixTests", () => { SettingsFixTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("SettingsTransferTests", () => { SettingsTransferTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("SearchTests", () => { SearchTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("Fix418Tests", () => { Fix418Tests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("ConnectTests", () => ConnectTests.RunAll(Check, Equal));
             await Guard("ExactSeekTests", () => { ExactSeekTests.RunAll(Check); return Task.CompletedTask; });
             await Guard("AudioFixTests", () => { AudioFixTests.RunAll(Check, Equal); return Task.CompletedTask; });

@@ -871,9 +871,21 @@ namespace ExplorerNative
         /// "or anything below it"; see <see cref="DriveSearch"/> for the half
         /// that narrows it down.
         /// </summary>
-        public Task<List<DriveFound>> FindByName(string term, CancellationToken token, int max = 10_000,
+        public Task<List<DriveFound>> FindByName(IReadOnlyList<string> anyOf, CancellationToken token, int max = 10_000,
             string? driveId = null) =>
-            Query($"name contains '{EscapeQuery(term)}' and trashed = false", token, max, driveId, interactive: true);
+            Query(NameQuery(anyOf), token, max, driveId, interactive: true);
+
+        /// <summary>
+        /// The query for items whose name contains any of <paramref name="anyOf"/>
+        /// (none: everything not in the trash). The caller narrows the answer
+        /// with the whole search rule (<see cref="SearchQuery"/>).
+        /// </summary>
+        internal static string NameQuery(IReadOnlyList<string> anyOf)
+        {
+            if (anyOf.Count == 0) return "trashed = false";
+            var names = string.Join(" or ", anyOf.Select(t => $"name contains '{EscapeQuery(t)}'"));
+            return anyOf.Count == 1 ? $"{names} and trashed = false" : $"({names}) and trashed = false";
+        }
 
         /// <summary>
         /// Every folder in the account.

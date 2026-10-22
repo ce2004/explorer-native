@@ -1052,6 +1052,8 @@ namespace ExplorerNative
             var rootId = mount.IdFor(folderPath) ?? (IsMountRoot(mount, folderPath) ? "root" : null);
             if (rootId == null) return null;
 
+            var query = SearchQuery.Parse(term);
+
             // The list of shared drives holds drives, and a search there is a
             // search of their names — searching inside all of them at once is
             // minutes of Drive listing on an account with many (see Query).
@@ -1060,11 +1062,17 @@ namespace ExplorerNative
             // there is nothing it would find.
             if (rootId == DriveClient.SharedDrivesId || InTrash(mount, folderPath))
             {
-                await Task.Run(() => mount.Populate(folderPath), token).ConfigureAwait(false);
+                // A listing that ran out of time is a failure to say, not the
+                // Escape that every other cancellation in a search means.
+                try { await Task.Run(() => mount.Populate(folderPath), token).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (!token.IsCancellationRequested)
+                {
+                    throw new IOException("Google Drive took too long to list it");
+                }
                 var named = new List<SearchHit>();
                 if (mount.TryListing(folderPath, out var drives))
                     foreach (var d in drives)
-                        if (d.Name.Contains(term, StringComparison.CurrentCultureIgnoreCase))
+                        if (query.Matches(d.Name, ""))
                             named.Add(new SearchHit(Path.Combine(folderPath, d.Name), d.Name, d.IsFolder,
                                 d.IsFolder ? -1 : d.Size, d.Modified));
                 return new SearchResult(named, false);
@@ -1080,10 +1088,14 @@ namespace ExplorerNative
             // *synchronous* Drive listing at about 1.3 seconds each. A search
             // across five folders would have been six seconds of frozen window,
             // which is the one rule this codebase does not bend.
-            var matches = await client.FindByName(term, token, most, driveId).ConfigureAwait(false);
+            var found = await client.FindByName(query.DriveHints, token, most, driveId).ConfigureAwait(false);
             var folders = await FolderGraph(client, driveId, token).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
 
+            // A hit in a folder the kept graph has never heard of is most likely
+            // in a folder made in the last few minutes; ask once more, fresh,
+            // rather than dropping it. (Folders shared in from other people are
+            // never in the graph, so this happens at most once per graph.)
             var parentOf = DriveSearch.ParentGraph(folders);
 
             // "root" is an alias Drive takes in a query and never the id it puts
@@ -1094,12 +1106,31 @@ namespace ExplorerNative
                 ? await client.RootId(token).ConfigureAwait(false)
                 : rootId;
 
+            bool Unknown(string? myDrive) => found.Exists(f =>
+                f.ParentId != null && f.ParentId != realRootId && f.ParentId != myDrive &&
+                f.ParentId != driveId && !parentOf.ContainsKey(f.ParentId));
+            if (Unknown(null) && FolderGraphAge(driveId) > TimeSpan.FromSeconds(30) &&
+                // Items sitting in My Drive itself have it as a parent, and it is
+                // not a folder in the graph; asked only when it could matter.
+                (driveId != null || rootId == "root" || Unknown(await client.RootId(token).ConfigureAwait(false))))
+            {
+                ForgetFolderGraph();
+                folders = await FolderGraph(client, driveId, token).ConfigureAwait(false);
+                parentOf = DriveSearch.ParentGraph(folders);
+            }
+
             var hits = new List<SearchHit>();
 
             // Against what was actually asked for. It used to compare against a
             // literal that happened to match FindByName's default, which is the
             // sort of agreement that holds until somebody changes one of them.
-            bool truncated = matches.Count >= most;
+            bool truncated = found.Count >= most;
+
+            // Google was asked for any one word; the whole rule (every word, in
+            // the name or the folders under the searched one, patterns, words
+            // left out) is applied here, before any folder is listed for a hit
+            // that would not be shown.
+            var matches = DriveSearch.Answering(query, found, realRootId, parentOf, DriveSearch.NameGraph(folders));
 
             // Folders already walked down, so a second hit in the same place
             // costs nothing. The value is the path on the letter, or null for one
@@ -1202,6 +1233,21 @@ namespace ExplorerNative
 
         /// <summary>The folder graphs, per drive ("" for My Drive), and when each was read.</summary>
         private Dictionary<string, (List<DriveFound> Folders, DateTime At)>? _folders;
+
+        /// <summary>Drops the kept folder graphs, so the next search reads them fresh (F5 in results).</summary>
+        internal void ForgetFolderGraph()
+        {
+            lock (_gate) _folders = null;
+        }
+
+        /// <summary>How old the kept graph for a drive is (zero when there is none).</summary>
+        private TimeSpan FolderGraphAge(string? driveId)
+        {
+            lock (_gate)
+                return _folders != null && _folders.TryGetValue(driveId ?? "", out var known)
+                    ? DateTime.UtcNow - known.At
+                    : TimeSpan.Zero;
+        }
 
         /// <summary>
         /// Every folder in the account, from the last few minutes if it was

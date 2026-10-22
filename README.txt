@@ -17,9 +17,32 @@ Preferences, or installing an update, puts a copy in
 %LOCALAPPDATA%\Programs\ExplorerNative, and that copy is the one that runs from
 then on.
 
-It needs the .NET 8 Desktop Runtime (or newer). If that is missing, Windows
-says so on first launch and offers the download. Get the one that matches your
-computer, x64 or Arm64, from https://dotnet.microsoft.com/download/dotnet/8.0
+Nothing else needs installing: everything it needs is inside the one file.
+
+
+Finding files
+
+Press F1 in any folder, type what you are looking for and press Enter. It
+searches that folder and every folder inside it, on your PC or in Google Drive,
+and lists what it finds with where each one is. Enter on a result takes you to
+it in its folder. Escape stops a search that is still running, or takes you
+back from the results. F5 runs the search again.
+
+Type words in any order, without worrying about capitals or accents: greedy
+tate finds Tate McRae - greedy.flac, and beyonce finds Beyonce with its accent.
+A word can also be the name of a folder the file is in, so tate greedy finds
+greedy.flac inside a Tate McRae folder. Put words in quotes to keep them
+together. A star stands for any number of letters and a question mark for
+one, so a star followed by .flac finds every FLAC file. Put a minus sign before a word to leave out anything with it, like love
+-remix.
+
+
+Keyboard shortcuts
+
+Help, Keyboard shortcuts (Ctrl+F1) lists every key built into the window, a
+section at a time: moving around, selecting, files and folders, searching and
+the app. Arrow through it; Ctrl+Down and Ctrl+Up jump between sections. The
+audio player's keys are your own, set in Preferences.
 
 
 Google Drive

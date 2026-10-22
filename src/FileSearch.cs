@@ -38,20 +38,10 @@ namespace ExplorerNative
         public const int MostResults = 10_000;
 
         /// <summary>
-        /// Whether a name answers the search.
-        ///
-        /// Case-insensitive, anywhere in the name, and the name includes the
-        /// extension — so "love" finds <c>Lovesick.flac</c>, ".flac" finds every
-        /// track, and "19" finds <c>2019 mix.wav</c>. One rule rather than a
-        /// field per kind of match, because a dialog with a name box and an
-        /// extension box is two things to tab past to do the one thing anybody
-        /// wants.
+        /// Whether a name answers the search, on its own (no folders around it).
+        /// The rule is <see cref="SearchQuery"/>'s.
         /// </summary>
-        public static bool Matches(string name, string term) => Matches(name.AsSpan(), term);
-
-        /// <summary>The same rule, over a name the walk has not made a string of.</summary>
-        public static bool Matches(ReadOnlySpan<char> name, string term) =>
-            term.Length == 0 || name.Contains(term, StringComparison.OrdinalIgnoreCase);
+        public static bool Matches(string name, string term) => SearchQuery.Parse(term).Matches(name, "");
 
         /// <summary>
         /// What a result's row says: the name, and where it lives when that is
@@ -110,18 +100,21 @@ namespace ExplorerNative
             // The window passes the Drive sync root, which sits under AppData and
             // costs a Drive listing per folder.
             var hits = new List<SearchHit>();
+            var query = SearchQuery.Parse(term);
 
             // An explicit stack rather than recursion. A deep tree is a stack
             // overflow, which takes the process with it and cannot be caught —
             // and this walks whatever folder somebody happened to be standing in.
-            var pending = new Stack<string>();
-            pending.Push(root);
+            // Each folder carries its path below the root, already folded, so a
+            // word can be found in the folders a file sits in ("tate greedy").
+            var pending = new Stack<(string Path, string Below)>();
+            pending.Push((root, ""));
 
             while (pending.Count > 0)
             {
                 token.ThrowIfCancellationRequested();
 
-                var folder = pending.Pop();
+                var (folder, below) = pending.Pop();
 
                 // Each entry is looked at where the scan left it, and only a hit
                 // or a folder to go into is turned into strings. The walk used to
@@ -141,7 +134,7 @@ namespace ExplorerNative
                     // so the search listed the sibling's files under the wrong
                     // folder, or nothing at all. Paths come back plain (Look).
                     walk = new System.IO.Enumeration.FileSystemEnumerable<Found>(NameRules.ExactPath(folder),
-                        (ref System.IO.Enumeration.FileSystemEntry entry) => Look(ref entry, term), WalkOptions)
+                        (ref System.IO.Enumeration.FileSystemEntry entry) => Look(ref entry, query, below), WalkOptions)
                     {
                         ShouldIncludePredicate = (ref System.IO.Enumeration.FileSystemEntry entry) =>
                             (showHidden || (entry.Attributes & FileAttributes.Hidden) == 0) &&
@@ -166,11 +159,17 @@ namespace ExplorerNative
 
                         if (found.Hit != null)
                         {
-                            hits.Add(found.Hit);
+                            // Cut short only once there is one more than the cap:
+                            // exactly the cap is the whole answer, said as such.
                             if (hits.Count >= most) return new SearchResult(hits, true);
+                            hits.Add(found.Hit);
                         }
 
-                        if (found.Folder != null && (skip == null || !skip(found.Folder))) pending.Push(found.Folder);
+                        if (found.Folder != null && (skip == null || !skip(found.Folder)))
+                        {
+                            var name = SearchQuery.FoldName(Path.GetFileName(found.Folder));
+                            pending.Push((found.Folder, below.Length == 0 ? name : below + "\\" + name));
+                        }
                     }
                 }
             }
@@ -195,10 +194,10 @@ namespace ExplorerNative
             IgnoreInaccessible = false,
         };
 
-        private static Found Look(ref System.IO.Enumeration.FileSystemEntry entry, string term)
+        private static Found Look(ref System.IO.Enumeration.FileSystemEntry entry, SearchQuery query, string below)
         {
             bool isDir = entry.IsDirectory;
-            bool hit = Matches(entry.FileName, term);
+            bool hit = query.MatchesFolded(entry.FileName, below);
             if (!hit && !isDir) return default;
 
             string path = NameRules.PlainPath(entry.ToFullPath());
@@ -220,6 +219,148 @@ namespace ExplorerNative
                 folder = path;
 
             return new Found(found, folder);
+        }
+    }
+
+    /// <summary>
+    /// What was typed into Search, taken apart once and asked of every name.
+    ///
+    /// - Words, in any order: "greedy tate" finds "Tate McRae - greedy.flac".
+    ///   Case and accents do not matter ("beyonce" finds "Beyoncé"), and the
+    ///   extension is part of the name, so ".flac" still finds every track.
+    /// - A word may be found in the folders between the searched folder and the
+    ///   file instead ("tate greedy" finds Tate McRae\greedy.flac), but at
+    ///   least one word has to be in the name itself, or "tate" would list
+    ///   every file in the Tate folder.
+    /// - "quoted words" stay together as one phrase.
+    /// - A word with * or ? is a pattern for the whole name: "*.flac",
+    ///   "t??.mp3" (in quotes when it has a space: "track ??.mp3").
+    /// - -word leaves out anything with that word in its name or its folders.
+    ///
+    /// Nothing at all typed (F5 re-runs a search) matches everything.
+    /// </summary>
+    internal sealed class SearchQuery
+    {
+        private readonly string[] _words;      // folded; each must be found
+        private readonly string[] _patterns;   // folded; each must fit the whole name
+        private readonly string[] _without;    // folded; none may be found
+
+        /// <summary>
+        /// What to ask Google for (any one of them, as "name contains"): every
+        /// item the query can match holds at least one of these in its name. Empty
+        /// means Google cannot narrow it and everything is asked for.
+        /// </summary>
+        public IReadOnlyList<string> DriveHints { get; }
+
+        private SearchQuery(string[] words, string[] patterns, string[] without, string[] hints)
+        {
+            _words = words;
+            _patterns = patterns;
+            _without = without;
+            DriveHints = hints;
+        }
+
+        public static SearchQuery Parse(string? text)
+        {
+            var words = new List<string>();
+            var typedWords = new List<string>();
+            var patterns = new List<string>();
+            var without = new List<string>();
+            string patternPiece = "";
+
+            foreach (var (token, quoted, dashOutside) in Tokens(text ?? ""))
+            {
+                if (dashOutside && token.Length > 1)
+                {
+                    without.Add(FoldName(token[1..]));
+                    continue;
+                }
+                // Even quoted: no Windows name holds * or ?, so they can only
+                // be meant as a pattern ("track ??.mp3" needs the quotes).
+                if (token.AsSpan().IndexOfAny('*', '?') >= 0)
+                {
+                    patterns.Add(FoldName(token));
+                    foreach (var piece in token.Split('*', '?'))
+                    {
+                        var plain = piece.Trim(' ', '.');
+                        if (plain.Length > patternPiece.Length) patternPiece = plain;
+                    }
+                    continue;
+                }
+                words.Add(FoldName(token));
+                typedWords.Add(token);
+            }
+
+            // A name that matches fits every pattern, so it holds the longest
+            // plain piece of one; failing that it holds at least one word. A
+            // pattern with no plain piece ("*") gives Google nothing to go on.
+            string[] hints = patterns.Count > 0
+                ? (patternPiece.Length > 0 ? [patternPiece] : [])
+                : typedWords.ToArray();
+
+            return new SearchQuery(words.ToArray(), patterns.ToArray(), without.ToArray(), hints);
+        }
+
+        /// <summary>Split on spaces, keeping "quoted words" as one.</summary>
+        private static IEnumerable<(string Token, bool Quoted, bool DashOutside)> Tokens(string text)
+        {
+            var current = new System.Text.StringBuilder();
+            bool inQuote = false, quoted = false, dashOutside = false;
+
+            foreach (char c in text)
+            {
+                if (c == '"') { inQuote = !inQuote; quoted = true; continue; }
+                if (!inQuote && char.IsWhiteSpace(c))
+                {
+                    if (current.Length > 0) yield return (current.ToString(), quoted, dashOutside);
+                    current.Clear();
+                    quoted = dashOutside = false;
+                    continue;
+                }
+                if (current.Length == 0) dashOutside = c == '-' && !inQuote;
+                current.Append(c);
+            }
+            if (current.Length > 0) yield return (current.ToString(), quoted, dashOutside);
+        }
+
+        /// <summary>A name or folder path with accents taken off, as the query's words are.</summary>
+        public static string FoldName(string text) => TypeAhead.Fold(text);
+
+        /// <summary>
+        /// Whether an item answers, given its name and the folders between the
+        /// searched folder and it ("2019\live", or empty when it sits in the
+        /// searched folder itself).
+        /// </summary>
+        public bool Matches(string name, string folders) => MatchesFolded(name, FoldName(folders));
+
+        /// <summary>
+        /// The same, with the folders already through <see cref="FoldName"/>: the
+        /// walk folds each folder once, not once per file in it.
+        /// </summary>
+        public bool MatchesFolded(ReadOnlySpan<char> name, string folders)
+        {
+            // Plain ASCII, nearly every name, is compared where it lies.
+            if (name.ContainsAnyExceptInRange((char)0, (char)0x7F))
+                name = FoldName(name.ToString());
+
+            foreach (var pattern in _patterns)
+                if (!System.IO.Enumeration.FileSystemName.MatchesSimpleExpression(pattern, name, ignoreCase: true))
+                    return false;
+
+            foreach (var word in _without)
+                if (name.Contains(word, StringComparison.OrdinalIgnoreCase) ||
+                    folders.Contains(word, StringComparison.OrdinalIgnoreCase))
+                    return false;
+
+            bool inName = false;
+            foreach (var word in _words)
+            {
+                if (name.Contains(word, StringComparison.OrdinalIgnoreCase)) inName = true;
+                else if (!folders.Contains(word, StringComparison.OrdinalIgnoreCase)) return false;
+            }
+
+            // A pattern already pins the name down; words alone need one in it.
+            return inName || _words.Length == 0 || _patterns.Length > 0;
         }
     }
 }

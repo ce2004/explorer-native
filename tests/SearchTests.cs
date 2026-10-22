@@ -39,6 +39,53 @@ namespace ExplorerNative
             PathMaterialisationTests();
             QueryEscapingTests();
             SourceShapeTests();
+            ShortcutListTests();
+        }
+
+        /// <summary>
+        /// Help, Keyboard shortcuts: every key on the main menu is in the list,
+        /// so a new item with a key cannot be left out of it.
+        /// </summary>
+        private static void ShortcutListTests()
+        {
+            var listed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var (_, rows) in BuiltInShortcuts.Sections)
+                foreach (var row in rows)
+                    foreach (var part in row.Keys.Split(new[] { " or ", ", " }, StringSplitOptions.None))
+                        listed.Add(part.Trim());
+
+            var main = Source("MainForm.cs") ?? "";
+            var missing = new List<string>();
+            int seen = 0;
+            foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+                         main, @"Item\(""[^""]*"", (Keys\.\w+(?: \| Keys\.\w+)*)"))
+            {
+                var keys = m.Groups[1].Value.Split(" | ");
+                if (keys.Length == 1 && keys[0] == "Keys.None") continue;
+                seen++;
+                string text = "";
+                foreach (var mod in new[] { "Control", "Alt", "Shift" })
+                    if (Array.IndexOf(keys, "Keys." + mod) >= 0) text += (mod == "Control" ? "Ctrl" : mod) + "+";
+                foreach (var k in keys)
+                    if (k is not ("Keys.Control" or "Keys.Alt" or "Keys.Shift")) text += k["Keys.".Length..];
+                if (!listed.Contains(text)) missing.Add(text);
+            }
+
+            Check("the menu's keys were found to check", seen >= 20, seen.ToString());
+
+            // 4.2.0, Conner: NVDA read the same file every time the folder changed.
+            Check("a watcher reload swaps the rows in place instead of emptying the list",
+                main.Contains("if (quiet && keepFocus && sameFolder && previousRow != null &&", StringComparison.Ordinal) &&
+                main.Contains("SwapEntriesQuietly(pane, entries, previousRow,", StringComparison.Ordinal) &&
+                main.Contains("if (focus != oldFocus)", StringComparison.Ordinal));
+            Check("every key on the menu is in Help, Keyboard shortcuts", missing.Count == 0, string.Join(", ", missing));
+            Check("and so are the keys the menu does not show",
+                listed.Contains("Shift+F10") && listed.Contains("Alt+Enter") && listed.Contains("Backspace") &&
+                listed.Contains("Ctrl+Shift+N") && listed.Contains("Escape"));
+            Check("the list opens on Ctrl+F1, which no audio shortcut may take",
+                main.Contains("Keys.Control | Keys.F1, ShowKeyboardShortcuts", StringComparison.Ordinal) &&
+                System.Linq.Enumerable.Contains(ReservedShortcuts.Combinations(),
+                    System.Windows.Forms.Keys.Control | System.Windows.Forms.Keys.F1));
         }
 
         /// <summary>
@@ -65,6 +112,83 @@ namespace ExplorerNative
             // the dialog refuses a blank, but F5 re-runs whatever was searched
             // for — and "everything" is the answer that cannot lose a file.
             Check("an empty term matches everything", FileSearch.Matches("anything.txt", ""));
+
+            SmarterMatchTests();
+        }
+
+        /// <summary>
+        /// 4.1.8: words in any order, accents, folder names, phrases, patterns
+        /// and words left out, and what Google is asked for each.
+        /// </summary>
+        private static void SmarterMatchTests()
+        {
+            Check("words match in any order",
+                FileSearch.Matches("Tate McRae - greedy.flac", "greedy tate"));
+            Check("but every word has to be there",
+                !FileSearch.Matches("Tate McRae - greedy.flac", "greedy banjo"));
+            Check("accents do not matter, either way",
+                FileSearch.Matches("Beyoncé - Halo.mp3", "beyonce halo") &&
+                FileSearch.Matches("Cafe del Mar.mp3", "café"));
+
+            var q = SearchQuery.Parse("tate greedy");
+            Check("a word can be in the folders the file sits in",
+                q.Matches("greedy.flac", @"Tate McRae\2023"));
+            Check("but one word has to be in the name, or a folder's name lists everything in it",
+                !q.Matches("exes.flac", @"Tate McRae\greedy era") && !SearchQuery.Parse("tate").Matches("exes.flac", "Tate McRae"));
+            Check("folder accents fold too",
+                SearchQuery.Parse("beyonce halo").Matches("Halo.mp3", "Beyoncé"));
+
+            Check("a quoted phrase stays together",
+                FileSearch.Matches("I Love You.flac", "\"i love\"") &&
+                !FileSearch.Matches("Love I.flac", "\"i love\""));
+
+            Check("a pattern fits the whole name",
+                FileSearch.Matches("song.flac", "*.flac") && !FileSearch.Matches("song.flac.txt", "*.flac"));
+            Check("? stands for one character",
+                FileSearch.Matches("track 07.mp3", "\"track ??.mp3\"") &&
+                !FileSearch.Matches("track 7.mp3", "\"track ??.mp3\"") &&
+                FileSearch.Matches("t07.mp3", "t??.mp3") && !FileSearch.Matches("t7.mp3", "t??.mp3"));
+            Check("a pattern with words: the words may be in the folders",
+                SearchQuery.Parse("tate *.flac").Matches("greedy.flac", "Tate McRae") &&
+                !SearchQuery.Parse("tate *.flac").Matches("greedy.flac", "Olivia"));
+
+            Check("-word leaves out names with it",
+                FileSearch.Matches("love.flac", "love -remix") && !FileSearch.Matches("love (remix).flac", "love -remix"));
+            Check("and things in folders with it",
+                !SearchQuery.Parse("love -old").Matches("love.flac", @"live\old"));
+            Check("a lone dash is a word, not a leave-out",
+                FileSearch.Matches("a - b.txt", "a - b") && !FileSearch.Matches("ab.txt", "a - b"));
+            Check("only leave-outs: everything else matches",
+                FileSearch.Matches("song.flac", "-remix") && !FileSearch.Matches("remix.flac", "-remix"));
+
+            Equal("Google is asked for any one word",
+                "(name contains 'greedy' or name contains 'tate') and trashed = false",
+                DriveClient.NameQuery(SearchQuery.Parse("greedy tate").DriveHints));
+            Equal("one word stays as it was",
+                "name contains 'love' and trashed = false",
+                DriveClient.NameQuery(SearchQuery.Parse("love -remix").DriveHints));
+            Equal("a pattern asks for its longest plain piece",
+                "name contains 'flac' and trashed = false",
+                DriveClient.NameQuery(SearchQuery.Parse("tate *.flac").DriveHints));
+            Equal("nothing to go on asks for everything",
+                "trashed = false", DriveClient.NameQuery(SearchQuery.Parse("*").DriveHints));
+            Equal("a quote is escaped for Google",
+                @"name contains 'don\'t' and trashed = false",
+                DriveClient.NameQuery(SearchQuery.Parse("don't").DriveHints));
+
+            // Drive's answer is narrowed with the folders between the searched
+            // folder and each hit, named from the folder graph.
+            var parents = new Dictionary<string, string?> { ["tate"] = "root", ["era"] = "tate", ["olivia"] = "root" };
+            var names = new Dictionary<string, string> { ["tate"] = "Tate McRae", ["era"] = "2023", ["olivia"] = "Olivia" };
+            var found = new List<DriveFound>
+            {
+                new("1", "greedy.flac", "audio/flac", 1, default, "era"),
+                new("2", "greedy.flac", "audio/flac", 1, default, "olivia"),
+                new("3", "tate greedy.flac", "audio/flac", 1, default, "olivia"),
+            };
+            var kept = DriveSearch.Answering(SearchQuery.Parse("tate greedy"), found, "root", parents, names);
+            Equal("Drive hits are judged with their folders' names", "1,3",
+                string.Join(",", kept.ConvertAll(f => f.Id)));
         }
 
         /// <summary>
@@ -408,7 +532,7 @@ namespace ExplorerNative
             var drive = Source("GoogleDrive.cs");
             Check("a Drive search asks Google rather than walking placeholders",
                 drive != null &&
-                drive.Contains("client.FindByName(term, token, most, driveId)", StringComparison.Ordinal) &&
+                drive.Contains("client.FindByName(query.DriveHints, token, most, driveId)", StringComparison.Ordinal) &&
                 drive.Contains("client.AllFolders(token, driveId: driveId)", StringComparison.Ordinal),
                 "a recursive walk of the letter is one listing per folder");
 
@@ -425,7 +549,7 @@ namespace ExplorerNative
             // own Populate in a Task.Run.
             Check("a Drive search never resumes on the thread that asked for it",
                 drive != null &&
-                drive.Contains("client.FindByName(term, token, most, driveId).ConfigureAwait(false)", StringComparison.Ordinal) &&
+                drive.Contains("client.FindByName(query.DriveHints, token, most, driveId).ConfigureAwait(false)", StringComparison.Ordinal) &&
                 drive.Contains("FolderGraph(client, driveId, token).ConfigureAwait(false)", StringComparison.Ordinal) &&
                 drive.Contains("client.RootId(token).ConfigureAwait(false)", StringComparison.Ordinal),
                 "a synchronous folder listing would run on the UI thread");
@@ -460,7 +584,7 @@ namespace ExplorerNative
             // Application.ThreadException and puts the crash dialog up.
             Check("an async void search cannot take the window down with it",
                 System.Text.RegularExpressions.Regex.Matches(
-                    main, @"try \{ await RunSearchAsync\(term\); \}").Count is var guarded && guarded >= 2 &&
+                    main, @"try \{ await RunSearchAsync\(term[^;]*\); \}").Count is var guarded && guarded >= 2 &&
                 guarded == System.Text.RegularExpressions.Regex.Matches(main, @"await RunSearchAsync\(").Count,
                 "every caller of RunSearchAsync must guard it");
 

@@ -431,10 +431,11 @@ namespace ExplorerNative
 
                 var reporter = new ArchiveEngine.Reporter(progress);
                 var errors = new List<string>();
+                bool stoppedShort = false;
                 try
                 {
                     var (done, _) = BsdTar.Extract(archivePath, tree, PasteConflictPolicy.AutoRename, null,
-                        reporter, errors, token);
+                        reporter, errors, token, () => stoppedShort = true);
                     token.ThrowIfCancellationRequested();
 
                     // The reason, not a per-entry line ("name: not extracted ..."):
@@ -445,7 +446,13 @@ namespace ExplorerNative
                     if (done == 0 && reason != null)
                         throw new InvalidDataException(reason.TrimEnd('.') + ".");
                     damaged = errors.Any(e => e.Contains("damaged", StringComparison.OrdinalIgnoreCase));
-                    if (!damaged && reason != null) partial = reason;
+
+                    // Only an extraction tar did not finish is partial. A link
+                    // left out, a repeated name or a withheld unsafe name is a
+                    // note about one entry: the tree is still the whole archive,
+                    // kept, and not extracted again on every open (4.1.7 read
+                    // any such note as "only part of this archive is shown").
+                    if (!damaged && stoppedShort) partial = reason ?? "the system tar stopped before the end";
                 }
                 catch
                 {

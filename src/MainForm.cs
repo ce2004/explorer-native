@@ -536,6 +536,13 @@ namespace ExplorerNative
             RestoreListFocus();
         }
 
+        /// <summary>Help, Keyboard shortcuts (Ctrl+F1): the built-in keys, as a list.</summary>
+        private void ShowKeyboardShortcuts()
+        {
+            using (var keys = new KeyboardShortcutsForm()) keys.ShowDialog(this);
+            RestoreListFocus();
+        }
+
         private void ShowAbout()
         {
             MessageBox.Show(this,
@@ -1034,6 +1041,7 @@ namespace ExplorerNative
             // automatic check and no setting for one.
             var help = new ToolStripMenuItem("&Help");
             help.DropDownItems.Add(Item("Check for &updates…", Keys.None, CheckForUpdates));
+            help.DropDownItems.Add(Item("&Keyboard shortcuts", Keys.Control | Keys.F1, ShowKeyboardShortcuts));
             help.DropDownItems.Add(Item("&Changelog", Keys.Shift | Keys.F1, ShowChangelog));
             help.DropDownItems.Add(Item("&About Explorer Native", Keys.None, ShowAbout));
             menu.Items.Add(help);
@@ -3576,6 +3584,22 @@ namespace ExplorerNative
                 selectedNow = SelectedPathsOf(pane);
             }
 
+            // The folder watcher's reload, with the cursor's file still there:
+            // the rows are swapped under it, never emptied and refilled. Emptied,
+            // the list told the screen reader the cursor had landed again, and
+            // NVDA read the same file every time anything in the folder changed
+            // (Conner, 4.2.0: "it won't shut up").
+            if (quiet && keepFocus && sameFolder && previousRow != null &&
+                entries.Exists(e => string.Equals(e.Path, previousRow, StringComparison.OrdinalIgnoreCase)))
+            {
+                SwapEntriesQuietly(pane, entries, previousRow, selectedNow ?? new List<string>());
+                pane.LastLoadedPath = path;
+                if (_settings.FolderSizes == FolderSizeMode.Automatic)
+                    _ = CalculateAllFolderSizesAsync(pane, token);
+                PrewarmAssociations(entries);
+                return true;
+            }
+
             SetEntries(pane, entries, preferPath);
             pane.LastLoadedPath = path;
 
@@ -3983,6 +4007,55 @@ namespace ExplorerNative
         /// Puts the cursor on <paramref name="focus"/> and the selection back on
         /// <paramref name="selected"/> after the rows under them moved.
         /// </summary>
+        /// <summary>
+        /// A reload's rows put in under the cursor without emptying the list,
+        /// touching the cursor and the selection only where a row actually moved.
+        /// Every state change is an event a screen reader may speak, and nothing
+        /// here was asked for by the person at the keyboard.
+        /// </summary>
+        private void SwapEntriesQuietly(Pane pane, List<Entry> entries, string focusPath, List<string> selected)
+        {
+            var list = pane.List;
+            int oldFocus = FocusedIndex(list);
+            var oldSelected = new HashSet<int>();
+            if (list.IsHandleCreated) foreach (int i in list.SelectedIndices) oldSelected.Add(i);
+
+            ReplaceEntriesInPlace(pane, entries);
+            if (!list.IsHandleCreated || !pane.IndexByPath.TryGetValue(focusPath, out int focus)) return;
+
+            var wanted = new HashSet<int>();
+            foreach (var path in selected)
+                if (pane.IndexByPath.TryGetValue(path, out int i)) wanted.Add(i);
+
+            _suppressStatus++;
+            try
+            {
+                // The selection first, row by row, and only the rows that differ.
+                foreach (int i in oldSelected)
+                    if (!wanted.Contains(i) && i < entries.Count)
+                    {
+                        var off = new LVITEM { mask = LVIF_STATE, state = 0, stateMask = LVIS_SELECTED };
+                        SendMessage(list.Handle, LVM_SETITEMSTATE, new IntPtr(i), ref off);
+                    }
+                foreach (int i in wanted)
+                    if (!oldSelected.Contains(i))
+                    {
+                        var on = new LVITEM { mask = LVIF_STATE, state = LVIS_SELECTED, stateMask = LVIS_SELECTED };
+                        SendMessage(list.Handle, LVM_SETITEMSTATE, new IntPtr(i), ref on);
+                    }
+
+                // Then the cursor, only if its file is on another row now.
+                if (focus != oldFocus)
+                {
+                    var set = new LVITEM { mask = LVIF_STATE, state = LVIS_FOCUSED, stateMask = LVIS_FOCUSED };
+                    SendMessage(list.Handle, LVM_SETITEMSTATE, new IntPtr(focus), ref set);
+                    try { list.EnsureVisible(focus); } catch (ArgumentOutOfRangeException) { }
+                }
+            }
+            finally { _suppressStatus--; }
+            if (pane == Active) ScheduleStatusUpdate();
+        }
+
         private void Reselect(Pane pane, int focus, List<string> selected)
         {
             SelectIndex(pane, focus);
@@ -5285,6 +5358,10 @@ namespace ExplorerNative
             // somebody is looking at.
             if (Active.SearchTerm is { } term)
             {
+                // F5 means now: Drive's folder graph is otherwise kept for five
+                // minutes, and a folder made since could hide what is in it.
+                Drive?.ForgetFolderGraph();
+
                 // async void, same as SearchHere — see the guard there.
                 try { await RunSearchAsync(term); }
                 catch (Exception ex)
@@ -5382,6 +5459,10 @@ namespace ExplorerNative
 
             _lastSearch = term;
 
+            // Back on the list before the walk starts, so Escape (the list's
+            // key) can stop a search of a whole disk; it used to wait for the end.
+            RestoreListFocus();
+
             // This method is `async void`, so anything escaping it goes to
             // Application.ThreadException and puts the crash dialog up. The
             // search itself catches its own failures, but building the rows,
@@ -5422,7 +5503,18 @@ namespace ExplorerNative
             _ = NavigateAsync(pane.CurrentPath, onPane: pane);
         }
 
-        private async Task RunSearchAsync(string term)
+        /// <summary>
+        /// The search again after something changed in the results (a rename, a
+        /// new folder, a delete): quietly, landing on <paramref name="landOn"/>,
+        /// and not awaited by the operation, which says what it did at once.
+        /// </summary>
+        private async Task RerunSearchAsync(string term, string? landOn)
+        {
+            try { await RunSearchAsync(term, landOn, quiet: true); }
+            catch (Exception ex) { AnnounceOperation("search.failed", $"Could not search: {ex.Message}"); }
+        }
+
+        private async Task RunSearchAsync(string term, string? landOn = null, bool quiet = false)
         {
             var pane = Active;
             var root = pane.CurrentPath;
@@ -5433,8 +5525,11 @@ namespace ExplorerNative
             var token = BeginPaneWork(pane);
 
             // And a navigation still checking its folder gives way to it, rather
-            // than cancelling the search the moment its check comes back.
-            pane.NavigationId++;
+            // than cancelling the search the moment its check comes back. A
+            // navigation started after this one takes the number on again, and
+            // then the results are not put in: one that finished during its
+            // probe left "Results for" on the folder it went to.
+            int navigation = ++pane.NavigationId;
 
             // Whose search this is. A second F1 while the first is still walking
             // cancels it and starts again — and the loser then runs its finally
@@ -5448,7 +5543,7 @@ namespace ExplorerNative
             // results lands where the search was started from.
             if (pane.SearchTerm == null) RememberPosition(pane);
 
-            AnnounceOperation("search.started", $"Searching for {term}");
+            if (!quiet) AnnounceOperation("search.started", $"Searching for {term}");
 
             SearchResult result;
             pane.Searching = true;
@@ -5463,6 +5558,11 @@ namespace ExplorerNative
                 var onDrive = drive == null
                     ? null
                     : await drive.SearchAsync(root, term, FileSearch.MostResults, token);
+
+                // A folder on the letter Drive could not place is never walked:
+                // that reads placeholders from this process.
+                if (onDrive == null && drive != null && drive.Owns(root))
+                    throw new IOException("Google Drive has not finished listing this folder. Try again in a moment");
 
                 result = onDrive ?? await Task.Run(
                     () => FileSearch.Local(root, term,
@@ -5518,7 +5618,7 @@ namespace ExplorerNative
             // The pane may have been navigated while the search ran. Switched away
             // from is fine: the results go into it, where they will be on the
             // way back, rather than being dropped with the folder half loaded.
-            if (pane.CurrentPath != root) return;
+            if (pane.CurrentPath != root || pane.NavigationId != navigation) return;
 
             var entries = new List<Entry>(result.Hits.Count);
             foreach (var hit in result.Hits)
@@ -5533,7 +5633,12 @@ namespace ExplorerNative
             pane.SearchTruncated = result.Truncated;
             pane.TypeAhead.Reset();
 
-            SetEntries(pane, entries);
+            SetEntries(pane, entries, preferPath: landOn);
+
+            // The list no longer holds the folder: leaving the results reads
+            // it as a folder arriving, not as the same one refreshed (which
+            // kept the results on screen, live, until the listing finished).
+            pane.LastLoadedPath = "";
             UpdatePaneName(pane);
             UpdateTitle();
             if (pane == Active)
@@ -5545,9 +5650,11 @@ namespace ExplorerNative
                 // Only with the window in front — focusing activates it, and a
                 // long search finishing would take the keyboard from a progress
                 // window and read a row over whatever was being done there.
-                if (Form.ActiveForm == this) FocusListAndRow(pane, readRowAloud: entries.Count > 0);
+                // A quiet re-run after a rename leaves the operation to speak.
+                if (Form.ActiveForm == this && !quiet) FocusListAndRow(pane, readRowAloud: entries.Count > 0);
             }
 
+            if (quiet) return;
             if (entries.Count == 0)
                 AnnounceOperation("search.none", $"Nothing matching {term} in {FolderDisplayName(root)}");
             else if (result.Truncated)
@@ -5683,8 +5790,11 @@ namespace ExplorerNative
             if (pane.SearchTerm is { } term)
             {
                 if (quiet) { pane.NeedsRefresh = true; return false; }
-                try { await RunSearchAsync(term); }
-                catch (Exception ex) { AnnounceOperation("search.failed", $"Could not search: {ex.Message}"); }
+
+                // Not awaited, and landing on the item the operation was about:
+                // a rename in results jumped to the top, and waited for the whole
+                // walk again before saying "Renamed".
+                _ = RerunSearchAsync(term, selectAfter ?? FocusedPath());
                 return false;
             }
 

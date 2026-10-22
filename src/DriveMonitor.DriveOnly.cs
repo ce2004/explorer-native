@@ -157,7 +157,7 @@ namespace ExplorerNative
 
         /// <summary>What checking a PC folder against Drive found.</summary>
         private sealed record FolderCheck(List<CheckedFile> Matching, List<string> Leftovers, List<string> NotOnDrive,
-            string? Link, List<string> NeverSynced);
+            string? Link, List<string> NeverSynced, List<string>? LeftOnPc = null);
 
         /// <summary>
         /// Every file under <paramref name="pcFolder"/>, hidden ones included,
@@ -172,20 +172,31 @@ namespace ExplorerNative
             var leftovers = new List<string>();
             var notOnDrive = new List<string>();
             var neverSynced = new List<string>();
-            var folders = new Stack<string>();
-            folders.Push(pcFolder);
+            var leftOnPc = new List<string>();
+            // Each folder carries whether the scan would leave it out: it skips a
+            // hidden or system folder whole (ScanLocalFolder), so nothing inside
+            // one is ever uploaded, whatever the file's own attributes say.
+            const FileAttributes leftOut = FileAttributes.Hidden | FileAttributes.System;
+            bool topLeftOut = false;
+            try { topLeftOut = (File.GetAttributes(pcFolder) & leftOut) != 0; } catch { }
+            var folders = new Stack<(string Path, bool LeftOut)>();
+            folders.Push((pcFolder, topLeftOut));
             while (folders.Count > 0)
             {
                 token.ThrowIfCancellationRequested();
-                var folder = folders.Pop();
+                var (folder, folderLeftOut) = folders.Pop();
                 foreach (var entry in new DirectoryInfo(folder).EnumerateFileSystemInfos())
                 {
                     var relative = DriveOnlyFolders.Normal(Path.GetRelativePath(pcFolder, entry.FullName));
                     if ((entry.Attributes & FileAttributes.ReparsePoint) != 0)
                         return new FolderCheck(matching, leftovers, notOnDrive, relative, neverSynced);
-                    if (entry is DirectoryInfo) { folders.Push(entry.FullName); continue; }
+                    if (entry is DirectoryInfo)
+                    {
+                        folders.Push((entry.FullName, folderLeftOut || (entry.Attributes & leftOut) != 0));
+                        continue;
+                    }
                     if (IsWindowsLeftover(entry.Name)) { leftovers.Add(entry.FullName); continue; }
-                    if (IsLeftOnPc(entry.Name)) continue;
+                    if (IsLeftOnPc(entry.Name)) { leftOnPc.Add(relative); continue; }
 
                     var file = (FileInfo)entry;
                     if (!remote.TryGetValue(relative, out var onDrive) || onDrive.Md5 == null || onDrive.Size != file.Length)
@@ -193,7 +204,7 @@ namespace ExplorerNative
                         // Hidden and system files are never uploaded (the scan leaves
                         // them out), so waiting for a pass to send them was 5 minutes
                         // for a refusal that could never come right.
-                        if ((file.Attributes & (FileAttributes.Hidden | FileAttributes.System)) != 0) neverSynced.Add(relative);
+                        if (folderLeftOut || (file.Attributes & leftOut) != 0) neverSynced.Add(relative);
                         notOnDrive.Add(relative);
                         continue;
                     }
@@ -219,7 +230,7 @@ namespace ExplorerNative
                         notOnDrive.Add(relative);
                 }
             }
-            return new FolderCheck(matching, leftovers, notOnDrive, null, neverSynced);
+            return new FolderCheck(matching, leftovers, notOnDrive, null, neverSynced, leftOnPc);
         }
 
         /// <summary>
@@ -381,11 +392,22 @@ namespace ExplorerNative
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
 
-            SyncHistory.Add(pairId, "Kept on Google Drive only", relative, "cleared off this PC");
+            // Temporary files and downloads still being written never sync, so
+            // they stay, and so does their folder: "cleared off this PC" would
+            // not be true. Said, with what they are.
+            var left = check.LeftOnPc ?? new List<string>();
+            SyncHistory.Add(pairId, "Kept on Google Drive only", relative,
+                kept == 0 && left.Count == 0 ? "cleared off this PC" : "cleared off this PC, some files left");
             SyncHistory.Flush(pairId);
-            return kept == 0
-                ? new(true, $"{name} is on Google Drive only now, and was cleared off this PC")
-                : new(true, $"{name} is on Google Drive only now. {NameRules.Counted(kept, "file")} changed while it was checked, so {(kept == 1 ? "it was" : "they were")} left on this PC, in {name}");
+            var stayed = left.Count == 0 ? ""
+                : $" {NameRules.Counted(left.Count, "file")} {(left.Count == 1 ? "was" : "were")} left on this PC because " +
+                  $"{(left.Count == 1 ? "it's a temporary file or a download that isn't finished" : "they're temporary files or downloads that aren't finished")}, " +
+                  $"which never sync ({SomeOf(left)})";
+            if (kept == 0)
+                return left.Count == 0
+                    ? new(true, $"{name} is on Google Drive only now, and was cleared off this PC")
+                    : new(true, $"{name} is on Google Drive only now, and the rest was cleared off this PC.{stayed}");
+            return new(true, $"{name} is on Google Drive only now. {NameRules.Counted(kept, "file")} changed while it was checked, so {(kept == 1 ? "it was" : "they were")} left on this PC, in {name}." + stayed);
         }
 
         /// <summary>

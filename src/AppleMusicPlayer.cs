@@ -254,7 +254,7 @@ namespace ExplorerNative
                     {
                         // Repeat all: an ended list starts over (shuffled afresh if shuffle is on).
                         if (_listQueue.Count == 0 && _repeat == RepeatMode.All && _listFolder != null && !AppleMusic.InStation(path))
-                            Refill();
+                            Refill(path);
                         next = _listQueue.Count > 0 ? _listQueue[0] : null;
                     }
                 }
@@ -321,22 +321,33 @@ namespace ExplorerNative
             else _listQueue = songs.Skip(at + 1).ToList();
         }
 
-        /// <summary>Repeat all, at the end of the list: all of it again. Under Gate.</summary>
-        private static void Refill()
+        /// <summary>
+        /// Repeat all, at the end of the list: all of it again. Under Gate.
+        /// <paramref name="last"/> is the song the new round follows: NextFor's
+        /// own song, which is often starting before <c>_currentPath</c> is set
+        /// (Start asks NextFor first), so comparing with that field let a skip
+        /// to the round's last song play it twice in a row.
+        /// </summary>
+        private static void Refill(string last)
         {
             var songs = AppleMusic.SongsShown(_listFolder!);
             if (songs == null) return;
             if (_shuffle)
             {
                 Shuffled(songs);
-                // Not the song just heard, straight away again.
-                if (songs.Count > 1 && string.Equals(songs[0], _currentPath, StringComparison.OrdinalIgnoreCase))
-                    (songs[0], songs[^1]) = (songs[^1], songs[0]);
+                if (songs.Count > 1) NotFirst(songs, last);
             }
             _listQueue = songs;
             // History is kept, so Previous goes back across the start of a new
             // round (clearing it left the last song unable to go back at all).
             if (_history.Count > 1000) _history.RemoveRange(0, _history.Count - 1000);
+        }
+
+        /// <summary>The song just heard is not first in a new round: swapped with the last.</summary>
+        internal static void NotFirst(List<string> songs, string last)
+        {
+            if (songs.Count > 1 && string.Equals(songs[0], last, StringComparison.OrdinalIgnoreCase))
+                (songs[0], songs[^1]) = (songs[^1], songs[0]);
         }
 
         private static void Shuffled(List<string> songs)
