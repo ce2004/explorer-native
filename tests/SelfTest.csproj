@@ -117,6 +117,7 @@
     <Compile Include="SyncDuplicateTests.cs" />
     <Compile Include="SyncScaleTests.cs" />
     <Compile Include="PcChangesTests.cs" />
+    <Compile Include="SyncHardeningTests.cs" />
     <Compile Include="EdgeCaseTests.cs" />
     <Compile Include="TransferFixTests.cs" />
     <Compile Include="FilesR2Tests.cs" />

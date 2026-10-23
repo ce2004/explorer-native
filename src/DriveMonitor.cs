@@ -533,6 +533,15 @@ namespace ExplorerNative
                     _watchTickets.Remove(gone);
                 }
 
+                _watchRules.Clear();
+                foreach (var pair in _pairs)
+                {
+                    // Its skip list is read once here, not raced for by the watcher's threads.
+                    var rules = SyncRules.For(pair);
+                    rules.SkipsType("");
+                    _watchRules[pair.Id] = rules;
+                }
+
                 foreach (var pair in _pairs)
                 {
                     if (_watchers.TryGetValue(pair.Id, out var existing))
@@ -562,6 +571,36 @@ namespace ExplorerNative
 
             try { Changed?.Invoke(); } catch { }
             SyncNow();
+        }
+
+        /// <summary>Each watched pair's rules as they are now, for <see cref="NotNews"/> (an edit can keep the watcher).</summary>
+        private readonly Dictionary<string, SyncRules> _watchRules = new();
+
+        /// <summary>
+        /// Whether a change the watcher saw is one no pass would act on: a
+        /// name the planner always skips, something the pair's own settings
+        /// leave out (the skip list, kept on Drive only), or anything hidden or
+        /// system, or inside a hidden or system folder, which a walk never
+        /// reaches. A path that cannot be looked at (gone already) is news.
+        /// </summary>
+        internal static bool NotNews(string root, string fullPath, SyncRules? rules)
+        {
+            string relative;
+            try { relative = Relative(root, fullPath); }
+            catch { return false; }
+            if (relative.Length == 0 || relative == "." || relative.StartsWith("../", StringComparison.Ordinal)) return false;
+            if (SyncPlanner.IsSkippedPath(relative) || rules?.LeavesOut(relative) == true) return true;
+            var at = root;
+            foreach (var part in relative.Split('/', StringSplitOptions.RemoveEmptyEntries))
+            {
+                at = Path.Combine(at, part);
+                try
+                {
+                    if ((File.GetAttributes(at) & (FileAttributes.Hidden | FileAttributes.System)) != 0) return true;
+                }
+                catch { return false; }
+            }
+            return false;
         }
 
         /// <summary>The newest watcher asked for, per pair: one made for an older ticket is thrown away.</summary>
@@ -601,25 +640,37 @@ namespace ExplorerNative
                 // The monitor's own writes are noted but are not news: a
                 // download landing used to make the next pass due, which
                 // listed the whole of Drive again for nothing.
+                //
+                // Nor is anything the pair leaves out (see NotNews): Resilio
+                // Sync writes and deletes a test file in its hidden .sync
+                // folder every ten minutes, and each one ran a pass, then
+                // another for the folder's own time changing a moment later.
                 var id = pair.Id;
                 var root = pair.LocalFolder;
                 var journal = new PcWatchJournal();
+                bool Ignored(string fullPath)
+                {
+                    SyncRules? rules;
+                    lock (_gate) _watchRules.TryGetValue(id, out rules);
+                    return NotNews(root, fullPath, rules);
+                }
                 void Seen(string fullPath, WatcherChangeTypes kind)
                 {
+                    if (Ignored(fullPath)) return;
                     journal.Note(Relative(root, fullPath), kind);
                     if (!IsMine(fullPath)) Soon(id);
                 }
-                FileSystemEventHandler changed = (_, e) =>
-                {
-                    if (!SyncPlanner.IsSkipped(e.Name ?? "")) Seen(e.FullPath, e.ChangeType);
-                };
+                FileSystemEventHandler changed = (_, e) => Seen(e.FullPath, e.ChangeType);
                 watcher.Created += changed;
                 watcher.Changed += changed;
                 watcher.Deleted += changed;
                 watcher.Renamed += (_, e) =>
                 {
-                    journal.Note(Relative(root, e.OldFullPath), WatcherChangeTypes.Deleted);
-                    Seen(e.FullPath, WatcherChangeTypes.Renamed);
+                    if (!Ignored(e.OldFullPath)) journal.Note(Relative(root, e.OldFullPath), WatcherChangeTypes.Deleted);
+                    // Renamed from a name the pair syncs to one it leaves out
+                    // (a download finished as .tmp, say) is still news: the old one has gone.
+                    if (!Ignored(e.FullPath)) Seen(e.FullPath, WatcherChangeTypes.Renamed);
+                    else if (!Ignored(e.OldFullPath) && !IsMine(e.FullPath)) Soon(id);
                 };
                 watcher.Error += (_, _) =>
                 {
@@ -796,6 +847,12 @@ namespace ExplorerNative
                 _settled ??= new System.Threading.Timer(_ => Wake());
                 _settled.Change(delay, Timeout.InfiniteTimeSpan);
             }
+        }
+
+        /// <summary>For the suite: whether something has made the pair due since it last asked (and takes it).</summary>
+        internal bool TakeDueForTests(string pairId)
+        {
+            lock (_gate) return _due.Remove(pairId);
         }
 
         /// <summary>For the suite: how soon the last pass that held a file back asked to run again.</summary>
@@ -3643,6 +3700,9 @@ namespace ExplorerNative
 
             /// <summary>Actions held back by a batch for the end of the pass.</summary>
             public readonly List<SyncAction> Held = new();
+
+            /// <summary>Names of PC files left for a later pass because another program had them open.</summary>
+            public readonly List<string> InUse = new();
         }
 
         /// <summary>
@@ -3760,6 +3820,7 @@ namespace ExplorerNative
             }
 
             int uploaded = 0, downloaded = 0, deleted = 0, failed = 0, deferred = 0;
+            var inUse = new List<string>();
             var settleLeft = SettleTime;
             string? lastError = null, spaceProblem = null;
             var conflicts = new List<string>();
@@ -3782,7 +3843,10 @@ namespace ExplorerNative
                 {
                     uploadedThisPass += local[path].Size;
                     Uploads.Add(local[path].Size, DateTime.UtcNow);
-                    SyncHistory.Add(pair.Id, "Uploaded", path);
+                    // The fast lane replaces Drive files in place too, and those
+                    // are said as the careful loop says them, not as new uploads.
+                    SyncHistory.Add(pair.Id, remote.TryGetValue(path, out var replaced) && replaced.Id != null
+                        ? "Updated in Drive" : "Uploaded", path);
                 }
 
                 // New song-sized PC files, many at once too (see UploadNewMediumAsync).
@@ -3918,6 +3982,11 @@ namespace ExplorerNative
                         }
                         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
                         {
+                            if (InUseElsewhere(ex, localPath))
+                            {
+                                inUse.Add(Path.GetFileName(path));
+                                continue;
+                            }
                             failed++;
                             lastError = $"{Path.GetFileName(path)}: {ex.Message}";
                             SyncHistory.Add(pair.Id, "Could not sync", path, ex.Message);
@@ -4161,6 +4230,18 @@ namespace ExplorerNative
 
                             if (IsOffline(ex, token) && attempt == 0) continue;
 
+                            // A PC file another program has open (a song playing, a
+                            // book being read) is not a failure. It counted as one on
+                            // every pass, and was said as "could not sync" with
+                            // Windows' wording, until the program let go of it. It
+                            // waits for the pair's next look instead (not a few
+                            // seconds' time: a file can stay open all day).
+                            if (InUseElsewhere(ex, localPath))
+                            {
+                                inUse.Add(Path.GetFileName(path));
+                                break;
+                            }
+
                             failed++;
                             lastError = $"{Path.GetFileName(path)}: {ex.Message}";
                             SyncHistory.Add(pair.Id, "Could not sync", path, ex.Message);
@@ -4188,6 +4269,7 @@ namespace ExplorerNative
                 tally.Deleted += deleted;
                 tally.Failed += failed;
                 tally.Deferred += deferred;
+                tally.InUse.AddRange(inUse);
                 if (lastError != null) tally.LastError = lastError;
                 tally.SpaceProblem ??= spaceProblem;
                 tally.Conflicts.AddRange(conflicts);
@@ -4217,7 +4299,7 @@ namespace ExplorerNative
             // Nothing left for a later pass: until Drive or the PC changes, the
             // next minute need not look (DuePairsAsync).
             if (tally.SpaceProblem == null && tally.Failed == 0 && tally.Deferred == 0 && tally.Held.Count == 0 &&
-                state.DirtyFolders.Count == 0)
+                tally.InUse.Count == 0 && state.DirtyFolders.Count == 0)
                 lock (_gate) _clean.Add(pair.Id);
             if (conflicts.Count > 0)
                 _notify("sync.conflict", conflicts.Count == 1
@@ -4248,14 +4330,17 @@ namespace ExplorerNative
 
             // Everything else is in step; these few never can be, and say so
             // rather than failing on every pass or landing somewhere else.
-            if (unusable.Count > 0 || clashing.Count > 0 || localClashing.Count > 0 || tally.Twins.Count > 0)
+            if (unusable.Count > 0 || clashing.Count > 0 || localClashing.Count > 0 || tally.Twins.Count > 0 ||
+                tally.InUse.Count > 0)
             {
                 var left = new List<string>();
+                if (tally.InUse.Count > 0) left.Add(InUseNames(tally.InUse));
                 if (unusable.Count > 0) left.Add(UnusableNames(unusable));
                 if (tally.Twins.Count > 0) left.Add(TwinNames(tally.Twins));
                 if (clashing.Count > 0) left.Add(ClashingNames(clashing));
                 if (localClashing.Count > 0) left.Add(ClashingOnPc(localClashing));
-                Finish(pair, state, string.Join(". ", left), announce: true, synced: true);
+                // A file that is only open somewhere is shown, not said: it sorts itself out.
+                Finish(pair, state, string.Join(". ", left), announce: left.Count > (tally.InUse.Count > 0 ? 1 : 0), synced: true);
                 return;
             }
 
@@ -4328,6 +4413,46 @@ namespace ExplorerNative
                     tally.Twins.Add(path);
                 }
             }
+        }
+
+        /// <summary>"notes.docx is open in another program, so it syncs once that program lets go of it".</summary>
+        internal static string InUseNames(IReadOnlyList<string> names)
+        {
+            const int shown = 5;
+            var distinct = names.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var list = string.Join(", ", distinct.Take(shown)) + (distinct.Count > shown ? $" and {distinct.Count - shown} more" : "");
+            return distinct.Count == 1
+                ? $"{distinct[0]} is open in another program, so it syncs once that program lets go of it"
+                : $"{distinct.Count} files are open in other programs, so they sync once those programs let go of them: {list}";
+        }
+
+        /// <summary>
+        /// Windows refused because another program has the file open: a sharing
+        /// or lock violation, anywhere in the chain. Waited out, not failed.
+        /// </summary>
+        /// <remarks>
+        /// Moving a download over a file another program has open is refused
+        /// as "access denied", the same words as a file the account may not
+        /// touch at all; so that refusal is checked by opening the file with
+        /// nobody else allowed in, which only a file in use refuses as a
+        /// sharing violation.
+        /// </remarks>
+        internal static bool InUseElsewhere(Exception ex, string? localPath = null)
+        {
+            static bool Sharing(Exception e) => e is IOException && (e.HResult & 0xFFFF) is 32 or 33;   // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
+            bool denied = false;
+            for (var e = ex; e != null; e = e.InnerException)
+            {
+                if (Sharing(e)) return true;
+                if (e is UnauthorizedAccessException) denied = true;
+            }
+            if (!denied || localPath == null) return false;
+            try
+            {
+                using var alone = new FileStream(localPath, FileMode.Open, FileAccess.Read, FileShare.None);
+                return false;
+            }
+            catch (Exception probe) { return Sharing(probe); }
         }
 
         /// <summary>"x in Google Drive was left out, because Windows sees another item in that folder as the same name".</summary>

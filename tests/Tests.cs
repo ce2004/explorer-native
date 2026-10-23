@@ -120,9 +120,23 @@ namespace ExplorerNative
         private static void Equal(string what, string expected, string actual) =>
             Check(what, expected == actual, $"expected \"{expected}\", got \"{actual}\"");
 
+        /// <summary>
+        /// EXPLORERNATIVE_DRIVELOG is set for the whole user account while the
+        /// real app's sync is being looked into, and the suite inherited it: the
+        /// fake Drive's passes ("the feed failed: changes failed 410") landed in
+        /// the app's own drive-trace.log, mixed in with the real account's. The
+        /// suite writes its trace only where EXPLORERNATIVE_SELFTEST_DRIVELOG
+        /// says, and by default nowhere.
+        /// </summary>
+        internal static void KeepDriveTraceToItself() =>
+            Environment.SetEnvironmentVariable("EXPLORERNATIVE_DRIVELOG",
+                Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_DRIVELOG"));
+
         public static async Task<int> Main()
         {
             Console.WriteLine("Explorer Native self-test\n");
+
+            KeepDriveTraceToItself();
 
             // The live sync run is hours of real uploads, with no checks between.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") is not ("livesync" or "syncmemory" or "playprobe")) StartWatchdog();
@@ -284,6 +298,13 @@ namespace ExplorerNative
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "pcchanges")
             {
                 await Guard("PcChangesTests", () => PcChangesTests.RunAll(Check));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "synchardening")
+            {
+                await Guard("SyncHardeningTests", () => SyncHardeningTests.RunAll(Check, Equal));
                 Console.WriteLine($"\n{_passed} passed, {_failed} failed");
                 return _failed == 0 ? 0 : 1;
             }
@@ -465,6 +486,7 @@ namespace ExplorerNative
             await Guard("Sweep309PlaybackTests", () => { Sweep309PlaybackTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("Sweep309SyncTests", () => Sweep309SyncTests.RunAll(Check, Equal));
             await Guard("Sweep309DecoderTests", () => { Sweep309DecoderTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("SyncHardeningTests", () => SyncHardeningTests.RunAll(Check, Equal));
 
             Console.WriteLine($"\n{_passed} passed, {_failed} failed");
             return _failed == 0 ? 0 : 1;
