@@ -112,6 +112,55 @@ namespace ExplorerNative
                         catch { return false; }
                     }), null);
 
+                // tar.xz and tar.bz2 are made and unpacked by 7-Zip in two halves,
+                // one writing or reading the tar and one compressing it (4.2.1).
+                {
+                    var plain = Path.Combine(dir, "plain");
+                    Directory.CreateDirectory(Path.Combine(plain, "deep", "er"));
+                    File.WriteAllBytes(Path.Combine(plain, "deep", "er", "random.bin"), big);
+                    File.WriteAllText(Path.Combine(plain, "note.txt"), "plain");
+                    File.WriteAllText(Path.Combine(plain, "café 日本.txt"), "named");
+                    foreach (var format in new[] { ArchiveFormats.ById("tar.xz")!, ArchiveFormats.ById("tar.bz2")! })
+                    {
+                        check($"{format.Id} is made and unpacked by 7-Zip",
+                            BsdTar.UsesSevenZip(format) && BsdTar.UnpacksWithSevenZip(format), null);
+                        var packed = Path.Combine(dir, "plain" + format.Extension);
+                        var madeTar = await ArchiveEngine.CompressAsync(new[] { plain }, packed, format,
+                            ArchiveLevel.Fastest, 4, null, CancellationToken.None);
+                        check($"{format.Id}: 7-Zip made it, a name in another language too", madeTar.Failed == 0 && File.Exists(packed),
+                            string.Join("; ", madeTar.Errors));
+                        var outDir = Path.Combine(dir, "out-" + format.Id);
+                        var seen = new Collect();
+                        var unpacked = await ArchiveEngine.ExtractAsync(packed, outDir, PasteConflictPolicy.AutoRename,
+                            null, 4, seen, CancellationToken.None);
+                        var got = Path.Combine(outDir, "plain", "deep", "er", "random.bin");
+                        check($"{format.Id}: 7-Zip unpacked it whole", unpacked.Failed == 0 && File.Exists(got) &&
+                            File.ReadAllBytes(got).AsSpan().SequenceEqual(big) &&
+                            File.ReadAllText(Path.Combine(outDir, "plain", "note.txt")) == "plain" &&
+                            File.ReadAllText(Path.Combine(outDir, "plain", "café 日本.txt")) == "named",
+                            string.Join("; ", unpacked.Errors));
+                        check($"{format.Id}: and reported progress", seen.Seen.Count > 0, null);
+                        check($"{format.Id}: no staging folder is left",
+                            !Directory.EnumerateDirectories(outDir, ".extracting-*").Any(), null);
+
+                        var raw = File.ReadAllBytes(packed);
+                        var broken = Path.Combine(dir, "broken" + format.Extension);
+                        File.WriteAllBytes(broken, raw[..(raw.Length * 2 / 3)]);
+                        var bad = await ArchiveEngine.ExtractAsync(broken, Path.Combine(dir, "bad-" + format.Id),
+                            PasteConflictPolicy.AutoRename, null, 4, null, CancellationToken.None);
+                        check($"{format.Id}: a cut-off one is said to be damaged", bad.Failed > 0 &&
+                            bad.Errors.Any(e => e.Contains("damaged", StringComparison.OrdinalIgnoreCase)),
+                            string.Join("; ", bad.Errors));
+                    }
+                    await Task.Delay(300);
+                    check("and no 7-Zip half is left running after them",
+                        !System.Diagnostics.Process.GetProcessesByName("7za").Any(p =>
+                        {
+                            try { return string.Equals(p.MainModule?.FileName, exe, StringComparison.OrdinalIgnoreCase); }
+                            catch { return false; }
+                        }), null);
+                }
+
                 // The warnings summary, as 7-Zip writes it.
                 var warned = BsdTar.FileWarnings(new[]
                 {

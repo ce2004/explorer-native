@@ -1,5 +1,6 @@
 4.2.1
 New: making and unpacking 7z files is much faster. Explorer Native now uses 7-Zip itself, which uses every core of your processor but one and up to 40 percent of your memory, at low priority so your PC stays usable. On an 8-core PC, a 490 MB folder took 43 seconds to compress instead of 3 minutes, came out smaller, and unpacked in 5 seconds instead of 15. 7z files with names in other languages or with emoji now work too.
+New: tar.xz and tar.bz2 files are much faster too. On the same folder, making a tar.bz2 went from 44 seconds to 8, unpacking a tar.xz from 11 seconds to under 4, and unpacking a tar.bz2 from 21 seconds to 10. tar.xz files also come out smaller, and names in other languages or with emoji work in them.
 New: select several archives and choose Extract, and they're all extracted at the same time, each with its own progress window. Before, only the one you were on was extracted.
 New: zip and tar.gz files are made with every core but one, so the rest of your PC keeps up. Opening a zip or tar to look inside also uses all of those cores, and tar.xz may use up to 40 percent of your memory to go faster.
 New: the Shared drives folder in Google Drive shows the size of all your shared drives together.

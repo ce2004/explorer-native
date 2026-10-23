@@ -304,7 +304,7 @@ namespace ExplorerNative
                     $"A {format.Extension} cannot be made from {Path.GetFileName(dotted.Source)}, whose name " +
                     "ends in a dot or a space. Zip and .tar.gz can.");
 
-            if (sevenZip) return CreateWithSevenZip(plan, tops, archivePath, level, reporter, errors, token);
+            if (sevenZip) return CreateWithSevenZip(plan, tops, archivePath, format, level, reporter, errors, token);
 
             var aliases = new List<Alias>();
             try
@@ -829,8 +829,10 @@ namespace ExplorerNative
             // archive (a stall, a crash, an exit that was not "delayed"). The
             // errors alone cannot say that: a link not made or a repeated name
             // is a note about one entry, not an archive taken only in part.
-            if (UsesSevenZip(ArchiveFormats.Identify(archivePath)))
-                return ExtractWithSevenZip(archivePath, destination, policy, ask, reporter, errors, token, stoppedShort);
+            var identified = ArchiveFormats.Identify(archivePath);
+            if (UnpacksWithSevenZip(identified))
+                return ExtractWithSevenZip(archivePath, destination, policy, ask, reporter, errors, token, stoppedShort,
+                    compressedTar: identified!.Id != "7z");
             RequireAvailable();
 
             Directory.CreateDirectory(destination);

@@ -98,6 +98,7 @@
     <Compile Include="SearchTests.cs" />
     <Compile Include="Fix418Tests.cs" />
     <Compile Include="SevenZipTests.cs" />
+    <Compile Include="ArchiveBench.cs" />
     <Compile Include="ConnectTests.cs" />
     <Compile Include="SeekTests.cs" />
     <Compile Include="Tests.cs" />

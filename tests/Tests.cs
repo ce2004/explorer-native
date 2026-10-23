@@ -139,7 +139,7 @@ namespace ExplorerNative
             KeepDriveTraceToItself();
 
             // The live sync run is hours of real uploads, with no checks between.
-            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") is not ("livesync" or "syncmemory" or "playprobe")) StartWatchdog();
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") is not ("livesync" or "syncmemory" or "playprobe" or "archivebench")) StartWatchdog();
 
             // Just the window timings, for measuring one change at a time.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "speed")
@@ -177,6 +177,12 @@ namespace ExplorerNative
             }
 
             // Just compressing, extracting and browsing archives.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "archivebench")
+            {
+                await ArchiveBench.Run();
+                return 0;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "sizes")
             {
                 await Guard("DriveSizeTests", () => DriveSizeTests.RunAll(Check, Equal));
