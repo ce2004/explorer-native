@@ -69,7 +69,7 @@ namespace ExplorerNative
             check("Drive sizes: a listed index says it is built", index.Built, null);
             fake.AddFile("d.flac", new byte[5], DateTime.UtcNow, album);
             index.Expire();
-            fake.AnswerDelayMs = 4000;
+            fake.ChangesDelayMs = 4000;
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var slow = index.Refresh(client, CancellationToken.None);
             bool timedOut = false;
@@ -79,7 +79,7 @@ namespace ExplorerNative
             check("Drive sizes: a slow feed is not waited for", timedOut && clock.Elapsed < TimeSpan.FromSeconds(3),
                 clock.Elapsed.ToString());
             check("Drive sizes: and the sizes held still answer", held is { Bytes: 1057 }, held?.ToString());
-            fake.AnswerDelayMs = 0;
+            fake.ChangesDelayMs = 0;
             await slow;
             check("Drive sizes: the feed catches up behind the answer", index.SizeOf(music) is { Bytes: 1062 },
                 index.SizeOf(music)?.ToString());
@@ -91,6 +91,63 @@ namespace ExplorerNative
                 source.Contains("IsSharedDrivesFolder(path)) return await SharedDrivesTotalAsync"), null);
             check("Drive sizes: the index is started as Drive connects",
                 source.Contains("WarmSizes(mount.Letter ?? mount.Root)"), null);
+
+            await LiveSizeTests(check);
+        }
+
+        /// <summary>
+        /// 4.2.1 (Conner: sizes "don't report correctly after changing on local
+        /// and google drive"). A folder's own date moves only for a change
+        /// directly inside it, so a file added deeper answered the old size.
+        /// </summary>
+        private static async Task LiveSizeTests(Action<string, bool, string?> check)
+        {
+            var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "EN-livesize-" + Guid.NewGuid().ToString("N")[..8]);
+            try
+            {
+                var deep = System.IO.Path.Combine(dir, "Music", "Artist", "Album");
+                System.IO.Directory.CreateDirectory(deep);
+                System.IO.File.WriteAllBytes(System.IO.Path.Combine(deep, "a.flac"), new byte[100]);
+                var music = System.IO.Path.Combine(dir, "Music");
+                using var sizes = new FolderSizeCalculator();
+                var first = await sizes.CalculateAsync(music);
+                check("Live sizes: measured once", first.Bytes == 100, first.ToString());
+
+                var added = System.IO.Path.Combine(deep, "b.flac");
+                System.IO.File.WriteAllBytes(added, new byte[50]);
+                var stale = await sizes.CalculateAsync(music);
+                check("Live sizes: (control) a file added two levels down is missed by the cache alone",
+                    stale.Bytes == 100, stale.ToString());
+
+                sizes.Forget(added);
+                check("Live sizes: a change forgets every folder above it",
+                    !sizes.TryGetCached(music, out _), null);
+                var fresh = await sizes.CalculateAsync(music);
+                check("Live sizes: and the folder is measured right again", fresh.Bytes == 150, fresh.ToString());
+
+                await sizes.CalculateAsync(deep);
+                sizes.Forget(System.IO.Path.Combine(dir, "Music", "Artist"));
+                check("Live sizes: a renamed or deleted folder forgets what is inside it",
+                    !sizes.TryGetCached(deep, out _), null);
+                await sizes.CalculateAsync(deep);
+                sizes.Forget(System.IO.Path.Combine(dir, "Other", "x.txt"));
+                check("Live sizes: a change elsewhere leaves unrelated folders alone",
+                    sizes.TryGetCached(deep, out _), null);
+
+                var main = SourceText("MainForm.cs");
+                check("Live sizes: the window watches below the folder for sizes",
+                    main.Contains("IncludeSubdirectories = true") && main.Contains("_folderSizes.Forget(plain)"), null);
+                check("Live sizes: the 4-second timer re-measures what changed",
+                    main.Contains("_availabilityTimer.Tick += (_, _) => RefreshLiveSizes();"), null);
+                check("Live sizes: a row is redrawn only when its size changed",
+                    main.Contains("if (pane.Entries[i].SizeOverride == text) return;"), null);
+                check("Live sizes: Drive folders ask Drive's changes feed while shown",
+                    main.Contains("drive!.ExpireSizesIfIdle();"), null);
+            }
+            finally
+            {
+                try { System.IO.Directory.Delete(dir, recursive: true); } catch { }
+            }
         }
 
         private static string SourceText(string name)

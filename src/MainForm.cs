@@ -200,6 +200,20 @@ namespace ExplorerNative
             public FileSystemWatcher? Watcher;
 
             /// <summary>
+            /// Folders on screen whose size changed somewhere inside them (the
+            /// size watcher sees every depth), measured again by the live size check.
+            /// </summary>
+            public readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> SizeDirty =
+                new(StringComparer.OrdinalIgnoreCase);
+
+            /// <summary>The size watcher lost a burst: every folder on screen is measured again.</summary>
+            public volatile bool SizeAllDirty;
+
+            /// <summary>When the live size check last ran for this pane, and whether one is running.</summary>
+            public long SizeCheckedAt;
+            public bool SizeBusy;
+
+            /// <summary>
             /// The folder a watcher is being built for on a worker, or null.
             /// Building one opens the folder, which on a sleeping share is
             /// seconds, so it is never done on the UI thread.
@@ -407,6 +421,7 @@ namespace ExplorerNative
             // while the window is shown: OnVisibleChanged starts and stops it.
             _availabilityTimer = new System.Windows.Forms.Timer { Interval = 4000 };
             _availabilityTimer.Tick += (_, _) => CheckCurrentPathStillExists();
+            _availabilityTimer.Tick += (_, _) => RefreshLiveSizes();
 
             AppleMusic.Grew += OnAppleMusicGrew;
         }
@@ -2635,6 +2650,13 @@ namespace ExplorerNative
                 watcher.Error += Reload;
 
                 watcher.EnableRaisingEvents = true;
+
+                // Sizes: a change at any depth (the list's own watcher sees only
+                // this folder's entries). Goes with the list's watcher. Not on the
+                // Drive letter, whose sizes come from Drive itself.
+                if (removable && SizeWatcherFor(pane, path, Current) is { } sizes)
+                    watcher.Disposed += (_, _) => DisposeWatch(sizes, null);
+
                 return (watcher, removable ? RemovalWatch.TryRegister(window, path) : null);
             }
             catch
@@ -2644,6 +2666,139 @@ namespace ExplorerNative
                 DisposeWatch(watcher, null);
                 return (null, null);
             }
+        }
+
+        /// <summary>
+        /// On a worker: a watcher for everything below <paramref name="path"/>,
+        /// for sizes only. Each change drops the cached sizes it is part of and
+        /// marks the folder on screen it is inside, which the live size check
+        /// measures again (Conner, 4.2.1: sizes were wrong after changes).
+        /// </summary>
+        private FileSystemWatcher? SizeWatcherFor(Pane pane, string path, Func<bool> current)
+        {
+            FileSystemWatcher? sizes = null;
+            try
+            {
+                sizes = new FileSystemWatcher(NameRules.ExactPath(path))
+                {
+                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName | NotifyFilters.Size,
+                    IncludeSubdirectories = true,
+                    InternalBufferSize = 64 * 1024,
+                };
+
+                void Seen(string? full)
+                {
+                    if (string.IsNullOrEmpty(full) || !current()) return;
+                    var plain = NameRules.PlainPath(full);
+                    _folderSizes.Forget(plain);
+                    string relative;
+                    try { relative = Path.GetRelativePath(path, plain); } catch { return; }
+                    int slash = relative.IndexOf('\\');
+                    // Directly in this folder: the list's own watcher has it.
+                    if (slash <= 0 || relative.StartsWith("..", StringComparison.Ordinal)) return;
+                    pane.SizeDirty[Path.Combine(path, relative[..slash])] = 0;
+                }
+
+                sizes.Created += (_, e) => Seen(e.FullPath);
+                sizes.Deleted += (_, e) => Seen(e.FullPath);
+                sizes.Changed += (_, e) => Seen(e.FullPath);
+                sizes.Renamed += (_, e) => { Seen(e.OldFullPath); Seen(e.FullPath); };
+                sizes.Error += (_, _) =>
+                {
+                    if (!current()) return;
+                    _folderSizes.Forget(path);
+                    pane.SizeAllDirty = true;
+                };
+                sizes.EnableRaisingEvents = true;
+                return sizes;
+            }
+            catch
+            {
+                DisposeWatch(sizes, null);
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Every 4 seconds while the window is shown: folder sizes on screen that
+        /// may have changed are measured again, and a row is touched only when
+        /// its size really did change, so the screen reader hears nothing
+        /// otherwise. PC folders: the ones the size watcher marked, at most every
+        /// 8 seconds. Drive folders: Drive's changes feed every 16 seconds, which
+        /// catches edits made on the web or the phone as well as our own.
+        /// </summary>
+        private void RefreshLiveSizes()
+        {
+            if (IsDisposed || !Visible || _settings.FolderSizes != FolderSizeMode.Automatic) return;
+            var pane = Active;
+            if (pane.SizeBusy || pane.Archive != null || pane.Loading) return;
+            var shown = pane.CurrentPath;
+            if (string.IsNullOrEmpty(shown) || shown == DrivesPath || AppleMusic.Is(shown)) return;
+
+            long now = Environment.TickCount64;
+            var drive = Drive;
+            bool onDrive = drive != null && drive.Owns(shown);
+            List<string> folders;
+            if (onDrive)
+            {
+                if (now - pane.SizeCheckedAt < 16_000) return;
+                folders = pane.Entries.Where(e => e.IsDir).Select(e => e.Path).ToList();
+                drive!.ExpireSizesIfIdle();
+            }
+            else
+            {
+                if (pane.SizeDirty.IsEmpty && !pane.SizeAllDirty) return;
+                if (now - pane.SizeCheckedAt < 8_000) return;
+                if (pane.SizeAllDirty)
+                {
+                    pane.SizeAllDirty = false;
+                    pane.SizeDirty.Clear();
+                    folders = pane.Entries.Where(e => e.IsDir).Select(e => e.Path).ToList();
+                }
+                else
+                {
+                    folders = pane.SizeDirty.Keys.ToList();
+                    foreach (var f in folders) pane.SizeDirty.TryRemove(f, out _);
+                }
+            }
+            if (folders.Count == 0) return;
+
+            pane.SizeCheckedAt = now;
+            pane.SizeBusy = true;
+            _ = RemeasureAsync(pane, folders, onDrive ? drive : null, shown, pane.EnumCts?.Token ?? CancellationToken.None);
+        }
+
+        private async Task RemeasureAsync(Pane pane, List<string> folders, GoogleDrive? drive, string shown,
+            CancellationToken token)
+        {
+            try
+            {
+                foreach (var folder in folders)
+                {
+                    if (IsDisposed || token.IsCancellationRequested ||
+                        !string.Equals(pane.CurrentPath, shown, StringComparison.OrdinalIgnoreCase)) return;
+                    if (!pane.IndexByPath.ContainsKey(folder)) continue;
+
+                    string? text = null;
+                    if (drive != null)
+                    {
+                        if (await drive.FolderSizeAsync(folder, token) is { } known)
+                            text = SizeFormatter.Format(known.Bytes, _settings.SizeUnits);
+                    }
+                    else
+                    {
+                        var measured = await _folderSizes.CalculateAsync(folder, token);
+                        if (token.IsCancellationRequested) return;
+                        text = SizeFormatter.Format(measured.Bytes, _settings.SizeUnits) + (measured.Complete ? "" : "+");
+                    }
+                    if (IsDisposed || token.IsCancellationRequested ||
+                        !string.Equals(pane.CurrentPath, shown, StringComparison.OrdinalIgnoreCase)) return;
+                    if (text != null) SetSizeOverride(pane, folder, text);
+                }
+            }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { RoboCopyEngine.Trace($"live sizes: {ex.Message}"); }
+            finally { pane.SizeBusy = false; }
         }
 
         private static void DisposeWatch(FileSystemWatcher? watcher, RemovalWatch? removal)
@@ -9082,6 +9237,46 @@ namespace ExplorerNative
             var archive = FocusedPath();
             if (archive == null) { AnnounceOperation("clip.nothing", "Nothing selected"); return; }
 
+            // Several archives selected: every one of them, all at once, each in
+            // its own window (Conner, 4.2.1: "unzips and zips in parallel"). It
+            // used to extract only the one under the cursor.
+            var chosen = SelectedPathsOf(Active);
+            if (chosen.Count > 1 && chosen.Contains(archive, StringComparer.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    var archives = await Task.Run(() => chosen
+                        .Where(p => ArchiveFormats.Identify(p) is { CanExtract: true }).ToList());
+                    if (archives.Count == 0)
+                    {
+                        AnnounceOperation("archive.unknown", "None of the selected items is an archive Explorer Native can open");
+                        RestoreListFocus();
+                        return;
+                    }
+                    if (archives.Count < chosen.Count)
+                        Announce($"Extracting {NameRules.Counted(archives.Count, "archive")}; " +
+                                 $"{NameRules.Items(chosen.Count - archives.Count)} selected {(chosen.Count - archives.Count == 1 ? "isn't an archive" : "aren't archives")}");
+                    await Task.WhenAll(archives.Select(a => ExtractOneAsync(a, intoNewFolder)));
+                }
+                catch (Exception ex)
+                {
+                    AnnounceOperation("extract.failed", $"Could not extract: {ex.Message}");
+                    RestoreListFocus();
+                }
+                return;
+            }
+
+            try { await ExtractOneAsync(archive, intoNewFolder); }
+            catch (Exception ex)
+            {
+                AnnounceOperation("extract.failed", $"Could not extract: {ex.Message}");
+                RestoreListFocus();
+            }
+        }
+
+        /// <summary>One archive extracted, with its own progress window.</summary>
+        private async Task ExtractOneAsync(string archive, bool intoNewFolder)
+        {
             // The folder the archive is in: in search results that is not the
             // folder the search started from.
             var here = Active.SearchTerm != null ? SafeParent(archive) ?? Active.CurrentPath : Active.CurrentPath;
@@ -10305,6 +10500,9 @@ namespace ExplorerNative
             if (!pane.IndexByPath.TryGetValue(path, out int i)) return;
             if (i < 0 || i >= pane.Entries.Count) return;
 
+            // Unchanged is left alone: redrawing the row under the cursor for
+            // nothing can make the screen reader read it again.
+            if (pane.Entries[i].SizeOverride == text) return;
             pane.Entries[i].SizeOverride = text;
             EvictItem(pane, i);
             try { if (pane.List.IsHandleCreated) pane.List.RedrawItems(i, i, true); } catch { }

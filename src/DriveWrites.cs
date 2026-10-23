@@ -1048,6 +1048,47 @@ namespace ExplorerNative
         /// One request, metadata and bytes together, for a file small enough that
         /// a second round trip would be most of the cost of sending it.
         /// </summary>
+        /// <summary>
+        /// Google answering 500, 502, 503 or 504 to one file's upload, which it
+        /// can keep doing for minutes while its own servers are busy (Conner,
+        /// 4.2.1: "why does it keep saying Retrying 808 (MIU).wav: Google Drive
+        /// is temporarily unavailable"). Six tries an average of half a minute
+        /// apart failed the file inside a minute of trouble and said "Retrying"
+        /// at every one. Now those answers are waited out, doubling to a minute
+        /// between tries, for up to <see cref="BusyPatience"/> without spending
+        /// the file's tries, and said once per file.
+        /// </summary>
+        internal sealed class ServerBusy
+        {
+            public int Waits;
+            public double WaitedSeconds;
+            public bool Said;
+        }
+
+        internal static TimeSpan BusyPatience { get; set; } = TimeSpan.FromMinutes(10);
+
+        /// <summary>For the tests: the longest single wait on a busy Google.</summary>
+        internal static TimeSpan BusyLongestWait { get; set; } = TimeSpan.FromSeconds(60);
+
+        internal static bool IsServerBusy(int status) => status is 500 or 502 or 503 or 504;
+
+        /// <summary>Waits once on a busy Google; false once this file has waited long enough.</summary>
+        private async Task<bool> WaitOutBusy(ServerBusy busy, Random random, TimeSpan? asked, CancellationToken token)
+        {
+            // The folder monitor waits Google out itself, in the pair's status.
+            if (CallerWaitsOutRateLimits.Value) return false;
+            // Counted in waits, not the clock, like the rate-limit patience.
+            if (busy.WaitedSeconds >= BusyPatience.TotalSeconds) return false;
+
+            double seconds = Math.Min(BusyLongestWait.TotalSeconds, Math.Pow(2, Math.Min(busy.Waits, 6)));
+            var wait = asked ?? TimeSpan.FromSeconds(seconds * (1 + random.NextDouble() * 0.5));
+            if (wait > BusyLongestWait + TimeSpan.FromSeconds(30)) wait = BusyLongestWait;
+            busy.Waits++;
+            busy.WaitedSeconds += wait.TotalSeconds;
+            await Pause(wait, token);
+            return true;
+        }
+
         private async Task<DriveUploaded> UploadWhole(
             string localPath, string name, string parentId, long total,
             Action<UploadProgress>? progress, CancellationToken token, string? replaceId = null)
@@ -1102,6 +1143,7 @@ namespace ExplorerNative
             }
 
             var slow = new SlowDown();
+            var busy = new ServerBusy();
             bool waited = false;
             for (int attempt = 0; attempt < MaxSmallUploadAttempts; attempt++)
             {
@@ -1257,6 +1299,19 @@ namespace ExplorerNative
                     continue;
                 }
 
+                // Google busy: waited out patiently, said once for this file.
+                if (IsServerBusy(status) && await WaitOutBusy(busy, random, asked, token))
+                {
+                    if (!busy.Said)
+                    {
+                        busy.Said = true;
+                        Say("drive.upload.retrying", $"Retrying {name}: {lastProblem}");
+                    }
+                    waited = true;
+                    attempt--;
+                    continue;
+                }
+
                 if (attempt == MaxSmallUploadAttempts - 1) break;
 
                 // Said, because otherwise a retry is invisible: the file simply
@@ -1307,6 +1362,7 @@ namespace ExplorerNative
             bool askFirst = resumeSession != null;
 
             var slow = new SlowDown();
+            var busy = new ServerBusy();
             bool waited = false;
             for (int attempt = 0; attempt < MaxUploadAttempts; attempt++)
             {
@@ -1480,6 +1536,23 @@ namespace ExplorerNative
                     // Broken by the file changing size under it: see above.
                     if (Resized(source, total) is { } resizedDuring)
                         return await HeldWhole(session, total, progress, token) ?? throw resizedDuring;
+
+                    // Google busy: waited out patiently without spending a try,
+                    // said once for this file; then Google is asked how much it holds.
+                    if (ex is UploadRefusedException { } busyAnswer && IsServerBusy(busyAnswer.Status) &&
+                        await WaitOutBusy(busy, random, null, token))
+                    {
+                        if (!busy.Said)
+                        {
+                            busy.Said = true;
+                            Say("drive.upload.retrying", $"Retrying {name}: {Explain(busyAnswer.Status, busyAnswer.Body)}");
+                        }
+                        sent = before;
+                        askFirst = true;
+                        waited = true;
+                        attempt--;
+                        continue;
+                    }
 
                     // How much of it actually arrived, asked of the only party
                     // that knows — on the next pass, after the pause, so that a

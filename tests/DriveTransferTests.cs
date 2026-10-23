@@ -35,6 +35,50 @@ namespace ExplorerNative
             RecentRateTests();
             await SlowListingTests();
             await OnTheLetter();
+            await BusyGoogleTests();
+        }
+
+        // ---- Google busy for minutes (Conner, 4.2.1: "why does it keep saying Retrying ...") ----
+
+        private static async Task BusyGoogleTests()
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "en-busy-" + Guid.NewGuid().ToString("N")[..8]);
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var small = Path.Combine(dir, "808 (MIU).wav");
+                File.WriteAllText(small, "hello");
+                var big = Path.Combine(dir, "big.wav");
+                File.WriteAllBytes(big, new byte[(int)DriveClient.SmallUploadBytes + 4096]);
+
+                foreach (var (kind, file) in new[] { ("multipart", small), ("put", big) })
+                {
+                    var fake = new FakeDrive();
+                    var said = new List<string>();
+                    var client = new DriveClient(fake, 0.0005) { Notify = (id, text) => { lock (said) said.Add(id); } };
+                    var folder = fake.AddFolder("Up");
+                    fake.AddFault(new FakeDrive.Fault { Kind = kind, Times = 9, Status = 503, Body = HtmlPage });
+                    string? problem = null;
+                    try { await client.UploadDetailed(file, Path.GetFileName(file), folder, null, CancellationToken.None); }
+                    catch (Exception ex) { problem = ex.Message; }
+                    Check($"nine busy answers in a row ({kind}) are waited out, more than the six tries a file has",
+                        problem == null && fake.FaultsLeft == 0, $"{problem}; {fake.FaultsLeft} left");
+                    int retrying;
+                    lock (said) retrying = said.Count(s => s == "drive.upload.retrying");
+                    Check($"and Retrying is said once for the file, not at every try ({kind})", retrying == 1, retrying.ToString());
+                }
+
+                var endless = new FakeDrive();
+                var patient = new DriveClient(endless, 0.0005);
+                var into = endless.AddFolder("Up");
+                endless.AddFault(new FakeDrive.Fault { Kind = "multipart", Times = 100_000, Status = 503, Body = HtmlPage });
+                bool failed = false;
+                try { await patient.UploadDetailed(small, "x.wav", into, null, CancellationToken.None); }
+                catch (Exception) { failed = true; }
+                Check("a Google that stays busy still ends, after about ten minutes of waits",
+                    failed && endless.FaultsServed is > 9 and < 60, $"failed {failed}, {endless.FaultsServed} tries");
+            }
+            finally { try { Directory.Delete(dir, true); } catch { } }
         }
 
         // ---- the speed between Drive's pieces ----

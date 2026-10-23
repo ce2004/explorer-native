@@ -1462,6 +1462,20 @@ namespace ExplorerNative
                 int next = main.IndexOf("\n        private ", at + 10, StringComparison.Ordinal);
                 var body = next > at ? main[at..next] : main[at..];
 
+                // Since 4.2.1 ExtractFocused starts one ExtractOneAsync per
+                // selected archive; the window and the Drive refusal live there.
+                if (handler == "ExtractFocused")
+                {
+                    int one = main.IndexOf("private async Task ExtractOneAsync(", StringComparison.Ordinal);
+                    Check("ExtractFocused hands each archive to ExtractOneAsync",
+                        one >= 0 && body.Contains("ExtractOneAsync(", StringComparison.Ordinal));
+                    if (one >= 0)
+                    {
+                        int after = main.IndexOf("\n        private ", one + 10, StringComparison.Ordinal);
+                        body += after > one ? main[one..after] : main[one..];
+                    }
+                }
+
                 Check($"{handler} catches everything it can throw",
                     body.Contains("catch (Exception ex)", StringComparison.Ordinal), handler);
 

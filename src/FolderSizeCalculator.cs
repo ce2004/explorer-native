@@ -77,6 +77,32 @@ namespace ExplorerNative
         /// </summary>
         public Func<string, bool>? Skip { get; set; }
 
+        /// <summary>
+        /// Something changed at <paramref name="changedPath"/>: every cached size
+        /// it is part of goes, which is every folder above it, and every folder
+        /// inside it when it is a folder that was renamed or deleted.
+        ///
+        /// The folder's own date catches only a change directly inside it, so a
+        /// file added two levels down answered with the old size for up to
+        /// CacheSeconds (Conner, 4.2.1: sizes "don't report correctly after
+        /// changing"). The panes' watchers report every change below the folder
+        /// on screen here.
+        /// </summary>
+        public void Forget(string changedPath)
+        {
+            if (string.IsNullOrEmpty(changedPath) || _cache.IsEmpty) return;
+            var changed = changedPath.TrimEnd('\\');
+            foreach (var key in _cache.Keys)
+            {
+                var k = key.TrimEnd('\\');
+                bool above = changed.Length > k.Length && changed.StartsWith(k, StringComparison.OrdinalIgnoreCase) &&
+                             (changed[k.Length] == '\\' || k.EndsWith(':'));
+                bool same = string.Equals(k, changed, StringComparison.OrdinalIgnoreCase);
+                bool inside = k.Length > changed.Length && k.StartsWith(changed + "\\", StringComparison.OrdinalIgnoreCase);
+                if (above || same || inside) _cache.TryRemove(key, out _);
+            }
+        }
+
         public bool TryGetCached(string path, out FolderSizeResult result)
         {
             result = default;

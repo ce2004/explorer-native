@@ -604,7 +604,7 @@ namespace ExplorerNative
             var reporter = new ArchiveEngine.Reporter(progress);
             var rules = ExtractionRules.Selecting(destination, select);
             int done = TarEngine.Extract(NameRules.ExactPath(listing.ArchivePath), listing.Format, rules,
-                Math.Min(4, ArchiveEngine.RecommendedThreads), reporter, errors, token, estimate: true);
+                ArchiveEngine.RecommendedThreads, reporter, errors, token, estimate: true);
 
             // A chosen member that is a hard link (GNU tar's second name for a
             // file) has no data of its own, and the file it names was not part

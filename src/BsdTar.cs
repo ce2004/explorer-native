@@ -2115,7 +2115,7 @@ namespace ExplorerNative
                 _ => 700L << 20,
             };
 
-            long budget = PhysicalMemoryBytes() / 4;
+            long budget = PhysicalMemoryBytes() * SevenZipMemoryPercent / 100;
             if (budget <= 0) return Math.Clamp(threads, 1, 4);
 
             int affordable = (int)Math.Min(int.MaxValue, budget / perThread);

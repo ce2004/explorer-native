@@ -1359,6 +1359,17 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// Makes the next size question ask Drive's changes feed, so a folder on
+        /// screen catches up with changes made here, on the web or on a phone.
+        /// </summary>
+        public void ExpireSizesIfIdle()
+        {
+            lock (_gate)
+                if (_sizes != null)
+                    foreach (var index in _sizes.Values) index.ExpireIfIdle();
+        }
+
+        /// <summary>
         /// The Shared drives folder's size: every shared drive's own total added
         /// up (Conner: it should show all of them together). Null until each
         /// drive can be told, so a part is never shown as the whole.

@@ -329,6 +329,17 @@ namespace ExplorerNative
         private int _generation;
 
         /// <summary>
+        /// <see cref="Expire"/>, unless a refresh is already on its way: the live
+        /// size check asks every few seconds, and on a slow line each ask would
+        /// otherwise start another feed request beside the last.
+        /// </summary>
+        public void ExpireIfIdle()
+        {
+            lock (_gate) if (_refreshing != null) return;
+            Expire();
+        }
+
+        /// <summary>
         /// Brings the index up to date if it is due, sharing one refresh among
         /// everyone asking. The refresh runs on <paramref name="lifetime"/>, not
         /// the caller's token: a navigation that gives up on a size should not

@@ -243,6 +243,9 @@ namespace ExplorerNative
         /// <summary>When set, the changes feed answers with this status (an expired token is 400 or 410).</summary>
         public int ChangesFail;
 
+        /// <summary>How long the changes feed takes to answer, for a slow line.</summary>
+        public int ChangesDelayMs;
+
         /// <summary>Changes made straight to an item by a test, so the feed sees them like Drive's own.</summary>
         public void Changed(string id) { lock (_gate) _changed.Add(id); }
 
@@ -417,6 +420,7 @@ namespace ExplorerNative
                 case "changes":
                 {
                     if (ChangesFail > 0) return Error(ChangesFail, "invalid", "Invalid page token");
+                    if (ChangesDelayMs > 0) await Task.Delay(ChangesDelayMs, ct);
                     int from = int.Parse(query["pageToken"] ?? "0");
                     var rows = new List<Dictionary<string, object>>();
                     lock (_gate)
