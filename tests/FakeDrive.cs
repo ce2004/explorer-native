@@ -451,6 +451,15 @@ namespace ExplorerNative
                     if (item == null) return Error(404, "notFound", "File not found: " + subject);
                     var described = Describe(item);
                     if (item.Id != Root) described["parents"] = new[] { item.Parent };
+                    // What RightsOf asks before a move or copy inside Drive:
+                    // everything allowed, as for the account's own files.
+                    if ((query["fields"] ?? "").Contains("capabilities", StringComparison.Ordinal))
+                        described["capabilities"] = new Dictionary<string, object>
+                        {
+                            ["canCopy"] = true, ["canTrash"] = true, ["canRename"] = true,
+                            ["canMoveItemWithinDrive"] = true, ["canMoveItemOutOfDrive"] = true,
+                            ["canAddChildren"] = item.IsFolder,
+                        };
                     return Json(200, described);
                 }
 

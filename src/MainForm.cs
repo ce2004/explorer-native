@@ -7748,6 +7748,7 @@ namespace ExplorerNative
                 if (move) handled++;
                 Show();
             }
+            var errors = new List<string>();
             var report = new DriveCopyReport
             {
                 OnStarting = name => { current = name; Show(); },
@@ -7758,12 +7759,19 @@ namespace ExplorerNative
                     current = name;
                     Show();
                 },
+                // Something inside a folder being copied that Drive would not
+                // copy: listed, and the rest of the folder still goes.
+                OnFailed = (name, why) => { lock (errors) errors.Add($"{name}: {why}"); },
             };
 
             var log = new ConflictLog();
-            var errors = new List<string>();
             int done = 0;
             bool cancelled = false;
+
+            // Once a second whatever Google is doing: a server-side copy of a
+            // big file, or a move waiting on Google, reported nothing until it
+            // ended, and the window's elapsed time stood still as if hung.
+            using var heartbeat = new System.Threading.Timer(_ => Show(), null, 1000, 1000);
 
             BeginTransferTo(destination);
             foreach (var origin in origins) BeginTransferTo(origin);
@@ -9530,7 +9538,7 @@ namespace ExplorerNative
                 // announced every time and nothing had been.
                 if (Drive != null && Drive.Owns(path))
                 {
-                    var placed = await Drive.RenameOnDrive(path, newName.Trim());
+                    var placed = await Drive.RenameOnDrive(path, newName.Trim(), interactive: true);
                     if (placed == null) { RestoreListFocus(); return; }
 
                     await RefreshAsync(Path.Combine(Path.GetDirectoryName(path)!, placed));

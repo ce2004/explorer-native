@@ -163,7 +163,27 @@ namespace ExplorerNative
                 try
                 {
                     using var request = await build();
-                    response = await Send(request, completion, token, client);
+
+                    // Somebody waiting, and the last try ran out of the quick
+                    // client's fifteen seconds: this one gets longer. A big
+                    // folder's page of a thousand rows on a slow or busy line
+                    // legitimately takes more than fifteen seconds, and two
+                    // fifteen-second tries failed it with "did not answer
+                    // within 15 seconds" when one longer try would have
+                    // arrived. Still bounded: the caller's own deadline (a
+                    // callback's 45 seconds) cancels it, and so does this.
+                    if (interactive && last is TimeoutException)
+                    {
+                        using var longer = CancellationTokenSource.CreateLinkedTokenSource(token);
+                        longer.CancelAfter(InteractiveSlowAttempt);
+                        try { response = await Send(request, completion, longer.Token, _slowMetadata); }
+                        catch (OperationCanceledException ex) when (!token.IsCancellationRequested)
+                        {
+                            throw new TimeoutException(
+                                $"Google Drive did not answer within {InteractiveSlowAttempt.TotalSeconds:0} seconds", ex);
+                        }
+                    }
+                    else response = await Send(request, completion, token, client);
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
                 {
@@ -281,6 +301,13 @@ namespace ExplorerNative
         /// placeholder callback is given; a third would not.
         /// </summary>
         private const int InteractiveAttempts = 2;
+
+        /// <summary>
+        /// The second interactive try, after the first ran out of time: fifteen,
+        /// a second's gap and thirty fit inside a callback's forty-five.
+        /// Settable for the suite.
+        /// </summary>
+        internal TimeSpan InteractiveSlowAttempt { get; set; } = TimeSpan.FromSeconds(30);
 
         /// <summary>The longest gap an interactive request sits through before trying again.</summary>
         private static readonly TimeSpan InteractiveLongestWait = TimeSpan.FromSeconds(5);
@@ -426,6 +453,9 @@ namespace ExplorerNative
             _uploads = new HttpClient(handler, disposeHandler: false) { Timeout = Timeout.InfiniteTimeSpan };
             _waitScale = waitScale;
         }
+
+        /// <summary>For the suite: the quick client's timeout, set before the first request.</summary>
+        internal TimeSpan QuickTimeoutForTests { set => _http.Timeout = value; }
 
         /// <summary>One, except for the suite's fake Drive. See the internal constructor.</summary>
         private readonly double _waitScale = 1;
@@ -958,9 +988,14 @@ namespace ExplorerNative
 
             const string fields = "driveId,capabilities(canCopy,canTrash,canRename," +
                                   "canMoveItemWithinDrive,canMoveItemOutOfDrive,canAddChildren)";
-            using var request = await Request(HttpMethod.Get,
-                $"{Files}/{Uri.EscapeDataString(fileId)}?fields={Uri.EscapeDataString(fields)}", token);
-            using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token, _slowMetadata);
+            // Through the retrying sender: asked before every move and copy
+            // inside Drive, and a single 429 or 503 here failed the item with
+            // "503: Google Drive is temporarily unavailable" before anything
+            // was tried. A question, so asking again is always safe.
+            using var response = await SendWithRetry(
+                () => Request(HttpMethod.Get,
+                    $"{Files}/{Uri.EscapeDataString(fileId)}?fields={Uri.EscapeDataString(fields)}", token),
+                HttpCompletionOption.ResponseContentRead, token);
             var body = await response.Content.ReadAsStringAsync(token);
             if (!response.IsSuccessStatusCode)
                 throw new InvalidOperationException(
@@ -1002,9 +1037,10 @@ namespace ExplorerNative
 
         internal async Task<string> NameOf(string fileId, CancellationToken token)
         {
-            using var request = await Request(HttpMethod.Get,
-                $"{Files}/{Uri.EscapeDataString(fileId)}?fields=name", token);
-            using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token, _slowMetadata);
+            // Retried, as RightsOf is: a paste inside Drive asks this per item.
+            using var response = await SendWithRetry(
+                () => Request(HttpMethod.Get, $"{Files}/{Uri.EscapeDataString(fileId)}?fields=name", token),
+                HttpCompletionOption.ResponseContentRead, token);
             var body = await response.Content.ReadAsStringAsync(token);
             if (!response.IsSuccessStatusCode)
                 throw new InvalidOperationException(

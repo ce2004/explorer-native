@@ -38,6 +38,13 @@ namespace ExplorerNative
         /// upload already has that name. Null means each goes as its own name.
         /// </summary>
         public IReadOnlyList<string>? SourceNames { get; init; }
+
+        /// <summary>
+        /// Folders the walk could not look inside (access denied, gone part
+        /// way), as relative paths. Each is said as a failure: the folder went
+        /// up empty, and nothing said its files were missing.
+        /// </summary>
+        public IReadOnlyList<string> Unreadable { get; init; } = Array.Empty<string>();
     }
 
     /// <summary>
@@ -234,6 +241,7 @@ namespace ExplorerNative
             var folders = new List<string>();
             var roots = new List<string>();
             var rootNames = new List<string>();
+            var unreadable = new List<string>();
             long total = 0;
 
             // Two source folders of one name — Music from two drives — were one
@@ -261,7 +269,7 @@ namespace ExplorerNative
                     topNames.Add(sentAs);
                     roots.Add(source);
                     rootNames.Add(sentAs);
-                    Walk(source, sentAs, files, folders, ref total);
+                    Walk(source, sentAs, files, folders, unreadable, ref total);
                     continue;
                 }
 
@@ -278,7 +286,7 @@ namespace ExplorerNative
                 total += size;
             }
 
-            return new UploadWork(files, folders, roots, total) { SourceNames = rootNames };
+            return new UploadWork(files, folders, roots, total) { SourceNames = rootNames, Unreadable = unreadable };
         }
 
         /// <summary>
@@ -290,7 +298,7 @@ namespace ExplorerNative
         /// </summary>
         private static void Walk(
             string root, string rootName, List<UploadFile> files, List<string> folders,
-            ref long total)
+            List<string> unreadable, ref long total)
         {
             var queue = new Queue<(string Path, string Relative)>();
             queue.Enqueue((root, rootName));
@@ -300,9 +308,11 @@ namespace ExplorerNative
                 var (path, relative) = queue.Dequeue();
                 folders.Add(relative);
 
+                // Kept, not skipped in silence: the folder still goes up, and
+                // it went up empty with "Uploaded 40 files" said over it.
                 FileSystemInfo[] entries;
                 try { entries = new DirectoryInfo(path).GetFileSystemInfos(); }
-                catch { continue; }
+                catch { unreadable.Add(relative); continue; }
 
                 foreach (var entry in entries)
                 {
@@ -349,11 +359,20 @@ namespace ExplorerNative
             _totalFiles = work.Files.Count;
             _announceEach = work.Files.Count <= ChattyBelow && work.Folders.Count == 0;
 
+            foreach (var folder in work.Unreadable)
+                Fail(folder, "Windows would not let Explorer Native look inside this folder, so nothing in it was sent");
+
             // Said before anything is sent, so the dialog opens with the real
             // numbers in it rather than "calculating" for the seven hundred
             // milliseconds of the first round trip. Every field on it is already
             // knowable at this point except the speed.
             Report("", force: true);
+
+            // And once a second after that whatever is happening. Reports came
+            // only from bytes being read and files landing, so while folders
+            // were being made, or a file waited on Google or the network, the
+            // window stood still, elapsed time and all, and looked hung.
+            using var heartbeat = new Timer(_ => Report(""), null, 1000, 1000);
 
             // The folders first, and all of them, whether or not anything goes in
             // them. A file waiting on a folder that is being created at the same
@@ -520,6 +539,7 @@ namespace ExplorerNative
                 Folders = folders,
                 SourceFolders = kept.Select(i => work.SourceFolders[i]).ToList(),
                 SourceNames = sentAs == null ? null : kept.Where(i => i < sentAs.Count).Select(i => sentAs[i]).ToList(),
+                Unreadable = work.Unreadable.Where(f => !dropped.Contains(Top(f))).ToList(),
                 TotalBytes = files.Sum(f => f.Size),
             };
         }
@@ -734,7 +754,10 @@ namespace ExplorerNative
                     var now = SourceStamp(file.LocalPath);
                     if (startedAs.Exists && now == startedAs && now.Length == file.Size)
                     {
-                        try { File.Delete(file.LocalPath); } catch { }
+                        // Said when it fails. This was `catch { }`: a read-only
+                        // or open file was copied, left on this PC, and the move
+                        // reported as done with both copies in place.
+                        if (RemoveSource(file.LocalPath) is { } why) Fail(name, why);
                     }
                     else Fail(name, "it changed while it was being sent, so it was copied and the original was kept on this PC");
                 }
@@ -771,12 +794,59 @@ namespace ExplorerNative
                 if (reserved) Release(folder, name);
                 Unsend(counted);
                 NotGoing(file);
-                Fail(name, ex.Message);
+                Fail(name, Reason(ex));
                 Report(name);
             }
             finally
             {
                 if (big) _bigLanes.Release();
+            }
+        }
+
+        /// <summary>
+        /// Why a file could not be sent, as a person would say it. A file open
+        /// in another program came out as "The process cannot access the file
+        /// 'C:\Users\...\x.pst' because it is being used by another process",
+        /// the whole path again after the name it was listed under.
+        /// </summary>
+        internal static string Reason(Exception error)
+        {
+            const int SharingViolation = unchecked((int)0x80070020), LockViolation = unchecked((int)0x80070021);
+            return error switch
+            {
+                IOException io when io.HResult is SharingViolation or LockViolation =>
+                    "another program has it open and will not let it be read. Close it and copy it again",
+                FileNotFoundException or DirectoryNotFoundException =>
+                    "it is not on this PC any more",
+                UnauthorizedAccessException =>
+                    "Windows would not let Explorer Native read it",
+                _ => error.Message,
+            };
+        }
+
+        /// <summary>
+        /// Deletes a moved file's original once Google has it, or says why
+        /// not. Read-only is cleared first, as Explorer's own move does: the
+        /// file is already safe in Drive and the person asked for it to go.
+        /// </summary>
+        internal static string? RemoveSource(string path)
+        {
+            try
+            {
+                try { File.Delete(path); }
+                catch (UnauthorizedAccessException) when ((File.GetAttributes(path) & FileAttributes.ReadOnly) != 0)
+                {
+                    File.SetAttributes(path, File.GetAttributes(path) & ~FileAttributes.ReadOnly);
+                    File.Delete(path);
+                }
+                return null;
+            }
+            catch (Exception ex)
+            {
+                var why = ex is IOException { HResult: unchecked((int)0x80070020) or unchecked((int)0x80070021) }
+                    ? "another program has it open"
+                    : ex is UnauthorizedAccessException ? "Windows would not let Explorer Native delete it" : ex.Message;
+                return $"it was copied to Google Drive, but the original could not be removed from this PC ({why}), so it is in both places";
             }
         }
 

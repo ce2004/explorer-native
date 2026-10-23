@@ -94,8 +94,20 @@ namespace ExplorerNative
     {
         private const double WindowSeconds = 10.0;
 
+        /// <summary>
+        /// How far back the window stretches when nothing moved inside the ten
+        /// seconds. A copy off Drive moves in four-megabyte pieces, and on a slow
+        /// line one piece takes longer than ten seconds: the window then held
+        /// only equal counts, the speed came out as nought, and the window read
+        /// "unknown" and "calculating" between every piece (Conner, 4.2.0:
+        /// "uploading or downloading can sit at unknown"). Stretched back to the
+        /// count before the last piece, it says how fast the pieces are coming.
+        /// A minute with nothing at all is nothing moving, and says so.
+        /// </summary>
+        private const double LongestWindowSeconds = 60.0;
+
         private readonly object _gate = new();
-        private readonly Queue<(double At, long Bytes)> _samples = new();
+        private readonly List<(double At, long Bytes)> _samples = new();
 
         /// <summary>
         /// Records where the transfer has got to and returns bytes per second
@@ -108,16 +120,26 @@ namespace ExplorerNative
 
             lock (_gate)
             {
-                _samples.Enqueue((now, bytesDone));
+                _samples.Add((now, bytesDone));
 
                 // One sample older than the window is kept deliberately, so the
                 // span never collapses to nothing at the moment the oldest is
                 // dropped — which would divide by very nearly zero and report a
                 // speed of several gigabytes a second.
-                while (_samples.Count > 2 && _samples.Peek().At < now - WindowSeconds)
-                    _samples.Dequeue();
+                //
+                // And the oldest is kept while dropping it would leave a window
+                // in which nothing moved (the next one already holds today's
+                // count), up to LongestWindowSeconds.
+                int drop = 0;
+                while (_samples.Count - drop > 2 && _samples[drop].At < now - WindowSeconds)
+                {
+                    bool stillMoving = _samples[drop + 1].Bytes != bytesDone;
+                    if (!stillMoving && _samples[drop].At >= now - LongestWindowSeconds) break;
+                    drop++;
+                }
+                if (drop > 0) _samples.RemoveRange(0, drop);
 
-                var first = _samples.Peek();
+                var first = _samples[0];
                 double span = now - first.At;
 
                 // Nothing to measure against yet. The average since the start is

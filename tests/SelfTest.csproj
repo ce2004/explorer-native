@@ -109,6 +109,7 @@
     <Compile Include="FakeDrive.cs" />
     <Compile Include="DriveMountTests.cs" />
     <Compile Include="DriveTrashTests.cs" />
+    <Compile Include="DriveTransferTests.cs" />
     <Compile Include="DriveMountTimerTests.cs" />
     <Compile Include="DriveSizeTests.cs" />
     <Compile Include="DriveClientCacheTests.cs" />

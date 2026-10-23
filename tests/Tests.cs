@@ -199,6 +199,14 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            // Copying and moving to, from and inside Drive in the file manager.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "drivecopy")
+            {
+                await DriveTransferTests.RunAll(Check, Equal);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "applemusic")
             {
                 await AppleMusicTests.RunAll(Check, Equal);
@@ -414,6 +422,7 @@ namespace ExplorerNative
             await SyncSuitesInBatches();
             await Guard("DriveMountTests", () => DriveMountTests.RunAll(Check, Equal));
             await Guard("DriveTrashTests", () => DriveTrashTests.RunAll(Check, Equal));
+            await Guard("DriveTransferTests", () => DriveTransferTests.RunAll(Check, Equal));
             await Guard("DriveMountTimerTests", () => DriveMountTimerTests.RunAll(Check, Equal));
             await Guard("OddCaseTests", () => OddCaseTests.RunAll(Check, Equal));
             await Guard("TransferFixTests", () => TransferFixTests.RunAll(Check, Equal));

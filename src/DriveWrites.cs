@@ -499,13 +499,32 @@ namespace ExplorerNative
         /// deletes irrecoverably from a keystroke is a file manager that will one
         /// day be the reason something is gone.
         /// </summary>
-        public async Task Trash(string fileId, CancellationToken token)
+        /// <param name="retry">
+        /// Sent again on "not now", on the two-minute client: trashing is the
+        /// same PATCH however often it is sent. For the file manager's moves out
+        /// of Drive and replaces, where one fifteen-second timeout left the
+        /// original behind with "could not be removed". Off for the folder
+        /// monitor, which waits Google out its own way.
+        /// </param>
+        public async Task Trash(string fileId, CancellationToken token, bool retry = false)
         {
-            using var request = await Request(HttpMethod.Patch,
-                $"{Files}/{fileId}?fields=" + Uri.EscapeDataString("id,name,mimeType,size,trashedTime,md5Checksum,driveId"), token);
-            request.Content = new StringContent("{\"trashed\":true}", Encoding.UTF8, "application/json");
+            var url = $"{Files}/{fileId}?fields=" + Uri.EscapeDataString("id,name,mimeType,size,trashedTime,md5Checksum,driveId");
+            async Task<HttpRequestMessage> Build()
+            {
+                var request = await Request(HttpMethod.Patch, url, token);
+                request.Content = new StringContent("{\"trashed\":true}", Encoding.UTF8, "application/json");
+                return request;
+            }
 
-            using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token);
+            HttpResponseMessage sent;
+            if (retry) sent = await SendWithRetry(Build, HttpCompletionOption.ResponseContentRead, token);
+            else
+            {
+                using var request = await Build();
+                sent = await Send(request, HttpCompletionOption.ResponseContentRead, token);
+            }
+
+            using var response = sent;
             var body = await response.Content.ReadAsStringAsync(token);
             if (!response.IsSuccessStatusCode)
                 throw new DriveStatusException((int)response.StatusCode, body,
@@ -824,27 +843,55 @@ namespace ExplorerNative
         /// adding one and removing the other in the same request. Doing it as two
         /// requests leaves a window where the file is in both places or neither.
         /// </summary>
+        /// <param name="retry">
+        /// Sent again when Google says "not now" (429, 403 rateLimitExceeded,
+        /// 5xx, a dropped connection), as every other write is. A move or a
+        /// rename is the same PATCH however often it is sent, so a resend is
+        /// safe. Off for the folder monitor, which waits Google out itself;
+        /// on for the file manager, where one 503 in a move of three hundred
+        /// files used to fail that file with "move failed 503".
+        /// </param>
+        /// <param name="interactive">
+        /// Somebody is waiting on it (F2): the quick client and two tries,
+        /// not the transfer's patience. See <see cref="SendWithRetry"/>.
+        /// </param>
         public async Task MoveOrRename(
             string fileId, string? newName, string? fromParentId, string? toParentId,
-            CancellationToken token)
+            CancellationToken token, bool retry = false, bool interactive = false)
         {
             var url = $"{Files}/{fileId}?fields=id";
             if (!string.IsNullOrEmpty(toParentId)) url += $"&addParents={toParentId}";
             if (!string.IsNullOrEmpty(fromParentId)) url += $"&removeParents={fromParentId}";
 
-            using var request = await Request(HttpMethod.Patch, url, token);
-            request.Content = new StringContent(
-                newName == null
-                    ? "{}"
-                    : JsonSerializer.Serialize(new Dictionary<string, object> { ["name"] = newName }),
-                Encoding.UTF8, "application/json");
+            var json = newName == null
+                ? "{}"
+                : JsonSerializer.Serialize(new Dictionary<string, object> { ["name"] = newName });
 
-            using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token);
-            if (!response.IsSuccessStatusCode)
+            async Task<HttpRequestMessage> Build()
             {
-                var body = await response.Content.ReadAsStringAsync(token);
-                throw new DriveStatusException((int)response.StatusCode, body,
-                    $"move failed {(int)response.StatusCode}: " + Explain((int)response.StatusCode, body));
+                var request = await Request(HttpMethod.Patch, url, token);
+                request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+                return request;
+            }
+
+            HttpResponseMessage response;
+            if (retry)
+                response = await SendWithRetry(Build, HttpCompletionOption.ResponseContentRead, token,
+                    interactive: interactive);
+            else
+            {
+                using var request = await Build();
+                response = await Send(request, HttpCompletionOption.ResponseContentRead, token);
+            }
+
+            using (response)
+            {
+                if (!response.IsSuccessStatusCode)
+                {
+                    var body = await response.Content.ReadAsStringAsync(token);
+                    throw new DriveStatusException((int)response.StatusCode, body,
+                        $"move failed {(int)response.StatusCode}: " + Explain((int)response.StatusCode, body));
+                }
             }
         }
 

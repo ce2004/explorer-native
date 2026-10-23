@@ -74,8 +74,34 @@ namespace ExplorerNative
     {
         public Action<string>? OnStarting { get; init; }
         public Action<string, long>? OnCopied { get; init; }
+
+        /// <summary>
+        /// A file or folder inside a folder being copied that Drive would not
+        /// copy, with why. Set, the copy carries on with the rest and the
+        /// caller lists these; unset, the first one ends the copy as before.
+        /// One file whose owner had turned copying off used to stop a whole
+        /// folder part way, everything after it left behind.
+        /// </summary>
+        public Action<string, string>? OnFailed { get; init; }
+
         public void Starting(string name) { try { OnStarting?.Invoke(name); } catch { } }
         public void Copied(string name, long bytes) { try { OnCopied?.Invoke(name, bytes); } catch { } }
+        public void Failed(string name, string why) { try { OnFailed?.Invoke(name, why); } catch { } }
+
+        /// <summary>
+        /// Whether a failure inside a folder copy is one to note and carry on
+        /// past, noting it if so. Never a cancellation, and never a full
+        /// account or a spent day, which stop the whole copy.
+        /// </summary>
+        internal static bool CarriesOn(Exception error, DriveCopyReport? report, object gate, string name,
+            string why, CancellationToken token)
+        {
+            if (report?.OnFailed == null) return false;
+            if (error is OperationCanceledException && token.IsCancellationRequested) return false;
+            if (error is DriveQuotaException) return false;
+            lock (gate) report.Failed(name, why + error.Message);
+            return true;
+        }
     }
 
     public sealed class GoogleDrive : IDisposable
@@ -1847,7 +1873,7 @@ namespace ExplorerNative
 
             try
             {
-                await client.Trash(id, token).ConfigureAwait(false);
+                await client.Trash(id, token, retry: true).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
@@ -2036,8 +2062,12 @@ namespace ExplorerNative
         /// leaves the letter disagreeing with the account for one refresh rather
         /// than the account disagreeing with itself.
         /// </summary>
+        /// <param name="interactive">
+        /// Somebody pressed F2 and is waiting: two quick tries rather than a
+        /// transfer's patience. A rename inside a paste leaves it false.
+        /// </param>
         public async Task<string?> RenameOnDrive(
-            string path, string newName, CancellationToken token = default)
+            string path, string newName, CancellationToken token = default, bool interactive = false)
         {
             DriveMount? mount;
             DriveClient? client;
@@ -2093,7 +2123,8 @@ namespace ExplorerNative
             }
             catch { isFolder = false; }
 
-            await client.MoveOrRename(id, newName, null, null, token).ConfigureAwait(false);
+            await client.MoveOrRename(id, newName, null, null, token, retry: true, interactive: interactive)
+                .ConfigureAwait(false);
 
             // Moved in place first: a populated folder keeps everything under it
             // and needs no new listing. Only when that is refused, RemoveOne takes
@@ -2205,7 +2236,7 @@ namespace ExplorerNative
                 // and only when this file is one of a few, because a tree whose
                 // whole destination has gone away is one problem said two thousand
                 // times, over the top of the summary that would explain it.
-                if (announce) Say("drive.upload.failed", $"Could not upload {name}: {ex.Message}");
+                if (announce) Say("drive.upload.failed", $"Could not upload {name}: {DriveUpload.Reason(ex)}");
                 throw;
             }
 
@@ -2257,7 +2288,7 @@ namespace ExplorerNative
         {
             try
             {
-                await client.Trash(replacing, token).ConfigureAwait(false);
+                await client.Trash(replacing, token, retry: true).ConfigureAwait(false);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
@@ -2384,7 +2415,9 @@ namespace ExplorerNative
             }
             catch { }
 
-            await client.MoveOrRename(id, newName, fromId, toId, token).ConfigureAwait(false);
+            // Retried when Google says "not now": one 429 in a move of three
+            // hundred files failed that file outright.
+            await client.MoveOrRename(id, newName, fromId, toId, token, retry: true).ConfigureAwait(false);
 
             // Moved in place when the mount can, keeping a populated folder's
             // contents. Otherwise removed and put where it went: removing the
@@ -2516,8 +2549,15 @@ namespace ExplorerNative
                 token.ThrowIfCancellationRequested();
                 if (!child.IsFolder || made.Contains(child.Id)) continue;
 
-                count += await CopyFolderById(client, mount, child.Id, child.Name,
-                    folderId, copiedInto, made, child.DriveId, token, report, gate).ConfigureAwait(false);
+                // One folder that will not copy is said and passed over; the
+                // folders after it still go.
+                try
+                {
+                    count += await CopyFolderById(client, mount, child.Id, child.Name,
+                        folderId, copiedInto, made, child.DriveId, token, report, gate).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (DriveCopyReport.CarriesOn(ex, report, gate, child.Name,
+                                               "the folder could not be copied: ", token)) { }
             }
 
             return count;
@@ -2552,7 +2592,12 @@ namespace ExplorerNative
                 async (child, _) =>
                 {
                     lock (gate) report?.Starting(child.Name);
-                    var copy = await client.Copy(child.Id, child.Name, intoId, token).ConfigureAwait(false);
+                    DriveEntry copy;
+                    try { copy = await client.Copy(child.Id, child.Name, intoId, token).ConfigureAwait(false); }
+                    catch (Exception ex) when (DriveCopyReport.CarriesOn(ex, report, gate, child.Name, "", token))
+                    {
+                        return;
+                    }
                     if (string.IsNullOrEmpty(copy.Id)) return;
 
                     lock (gate)
@@ -2658,8 +2703,13 @@ namespace ExplorerNative
                 token.ThrowIfCancellationRequested();
                 if (!child.IsFolder || made.Contains(child.Id)) continue;
 
-                count += await CopyFolderById(client, mount, child.Id, child.Name,
-                    folderId, here, made, child.DriveId, token, report, gate).ConfigureAwait(false);
+                try
+                {
+                    count += await CopyFolderById(client, mount, child.Id, child.Name,
+                        folderId, here, made, child.DriveId, token, report, gate).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (DriveCopyReport.CarriesOn(ex, report, gate, child.Name,
+                                               "the folder could not be copied: ", token)) { }
             }
 
             return count;

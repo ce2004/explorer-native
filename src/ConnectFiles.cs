@@ -556,7 +556,7 @@ namespace ExplorerNative
                 if (!caseOnly && names.Contains(DriveMount.Sanitise(newName)))
                     throw new ConnectException(409, $"Something called {newName} is already there.");
                 string? placed;
-                try { placed = await drive.RenameOnDrive(path, newName, token); }
+                try { placed = await drive.RenameOnDrive(path, newName, token, interactive: true); }
                 catch (Exception e) when (e is not OperationCanceledException) { throw FromDrive(e, "rename it"); }
                 return placed == null
                     ? throw new ConnectException(403, "Google Drive would not rename it. A shared drive is renamed on drive.google.com.")
@@ -997,6 +997,9 @@ namespace ExplorerNative
                     Interlocked.Add(ref bytesDone, bytes);
                     Show(name);
                 },
+                // As MainForm: one file Drive would not copy is listed, and the
+                // rest of the folder still goes.
+                OnFailed = (name, why) => job.Fail(name, why),
             };
 
             var log = new ConflictLog();
