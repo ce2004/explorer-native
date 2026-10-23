@@ -671,6 +671,7 @@ namespace ExplorerNative
             "NVDA-controllerClient-LICENSE.txt",
             "Concentus-LICENSE.txt",
             "NVorbis-LICENSE.txt",
+            "7-Zip-LICENSE.txt",
         };
 
         private static void WriteLicenceBeside()

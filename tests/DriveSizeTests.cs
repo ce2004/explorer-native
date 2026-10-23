@@ -62,6 +62,45 @@ namespace ExplorerNative
             int requests = fake.Requests;
             await index.Refresh(client, CancellationToken.None);
             equal("Drive sizes: a fresh index asks Drive nothing", "0", (fake.Requests - requests).ToString());
+
+            // 4.2.1 (Conner: "sizes don't show up on Google Drive half the
+            // time"): once built, a slow changes feed is not waited out. The held
+            // sizes answer within AnswerWithin and the feed finishes behind.
+            check("Drive sizes: a listed index says it is built", index.Built, null);
+            fake.AddFile("d.flac", new byte[5], DateTime.UtcNow, album);
+            index.Expire();
+            fake.AnswerDelayMs = 4000;
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            var slow = index.Refresh(client, CancellationToken.None);
+            bool timedOut = false;
+            try { await slow.WaitAsync(DriveSizeIndex.AnswerWithin); }
+            catch (TimeoutException) { timedOut = true; }
+            var held = index.SizeOf(music);
+            check("Drive sizes: a slow feed is not waited for", timedOut && clock.Elapsed < TimeSpan.FromSeconds(3),
+                clock.Elapsed.ToString());
+            check("Drive sizes: and the sizes held still answer", held is { Bytes: 1057 }, held?.ToString());
+            fake.AnswerDelayMs = 0;
+            await slow;
+            check("Drive sizes: the feed catches up behind the answer", index.SizeOf(music) is { Bytes: 1062 },
+                index.SizeOf(music)?.ToString());
+
+            var source = SourceText("GoogleDrive.cs");
+            check("Drive sizes: a built index answers within AnswerWithin, not after the feed",
+                source.Contains("if (index.Built) await refresh.WaitAsync(DriveSizeIndex.AnswerWithin, token)"), null);
+            check("Drive sizes: the Shared drives folder adds up its drives",
+                source.Contains("IsSharedDrivesFolder(path)) return await SharedDrivesTotalAsync"), null);
+            check("Drive sizes: the index is started as Drive connects",
+                source.Contains("WarmSizes(mount.Letter ?? mount.Root)"), null);
+        }
+
+        private static string SourceText(string name)
+        {
+            var at = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
+            while (at != null && !System.IO.Directory.Exists(System.IO.Path.Combine(at.FullName, "src"))) at = at.Parent;
+            if (at == null) return "";
+            var path = System.IO.Path.Combine(at.FullName, "src", name);
+            try { return System.IO.File.Exists(path) ? System.IO.File.ReadAllText(path) : ""; }
+            catch { return ""; }
         }
     }
 }

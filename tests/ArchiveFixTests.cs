@@ -104,7 +104,11 @@ namespace ExplorerNative
 
             if (!BsdTar.HandlesNames)
             {
-                await CrashShowsNoBoxTests();
+                // A 7z is what makes this tar crash, and 7z now goes through
+                // 7-Zip, so Windows' tar is put back for this one.
+                BsdTar.SevenZipOff = true;
+                try { await CrashShowsNoBoxTests(); }
+                finally { BsdTar.SevenZipOff = false; }
                 return;
             }
 

@@ -57,6 +57,7 @@
     <Compile Include="..\src\ZipEngine.cs" />
     <Compile Include="..\src\TarEngine.cs" />
     <Compile Include="..\src\BsdTar.cs" />
+    <Compile Include="..\src\BsdTar.SevenZip.cs" />
     <Compile Include="..\src\ArchiveBrowser.cs" />
     <Compile Include="..\src\ArchiveForm.cs" />
     <Compile Include="..\src\ProgressForm.cs" />
@@ -96,6 +97,7 @@
     <Compile Include="..\src\ConnectServer.cs" /><Compile Include="..\src\ConnectFiles.cs" /><Compile Include="..\src\ConnectAudio.cs" /><Compile Include="..\src\ConnectUploads.cs" /><Compile Include="..\src\ConnectClipboard.cs" /><Compile Include="..\src\ClipboardInterop.cs" /><Compile Include="..\src\ConnectDetails.cs" /><Compile Include="..\src\TailscaleWeb.cs" /><Compile Include="..\src\WebAssets.cs" />
     <Compile Include="SearchTests.cs" />
     <Compile Include="Fix418Tests.cs" />
+    <Compile Include="SevenZipTests.cs" />
     <Compile Include="ConnectTests.cs" />
     <Compile Include="SeekTests.cs" />
     <Compile Include="Tests.cs" />
@@ -158,6 +160,8 @@
   <ItemGroup>
     <EmbeddedResource Include="..\web\*.*" LogicalName="web/%(Filename)%(Extension)" />
     <EmbeddedResource Include="..\CHANGES.txt" LogicalName="CHANGES.txt" />
+    <EmbeddedResource Include="..\native\win-arm64\7za.exe" LogicalName="7za.exe" Condition="'$(RuntimeIdentifier)' == 'win-arm64'" />
+    <EmbeddedResource Include="..\native\win-x64\7za.exe" LogicalName="7za.exe" Condition="'$(RuntimeIdentifier)' == 'win-x64'" />
   </ItemGroup>
 </Project>
 

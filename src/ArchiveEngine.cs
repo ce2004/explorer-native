@@ -101,7 +101,10 @@ namespace ExplorerNative
         /// hundreds of cores, where the writer stitching the output together
         /// becomes the limit long before the workers do.
         /// </summary>
-        public static int RecommendedThreads => Math.Clamp(Environment.ProcessorCount, 1, 64);
+        // Every core but one since 4.2.1 (Conner: "use all my CPU and leave
+        // enough to actually work with"), so the window, NVDA and whatever else
+        // is open keep a core while an archive is made.
+        public static int RecommendedThreads => Math.Clamp(Environment.ProcessorCount - 1, 1, 64);
 
         /// <summary>
         /// How often progress may reach the UI thread.

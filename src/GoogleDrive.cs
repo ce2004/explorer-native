@@ -677,6 +677,7 @@ namespace ExplorerNative
                 Interlocked.Exchange(ref _lapseSaid, 0);
 
                 Status = $"{user} on {mount.Letter}";
+                if (settings.FolderSizes == FolderSizeMode.Automatic) WarmSizes(mount.Letter ?? mount.Root);
                 return true;
             }
             catch (Exception ex)
@@ -1295,7 +1296,7 @@ namespace ExplorerNative
             CancellationToken lifetime;
             lock (_gate) { mount = _mount; client = _client; lifetime = _lifetime.Token; }
             if (mount == null || client == null || !Owns(mount, path)) return null;
-            if (mount.IsSharedDrivesFolder(path)) return null;
+            if (mount.IsSharedDrivesFolder(path)) return await SharedDrivesTotalAsync(mount, path, token).ConfigureAwait(false);
             if (InTrash(mount, path)) return null;      // the size index covers what is not trashed
 
             var id = mount.FolderIdFor(path) ?? mount.IdFor(path);
@@ -1311,11 +1312,67 @@ namespace ExplorerNative
                     _sizes[driveId ?? ""] = index = new DriveSizeIndex(driveId);
             }
 
-            try { await index.Refresh(client, lifetime).WaitAsync(token).ConfigureAwait(false); }
+            // Built once, the sizes held answer straight away when the feed is
+            // slow, and the feed catches up behind them.
+            var refresh = index.Refresh(client, lifetime);
+            try
+            {
+                if (index.Built) await refresh.WaitAsync(DriveSizeIndex.AnswerWithin, token).ConfigureAwait(false);
+                else await refresh.WaitAsync(token).ConfigureAwait(false);
+            }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (TimeoutException) { }
             catch (Exception ex) { Note($"folder sizes: {ex.Message}"); }
 
+            // A refresh left running is watched, so a failure is noted rather than unobserved.
+            if (!refresh.IsCompleted)
+                _ = refresh.ContinueWith(t => Note($"folder sizes: {t.Exception?.GetBaseException().Message}"),
+                    CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+
             return index.SizeOf(id);
+        }
+
+        /// <summary>
+        /// The Shared drives folder's size: every shared drive's own total added
+        /// up (Conner: it should show all of them together). Null until each
+        /// drive can be told, so a part is never shown as the whole.
+        /// </summary>
+        private async Task<FolderSizeResult?> SharedDrivesTotalAsync(DriveMount mount, string path, CancellationToken token)
+        {
+            if (!mount.TryListing(path, out var drives))
+            {
+                try { await Task.Run(() => mount.Populate(path), token).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                catch (Exception ex) { Note($"folder sizes: {ex.Message}"); return null; }
+                if (!mount.TryListing(path, out drives)) return null;
+            }
+
+            var each = await Task.WhenAll(drives.Where(d => d.IsFolder)
+                .Select(d => FolderSizeAsync(Path.Combine(path, d.Name), token))).ConfigureAwait(false);
+            if (each.Any(s => s == null)) return null;
+
+            long bytes = 0, files = 0, folders = 0;
+            foreach (var s in each)
+            {
+                bytes += s!.Value.Bytes;
+                files += s.Value.Files;
+                folders += s.Value.Folders + 1;
+            }
+            return new FolderSizeResult(bytes, (int)Math.Min(int.MaxValue, files), (int)Math.Min(int.MaxValue, folders), true);
+        }
+
+        /// <summary>
+        /// Starts the size index for My Drive as soon as Drive is on the letter,
+        /// so the Size column is ready by the time a folder is opened instead of
+        /// waiting on a listing of the whole account then.
+        /// </summary>
+        private void WarmSizes(string root)
+        {
+            _ = Task.Run(async () =>
+            {
+                try { await FolderSizeAsync(root).ConfigureAwait(false); }
+                catch (Exception ex) { Note($"folder sizes: {ex.Message}"); }
+            });
         }
 
         /// <summary>Whether a path is the mounted letter itself rather than something in it.</summary>

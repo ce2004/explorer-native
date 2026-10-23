@@ -12,7 +12,7 @@
     <!-- ARM64 by default; "dotnet publish -r win-x64" builds the x64 copy.
          Release builds stamp Version from the git tag (see .github\workflows). -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-arm64</RuntimeIdentifier>
-    <Version>4.2.0</Version>
+    <Version>4.2.1</Version>
     <!-- .NET 9+ checks properties for the forms designer, which nothing here uses. -->
     <NoWarn>$(NoWarn);WFO1000</NoWarn>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
@@ -141,6 +141,19 @@
     </EmbeddedResource>
     <EmbeddedResource Include="native\NVorbis-LICENSE.txt">
       <LogicalName>NVorbis-LICENSE.txt</LogicalName>
+    </EmbeddedResource>
+
+    <!-- 7-Zip's console program (7-Zip Extra 25.01, LGPL with some BSD code)
+         makes and unpacks 7z on every core; Windows' tar uses one. Unpacked to
+         %LOCALAPPDATA%\ExplorerNative\7-Zip on first use (BsdTar.SevenZip.cs). -->
+    <EmbeddedResource Include="native\win-arm64\7za.exe" Condition="'$(RuntimeIdentifier)' == 'win-arm64'">
+      <LogicalName>7za.exe</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="native\win-x64\7za.exe" Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+      <LogicalName>7za.exe</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="native\7-Zip-LICENSE.txt">
+      <LogicalName>7-Zip-LICENSE.txt</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 

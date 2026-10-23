@@ -298,6 +298,18 @@ namespace ExplorerNative
 
         public DriveSizeIndex(string? driveId) { _driveId = driveId; }
 
+        /// <summary>Whether the whole drive has been listed once, so a size can be answered from memory.</summary>
+        public bool Built { get { lock (_gate) return _built; } }
+
+        /// <summary>
+        /// How long a question waits for the changes feed once the index is built.
+        /// Past this the sizes held are the answer and the feed carries on behind
+        /// it: waiting the feed out (two minutes a try on a slow line) left the
+        /// Size column empty whenever the folder was left first, which on a
+        /// sluggish connection was half the folders opened.
+        /// </summary>
+        public static TimeSpan AnswerWithin { get; set; } = TimeSpan.FromSeconds(2);
+
         /// <summary>The next question asks the changes feed first, whatever the clock says.</summary>
         public void Expire()
         {

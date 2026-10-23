@@ -66,7 +66,7 @@ namespace ExplorerNative
     /// in the collision check, and so would have extracted over a file it had
     /// decided was not there.
     /// </summary>
-    public static class BsdTar
+    public static partial class BsdTar
     {
         /// <summary>System32's tar, by full path: a bare "tar.exe" is resolved against PATH.</summary>
         public static string SystemExecutable { get; } = Path.Combine(
@@ -276,7 +276,8 @@ namespace ExplorerNative
             List<string> errors,
             CancellationToken token)
         {
-            RequireAvailable();
+            bool sevenZip = UsesSevenZip(format);
+            if (!sevenZip) RequireAvailable();
 
             // Only the items that were actually selected go on the command line;
             // everything under a selected folder is bsdtar's business.
@@ -302,6 +303,8 @@ namespace ExplorerNative
                 throw new NotSupportedException(
                     $"A {format.Extension} cannot be made from {Path.GetFileName(dotted.Source)}, whose name " +
                     "ends in a dot or a space. Zip and .tar.gz can.");
+
+            if (sevenZip) return CreateWithSevenZip(plan, tops, archivePath, level, reporter, errors, token);
 
             var aliases = new List<Alias>();
             try
@@ -826,6 +829,8 @@ namespace ExplorerNative
             // archive (a stall, a crash, an exit that was not "delayed"). The
             // errors alone cannot say that: a link not made or a repeated name
             // is a note about one entry, not an archive taken only in part.
+            if (UsesSevenZip(ArchiveFormats.Identify(archivePath)))
+                return ExtractWithSevenZip(archivePath, destination, policy, ask, reporter, errors, token, stoppedShort);
             RequireAvailable();
 
             Directory.CreateDirectory(destination);

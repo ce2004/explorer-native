@@ -1,3 +1,9 @@
+4.2.1
+New: making and unpacking 7z files is much faster. Explorer Native now uses 7-Zip itself, which uses every core of your processor but one and up to 40 percent of your memory, at low priority so your PC stays usable. On an 8-core PC, a 490 MB folder took 43 seconds to compress instead of 3 minutes, came out smaller, and unpacked in 5 seconds instead of 15. 7z files with names in other languages or with emoji now work too.
+New: zip and tar.gz files also leave one core free while they're made, so the rest of your PC keeps up.
+New: the Shared drives folder in Google Drive shows the size of all your shared drives together.
+Bug fixed: folder sizes in Google Drive often didn't show up, because each folder waited for a fresh check with Google before showing its sizes, and if you moved on first they never appeared. Now sizes show straight away and update behind the scenes, and they're worked out as soon as Google Drive connects instead of the first time you open a folder.
+
 4.2.0
 New: searching (F1) is smarter. Type words in any order, like greedy tate, and capitals and accents don't matter. A word can also be the name of a folder the file is in, so tate greedy finds greedy.flac in your Tate McRae folder. Quotes keep words together, a star stands for anything (a star followed by .flac finds every FLAC file), and a minus sign leaves things out, like love -remix. It works the same on your PC and in Google Drive.
 New: Help, Keyboard shortcuts (Ctrl+F1) lists every key built into Explorer Native, from new folder to search. Arrow through it, and Ctrl+Down and Ctrl+Up jump between sections.

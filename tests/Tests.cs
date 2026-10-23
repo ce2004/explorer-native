@@ -163,10 +163,18 @@ namespace ExplorerNative
             }
 
             // Just compressing, extracting and browsing archives.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "sevenzip")
+            {
+                await Guard("SevenZipTests", () => SevenZipTests.RunAll(Check, Equal));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "archives")
             {
-                await ArchiveTests.RunAll(Check, Equal);
-                await ArchiveBrowserTests.RunAll(Check, Equal);
+                await Guard("ArchiveTests", () => ArchiveTests.RunAll(Check, Equal));
+                await Guard("ArchiveBrowserTests", () => ArchiveBrowserTests.RunAll(Check, Equal));
+                await Guard("SevenZipTests", () => SevenZipTests.RunAll(Check, Equal));
                 Console.WriteLine($"\n{_passed} passed, {_failed} failed");
                 return _failed == 0 ? 0 : 1;
             }
@@ -396,6 +404,7 @@ namespace ExplorerNative
             GoogleDriveTests();
             await Guard("AppleMusicTests", () => AppleMusicTests.RunAll(Check, Equal));
             await Guard("ArchiveTests", () => ArchiveTests.RunAll(Check, Equal));
+            await Guard("SevenZipTests", () => SevenZipTests.RunAll(Check, Equal));
             await Guard("InstallTests", () => { InstallTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("DriveCopyTests", () => DriveCopyTests.RunAll(Check, Equal));
             await Guard("FakeDriveMonitorTests", () => FakeDriveMonitorTests.RunAll(Check, Equal));
