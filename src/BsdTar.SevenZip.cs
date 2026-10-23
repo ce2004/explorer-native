@@ -121,6 +121,19 @@ namespace ExplorerNative
             }
         }
 
+        /// <summary>
+        /// A path as 7-Zip is given it: whole, and in the literal "\\?\" form
+        /// when any part ends in a dot or a space ("Backup."), which an ordinary
+        /// path quietly drops, so 7-Zip read or wrote the sibling without it.
+        /// </summary>
+        internal static string SevenZipPath(string path) =>
+            NameRules.ExactPath(Path.IsPathFullyQualified(path) ? path : Path.GetFullPath(path));
+
+        /// <summary>A path 7-Zip reports, without the literal prefix, to compare with ours.</summary>
+        private static string Unliteral(string path) =>
+            path.StartsWith(@"\\?\UNC\", StringComparison.Ordinal) ? @"\\" + path[8..]
+            : path.StartsWith(@"\\?\", StringComparison.Ordinal) ? path[4..] : path;
+
         private static string SevenZipLevel(ArchiveLevel level) => level switch
         {
             ArchiveLevel.Fastest => "-mx1",
@@ -146,7 +159,7 @@ namespace ExplorerNative
             {
                 // A list file rather than arguments: no command-line limit, and
                 // names go across as UTF-8, whatever the code page.
-                File.WriteAllLines(list, tops.Select(t => Path.GetFullPath(t.Source)), new UTF8Encoding(false));
+                File.WriteAllLines(list, tops.Select(t => SevenZipPath(t.Source)), new UTF8Encoding(false));
 
                 long total = plan.Sum(p => p.Size);
                 long charged = 0;
@@ -174,7 +187,7 @@ namespace ExplorerNative
                                  "-bso0", "-bse1", "-bsp1", "-sccUTF-8", "-scsUTF-8",
                              })
                         start.ArgumentList.Add(a);
-                    start.ArgumentList.Add(Path.GetFullPath(archivePath));
+                    start.ArgumentList.Add(SevenZipPath(archivePath));
                     start.ArgumentList.Add("@" + list);
                 }
                 else
@@ -193,7 +206,7 @@ namespace ExplorerNative
                                  "-bso0", "-bse1", "-bsp0", "-sccUTF-8",
                              })
                         start.ArgumentList.Add(a);
-                    start.ArgumentList.Add(Path.GetFullPath(archivePath));
+                    start.ArgumentList.Add(SevenZipPath(archivePath));
                 }
 
                 RoboCopyEngine.Trace($"7-Zip create: {string.Join(" ", start.ArgumentList)}");
@@ -217,15 +230,16 @@ namespace ExplorerNative
                 // Files and folders it could not open: "path : reason" under its
                 // warnings summaries. A folder takes everything in it along.
                 var failed = FileWarnings(lines);
-                var sources = plan.Select(p => (Item: p, Full: Path.GetFullPath(p.Source))).ToList();
+                var sources = plan.Select(p => (Item: p, Full: Unliteral(SevenZipPath(p.Source)))).ToList();
                 var left = new HashSet<ArchiveItem>();
-                foreach (var (path, reason) in failed)
+                foreach (var (said, reason) in failed)
                 {
+                    var path = Unliteral(said);
                     var under = sources.Where(s => string.Equals(s.Full, path, StringComparison.OrdinalIgnoreCase) ||
                                                    s.Full.StartsWith(path.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase))
                                        .Select(s => s.Item).ToList();
                     foreach (var item in under) left.Add(item);
-                    var named = under.FirstOrDefault(i => string.Equals(Path.GetFullPath(i.Source), path, StringComparison.OrdinalIgnoreCase));
+                    var named = under.FirstOrDefault(i => string.Equals(Unliteral(SevenZipPath(i.Source)), path, StringComparison.OrdinalIgnoreCase));
                     errors.Add($"{named?.Name ?? path}: it could not be opened ({reason.TrimEnd('.')}), so it was not added");
                 }
 
@@ -268,22 +282,23 @@ namespace ExplorerNative
                              ? new[]
                              {
                                  "x", "-si", "-ttar", "-y", "-aos", "-bso1", "-bse1", "-bsp0", "-bb1",
-                                 "-sccUTF-8", "-o" + Path.GetFullPath(staging),
+                                 "-sccUTF-8", "-o" + SevenZipPath(staging),
                              }
                              : new[]
                              {
                                  "x", "-y", "-aos", "-pExplorerNative", $"-mmt{SevenZipThreads}",
                                  $"-mmemuse=p{SevenZipMemoryPercent}", "-bso1", "-bse1", "-bsp1", "-bb1",
-                                 "-sccUTF-8", "-o" + Path.GetFullPath(staging), "--",
+                                 "-sccUTF-8", "-o" + SevenZipPath(staging), "--",
                              })
                     start.ArgumentList.Add(a);
-                if (!compressedTar) start.ArgumentList.Add(Path.GetFullPath(archivePath));
+                if (!compressedTar) start.ArgumentList.Add(SevenZipPath(archivePath));
 
                 RoboCopyEngine.Trace($"7-Zip extract: {string.Join(" ", start.ArgumentList)}");
 
                 long archiveBytes = 0;
                 try { archiveBytes = new FileInfo(archivePath).Length; } catch { }
                 long percentNow = 0;
+                var printed = new List<(string Name, string? Failure)>();
                 reporter.Estimate(archiveBytes, () => Math.Max(1, archiveBytes) * Interlocked.Read(ref percentNow) / 100);
 
                 bool stalled = false;
@@ -293,7 +308,7 @@ namespace ExplorerNative
                     ? new Feeder(exe, new[]
                     {
                         "x", "-so", "-y", $"-mmt{SevenZipThreads}", $"-mmemuse=p{SevenZipMemoryPercent}",
-                        "-bse2", "-bsp2", "-sccUTF-8", "--", Path.GetFullPath(archivePath),
+                        "-bse2", "-bsp2", "-sccUTF-8", "--", SevenZipPath(archivePath),
                     }, (p, _, _) => Interlocked.Exchange(ref percentNow, p), token)
                     : null;
                 try
@@ -304,7 +319,9 @@ namespace ExplorerNative
                         if (name != null) reporter.Starting(name);
                     }, onLine: line =>
                     {
-                        if (line.StartsWith("- ", StringComparison.Ordinal)) reporter.Finished(0);
+                        if (!line.StartsWith("- ", StringComparison.Ordinal)) return;
+                        lock (printed) printed.Add((line[2..].Replace('\\', '/'), null));
+                        reporter.Finished(0);
                     }, feed: feeding == null ? null : feeding.CopyTo);
                 }
                 catch (IOException ex) when (!token.IsCancellationRequested)
@@ -355,7 +372,12 @@ namespace ExplorerNative
 
                 var (done, conflicts, _) = Rehome(staging, destination, policy, ask, reporter, errors, token,
                     distrusted.Count > 0 || unfinished ? distrusted : null, unfinished,
-                    _ => new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase));
+                    staged =>
+                    {
+                        List<(string Name, string? Failure)> names;
+                        lock (printed) names = new List<(string, string?)>(printed);
+                        return Withheld(names, staged, destination, null, token);
+                    });
 
                 foreach (var name in distrusted)
                     if (!locked) errors.Add($"{name}: the archive is damaged at this point");
