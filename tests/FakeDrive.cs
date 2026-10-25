@@ -332,7 +332,39 @@ namespace ExplorerNative
 
         // ---------------- the API ----------------
 
+        /// <summary>Requests that asked for gzip, and those of them that were file content reads (which never should).</summary>
+        public int GzipAsked, MediaGzipAsked;
+
+        /// <summary>
+        /// Like Google: gzip to a request that says it accepts gzip and whose
+        /// User-Agent contains "gzip", plain to everything else.
+        /// </summary>
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            bool wants = request.Headers.AcceptEncoding.Any(e => e.Value == "gzip") &&
+                         request.Headers.UserAgent.ToString().Contains("gzip", StringComparison.Ordinal);
+            if (wants)
+            {
+                Interlocked.Increment(ref GzipAsked);
+                if (request.RequestUri!.Query.Contains("alt=media", StringComparison.Ordinal))
+                    Interlocked.Increment(ref MediaGzipAsked);
+            }
+            var response = await SendCore(request, ct);
+            if (!wants || response.Content == null) return response;
+
+            var plain = await response.Content.ReadAsByteArrayAsync(ct);
+            var packed = new MemoryStream();
+            using (var gz = new System.IO.Compression.GZipStream(packed, System.IO.Compression.CompressionLevel.Fastest, leaveOpen: true))
+                gz.Write(plain);
+            var content = new ByteArrayContent(packed.ToArray());
+            foreach (var header in response.Content.Headers)
+                if (header.Key != "Content-Length") content.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            content.Headers.ContentEncoding.Add("gzip");
+            response.Content = content;
+            return response;
+        }
+
+        private async Task<HttpResponseMessage> SendCore(HttpRequestMessage request, CancellationToken ct)
         {
             Interlocked.Increment(ref Requests);
             var uri = request.RequestUri!;

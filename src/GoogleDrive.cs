@@ -123,6 +123,13 @@ namespace ExplorerNative
         private DriveMount? _mount;
         private GoogleAuth? _auth;
 
+        static GoogleDrive()
+        {
+            DriveSizeIndex.Log = Note;
+            // Signed out: a refresh still running, or the unmount after it, must not write a copy back.
+            DriveSizeIndex.MaySave = () => HasSavedSignIn;
+        }
+
         /// <summary>
         /// The Drive API itself. Held because the write operations need it, and
         /// they are addressed by path rather than by id — only this class knows
@@ -312,6 +319,9 @@ namespace ExplorerNative
         private static string TokenPath =>
             Path.Combine(SafeDirectory(), $"google-drive-token-v{GoogleAuth.ScopeVersion}.dat");
 
+        /// <summary>For the timing benchmark in the suite, which signs in the way a mount does.</summary>
+        internal static string SavedTokenPath => TokenPath;
+
         /// <summary>
         /// Whether there is a saved sign-in on this computer.
         ///
@@ -340,6 +350,7 @@ namespace ExplorerNative
         {
             try
             {
+                ForgetSavedSizes(keepAccount: null);
                 if (!File.Exists(TokenPath)) return false;
                 File.Delete(TokenPath);
                 return true;
@@ -508,6 +519,13 @@ namespace ExplorerNative
                 string user;
                 using (GoogleAuth.ConsentScope())
                     (user, _, _) = await client.Whoami(token).ConfigureAwait(false);
+                lock (_gate)
+                {
+                    // Signed in again as somebody else: the sizes held are theirs.
+                    if (_account != null && !string.Equals(_account, user, StringComparison.OrdinalIgnoreCase))
+                        _sizes = null;
+                    _account = user;
+                }
                 NeedsSignIn = false;
                 Interlocked.Exchange(ref _lapseSaid, 0);
                 if (auth.ConsentGranted) Say("drive.signin.done", $"Signed in to Google Drive as {user}");
@@ -685,6 +703,7 @@ namespace ExplorerNative
                         auth.AllowConsent = false;
                         _auth = auth;
                         _client = drive;
+                        _account = user;
                     }
                 }
 
@@ -772,13 +791,20 @@ namespace ExplorerNative
         private void TearDown()
         {
             DriveMount? old;
+            Dictionary<string, DriveSizeIndex>? sizes;
             lock (_gate)
             {
                 old = _mount;
                 _mount = null;
                 _folders = null;
+                sizes = _sizes;
                 _sizes = null;
             }
+
+            // Changes the feed brought in since the last save, so the next start begins from here.
+            if (sizes != null)
+                foreach (var index in sizes.Values)
+                    try { index.SaveNow(); } catch { }
 
             // Outside the lock. Dispose waits up to five seconds for callbacks
             // still in flight, and a callback whose request fails raises the
@@ -1308,6 +1334,47 @@ namespace ExplorerNative
         /// <summary>The size indexes, per drive ("" for My Drive). See <see cref="DriveSizeIndex"/>.</summary>
         private Dictionary<string, DriveSizeIndex>? _sizes;
 
+        /// <summary>Who the mount is signed in as, from Whoami. Keys the saved size indexes.</summary>
+        private string? _account;
+
+        /// <summary>Where the size indexes are saved between runs. One encrypted file per account and drive.</summary>
+        internal static string SavedSizesDirectory => Path.Combine(Settings.AppDataDir, "DriveSizes");
+
+        /// <summary>The account part of a saved index's name: a hash, so the file name does not give the address away.</summary>
+        internal static string AccountKey(string account)
+        {
+            var hash = System.Security.Cryptography.SHA256.HashData(
+                System.Text.Encoding.UTF8.GetBytes(account.Trim().ToLowerInvariant()));
+            return Convert.ToHexString(hash, 0, 8).ToLowerInvariant();
+        }
+
+        internal static string SavedSizesPath(string account, string? driveId) =>
+            Path.Combine(SavedSizesDirectory, $"{AccountKey(account)}-{(string.IsNullOrEmpty(driveId) ? "mydrive" : driveId)}.bin");
+
+        /// <summary>
+        /// Deletes saved size indexes: every one (sign-out), or every one not
+        /// belonging to <paramref name="keepAccount"/> (another account signed in).
+        /// Only this one folder's own files are looked at.
+        /// </summary>
+        internal static void ForgetSavedSizes(string? keepAccount)
+        {
+            try
+            {
+                var dir = SavedSizesDirectory;
+                if (!Directory.Exists(dir)) return;
+                var keep = keepAccount == null ? null : AccountKey(keepAccount) + "-";
+                foreach (var file in Directory.GetFiles(dir))
+                {
+                    if (keep != null && Path.GetFileName(file).StartsWith(keep, StringComparison.Ordinal) &&
+                        file.EndsWith(".bin", StringComparison.Ordinal)) continue;
+                    try { File.Delete(file); } catch { }
+                }
+            }
+            catch { }
+        }
+
+        private bool _otherAccountsSwept;
+
         /// <summary>
         /// How big a folder on the letter is, from Drive's own listing of the
         /// whole account rather than a walk of its placeholders — which would be
@@ -1331,12 +1398,19 @@ namespace ExplorerNative
             if (driveId == null && mount.IsSharedDriveRoot(path)) driveId = id;
 
             DriveSizeIndex index;
+            string? account;
+            bool sweep = false;
             lock (_gate)
             {
+                account = _account;
+                if (account != null && !_otherAccountsSwept) { _otherAccountsSwept = true; sweep = true; }
                 _sizes ??= new Dictionary<string, DriveSizeIndex>(StringComparer.Ordinal);
                 if (!_sizes.TryGetValue(driveId ?? "", out index!))
-                    _sizes[driveId ?? ""] = index = new DriveSizeIndex(driveId);
+                    _sizes[driveId ?? ""] = index = new DriveSizeIndex(driveId,
+                        account == null ? null : SavedSizesPath(account, driveId));
             }
+            // A different account signed in since the last run: its sizes are no use to this one.
+            if (sweep) ForgetSavedSizes(keepAccount: account);
 
             // Built once, the sizes held answer straight away when the feed is
             // slow, and the feed catches up behind them.

@@ -1,3 +1,7 @@
+4.2.4
+Bug fixed: folder sizes on Google Drive took a long time to appear after every start, because the app listed every file in each drive again. Now it remembers them, so after a restart sizes come back almost at once and only what changed is checked.
+Bug fixed: working out folder sizes for a big shared drive was slow, because Google sent the file lists uncompressed. Now they come compressed, so the first count finishes sooner.
+
 4.2.3
 Bug fixed: exporting your settings left out your start folder, your sound output device, your Apple Music sign-in, the web app's pairing code and your Google client ID and secret, so after importing them on another PC you had to set those up again. Now the export has every setting, and importing it brings them all back. The file has your sign-ins in it, so keep it somewhere private.
 Bug fixed: updates took a long time to download, because the whole 138 MB program came down. From the next update on, a compressed copy of about 55 MB is downloaded and checked instead, so updates finish in well under half the time.

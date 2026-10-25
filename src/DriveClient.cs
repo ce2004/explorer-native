@@ -523,6 +523,8 @@ namespace ExplorerNative
                     }
                 }
 
+                response = await Unpacked(response, token);
+
                 // 429 is the one throttling answer that needs nothing read out of
                 // the body — which matters, because the body of a ranged read is a
                 // stream the caller is about to consume. (Google also spells this
@@ -647,8 +649,63 @@ namespace ExplorerNative
             var request = new HttpRequestMessage(method, url);
             request.Headers.Authorization =
                 new AuthenticationHeaderValue("Bearer", await _token(token));
+            if (ListingGzip && method == HttpMethod.Get && IsListing(url))
+            {
+                // Google sends gzip only to a User-Agent that says "gzip" as well.
+                request.Headers.AcceptEncoding.Add(new StringWithQualityHeaderValue("gzip"));
+                request.Headers.UserAgent.ParseAdd(ListingUserAgent);
+            }
             return request;
         }
+
+        /// <summary>Off only for the timing benchmark, to compare with how listings came before.</summary>
+        internal static bool ListingGzip { get; set; } = true;
+
+        private static readonly string ListingUserAgent = $"ExplorerNative/{Updater.CurrentText} (gzip)";
+
+        /// <summary>
+        /// The requests that come back as long JSON: file lists, the changes
+        /// feed and the list of shared drives. Only these ask for gzip. A file's
+        /// own content (alt=media) never does, because a compressed answer to a
+        /// Range request has no byte offsets that match the file.
+        /// </summary>
+        internal static bool IsListing(string url)
+        {
+            if (url.Contains("alt=media", StringComparison.Ordinal)) return false;
+            return url.StartsWith(Files + "?", StringComparison.Ordinal) ||
+                   url.StartsWith(Changes + "?", StringComparison.Ordinal) ||
+                   url.StartsWith(Changes + "/startPageToken", StringComparison.Ordinal) ||
+                   url.StartsWith(DrivesEndpoint + "?", StringComparison.Ordinal) ||
+                   url == DrivesEndpoint;
+        }
+
+        /// <summary>
+        /// A gzip answer, which only a listing asks for, unpacked before anyone
+        /// reads it: the success path, the error path and the retries all see
+        /// plain JSON. The handler is shared with ranged reads and uploads, so
+        /// it is not set to decompress everything.
+        /// </summary>
+        private static async Task<HttpResponseMessage> Unpacked(HttpResponseMessage response, CancellationToken token)
+        {
+            var packed = response.Content;
+            if (packed == null || !packed.Headers.ContentEncoding.Any(e => e.Equals("gzip", StringComparison.OrdinalIgnoreCase)))
+                return response;
+
+            var raw = await packed.ReadAsStreamAsync(token).ConfigureAwait(false);
+            var plain = new StreamContent(new System.IO.Compression.GZipStream(raw, System.IO.Compression.CompressionMode.Decompress));
+            foreach (var header in packed.Headers)
+                if (!header.Key.Equals("Content-Encoding", StringComparison.OrdinalIgnoreCase) &&
+                    !header.Key.Equals("Content-Length", StringComparison.OrdinalIgnoreCase))
+                    plain.Headers.TryAddWithoutValidation(header.Key, header.Value);
+            response.Content = plain;
+            Interlocked.Increment(ref _gzipAnswers);
+            return response;
+        }
+
+        private static long _gzipAnswers;
+
+        /// <summary>How many answers came back gzip, for the suite and the log.</summary>
+        internal static long GzipAnswers => Interlocked.Read(ref _gzipAnswers);
 
         /// <summary>Who we signed in as, and the quota. Proves the token works.</summary>
         public async Task<(string User, long Used, long Limit)> Whoami(CancellationToken token)

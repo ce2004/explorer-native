@@ -296,7 +296,194 @@ namespace ExplorerNative
         private long _checkedAt = long.MinValue / 2, _failedAt = long.MinValue / 2;
         private Task? _refreshing;
 
-        public DriveSizeIndex(string? driveId) { _driveId = driveId; }
+        /// <param name="storePath">Where the index is kept between runs (encrypted), or null to keep it in memory only.</param>
+        public DriveSizeIndex(string? driveId, string? storePath = null) { _driveId = driveId; _store = storePath; }
+
+        private readonly string? _store;
+        private bool _triedLoad;
+        private long _savedAt = long.MinValue / 2;
+        private bool _unsaved;
+
+        /// <summary>How often changes from the feed are written to the saved copy. Unmount saves the rest.</summary>
+        public static TimeSpan SaveEvery { get; set; } = TimeSpan.FromMinutes(10);
+
+        /// <summary>Where the index says what it did: the Drive log.</summary>
+        public static Action<string>? Log { get; set; }
+
+        private static void Say(string line) { try { Log?.Invoke(line); } catch { } }
+
+        private string DriveName => _driveId ?? "My Drive";
+
+        /// <summary>
+        /// The saved copy, read in place of a first listing. The bookmark saved
+        /// with it is then given to the changes feed, which catches up on
+        /// whatever happened since; if the feed refuses it, the drive is listed
+        /// whole as before. A copy that cannot be read is deleted.
+        /// </summary>
+        private void TryLoad()
+        {
+            lock (_gate)
+            {
+                if (_triedLoad || _built || _store == null) return;
+                _triedLoad = true;
+            }
+            if (!System.IO.File.Exists(_store)) return;
+
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                var (rootId, changes, items) = Decode(ProtectedFile.ReadAllBytes(_store), _driveId);
+                lock (_gate)
+                {
+                    if (_built) return;
+                    _items.Clear();
+                    foreach (var item in items) _items[item.Id] = item;
+                    _rootId = rootId;
+                    _changes = changes;
+                    _totals = null;
+                    _built = true;
+                    _checkedAt = long.MinValue / 2;
+                    _savedAt = Environment.TickCount64;
+                }
+                Say($"sizes: {DriveName} loaded {items.Count} saved items in {clock.ElapsedMilliseconds} ms");
+            }
+            catch (Exception ex)
+            {
+                Say($"sizes: {DriveName} saved copy unreadable ({ex.Message}); listing again");
+                try { System.IO.File.Delete(_store); } catch { }
+            }
+        }
+
+        /// <summary>Writes the saved copy if anything changed since the last one. For unmount.</summary>
+        public void SaveNow()
+        {
+            lock (_gate) if (!_unsaved) return;
+            Save();
+        }
+
+        private void SaveIfDue(bool now)
+        {
+            if (_store == null) return;
+            lock (_gate)
+            {
+                if (!_unsaved) return;
+                if (!now && Environment.TickCount64 - _savedAt < (long)SaveEvery.TotalMilliseconds) return;
+            }
+            Save();
+        }
+
+        private readonly object _saving = new();
+
+        /// <summary>Asked before every save; false once signed out.</summary>
+        public static Func<bool>? MaySave { get; set; }
+
+        private void Save()
+        {
+            if (_store == null) return;
+            try { if (MaySave != null && !MaySave()) return; } catch { return; }
+            lock (_saving)
+            {
+                DriveSizeItem[] items;
+                string? rootId, changes;
+                lock (_gate)
+                {
+                    if (!_built || _changes == null) return;
+                    items = _items.Values.ToArray();
+                    rootId = _rootId;
+                    changes = _changes;
+                    _unsaved = false;
+                    _savedAt = Environment.TickCount64;
+                }
+
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                try
+                {
+                    System.IO.Directory.CreateDirectory(System.IO.Path.GetDirectoryName(_store)!);
+                    var data = Encode(_driveId, rootId, changes, items);
+                    ProtectedFile.WriteAllBytes(_store, data);
+                    Say($"sizes: {DriveName} saved {items.Length} items ({data.Length / 1024} KB) in {clock.ElapsedMilliseconds} ms");
+                }
+                catch (Exception ex)
+                {
+                    lock (_gate) _unsaved = true;
+                    Say($"sizes: {DriveName} could not be saved: {ex.Message}");
+                }
+            }
+        }
+
+        private const int FormatVersion = 1;
+        private static readonly byte[] FormatMagic = { (byte)'E', (byte)'N', (byte)'S', (byte)'Z' };
+
+        /// <summary>
+        /// The saved form, before encryption: each id once, then each item's
+        /// parent as a number pointing into that list (an id is about 33
+        /// characters, and most parents are in the list), its size and its
+        /// flags, the whole Brotli-compressed.
+        /// </summary>
+        internal static byte[] Encode(string? driveId, string? rootId, string changes, IReadOnlyList<DriveSizeItem> items)
+        {
+            var at = new Dictionary<string, int>(items.Count, StringComparer.Ordinal);
+            for (int i = 0; i < items.Count; i++) at[items[i].Id] = i;
+
+            using var output = new System.IO.MemoryStream();
+            output.Write(FormatMagic);
+            using (var packed = new System.IO.Compression.BrotliStream(output, System.IO.Compression.CompressionLevel.Fastest, leaveOpen: true))
+            using (var w = new System.IO.BinaryWriter(packed, System.Text.Encoding.UTF8))
+            {
+                w.Write(FormatVersion);
+                w.Write(driveId ?? "");
+                w.Write(rootId ?? "");
+                w.Write(changes);
+                w.Write(items.Count);
+                foreach (var item in items) w.Write(item.Id);
+                foreach (var item in items)
+                {
+                    // 0: no parent; 1: a parent outside the list, by name; n + 2: item n.
+                    if (item.Parent == null) w.Write7BitEncodedInt(0);
+                    else if (at.TryGetValue(item.Parent, out var p)) w.Write7BitEncodedInt(p + 2);
+                    else { w.Write7BitEncodedInt(1); w.Write(item.Parent); }
+                    w.Write7BitEncodedInt64(item.Size);
+                    w.Write((byte)((item.IsFolder ? 1 : 0) | (item.Counted ? 2 : 0)));
+                }
+            }
+            return output.ToArray();
+        }
+
+        internal static (string? RootId, string Changes, List<DriveSizeItem> Items) Decode(byte[] data, string? driveId)
+        {
+            if (data.Length < FormatMagic.Length || !data.AsSpan(0, FormatMagic.Length).SequenceEqual(FormatMagic))
+                throw new System.IO.InvalidDataException("not a saved size index");
+            using var input = new System.IO.MemoryStream(data, FormatMagic.Length, data.Length - FormatMagic.Length);
+            using var packed = new System.IO.Compression.BrotliStream(input, System.IO.Compression.CompressionMode.Decompress);
+            using var r = new System.IO.BinaryReader(packed, System.Text.Encoding.UTF8);
+
+            if (r.ReadInt32() != FormatVersion) throw new System.IO.InvalidDataException("saved by another version");
+            if (r.ReadString() != (driveId ?? "")) throw new System.IO.InvalidDataException("saved for another drive");
+            var rootId = r.ReadString();
+            var changes = r.ReadString();
+            if (changes.Length == 0) throw new System.IO.InvalidDataException("no changes bookmark");
+            int count = r.ReadInt32();
+            if (count < 0 || count > 50_000_000) throw new System.IO.InvalidDataException("bad item count");
+
+            var ids = new string[count];
+            for (int i = 0; i < count; i++) ids[i] = r.ReadString();
+            var items = new List<DriveSizeItem>(count);
+            for (int i = 0; i < count; i++)
+            {
+                int p = r.Read7BitEncodedInt();
+                string? parent = p switch
+                {
+                    0 => null,
+                    1 => r.ReadString(),
+                    _ when p - 2 < count => ids[p - 2],
+                    _ => throw new System.IO.InvalidDataException("bad parent"),
+                };
+                long size = r.Read7BitEncodedInt64();
+                byte flags = r.ReadByte();
+                items.Add(new DriveSizeItem(ids[i], parent, size, (flags & 1) != 0, (flags & 2) != 0));
+            }
+            return (rootId.Length == 0 ? null : rootId, changes, items);
+        }
 
         /// <summary>Whether the whole drive has been listed once, so a size can be answered from memory.</summary>
         public bool Built { get { lock (_gate) return _built; } }
@@ -365,6 +552,8 @@ namespace ExplorerNative
         {
             try
             {
+                if (!afterRebuild) TryLoad();
+
                 string? from;
                 int generation;
                 lock (_gate) { from = _built ? _changes : null; generation = _generation; }
@@ -403,9 +592,12 @@ namespace ExplorerNative
                             else _items.Remove(change.Id);
                         }
                         if (changes.Count > 0) _totals = null;
+                        if (changes.Count > 0 || next != from) _unsaved = true;
                         _changes = next;
                         if (generation == _generation) _checkedAt = Environment.TickCount64;
                     }
+                    if (changes.Count > 0) Say($"sizes: {DriveName} took {changes.Count} changes from the feed");
+                    SaveIfDue(now: false);
                     return;
                 }
 
@@ -423,9 +615,13 @@ namespace ExplorerNative
         {
             // The feed's start is taken before the listing, so nothing that
             // changes while the listing runs can be missed.
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            long gzipBefore = DriveClient.GzipAnswers;
             var start = await client.ChangesStartToken(_driveId, token).ConfigureAwait(false);
             string? rootId = _driveId == null ? await client.RootId(token).ConfigureAwait(false) : _driveId;
             var all = await client.ListForSizes(_driveId, token).ConfigureAwait(false);
+            Say($"sizes: {DriveName} listed whole, {all.Count} items in {clock.Elapsed.TotalSeconds:0.0} s " +
+                $"({DriveClient.GzipAnswers - gzipBefore} answers gzip)");
             lock (_gate)
             {
                 _items.Clear();
@@ -434,6 +630,7 @@ namespace ExplorerNative
                 _changes = start;
                 _totals = null;
                 _built = true;
+                _unsaved = true;
                 _checkedAt = Environment.TickCount64;
             }
 
@@ -441,6 +638,9 @@ namespace ExplorerNative
             // on the next refresh.
             lock (_gate) _checkedAt = long.MinValue / 2;
             await RefreshCore(client, token, afterRebuild: true).ConfigureAwait(false);
+
+            // Saved at once: this listing is the expensive part a restart should not repeat.
+            SaveIfDue(now: true);
         }
 
         /// <summary>A folder's size, or null when the index has not been built or does not know it.</summary>

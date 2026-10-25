@@ -139,7 +139,7 @@ namespace ExplorerNative
             KeepDriveTraceToItself();
 
             // The live sync run is hours of real uploads, with no checks between.
-            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") is not ("livesync" or "syncmemory" or "playprobe" or "archivebench")) StartWatchdog();
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") is not ("livesync" or "syncmemory" or "playprobe" or "archivebench" or "sizebench")) StartWatchdog();
 
             // Just the window timings, for measuring one change at a time.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "speed")
@@ -183,6 +183,11 @@ namespace ExplorerNative
                 return 0;
             }
 
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "sizebench")
+            {
+                // Real Drive, real sign-in: a whole listing of one drive, plain and then gzip.
+                return await DriveSizeTests.Bench(Environment.GetEnvironmentVariable("EXPLORERNATIVE_BENCH_DRIVE") ?? "");
+            }
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "sizes")
             {
                 await Guard("DriveSizeTests", () => DriveSizeTests.RunAll(Check, Equal));

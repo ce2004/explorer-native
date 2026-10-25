@@ -72,6 +72,34 @@ namespace ExplorerNative
             file.Write(blob, 0, blob.Length);
         }
 
+        /// <summary>
+        /// Binary data saved encrypted, written beside the real file and moved
+        /// over it, so a crash part way leaves the old file rather than half a new one.
+        /// </summary>
+        public static void WriteAllBytes(string path, byte[] data)
+        {
+            var blob = Protect(data);
+            var temp = path + ".tmp";
+            using (var file = new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None))
+            {
+                file.Write(Magic, 0, Magic.Length);
+                file.Write(blob, 0, blob.Length);
+                file.Flush(flushToDisk: true);
+            }
+            File.Move(temp, path, overwrite: true);
+        }
+
+        /// <summary>
+        /// Binary data written by <see cref="WriteAllBytes"/>. Throws on a file
+        /// that is not ours, since binary data has no plain older version.
+        /// </summary>
+        public static byte[] ReadAllBytes(string path)
+        {
+            var bytes = File.ReadAllBytes(path);
+            if (!IsProtected(bytes)) throw new InvalidDataException("not an encrypted file");
+            return Unprotect(bytes.AsSpan(Magic.Length).ToArray());
+        }
+
         /// <param name="durable">Flush to the disk itself before returning, for a file about to be renamed over
         /// the real one: otherwise a power cut can leave the rename on disk and the bytes not, an empty file.</param>
         public static void WriteAllText(string path, string text, bool durable = false)
