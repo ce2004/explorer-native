@@ -259,7 +259,6 @@ namespace ExplorerNative
             Live("drive.folder.loading", "Fetching a folder", DriveOperations, Bar, "Fetching {0} from Google Drive", "artists"),
             Live("drive.folder.loaded", "Folder fetched", DriveOperations, Off, "{0}: {1} items", "artists", 2118),
             Live("drive.folder.slow", "Folder is taking a while", DriveOperations, Bar, "{0} is large; still fetching", "artists"),
-            Live("drive.folder.empty", "Folder is empty", DriveOperations, Bar, "{0} is empty", "audiobooks"),
             Live("drive.folder.failed", "Folder would not load", DriveOperations, Say, "Could not read {0}: {1}", "artists", "offline"),
             Live("drive.upload.start", "Upload started", DriveOperations, Bar, "Uploading {0} to Google Drive", "album.flac"),
             Live("drive.upload.progress", "Upload progress", DriveOperations, Off, "{0} percent of {1}", 40, "1 GB"),

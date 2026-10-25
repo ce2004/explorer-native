@@ -1322,11 +1322,11 @@ namespace ExplorerNative
 
             if (name != null)
             {
-                // Empty and populated are different answers to "why is there
-                // nothing here", and a placeholder tree that has not been filled
-                // in yet looks exactly like the first one.
-                if (entries.Count == 0) Say("drive.folder.empty", $"{name} is empty");
-                else Say("drive.folder.loaded", $"{name}: {NameRules.Items(entries.Count)}");
+                // Nothing is said for an empty folder: most listings are the
+                // app's own (deletes, sizes, re-checks), and "Downloads is
+                // empty" out of nowhere is noise (Conner, 4.2.2). Opening an
+                // empty folder yourself still says "This folder is empty".
+                if (entries.Count > 0) Say("drive.folder.loaded", $"{name}: {NameRules.Items(entries.Count)}");
             }
 
             return entries;
