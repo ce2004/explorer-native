@@ -1235,7 +1235,7 @@ namespace ExplorerNative
         }
 
         /// <summary>Clamps anything that could wedge the UI if hand-edited to nonsense.</summary>
-        private Settings Validated()
+        internal Settings Validated()
         {
             // Before Migrate, which reads several of these and would throw on a
             // null — taking the whole settings file with it. See NoNullStrings.
@@ -1464,41 +1464,73 @@ namespace ExplorerNative
         internal const string ExportMarker = "ExplorerNativeSettingsExport";
 
         /// <summary>
-        /// Never in an export, and never taken from one: these stay this PC's own.
-        /// ConnectCode is the web app's pairing code, a secret (whoever holds it
-        /// can pair a browser with this PC). The rest describe this PC, not the
-        /// person: where the program is and when it last took over folders, the
-        /// window's place and the folders last open, the last track, and the sound
-        /// device's id, which means nothing on another PC. The Google sign-in, the
-        /// client secret, logs and sync progress are separate files and never go.
+        /// In an export, but never taken from one: the running window keeps its
+        /// own. Where the program is installed and when it last took over folders
+        /// are this install's record, and the window's place, the folders open in
+        /// each tab, what was focused there and the last track are what is on
+        /// screen right now, saved again from the screen on exit. Everything
+        /// else, every option, comes in: the start folder, the sound device, the
+        /// Apple Music sign-in and the web app's pairing code included (Conner,
+        /// 4.2.3: "export every option, everything").
         /// </summary>
         internal static readonly string[] ThisPcOnly =
         {
-            nameof(ConnectCode), nameof(RegisteredExePath), nameof(FoldersTakenAt),
+            nameof(RegisteredExePath), nameof(FoldersTakenAt),
             nameof(WindowX), nameof(WindowY), nameof(WindowWidth), nameof(WindowHeight),
-            nameof(StartPath), nameof(LastFolder), nameof(LastFolderTab2), nameof(ActiveTab),
-            nameof(FocusedPathTab1), nameof(FocusedPathTab2), nameof(AudioLastPath), nameof(AudioOutputDeviceId),
-            nameof(AppleMusicUserToken),
+            nameof(LastFolder), nameof(LastFolderTab2), nameof(ActiveTab),
+            nameof(FocusedPathTab1), nameof(FocusedPathTab2), nameof(AudioLastPath),
         };
+
+        /// <summary>
+        /// The Google client ID and secret typed into Preferences, which live in
+        /// their own encrypted file (client_secret.json), carried in an export
+        /// under this name. Without them a person moving to another PC had to
+        /// find and type both again before Google Drive would sign in.
+        /// </summary>
+        internal const string ExportGoogleClient = "GoogleClient";
 
         /// <summary>
         /// These settings as an export: plain, readable JSON (not encrypted, so it
         /// opens on another PC or Windows account), starting with
-        /// <see cref="ExportMarker"/>, without <see cref="ThisPcOnly"/>.
+        /// <see cref="ExportMarker"/>. Every setting is in it, and the Google
+        /// client when there is one. It holds the pairing code and sign-ins, so
+        /// it is a file to keep private.
         /// </summary>
-        internal string ToExportJson()
+        internal string ToExportJson((string ClientId, string ClientSecret)? googleClient = null)
         {
             var copy = Clone();
             copy.SettingsVersion = Math.Max(copy.SettingsVersion, CurrentSettingsVersion);
             var node = System.Text.Json.Nodes.JsonNode.Parse(JsonSerializer.Serialize(copy, JsonFormat))!.AsObject();
-            foreach (var name in ThisPcOnly) node.Remove(name);
             var export = new System.Text.Json.Nodes.JsonObject { [ExportMarker] = 1 };
             foreach (var (key, value) in node.ToList())
             {
                 node.Remove(key);
                 export[key] = value;
             }
+            if (googleClient is { } client && !string.IsNullOrWhiteSpace(client.ClientId) &&
+                !string.IsNullOrWhiteSpace(client.ClientSecret))
+            {
+                export[ExportGoogleClient] = new System.Text.Json.Nodes.JsonObject
+                {
+                    ["ClientId"] = client.ClientId,
+                    ["ClientSecret"] = client.ClientSecret,
+                };
+            }
             return export.ToJsonString(JsonFormat);
+        }
+
+        /// <summary>The Google client an export carries, or null when it has none.</summary>
+        internal static (string ClientId, string ClientSecret)? GoogleClientInExport(string json)
+        {
+            try
+            {
+                if (System.Text.Json.Nodes.JsonNode.Parse(json, documentOptions: ReadDocument) is not System.Text.Json.Nodes.JsonObject node ||
+                    node[ExportGoogleClient] is not System.Text.Json.Nodes.JsonObject client) return null;
+                var id = client["ClientId"]?.GetValue<string>()?.Trim() ?? "";
+                var secret = client["ClientSecret"]?.GetValue<string>()?.Trim() ?? "";
+                return id.Length > 0 && secret.Length > 0 ? (id, secret) : null;
+            }
+            catch { return null; }
         }
 
         /// <summary>What an import says when the file is not Explorer Native settings.</summary>
@@ -1521,6 +1553,7 @@ namespace ExplorerNative
             if (node == null || !(node.ContainsKey(ExportMarker) || node.ContainsKey(nameof(SettingsVersion)))) return null;
 
             node.Remove(ExportMarker);
+            node.Remove(ExportGoogleClient);
             foreach (var name in ThisPcOnly) node.Remove(name);
             var text = node.ToJsonString();
 

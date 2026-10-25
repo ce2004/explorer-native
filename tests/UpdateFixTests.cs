@@ -173,6 +173,8 @@ namespace ExplorerNative
                     noAsset is Updater.UpdateException && noAsset.Message.Contains(asset, StringComparison.Ordinal),
                     noAsset?.Message);
 
+                await CompressedTests(fake, asset);
+
                 fake.Answer = _ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
                 var down = await Fails(() => Updater.CheckAsync());
                 Check("a server error names its status",
@@ -182,6 +184,93 @@ namespace ExplorerNative
             finally
             {
                 Updater.UseHandlerForTests(null);
+            }
+        }
+
+        /// <summary>
+        /// The gzip copy (4.2.3): found beside the executable, downloaded instead
+        /// of it, unpacked and checked against the executable's own size and
+        /// hash; a broken or missing one falls back to the full download.
+        /// </summary>
+        private static async Task CompressedTests(FakeGitHub fake, string asset)
+        {
+            var exe = new byte[300_000];
+            new Random(7).NextBytes(exe.AsSpan(0, 1000));
+            var sha = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(exe));
+            byte[] packed;
+            using (var ms = new MemoryStream())
+            {
+                using (var gz = new System.IO.Compression.GZipStream(ms, System.IO.Compression.CompressionLevel.SmallestSize, leaveOpen: true))
+                    gz.Write(exe);
+                packed = ms.ToArray();
+            }
+
+            string Listing(long packedSize) =>
+                "{\"tag_name\":\"v99.0.0\",\"body\":\"\",\"assets\":[" +
+                "{\"name\":\"" + asset + "\",\"browser_download_url\":\"https://example/x.exe\",\"size\":" + exe.Length +
+                ",\"digest\":\"sha256:" + sha + "\"}," +
+                "{\"name\":\"" + asset + ".gz\",\"browser_download_url\":\"https://example/x.exe.gz\",\"size\":" + packedSize + "}]}";
+
+            var dir = Path.Combine(Path.GetTempPath(), "en-update-gz-" + Guid.NewGuid().ToString("N"));
+            var before = Updater.DirectoryOverride;
+            Updater.DirectoryOverride = dir;
+            try
+            {
+                byte[] servedGz = packed;
+                fake.Answer = r => r.RequestUri!.AbsoluteUri switch
+                {
+                    "https://example/x.exe.gz" => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(servedGz) },
+                    "https://example/x.exe" => new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(exe) },
+                    _ => Json(Listing(packed.Length)),
+                };
+
+                var release = await Updater.CheckAsync();
+                Check("the compressed copy is found beside the executable",
+                    release?.CompressedUrl == "https://example/x.exe.gz" && release.CompressedSize == packed.Length,
+                    release?.CompressedUrl);
+                if (release == null) return;
+
+                lock (fake.Asked) fake.Asked.Clear();
+                var path = await Updater.DownloadAsync(release);
+                List<string> asked;
+                lock (fake.Asked) asked = fake.Asked.ToList();
+                Check("an update downloads the compressed copy, not the full executable",
+                    asked.Contains("https://example/x.exe.gz") && !asked.Contains("https://example/x.exe"), string.Join(", ", asked));
+                Check("and unpacks it to exactly the release's executable",
+                    File.ReadAllBytes(path).AsSpan().SequenceEqual(exe), null);
+                Check("leaving no compressed file behind",
+                    !Directory.EnumerateFiles(Path.GetDirectoryName(path)!, "*.gz*").Any(), null);
+
+                // Damaged: unpacks to something else. The hash catches it and the
+                // full executable is downloaded instead.
+                var wrong = (byte[])exe.Clone();
+                wrong[10] ^= 0xFF;
+                using (var ms = new MemoryStream())
+                {
+                    using (var gz = new System.IO.Compression.GZipStream(ms, System.IO.Compression.CompressionLevel.Fastest, leaveOpen: true))
+                        gz.Write(wrong);
+                    servedGz = ms.ToArray();
+                }
+                lock (fake.Asked) fake.Asked.Clear();
+                var fallback = await Updater.DownloadAsync(release with { CompressedSize = servedGz.Length });
+                lock (fake.Asked) asked = fake.Asked.ToList();
+                Check("a compressed copy that unpacks wrong falls back to the full download",
+                    asked.Contains("https://example/x.exe") && File.ReadAllBytes(fallback).AsSpan().SequenceEqual(exe),
+                    string.Join(", ", asked));
+
+                // Not gzip at all.
+                servedGz = Encoding.UTF8.GetBytes("<html>not here</html>");
+                var notGz = await Updater.DownloadAsync(release with { CompressedSize = servedGz.Length });
+                Check("so does one that is not gzip at all", File.ReadAllBytes(notGz).AsSpan().SequenceEqual(exe), null);
+
+                // A release without one downloads the executable as before.
+                var plain = await Updater.DownloadAsync(release with { CompressedUrl = null, CompressedSize = -1 });
+                Check("a release without a compressed copy downloads the executable", File.ReadAllBytes(plain).AsSpan().SequenceEqual(exe), null);
+            }
+            finally
+            {
+                Updater.DirectoryOverride = before;
+                try { Directory.Delete(dir, true); } catch { }
             }
         }
 

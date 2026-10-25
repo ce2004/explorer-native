@@ -39,20 +39,18 @@ jobs:
               -p:Version=${{ steps.ver.outputs.version }}
             if ($LASTEXITCODE) { exit $LASTEXITCODE }
             Copy-Item "out/$arch/ExplorerNative.exe" "dist/ExplorerNative-$arch.exe"
+            # The gzip copy Check for updates downloads: about 40 percent of the size.
+            $in = [IO.File]::OpenRead("dist/ExplorerNative-$arch.exe")
+            $out = [IO.File]::Create("dist/ExplorerNative-$arch.exe.gz")
+            $gz = [IO.Compression.GZipStream]::new($out, [IO.Compression.CompressionLevel]::SmallestSize)
+            $in.CopyTo($gz); $gz.Dispose(); $in.Dispose()
           }
           Get-ChildItem dist
-
-      # Runs natively on x64. Informational: some sections need audio hardware
-      # or a desktop session the runner does not have.
-      - name: Self-test (x64)
-        continue-on-error: true
-        shell: pwsh
-        run: dotnet run --project tests/SelfTest.csproj -c Release -r win-x64
 
       - uses: actions/upload-artifact@v4
         with:
           name: ExplorerNative
-          path: dist/*.exe
+          path: dist/*
 
       # This version's lines from CHANGES.txt: plain text, one change per line.
       # No Markdown: the update dialog lists each line, and NVDA reads symbols.
@@ -72,4 +70,12 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create '${{ github.ref_name }}' dist/ExplorerNative-arm64.exe dist/ExplorerNative-x64.exe --title "Explorer Native ${{ steps.ver.outputs.version }}" --notes-file notes.txt
+        run: gh release create '${{ github.ref_name }}' dist/ExplorerNative-arm64.exe dist/ExplorerNative-x64.exe dist/ExplorerNative-arm64.exe.gz dist/ExplorerNative-x64.exe.gz --title "Explorer Native ${{ steps.ver.outputs.version }}" --notes-file notes.txt
+
+      # After the release, so updates are out without waiting for it.
+      # Runs natively on x64. Informational: some sections need audio hardware
+      # or a desktop session the runner does not have.
+      - name: Self-test (x64)
+        continue-on-error: true
+        shell: pwsh
+        run: dotnet run --project tests/SelfTest.csproj -c Release -r win-x64

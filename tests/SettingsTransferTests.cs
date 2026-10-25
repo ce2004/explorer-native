@@ -55,6 +55,8 @@ namespace ExplorerNative
             ConnectCode = "73914562",
             RegisteredExePath = @"C:\Somewhere\ExplorerNative.exe",
             AudioOutputDeviceId = "{0.0.0.00000000}.{secret-device}",
+            StartPath = @"E:\Start here",
+            AppleMusicUserToken = "apple-token",
             WindowX = 1234,
             DriveSyncPairs = new List<DriveSyncPair>
             {
@@ -70,13 +72,14 @@ namespace ExplorerNative
             check("settings export: plain JSON, readable on any PC", json.TrimStart().StartsWith("{", StringComparison.Ordinal), json[..Math.Min(40, json.Length)]);
             check("settings export: says what it is first",
                 json.TrimStart().TrimStart('{').TrimStart().StartsWith("\"" + Settings.ExportMarker + "\"", StringComparison.Ordinal), null);
-            check("settings export: the web app pairing code is not in it", !json.Contains("73914562", StringComparison.Ordinal), null);
             using (var doc = JsonDocument.Parse(json))
             {
-                var leaked = Settings.ThisPcOnly.Where(n => doc.RootElement.TryGetProperty(n, out _)).ToList();
-                equal("settings export: nothing that belongs to this PC only", "", string.Join(",", leaked));
+                var missing = PersistedProperties().Select(p => p.Name)
+                    .Where(n => !doc.RootElement.TryGetProperty(n, out _)).ToList();
+                equal("settings export: every setting is in it", "", string.Join(",", missing));
+                check("settings export: no Google client when there is none",
+                    !doc.RootElement.TryGetProperty(Settings.ExportGoogleClient, out _), null);
             }
-            check("settings export: the sound device's id is not in it", !json.Contains("secret-device", StringComparison.Ordinal), null);
             check("settings export: names keep their accents, unescaped", json.Contains("Books é", StringComparison.Ordinal), null);
 
             var back = Settings.FromExportJson(json, out var refusal);
@@ -89,14 +92,73 @@ namespace ExplorerNative
                 .Select(p => $"{p.Name}: {ValueOf(p, original)} became {ValueOf(p, back)}").ToList();
             equal("settings import: every setting comes back as it was exported", "", string.Join("; ", differ));
 
-            // This PC keeps its own pairing code, window and the rest.
+            // This PC keeps its window and install record; every option comes in.
             var live = new Settings { ConnectCode = "11112222", WindowX = 50, RegisteredExePath = @"C:\Here\ExplorerNative.exe" };
             Settings.PrepareImport(live, back, _ => true);
-            check("settings import: this PC keeps its own pairing code, window place and program path",
-                back.ConnectCode == "11112222" && back.WindowX == 50 && back.RegisteredExePath == @"C:\Here\ExplorerNative.exe",
-                $"{back.ConnectCode}, {back.WindowX}, {back.RegisteredExePath}");
-            check("settings import: and takes everything else from the file",
-                back.FontSize == 14 && back.WindowTitle == "Music room" && back.AudioPlayPauseShortcut == "Ctrl+Alt+P", null);
+            check("settings import: this PC keeps its own window place and program path",
+                back.WindowX == 50 && back.RegisteredExePath == @"C:\Here\ExplorerNative.exe",
+                $"{back.WindowX}, {back.RegisteredExePath}");
+            check("settings import: and takes every option from the file, pairing code, sound device, start folder and Apple Music sign-in too",
+                back.FontSize == 14 && back.WindowTitle == "Music room" && back.AudioPlayPauseShortcut == "Ctrl+Alt+P" &&
+                back.ConnectCode == "73914562" && back.AudioOutputDeviceId == "{0.0.0.00000000}.{secret-device}" &&
+                back.StartPath == @"E:\Start here" && back.AppleMusicUserToken == "apple-token",
+                $"{back.ConnectCode}, {back.AudioOutputDeviceId}, {back.StartPath}, {back.AppleMusicUserToken}");
+
+            // Every setting, one at a time, set to something other than its
+            // default, survives export, import and PrepareImport: nothing is
+            // left out by accident when a setting is added later.
+            var lost = new List<string>();
+            foreach (var p in PersistedProperties().Where(p => !Settings.ThisPcOnly.Contains(p.Name) && p.Name != nameof(Settings.SettingsVersion)))
+            {
+                var s = new Settings();
+                if (!TrySetUnusual(p, s)) continue;
+                var round = Settings.FromExportJson(s.ToExportJson(), out _);
+                if (round == null) { lost.Add(p.Name + " (refused)"); continue; }
+                Settings.PrepareImport(new Settings(), round, _ => true);
+                if (ValueOf(p, s) != ValueOf(p, round)) lost.Add($"{p.Name}: {ValueOf(p, s)} became {ValueOf(p, round)}");
+            }
+            equal("settings import: each setting changed on its own comes back", "", string.Join("; ", lost));
+
+            // The Google client typed into Preferences travels with the rest.
+            var withClient = original.ToExportJson(("12345.apps.googleusercontent.com", "GOCSPX-secret"));
+            var client = Settings.GoogleClientInExport(withClient);
+            check("settings export: the Google client ID and secret are in it, and read back",
+                client is { } c && c.ClientId == "12345.apps.googleusercontent.com" && c.ClientSecret == "GOCSPX-secret", null);
+            var backWithClient = Settings.FromExportJson(withClient, out var why);
+            check("settings import: the Google client is not taken for a setting",
+                backWithClient != null && (backWithClient.UnknownSettings == null ||
+                                           !backWithClient.UnknownSettings.ContainsKey(Settings.ExportGoogleClient)), why);
+            check("settings import: a file without a client says so",
+                Settings.GoogleClientInExport(json) == null && Settings.GoogleClientInExport("not json") == null, null);
+        }
+
+        /// <summary>
+        /// Gives <paramref name="p"/> a value that is not its default and that
+        /// Validated keeps. False for a type this does not know how to vary.
+        /// </summary>
+        private static bool TrySetUnusual(System.Reflection.PropertyInfo p, Settings s)
+        {
+            var now = p.GetValue(s);
+            var t = p.PropertyType;
+            object? value = null;
+            if (t == typeof(bool)) value = !(bool)now!;
+            else if (t == typeof(string)) value = p.Name.Contains("Shortcut", StringComparison.Ordinal) ? "" : "x" + p.Name;
+            else if (t == typeof(int)) value = (int)now! + 1;
+            else if (t == typeof(long)) value = (long)now! + 1;
+            else if (t == typeof(double)) value = (double)now! + 0.5;
+            else if (t.IsEnum)
+            {
+                var all = Enum.GetValues(t);
+                if (all.Length < 2) return false;
+                value = Equals(all.GetValue(0), now) ? all.GetValue(1) : all.GetValue(0);
+            }
+            else return false;
+            p.SetValue(s, value);
+            // What Validated would do to it, so a range clamp is not called a loss.
+            var settled = s.Clone().Validated();
+            if (ValueOf(p, settled) == ValueOf(p, new Settings())) return false;
+            p.SetValue(s, p.GetValue(settled));
+            return true;
         }
 
         private static void Refusals(Action<string, bool, string?> check, string dir)

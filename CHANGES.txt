@@ -1,3 +1,8 @@
+4.2.3
+Bug fixed: exporting your settings left out your start folder, your sound output device, your Apple Music sign-in, the web app's pairing code and your Google client ID and secret, so after importing them on another PC you had to set those up again. Now the export has every setting, and importing it brings them all back. The file has your sign-ins in it, so keep it somewhere private.
+Bug fixed: updates took a long time to download, because the whole 138 MB program came down. From the next update on, a compressed copy of about 55 MB is downloaded and checked instead, so updates finish in well under half the time.
+Bug fixed: new versions showed up in Check for updates about ten minutes after they were released. Now they show up as soon as they're out.
+
 4.2.2
 Bug fixed: while deleting folders on Google Drive, or at random after the app started, you heard messages like "Downloads is empty" for folders you never opened. Those messages are gone. Opening an empty folder yourself still says "This folder is empty".
 

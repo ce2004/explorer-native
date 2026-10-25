@@ -36,7 +36,17 @@ namespace ExplorerNative
             string Notes,
             string DownloadUrl,
             long Size,
-            string? Sha256);
+            string? Sha256,
+            string? CompressedUrl = null,
+            long CompressedSize = -1);
+
+        /// <summary>
+        /// The gzip copy of each executable the release carries beside it, about
+        /// 40 percent of the size (measured on 4.2.2: 138 MB to 55 MB). Unpacked
+        /// here and checked against the executable's own size and hash, so it can
+        /// never install something other than the release.
+        /// </summary>
+        public static string CompressedAssetName => AssetName + ".gz";
 
         private static readonly HttpClient Shared = CreateClient(null);
 
@@ -197,6 +207,21 @@ namespace ExplorerNative
 
                     if (latest <= Current) return null;
 
+                    string? packedUrl = null;
+                    long packedSize = -1;
+                    foreach (var asset in root.GetProperty("assets").EnumerateArray())
+                    {
+                        if (!string.Equals(asset.GetProperty("name").GetString(), CompressedAssetName, StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        if (asset.TryGetProperty("browser_download_url", out var pu) && pu.ValueKind == JsonValueKind.String &&
+                            asset.TryGetProperty("size", out var ps) && ps.ValueKind == JsonValueKind.Number &&
+                            ps.TryGetInt64(out var pn) && pn > 0)
+                        {
+                            packedUrl = pu.GetString();
+                            packedSize = pn;
+                        }
+                    }
+
                     foreach (var asset in root.GetProperty("assets").EnumerateArray())
                     {
                         if (!string.Equals(asset.GetProperty("name").GetString(), AssetName, StringComparison.OrdinalIgnoreCase))
@@ -225,7 +250,8 @@ namespace ExplorerNative
                                 (string.IsNullOrEmpty(url) ? "where to download it" : "how big the download is") +
                                 ". Try again later.");
 
-                        return new Release(latest, notes, url, size, sha);
+                        return new Release(latest, notes, url, size, sha,
+                            string.IsNullOrEmpty(packedUrl) ? null : packedUrl, packedSize);
                     }
 
                     throw new UpdateException(Problem.NotFound,
@@ -252,35 +278,38 @@ namespace ExplorerNative
             var target = Path.Combine(folder, AppInstall.ProductName + ".exe");
             var partial = target + ".download";
 
-            // HttpClient's own timeout stops at the headers once the body is
-            // streamed, so a stalled download would otherwise never end. Given
-            // up when nothing arrives for a minute (Kova's rule), not after a
-            // fixed five minutes, which a slow line could never beat.
-            using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancel);
-            limit.CancelAfter(StallLimit);
-
-            using (var response = await Http.GetAsync(release.DownloadUrl, HttpCompletionOption.ResponseHeadersRead, limit.Token)
-                       .ConfigureAwait(false))
+            // The compressed copy first: under half the bytes. Anything wrong
+            // with it (missing, cut short, will not unpack, wrong hash) falls
+            // back to the plain executable, so it can only ever make it faster.
+            if (release.CompressedUrl != null && release.CompressedSize > 0)
             {
-                ThrowIfRefused(response, $"The download for version {Text(release.Version)} is no longer on GitHub.");
-                await using var source = await response.Content.ReadAsStreamAsync(limit.Token).ConfigureAwait(false);
-                await using var file = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None);
-                var buffer = new byte[81920];
-                int read;
+                var packed = target + ".gz.download";
                 try
                 {
-                    while ((read = await source.ReadAsync(buffer, limit.Token).ConfigureAwait(false)) > 0)
+                    await FetchAsync(release.CompressedUrl, packed, release, cancel).ConfigureAwait(false);
+                    if (new FileInfo(packed).Length != release.CompressedSize)
+                        throw new InvalidDataException("The compressed download was cut short.");
+                    await Task.Run(() =>
                     {
-                        await file.WriteAsync(buffer.AsMemory(0, read), limit.Token).ConfigureAwait(false);
-                        limit.CancelAfter(StallLimit);
+                        using var input = new FileStream(packed, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20);
+                        using var gzip = new System.IO.Compression.GZipStream(input, System.IO.Compression.CompressionMode.Decompress);
+                        using var output = new FileStream(partial, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20);
+                        gzip.CopyTo(output, 1 << 20);
+                    }, cancel).ConfigureAwait(false);
+                    TryDelete(packed);
+                    if (Verified(partial, release))
+                    {
+                        File.Move(partial, target, overwrite: true);
+                        return target;
                     }
                 }
-                catch (OperationCanceledException) when (!cancel.IsCancellationRequested)
-                {
-                    throw new UpdateException(Problem.Refused,
-                        "The download stopped: nothing arrived from GitHub for a minute. Try again.");
-                }
+                catch (OperationCanceledException) when (cancel.IsCancellationRequested) { TryDelete(packed); throw; }
+                catch { }
+                TryDelete(packed);
+                TryDelete(partial);
             }
+
+            await FetchAsync(release.DownloadUrl, partial, release, cancel).ConfigureAwait(false);
 
             var length = new FileInfo(partial).Length;
             if (length != release.Size)
@@ -301,6 +330,45 @@ namespace ExplorerNative
 
             File.Move(partial, target, overwrite: true);
             return target;
+        }
+
+        /// <summary>Whether an unpacked executable is exactly the release's: its size, and its hash when GitHub gave one.</summary>
+        private static bool Verified(string path, Release release) =>
+            new FileInfo(path).Length == release.Size &&
+            (release.Sha256 == null || string.Equals(AppInstall.HashOf(path), release.Sha256, StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>
+        /// Downloads <paramref name="url"/> into <paramref name="path"/>.
+        /// HttpClient's own timeout stops at the headers once the body is
+        /// streamed, so a stalled download would otherwise never end. Given up
+        /// when nothing arrives for a minute (Kova's rule), not after a fixed
+        /// five minutes, which a slow line could never beat.
+        /// </summary>
+        private static async Task FetchAsync(string url, string path, Release release, CancellationToken cancel)
+        {
+            using var limit = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+            limit.CancelAfter(StallLimit);
+
+            using var response = await Http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, limit.Token)
+                .ConfigureAwait(false);
+            ThrowIfRefused(response, $"The download for version {Text(release.Version)} is no longer on GitHub.");
+            await using var source = await response.Content.ReadAsStreamAsync(limit.Token).ConfigureAwait(false);
+            await using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20, useAsync: true);
+            var buffer = new byte[1 << 20];
+            int read;
+            try
+            {
+                while ((read = await source.ReadAsync(buffer, limit.Token).ConfigureAwait(false)) > 0)
+                {
+                    await file.WriteAsync(buffer.AsMemory(0, read), limit.Token).ConfigureAwait(false);
+                    limit.CancelAfter(StallLimit);
+                }
+            }
+            catch (OperationCanceledException) when (!cancel.IsCancellationRequested)
+            {
+                throw new UpdateException(Problem.Refused,
+                    "The download stopped: nothing arrived from GitHub for a minute. Try again.");
+            }
         }
 
         /// <summary>

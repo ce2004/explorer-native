@@ -294,6 +294,13 @@ namespace ExplorerNative
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "ttaprobe")
                 return CodecProbe.RunTta();
 
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "updates")
+            {
+                await Guard("UpdateFixTests", () => UpdateFixTests.RunAll(Check, Equal));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "settingstransfer")
             {
                 await Guard("SettingsTransferTests", () => { SettingsTransferTests.RunAll(Check, Equal); return Task.CompletedTask; });

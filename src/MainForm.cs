@@ -10632,9 +10632,14 @@ namespace ExplorerNative
                     path = dialog.FileName;
                 }
 
-                var json = _settings.ToExportJson();
-                // Off the UI thread: the file may be on a share.
-                await Task.Run(() => File.WriteAllText(path, json, new System.Text.UTF8Encoding(false)));
+                var settings = _settings.Clone();
+                // Off the UI thread: the file may be on a share, and the Google
+                // client is read from its own file.
+                await Task.Run(() =>
+                {
+                    var json = settings.ToExportJson(GoogleAuth.Credentials(GoogleDrive.CredentialsDirectory));
+                    File.WriteAllText(path, json, new System.Text.UTF8Encoding(false));
+                });
                 if (!IsDisposed) AnnounceOperation("settings.exported", $"Settings exported to {Path.GetFileName(path)}");
             }
             catch (Exception ex)
@@ -10672,10 +10677,11 @@ namespace ExplorerNative
                     path = dialog.FileName;
                 }
 
-                var (imported, refusal) = await Task.Run(() =>
+                var (imported, refusal, client) = await Task.Run(() =>
                 {
-                    var read = Settings.FromExportJson(Settings.ExportFileText(File.ReadAllBytes(path)), out var why);
-                    return (read, why);
+                    var text = Settings.ExportFileText(File.ReadAllBytes(path));
+                    var read = Settings.FromExportJson(text, out var why);
+                    return (read, why, Settings.GoogleClientInExport(text));
                 });
                 if (IsDisposed) return;
                 if (imported == null)
@@ -10698,6 +10704,23 @@ namespace ExplorerNative
                 int paused = await Task.Run(() => Settings.PrepareImport(live, imported, Directory.Exists));
                 if (IsDisposed) return;
 
+                // The Google client goes in its own file before the settings are
+                // applied, so a Drive switched on by the import signs in with it.
+                // A different client means the saved sign-in no longer works.
+                string? clientProblem = null;
+                bool clientChanged = false;
+                if (client is { } c)
+                {
+                    clientProblem = await Task.Run(() =>
+                    {
+                        var now = GoogleAuth.Credentials(GoogleDrive.CredentialsDirectory);
+                        if (now is { } n && n.ClientId == c.ClientId && n.ClientSecret == c.ClientSecret) return null;
+                        return GoogleAuth.SaveClient(c.ClientId, c.ClientSecret, GoogleDrive.CredentialsDirectory, out clientChanged);
+                    });
+                    if (IsDisposed) return;
+                    if (clientProblem == null && clientChanged && GoogleDrive.HasSavedSignIn) GoogleDrive.ForgetSignIn();
+                }
+
                 if (!Program.ApplySettings(imported))
                 {
                     AnnounceOperation("settings.failed",
@@ -10707,6 +10730,8 @@ namespace ExplorerNative
                 var said = $"Settings imported from {name}";
                 if (paused == 1) said += ". One synced folder is paused, because its folder is not on this PC";
                 else if (paused > 1) said += $". {paused} synced folders are paused, because their folders are not on this PC";
+                if (clientProblem != null) said += ". The Google client ID and secret could not be saved: " + clientProblem.TrimEnd('.');
+                else if (clientChanged) said += ". Sign in to Google Drive again, because the Google client changed";
                 AnnounceOperation("settings.imported", said);
             }
             catch (Exception ex)
