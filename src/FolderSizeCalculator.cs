@@ -90,18 +90,45 @@ namespace ExplorerNative
         /// </summary>
         public void Forget(string changedPath)
         {
-            if (string.IsNullOrEmpty(changedPath) || _cache.IsEmpty) return;
+            if (string.IsNullOrEmpty(changedPath)) return;
             var changed = changedPath.TrimEnd('\\');
+
+            // A walk already under way may have read the changed folder before
+            // the change: what it finds must not be remembered, or the
+            // re-measure this change asks for is answered with the old size.
+            // Only walks the change touches, so a busy folder elsewhere does
+            // not stop sizes being cached.
+            foreach (var walk in _inFlight.Keys)
+                if (Touches(walk.Root, changed)) walk.Dirty = true;
+
+            if (_cache.IsEmpty) return;
             foreach (var key in _cache.Keys)
-            {
-                var k = key.TrimEnd('\\');
-                bool above = changed.Length > k.Length && changed.StartsWith(k, StringComparison.OrdinalIgnoreCase) &&
-                             (changed[k.Length] == '\\' || k.EndsWith(':'));
-                bool same = string.Equals(k, changed, StringComparison.OrdinalIgnoreCase);
-                bool inside = k.Length > changed.Length && k.StartsWith(changed + "\\", StringComparison.OrdinalIgnoreCase);
-                if (above || same || inside) _cache.TryRemove(key, out _);
-            }
+                if (Touches(key, changed)) _cache.TryRemove(key, out _);
         }
+
+        /// <summary>Whether a change at <paramref name="changed"/> is at, inside or above the folder <paramref name="key"/>.</summary>
+        private static bool Touches(string key, string changed)
+        {
+            var k = key.TrimEnd('\\');
+            bool above = changed.Length > k.Length && changed.StartsWith(k, StringComparison.OrdinalIgnoreCase) &&
+                         (changed[k.Length] == '\\' || k.EndsWith(':'));
+            bool same = string.Equals(k, changed, StringComparison.OrdinalIgnoreCase);
+            bool inside = k.Length > changed.Length && k.StartsWith(changed + "\\", StringComparison.OrdinalIgnoreCase);
+            return above || same || inside;
+        }
+
+        /// <summary>One walk in progress: its root, and whether a change touched it since it began.</summary>
+        private sealed class InFlight
+        {
+            public InFlight(string root) => Root = root;
+            public string Root { get; }
+            private volatile bool _dirty;
+            public bool Dirty { get => _dirty; set => _dirty = value; }
+        }
+
+        // One marker per walk, not per root, so two walks of the same folder
+        // never remove each other's marker.
+        private readonly ConcurrentDictionary<InFlight, byte> _inFlight = new();
 
         public bool TryGetCached(string path, out FolderSizeResult result)
         {
@@ -167,22 +194,35 @@ namespace ExplorerNative
         {
             if (TryGetCached(root, out var cached)) return cached;
 
-            DateTime stamp;
-            try { stamp = Directory.GetLastWriteTimeUtc(NameRules.ExactPath(root)); }
-            catch { return new FolderSizeResult(0, 0, 0, false); }
+            // Registered before the stamp is read, so a change from here on
+            // marks this walk.
+            var marker = new InFlight(root);
+            _inFlight[marker] = 0;
+            try
+            {
+                DateTime stamp;
+                try { stamp = Directory.GetLastWriteTimeUtc(NameRules.ExactPath(root)); }
+                catch { return new FolderSizeResult(0, 0, 0, false); }
 
-            var walk = new TreeWalk(root, MaxDepth, Skip,
-                DateTime.UtcNow.AddSeconds(Math.Max(1, TimeoutSeconds)), token);
-            walk.Run();
+                var walk = new TreeWalk(root, MaxDepth, Skip,
+                    DateTime.UtcNow.AddSeconds(Math.Max(1, TimeoutSeconds)), token);
+                walk.Run();
 
-            var result = new FolderSizeResult(walk.Bytes, walk.Files, walk.Folders, walk.Complete);
+                var result = new FolderSizeResult(walk.Bytes, walk.Files, walk.Folders, walk.Complete);
 
-            // Only a complete walk is worth remembering: a partial answer cached
-            // would be handed back for ever as though it were the real size.
-            if (result.Complete)
-                _cache[root] = new CacheEntry(result.Bytes, result.Files, result.Folders, stamp, Environment.TickCount64);
+                // Only a complete walk is worth remembering: a partial answer cached
+                // would be handed back for ever as though it were the real size.
+                // Nor one a change touched while it ran: it may have read the
+                // changed folder before the change.
+                if (result.Complete && !marker.Dirty)
+                    _cache[root] = new CacheEntry(result.Bytes, result.Files, result.Folders, stamp, Environment.TickCount64);
 
-            return result;
+                return result;
+            }
+            finally
+            {
+                _inFlight.TryRemove(marker, out _);
+            }
         }
 
         /// <summary>

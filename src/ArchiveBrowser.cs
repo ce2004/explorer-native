@@ -377,7 +377,7 @@ namespace ExplorerNative
                     bool damaged;
                     if (format.Id == "tar.gz")
                     {
-                        using var gzip = new GZipStream(counted, CompressionMode.Decompress, leaveOpen: true);
+                        using var gzip = new ParallelGZip.Reader(counted, ArchiveWorkers.Threads, token);
                         entries = TarEngine.ReadIndex(gzip, token, out damaged);
                     }
                     else entries = TarEngine.ReadIndex(counted, token, out damaged);

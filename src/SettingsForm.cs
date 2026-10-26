@@ -43,6 +43,10 @@ namespace ExplorerNative
         internal static Action? DisconnectDrive;
 
         /// <summary>Checked before OK closes the dialog; false keeps it open.</summary>
+        /// <summary>A refusal shown before OK closes. Replaced by the suite, which cannot press OK on a message box.</summary>
+        internal static Action<IWin32Window, string, string> Warn { get; set; } =
+            (owner, text, title) => MessageBox.Show(owner, text, title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+
         private readonly List<Func<System.Threading.Tasks.Task<bool>>> _beforeOkChecks = new();
 
         /// <summary>
@@ -634,33 +638,42 @@ namespace ExplorerNative
 
             AddLabelled(panel, "Key", keyBox);
 
-            _applies.Add(() =>
+            // Nothing on this page touched: the saved value stays exactly as
+            // it is, stray bits and all. Rebuilt from the four boxes, a file
+            // holding 0x4003 came back as 3 from OK on any page.
+            bool Untouched() => nCtrl == ctrl && nAlt == alt && nShift == shift && nWin == win &&
+                                keyBox.SelectedIndex == openedAt;
+
+            uint ChosenMods()
             {
-                // Nothing on this page touched: the saved value stays exactly as
-                // it is, stray bits and all. Rebuilt from the four boxes, a file
-                // holding 0x4003 came back as 3 from OK on any page.
-                if (nCtrl == ctrl && nAlt == alt && nShift == shift && nWin == win &&
-                    keyBox.SelectedIndex == openedAt)
-                    return;
+                uint m = 0;
+                if (nCtrl) m |= HotkeyManager.MOD_CONTROL;
+                if (nAlt) m |= HotkeyManager.MOD_ALT;
+                if (nShift) m |= HotkeyManager.MOD_SHIFT;
+                if (nWin) m |= HotkeyManager.MOD_WIN;
+                return m;
+            }
 
-                uint mods = 0;
-                if (nCtrl) mods |= HotkeyManager.MOD_CONTROL;
-                if (nAlt) mods |= HotkeyManager.MOD_ALT;
-                if (nShift) mods |= HotkeyManager.MOD_SHIFT;
-                if (nWin) mods |= HotkeyManager.MOD_WIN;
+            uint ChosenKey() => keyBox.SelectedIndex >= 0 ? keys[keyBox.SelectedIndex] : 0;
 
-                uint key = keyBox.SelectedIndex >= 0 ? keys[keyBox.SelectedIndex] : 0;
+            // The refusals are checked before OK closes, in a dialog. Said only
+            // from the apply, they were optional speech, and the dialog then
+            // closed saying "Preferences saved" with the new shortcut thrown away.
+            _beforeOkChecks.Add(() =>
+            {
+                if (Untouched()) return System.Threading.Tasks.Task.FromResult(true);
+
+                uint mods = ChosenMods();
+                uint key = ChosenKey();
 
                 // No key: nothing to check, and nothing is registered.
-                if (key == 0)
-                {
-                    _working.HotkeyModifiers = mods;
-                    _working.HotkeyKey = 0;
-                    return;
-                }
+                if (key == 0) return System.Threading.Tasks.Task.FromResult(true);
 
                 // Untouched: nothing to check and nothing to say about it.
-                if (mods == _working.HotkeyModifiers && key == _working.HotkeyKey) return;
+                if (mods == _working.HotkeyModifiers && key == _working.HotkeyKey)
+                    return System.Threading.Tasks.Task.FromResult(true);
+
+                string? refusal = null;
 
                 // This page builds a combination out of four tick boxes and a
                 // list, so it can produce Ctrl+C as easily as Ctrl+Alt+E — and
@@ -669,34 +682,44 @@ namespace ExplorerNative
                 // everywhere, so the old setting is kept and the reason said.
                 var candidate = new Shortcut(mods, key);
                 if (ReservedShortcuts.OwnerOf(candidate) is { } owner)
-                {
-                    Say($"{candidate.Spoken} is already used by {owner}. The window shortcut was left as it was.");
-                    return;
-                }
+                    refusal = $"{candidate.Spoken} is already used by {owner}.";
 
                 // With every modifier unticked this is a bare letter, and a bare
                 // letter registered globally is that letter gone from every
                 // program on the machine. Shift alone is the same: Shift+P is
                 // every capital P.
-                if (!candidate.CanRegister)
-                {
-                    Say($"{candidate.Spoken} needs Control, Alt or the Windows key with it. " +
-                        "The window shortcut was left as it was.");
-                    return;
-                }
+                else if (!candidate.CanRegister)
+                    refusal = $"{candidate.Spoken} needs Control, Alt or the Windows key with it.";
 
                 // An audio shortcut already on these keys would lose them to the
                 // window, silently, and the "not set" dialog would follow.
-                foreach (var action in AudioActions.All)
+                else
                 {
-                    var audio = Shortcut.Parse(action.Get(_working));
-                    if (audio.IsAssigned && audio.ToString() == candidate.ToString())
+                    foreach (var action in AudioActions.All)
                     {
-                        Say($"{candidate.Spoken} is already the shortcut for {action.Label}. " +
-                            "The window shortcut was left as it was.");
-                        return;
+                        var audio = Shortcut.Parse(action.Get(_working));
+                        if (audio.IsAssigned && audio.ToString() == candidate.ToString())
+                        {
+                            refusal = $"{candidate.Spoken} is already the shortcut for {action.Label}.";
+                            break;
+                        }
                     }
                 }
+
+                if (refusal == null) return System.Threading.Tasks.Task.FromResult(true);
+
+                Warn(this, refusal + " Choose another key for the window shortcut.", "Hotkey");
+                _showCategory?.Invoke("Hotkey");
+                keyBox.Focus();
+                return System.Threading.Tasks.Task.FromResult(false);
+            });
+
+            _applies.Add(() =>
+            {
+                if (Untouched()) return;
+
+                uint mods = ChosenMods();
+                uint key = ChosenKey();
 
                 _working.HotkeyModifiers = mods;
                 _working.HotkeyKey = key;
@@ -1224,8 +1247,8 @@ namespace ExplorerNative
                 _working.AppleMusicAutoplay, v => _working.AppleMusicAutoplay = v);
             AddInfo(panel,
                 "To sign in, export your Apple Music cookies to a cookies.txt file while signed in at " +
-                "music.apple.com (the same file gamdl uses), then load it below. Your sign-in is kept on " +
-                "this PC only and encrypted, and is never put in a settings export.");
+                "music.apple.com (the same file gamdl uses), then load it below. Your sign-in is kept encrypted " +
+                "on this PC. A settings export includes it, so keep exported files private.");
 
             var tokenBox = new TextBox
             {
@@ -1405,16 +1428,26 @@ namespace ExplorerNative
                     ? $"Enter a port number from {ConnectServer.LowestPort} to {ConnectServer.HighestPort}."
                     : ConnectServer.CheckPort(port, current);
                 if (refusal == null)
-                {
-                    _working.WebAppPort = port;
                     return System.Threading.Tasks.Task.FromResult(true);
-                }
                 MessageBox.Show(this, refusal + " Choose another port, or put back " + ConnectServer.Port + ".",
                     "Web app", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 _showCategory?.Invoke("Web app");
                 portBox.Focus();
                 portBox.SelectAll();
                 return System.Threading.Tasks.Task.FromResult(false);
+            });
+
+            // The check only looks; the port is written here, once every check
+            // and commit has passed. Written by the check, a later refusal left
+            // it set, and putting the box back did not undo it.
+            _applies.Add(() =>
+            {
+                var text = portBox.Text.Trim();
+                if (text == startPort.ToString(System.Globalization.CultureInfo.InvariantCulture))
+                    _working.WebAppPort = startPort;
+                else if (int.TryParse(text, System.Globalization.NumberStyles.None,
+                             System.Globalization.CultureInfo.InvariantCulture, out var port))
+                    _working.WebAppPort = port;
             });
 
             string? httpsUrl = null, problem = null, link = null;

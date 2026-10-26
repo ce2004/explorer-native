@@ -409,7 +409,7 @@ namespace ExplorerNative
             // children. Only when they are empty: anything left behind is
             // something that did not upload, and deleting it would destroy the one
             // copy there is.
-            if (_move) RemoveEmptySources(work.SourceFolders);
+            if (_move) RemoveEmptySources(work.SourceFolders, work.SourceNames);
 
             GoogleDrive.Trace($"upload run: {work.Files.Count} files, {work.Folders.Count} folders, done in {clock.ElapsedMilliseconds}ms");
             Report(_current, force: true);
@@ -450,7 +450,7 @@ namespace ExplorerNative
                 // Patient: a blip here used to fail every top folder.
                 _drive.Populate(_destination, interactive: false);
                 if (_drive.TryListing(_destination, out var listed)) there = listed;
-            }, token);
+            }, token).WaitAsync(token);
 
             var dropped = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -469,6 +469,9 @@ namespace ExplorerNative
                 var existing = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
                 foreach (var item in there) existing.TryAdd(item.Name, item.IsFolder);
                 var used = new HashSet<string>(existing.Keys, StringComparer.OrdinalIgnoreCase);
+                // The other folders in this paste are taken too: a renamed Music
+                // must not land on the "Music (2)" Survey gave the second Music.
+                foreach (var t in tops) used.Add(t);
 
                 foreach (var top in tops)
                 {
@@ -555,7 +558,7 @@ namespace ExplorerNative
             if (cut < 0 && _topRenames.TryGetValue(name, out var renamed)) name = renamed;
 
             var parent = await EnsureFolder(parentRelative, token);
-            if (parent == null) return null;
+            if (parent == null) { _failedFolders.TryAdd(relative, 0); return null; }
 
             // Only the top of a tree is worth a sentence. Below that, "Created
             // disc 2 in Google Drive" said forty times is the upload narrating its
@@ -573,12 +576,36 @@ namespace ExplorerNative
             catch (DriveQuotaException) { throw; }
             catch (Exception ex)
             {
+                _failedFolders.TryAdd(relative, 0);
                 Fail(relative, "the folder could not be created in Google Drive: " + ex.Message);
                 return null;
             }
 
-            if (placed == null) Fail(relative, "the folder could not be created in Google Drive");
+            if (placed == null)
+            {
+                _failedFolders.TryAdd(relative, 0);
+                Fail(relative, "the folder could not be created in Google Drive");
+            }
             return placed;
+        }
+
+        /// <summary>
+        /// Folders (by relative path, as sent) that never got a Drive copy; a move
+        /// must not delete their empty local originals.
+        /// </summary>
+        private readonly ConcurrentDictionary<string, byte> _failedFolders = new(StringComparer.OrdinalIgnoreCase);
+
+        private bool FolderFailed(string relative)
+        {
+            if (_failedFolders.IsEmpty) return false;
+            for (string at = relative; at.Length > 0;)
+            {
+                if (_failedFolders.ContainsKey(at)) return true;
+                int cut = at.LastIndexOf('\\');
+                if (cut < 0) break;
+                at = at[..cut];
+            }
+            return false;
         }
 
         private async ValueTask UploadOne(UploadFile file, CancellationToken token)
@@ -1004,10 +1031,18 @@ namespace ExplorerNative
         /// Deletes the source folders of a move, deepest first, and only the ones
         /// that are empty.
         /// </summary>
-        private void RemoveEmptySources(IReadOnlyList<string> roots)
+        private void RemoveEmptySources(IReadOnlyList<string> roots, IReadOnlyList<string>? sentNames)
         {
-            foreach (var root in roots)
+            for (int i = 0; i < roots.Count; i++)
             {
+                var root = roots[i];
+                // The name the tree went up as (before any keep-both rename,
+                // which is how the folder table knows it).
+                var sentName = sentNames != null && i < sentNames.Count
+                    ? sentNames[i]
+                    : Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
+                var rootTrimmed = Path.TrimEndingDirectorySeparator(root);
+
                 List<string> directories;
                 try
                 {
@@ -1023,6 +1058,14 @@ namespace ExplorerNative
                 // have gone, and one pass in that order is enough.
                 foreach (var directory in directories.OrderByDescending(d => d.Length))
                 {
+                    // A folder whose Drive copy was never made stays here, or it
+                    // would exist nowhere.
+                    var below = directory.Length > rootTrimmed.Length
+                        ? directory[rootTrimmed.Length..].Replace('/', '\\').Trim('\\')
+                        : "";
+                    var relative = below.Length == 0 ? sentName : sentName + "\\" + below;
+                    if (FolderFailed(relative)) continue;
+
                     try
                     {
                         if (!Directory.EnumerateFileSystemEntries(directory).Any())

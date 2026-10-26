@@ -216,6 +216,9 @@ namespace ExplorerNative
                 {
                     if (!await ReadyAsync().ConfigureAwait(true))
                     {
+                        // A newer play owns the player now (a crash restarted the song on a
+                        // fresh one): tearing it down here would stop that one in silence.
+                        if (Volatile.Read(ref _generation) != mine) return;
                         Reset();
                         Fail(mine, path, "Apple Music's player didn't start. Check the internet connection and try again.");
                         return;
@@ -230,7 +233,11 @@ namespace ExplorerNative
                     await CallAsync("play", catalogId, mine, queued, startAt, hold).ConfigureAwait(true);
                     WatchStart(mine, path, catalogId, spokenName, retried);
                 }
-                catch (AppleMusicException ex) { Reset(); Fail(mine, path, ex.Message); }
+                catch (AppleMusicException ex)
+                {
+                    if (Volatile.Read(ref _generation) != mine) return;   // a newer play owns the player
+                    Reset(); Fail(mine, path, ex.Message);
+                }
                 catch (Exception ex) { Fail(mine, path, "Apple Music couldn't start the song: " + ex.Message); }
             });
         }
@@ -1047,7 +1054,11 @@ namespace ExplorerNative
             int pid = _browserProcessId;
             var folder = _dataFolder;
             CloseBrowser();
+            // Anything still waiting on the abandoned start finishes at once rather
+            // than waiting out the 25 seconds; it sees _ready already gone.
+            var old = _ready;
             _ready = null; _pendingConfig = null;
+            old?.TrySetResult(false);
             // The profile goes once the browser has let go of it, off this thread.
             _ = Task.Run(() =>
             {
@@ -1532,6 +1543,9 @@ try {
 let music = null, current = 0, switching = false, endedFor = -1, wantVolume = null, wantSink = null;
 let queuedNext = null, lastState = "", seekWant = null, seeking = false, advances = 0;
 let holdPaused = false, pendingRequeue = null, pendingClear = false, resumeAt = 0;
+// unstarted: loaded paused and never played, so a seek only moves resumeAt.
+// pendingSeek: a seek that came while a song was being put in.
+let unstarted = false, pendingSeek = null;
 // MusicKit can reset the volume when it builds the audio for a new song (it
 // started at 0, silent), so the level asked for is kept and put back.
 function applyVolume() { if (music && wantVolume !== null && music.volume !== wantVolume) music.volume = wantVolume; }
@@ -1666,6 +1680,7 @@ window.amCommand = async function (c) {
     const mine = c.gen;
     current = mine; switching = true; queuedNext = null; seekWant = null;
     holdPaused = !!c.paused; pendingRequeue = null; pendingClear = false; resumeAt = 0;
+    unstarted = false; pendingSeek = null;
     try {
       const items = [item(c.arg)];
       if (c.next) items.push(item(c.next));
@@ -1683,14 +1698,18 @@ window.amCommand = async function (c) {
       }
       applyVolume();
       await applySink();
+      // A seek made while the song was being put in wins over where it was asked to start.
+      const startAt = pendingSeek !== null ? pendingSeek : (c.at > 1 ? c.at : 0);
+      pendingSeek = null;
       if (holdPaused) {
         // Paused before it started (Space right after Enter, or a crash while
         // paused): loaded, silent, and going on from the right place on resume.
-        resumeAt = c.at > 1 ? c.at : 0;
+        resumeAt = startAt; unstarted = true;
       } else {
+        unstarted = false;
         await music.play();
         applyVolume();
-        if (c.at > 1 && mine === current) await music.seekToTime(c.at);
+        if (startAt > 0 && mine === current) await music.seekToTime(startAt);
         if (holdPaused && mine === current) await music.pause();   // paused while play() was starting
       }
     } catch (e) {
@@ -1707,17 +1726,29 @@ window.amCommand = async function (c) {
     if (c.command === "requeue") { pendingRequeue = String(c.arg); pendingClear = false; return; }
     if (c.command === "clearnext") { pendingRequeue = null; pendingClear = true; return; }
   }
+  // Seeks carry no play number; one made while a song is being put in is kept for it.
+  if (switching && c.command === "seekto") { pendingSeek = Math.max(0, parseFloat(c.arg || "0") || 0); return; }
   try {
     switch (c.command) {
       case "pause": holdPaused = true; await music.pause(); break;
-      case "resume":
+      case "resume": {
         holdPaused = false;
+        // Never played yet: it starts where it was loaded for, or where it was moved to since.
+        const t = unstarted ? resumeAt : 0;
+        unstarted = false; resumeAt = 0;
         await music.play();
         applyVolume();
-        if (resumeAt > 1) { const t = resumeAt; resumeAt = 0; await music.seekToTime(t); }
+        if (t > 0) await music.seekToTime(t);
         break;
-      case "stop": current++; switching = false; queuedNext = null; seekWant = null; await music.stop(); break;
-      case "seekto": await seekTo(parseFloat(c.arg || "0")); break;
+      }
+      case "stop":
+        current++; switching = false; queuedNext = null; seekWant = null;
+        unstarted = false; resumeAt = 0; pendingSeek = null;
+        await music.stop(); break;
+      case "seekto":
+        // Not playing yet: MusicKit ignores a seek then, so the place is kept for resume.
+        if (unstarted) { resumeAt = Math.max(0, parseFloat(c.arg || "0") || 0); break; }
+        await seekTo(parseFloat(c.arg || "0")); break;
       case "volume": wantVolume = parseFloat(c.arg || "1"); music.volume = wantVolume; break;
       case "device": wantSink = c.arg || ""; await applySink(); break;
       case "append":

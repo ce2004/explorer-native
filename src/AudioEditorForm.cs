@@ -177,7 +177,13 @@ namespace ExplorerNative
         private EditList? Edits => _history?.Current;
 
         /// <summary>Where we are on the edited timeline, playing or not.</summary>
-        private double Now => _playing && _playback != null ? Math.Max(0, _playback.Position) : _cursor;
+        /// <remarks>
+        /// While a fresh playback is still starting its position reads 0 (no
+        /// decoder yet), so the cursor, which Play set to the start point, is
+        /// the answer until it has.
+        /// </remarks>
+        private double Now => _playing && _playback != null && _playbackStart.IsCompleted
+            ? Math.Max(0, _playback.Position) : _cursor;
 
         private (long From, long To)? Selection()
         {
@@ -331,7 +337,9 @@ namespace ExplorerNative
 
         private void Pause()
         {
-            if (_playback != null && _playing)
+            // While it is still starting, the cursor already says where it is, and
+            // Start would undo a pause; Play pauses it once Start has returned.
+            if (_playback != null && _playing && _playbackStart.IsCompleted)
             {
                 _cursor = Math.Max(0, _playback.Position);
                 try { _playback.Pause(); } catch { }
@@ -362,8 +370,13 @@ namespace ExplorerNative
 
                 if (_playback != null && ReferenceEquals(_playbackEdits, edits))
                 {
-                    _playback.SeekTo(from);
-                    _playback.Resume();
+                    // Still starting: Start plays from its own start point and the
+                    // first Play moves it to the cursor once it has returned.
+                    if (_playbackStart.IsCompleted)
+                    {
+                        _playback.SeekTo(from);
+                        _playback.Resume();
+                    }
                     _playing = true;
                     _timer.Start();
                     Refresh_();
@@ -407,6 +420,17 @@ namespace ExplorerNative
                     var why = playback.Diagnostic;
                     StopPlayback();
                     Say("Could not play: " + why);
+                    return;
+                }
+
+                // Keys pressed while it was starting: a move, then a pause.
+                if (Math.Abs(_cursor - from) > 0.0005)
+                {
+                    try { playback.SeekTo(_cursor); } catch { }
+                }
+                if (!_playing)
+                {
+                    try { playback.Pause(); } catch { }
                 }
             }
             catch (Exception ex)
@@ -494,7 +518,9 @@ namespace ExplorerNative
             var edits = Edits!;
             seconds = Math.Clamp(seconds, 0, edits.Seconds);
             _cursor = seconds;
-            if (_playback != null)
+            // While it is still starting, Start's own seek would undo this one;
+            // Play seeks to the cursor once Start has returned.
+            if (_playback != null && _playbackStart.IsCompleted)
             {
                 try { _playback.SeekTo(seconds); } catch { }
             }
@@ -525,9 +551,10 @@ namespace ExplorerNative
         /// <summary>Makes an edit current, stopping playback that was playing the old ones and starting again from the cursor.</summary>
         private void Apply(EditList next, string what, double cursor, string spoken)
         {
+            // Checked first: an edit that changes nothing leaves playback alone.
+            if (!_history!.Apply(next, what)) { Say("That changes nothing"); return; }
             bool wasPlaying = _playing;
             StopPlayback();
-            if (!_history!.Apply(next, what)) { Say("That changes nothing"); return; }
             _cursor = Math.Clamp(cursor, 0, next.Seconds);
             Say(spoken);
             if (wasPlaying) Play(_cursor, null);
@@ -574,7 +601,7 @@ namespace ExplorerNative
             }
 
             var next = Edits!.ChangeGain(from, to, decibels);
-            Apply(next, $"volume {Decibels(decibels)} on {what}", _cursor, $"{Decibels(decibels)} applied to {what}");
+            Apply(next, $"volume {Decibels(decibels)} on {what}", Now, $"{Decibels(decibels)} applied to {what}");
         }
 
         private static string Decibels(double value) =>
@@ -599,7 +626,7 @@ namespace ExplorerNative
                 double gain = Math.Round(-1 - 20 * Math.Log10(peak), 2);
                 if (Math.Abs(gain) < 0.05) { Say($"{char.ToUpperInvariant(what[0])}{what[1..]} is already normalised"); return; }
 
-                Apply(edits.ChangeGain(from, to, gain), $"normalise {what}", _cursor,
+                Apply(edits.ChangeGain(from, to, gain), $"normalise {what}", Now,
                     $"Normalised {what}: {Decibels(gain)}");
             }
             catch (Exception ex)
@@ -637,22 +664,28 @@ namespace ExplorerNative
 
         private void Undo()
         {
+            if (!_history!.CanUndo) { Say("Nothing to undo"); return; }
+            double here = Now;
             bool wasPlaying = _playing;
             StopPlayback();
+            _cursor = here;
             var what = _history!.Undo();
             if (what == null) { Say("Nothing to undo"); return; }
-            _cursor = Math.Min(_cursor, Edits!.Seconds);
+            _cursor = Math.Clamp(here, 0, Edits!.Seconds);
             Say($"Undid the {what}");
             if (wasPlaying) Play(_cursor, null);
         }
 
         private void Redo()
         {
+            if (!_history!.CanRedo) { Say("Nothing to redo"); return; }
+            double here = Now;
             bool wasPlaying = _playing;
             StopPlayback();
+            _cursor = here;
             var what = _history!.Redo();
             if (what == null) { Say("Nothing to redo"); return; }
-            _cursor = Math.Min(_cursor, Edits!.Seconds);
+            _cursor = Math.Clamp(here, 0, Edits!.Seconds);
             Say($"Redid the {what}");
             if (wasPlaying) Play(_cursor, null);
         }
@@ -882,6 +915,7 @@ namespace ExplorerNative
             bool wasBusy = _busy;
             _busy = true;
             _notes = "";
+            _cursor = Now;
             StopPlayback();
 
             using var cts = new CancellationTokenSource();

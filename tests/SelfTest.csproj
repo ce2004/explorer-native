@@ -50,6 +50,7 @@
          check worth having is a real archive written, read back, and handed to
          the tar Windows ships to see whether it agrees. -->
     <Compile Include="..\src\Crc32.cs" />
+    <Compile Include="..\src\ArchiveWorkers.cs" />
     <Compile Include="..\src\ArchiveFormats.cs" />
     <Compile Include="..\src\ParallelGZip.cs" />
     <Compile Include="..\src\ArchiveEngine.cs" />
@@ -99,6 +100,7 @@
     <Compile Include="Fix418Tests.cs" />
     <Compile Include="SevenZipTests.cs" />
     <Compile Include="ArchiveBench.cs" />
+    <Compile Include="ArchiveSpeedTests.cs" />
     <Compile Include="ConnectTests.cs" />
     <Compile Include="SeekTests.cs" />
     <Compile Include="Tests.cs" />

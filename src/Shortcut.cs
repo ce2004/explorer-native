@@ -135,9 +135,11 @@ namespace ExplorerNative
                 if (!char.IsLetterOrDigit(c)) return 0;
             if (char.IsDigit(part[0])) return 0;
 
-            // The names NameOf gives them, for the - and = keys.
-            if (part.Equals("Minus", StringComparison.OrdinalIgnoreCase)) return (uint)Keys.OemMinus;
-            if (part.Equals("Equals", StringComparison.OrdinalIgnoreCase)) return (uint)Keys.Oemplus;
+            // The names NameOf gives the keys whose Windows names nobody would
+            // say (Oem1, Next, Return). Each must read back here, or the
+            // capture box refuses the key outright.
+            foreach (var (named, name) in FriendlyNames)
+                if (part.Equals(name, StringComparison.OrdinalIgnoreCase)) return (uint)named;
 
             return Enum.TryParse<Keys>(part, ignoreCase: true, out var k) && IsUsable(k) ? (uint)k : 0;
         }
@@ -161,13 +163,43 @@ namespace ExplorerNative
             _ => true,
         };
 
-        private static string NameOf(Keys key) => key switch
+        /// <summary>
+        /// Names for keys whose Keys enum name is not what anybody would say.
+        /// Windows calls the punctuation keys Oem keys, and for codes with two
+        /// enum names ToString picks the odd one: PageDown comes out "Next",
+        /// the semicolon key "Oem1", Enter "Return", Caps Lock "Capital".
+        /// The punctuation names are the US layout's.
+        /// </summary>
+        private static readonly (Keys Key, string Name)[] FriendlyNames =
         {
-            >= Keys.D0 and <= Keys.D9 => ((char)('0' + (key - Keys.D0))).ToString(),
-            // Windows calls them Oem keys, which is not what anybody would say.
-            Keys.OemMinus => "Minus",
-            Keys.Oemplus => "Equals",
-            _ => key.ToString(),
+            (Keys.OemMinus, "Minus"),
+            (Keys.Oemplus, "Equals"),
+            (Keys.OemSemicolon, "Semicolon"),
+            (Keys.Oemcomma, "Comma"),
+            (Keys.OemPeriod, "Period"),
+            (Keys.OemQuestion, "Slash"),
+            (Keys.Oemtilde, "Backquote"),
+            (Keys.OemOpenBrackets, "OpenBracket"),
+            (Keys.OemCloseBrackets, "CloseBracket"),
+            (Keys.OemPipe, "Backslash"),
+            (Keys.OemQuotes, "Quote"),
+            (Keys.OemBackslash, "IntlBackslash"),
+            (Keys.Oem8, "Key223"),
+            (Keys.OemClear, "ClearKey"),
+            (Keys.PageUp, "PageUp"),
+            (Keys.PageDown, "PageDown"),
+            (Keys.Enter, "Enter"),
+            (Keys.CapsLock, "CapsLock"),
+            (Keys.PrintScreen, "PrintScreen"),
+            (Keys.Back, "Backspace"),
         };
+
+        private static string NameOf(Keys key)
+        {
+            if (key is >= Keys.D0 and <= Keys.D9) return ((char)('0' + (key - Keys.D0))).ToString();
+            foreach (var (named, name) in FriendlyNames)
+                if (named == key) return name;
+            return key.ToString();
+        }
     }
 }

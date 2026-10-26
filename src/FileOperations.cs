@@ -121,7 +121,24 @@ namespace ExplorerNative
         /// for a folder of thirty thousand files was most of half a minute of
         /// asking Windows the same question.
         /// </param>
-        private sealed record PlannedCopy(string Source, string Destination, long Size, bool Rename = false);
+        /// <param name="OnClash">
+        /// What to do if, by the time the file is written, something has
+        /// appeared at its destination (another transfer running at the same
+        /// time, say). Only a plan that chose Replace may replace; keep both
+        /// takes a fresh number, and Fill gaps or Skip leave what is there.
+        /// </param>
+        private sealed record PlannedCopy(string Source, string Destination, long Size, bool Rename = false,
+            ClashRule OnClash = ClashRule.Rename);
+
+        /// <summary>What a plan item does when its destination is taken at write time.</summary>
+        private enum ClashRule { Rename, Skip, Overwrite }
+
+        private static ClashRule ClashRuleFor(PasteConflictPolicy policy) => policy switch
+        {
+            PasteConflictPolicy.Overwrite => ClashRule.Overwrite,
+            PasteConflictPolicy.Skip or PasteConflictPolicy.FillGaps => ClashRule.Skip,
+            _ => ClashRule.Rename,
+        };
 
         /// <summary>
         /// Folders the plan must create even though no file lands in them.
@@ -197,6 +214,12 @@ namespace ExplorerNative
                 {
                     failed++;
                     errors.Add($"{gone}: not found");
+                }
+
+                foreach (var refusal in extras.Refused)
+                {
+                    failed++;
+                    errors.Add(refusal);
                 }
 
                 foreach (var (clash, folderThere) in conflicts.KindClashes)
@@ -370,18 +393,42 @@ namespace ExplorerNative
                         made.TryAdd(parent, 0);
                     }
 
+                    string? landed;
                     if (item.Rename)
                     {
                         // Same-volume move is a rename: no bytes travel. Over a
                         // read-only file too, as the copy path does: Replace
                         // means replace, and File.Move alone refuses one.
-                        MoveReplacing(NameRules.ExactPath(item.Source), NameRules.ExactPath(item.Destination));
+                        // Only when Replace was chosen, though: anything else
+                        // never moves over a file that appeared since the plan.
+                        if (item.OnClash == ClashRule.Overwrite)
+                        {
+                            MoveReplacing(NameRules.ExactPath(item.Source), NameRules.ExactPath(item.Destination));
+                            landed = item.Destination;
+                        }
+                        else landed = MoveWithoutReplacing(item.Source, item.Destination, item.OnClash);
                     }
                     else
                     {
-                        await CopyFileAsync(item.Source, item.Destination, bufferSize, item.Size,
-                            copied => { Interlocked.Add(ref bytesDone, copied); Report(item.Source); }, ct);
+                        landed = await CopyFileAsync(item.Source, item.Destination, bufferSize, item.Size,
+                            copied => { Interlocked.Add(ref bytesDone, copied); Report(item.Source); }, ct,
+                            item.OnClash);
+                    }
 
+                    // Something arrived at the destination after the plan, and
+                    // Fill gaps or Skip leaves it alone; a move keeps its original.
+                    if (landed == null)
+                    {
+                        Interlocked.Increment(ref skipped);
+                        lock (conflicts) conflicts.Skipped(item.Destination);
+                        return;
+                    }
+
+                    if (!string.Equals(landed, item.Destination, StringComparison.OrdinalIgnoreCase))
+                        lock (conflicts) conflicts.Renamed(landed);
+
+                    if (!item.Rename)
+                    {
                         if (move)
                         {
                             // A move that left the original behind is not a
@@ -517,6 +564,12 @@ namespace ExplorerNative
             /// <summary>Sources that are neither a file nor a folder any more.</summary>
             public readonly List<string> Missing = new();
 
+            /// <summary>
+            /// Sources refused on their own (a folder pasted into itself), said
+            /// as failures while the rest of the paste goes ahead.
+            /// </summary>
+            public readonly List<string> Refused = new();
+
             /// <summary>Selected links being moved, and where each goes.</summary>
             public readonly List<(string Source, string Destination)> Links = new();
 
@@ -601,15 +654,21 @@ namespace ExplorerNative
                     // Auto-rename turns the destination into "name (2)" first, which
                     // is not inside the source at all, and the copy is fine.
                     destRoot = ResolveConflict(destRoot, policy, askConflict, conflicts, claimed, true,
-                        out bool skip, out bool merge);
+                        out bool skip, out bool merge, out ClashRule folderRule);
                     if (skip) continue;
                     claimed.Add(destRoot);
 
                     // Still refused once renaming has had its say: copying a folder
                     // into its own subtree really would recurse forever, and asking
                     // to overwrite a folder with itself is not a copy at all.
+                    // Refused for this source alone: thrown, it failed the whole
+                    // paste and the other items in it were never copied.
                     if (IsWithin(destRoot, source))
-                        throw new IOException($"Cannot copy \"{name}\" into itself.");
+                    {
+                        if (extras == null) throw new IOException($"Cannot copy \"{name}\" into itself.");
+                        extras.Refused.Add($"{name}: cannot copy a folder into itself");
+                        continue;
+                    }
 
                     // The root itself, so copying an entirely empty folder still
                     // produces a folder rather than nothing at all.
@@ -679,19 +738,20 @@ namespace ExplorerNative
                             }
                         }
 
-                        plan.Add(new PlannedCopy(file, target, size, rename));
+                        plan.Add(new PlannedCopy(file, target, size, rename, folderRule));
                     }
                 }
                 else if (File.Exists(exact))
                 {
                     var dest = Path.Combine(destinationDir, name);
-                    dest = ResolveConflict(dest, policy, askConflict, conflicts, claimed, false, out bool skip);
+                    dest = ResolveConflict(dest, policy, askConflict, conflicts, claimed, false,
+                        out bool skip, out _, out ClashRule fileRule);
                     if (skip) continue;
                     claimed.Add(dest);
 
                     long size = 0;
                     try { size = new FileInfo(exact).Length; } catch { }
-                    plan.Add(new PlannedCopy(source, dest, size, move && SameVolume(source, dest)));
+                    plan.Add(new PlannedCopy(source, dest, size, move && SameVolume(source, dest), fileRule));
                 }
 
                 // Neither a file nor a folder: gone since it was picked. This had
@@ -777,11 +837,15 @@ namespace ExplorerNative
             HashSet<string> claimed,
             bool folder,
             out bool skip)
-            => ResolveConflict(desired, policy, askConflict, conflicts, claimed, folder, out skip, out _);
+            => ResolveConflict(desired, policy, askConflict, conflicts, claimed, folder, out skip, out _, out _);
 
         /// <param name="merge">
         /// A folder arriving on a folder under Fill gaps: the two are merged, and
         /// every file the destination already has is left alone.
+        /// </param>
+        /// <param name="rule">
+        /// What the copy may do if the destination is taken by the time it is
+        /// written. Replace only when Replace was what this decided.
         /// </param>
         private static string ResolveConflict(
             string desired,
@@ -791,10 +855,12 @@ namespace ExplorerNative
             HashSet<string> claimed,
             bool folder,
             out bool skip,
-            out bool merge)
+            out bool merge,
+            out ClashRule rule)
         {
             skip = false;
             merge = false;
+            rule = ClashRule.Rename;
 
             // Another item of this same paste is going there. Whatever the policy
             // says about what was already on disk, the answer for two things
@@ -807,7 +873,13 @@ namespace ExplorerNative
             }
 
             var exactDesired = NameRules.ExactPath(desired);
-            if (!File.Exists(exactDesired) && !Directory.Exists(exactDesired)) return desired;
+            if (!File.Exists(exactDesired) && !Directory.Exists(exactDesired))
+            {
+                // Nothing there now: the standing policy says what to do if
+                // something arrives first. Ask cannot ask mid-copy, so keeps both.
+                rule = ClashRuleFor(policy);
+                return desired;
+            }
 
             var effective = policy;
             if (policy == PasteConflictPolicy.Ask)
@@ -832,6 +904,7 @@ namespace ExplorerNative
                     if (folder && Directory.Exists(exactDesired))
                     {
                         merge = true;
+                        rule = ClashRule.Skip;
                         return desired;
                     }
                     skip = true;
@@ -849,6 +922,7 @@ namespace ExplorerNative
                         return desired;
                     }
                     conflicts.Overwritten(desired);
+                    rule = ClashRule.Overwrite;
                     return desired;
                 case PasteConflictPolicy.Skip:
                     skip = true;
@@ -895,13 +969,43 @@ namespace ExplorerNative
             return Path.Combine(dir, unique);
         }
 
-        private static async Task CopyFileAsync(
+        /// <summary>
+        /// A same-volume move that never replaces anything. A name taken since
+        /// the plan is numbered afresh (keep both) or left alone (Fill gaps,
+        /// Skip). Returns where the file went, or null when it was left.
+        /// </summary>
+        private static string? MoveWithoutReplacing(string source, string destination, ClashRule onClash)
+        {
+            var from = NameRules.ExactPath(source);
+            string final = destination;
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    File.Move(from, NameRules.ExactPath(final), overwrite: false);
+                    return final;
+                }
+                catch (IOException ex) when ((ex.HResult & 0xFFFF) is 80 or 183 && attempt < 5)
+                {
+                    if (onClash == ClashRule.Skip) return null;
+                    final = UniqueName(destination, null, false);
+                }
+            }
+        }
+
+        /// <returns>
+        /// Where the copy landed: the destination, or a fresh number when keep
+        /// both found the name taken since the plan. Null when Fill gaps or
+        /// Skip found it taken, and nothing was written.
+        /// </returns>
+        private static async Task<string?> CopyFileAsync(
             string source, string destination, int bufferSize, long sizeHint,
-            Action<long> onChunk, CancellationToken token)
+            Action<long> onChunk, CancellationToken token, ClashRule onClash)
         {
             // Exact, so "report." is read and written as itself.
             var from = NameRules.ExactPath(source);
-            var to = NameRules.ExactPath(destination);
+            string final = destination;
+            var to = NameRules.ExactPath(final);
 
             // Unbuffered, because the reads and writes are already whole chunks:
             // a buffered stream kept a buffer of its own the size of the setting
@@ -917,20 +1021,42 @@ namespace ExplorerNative
             // written beside it under a temporary name and moved over it only
             // once it is whole. A new name — nearly every file — costs nothing:
             // CreateNew answers whether something is there in the same request.
+            //
+            // Swapping over what is there happens only when the plan chose
+            // Replace. A file that appeared since the plan (another transfer
+            // running at the same time) was swapped over whatever the policy
+            // said, so under keep both one transfer's copy replaced another's,
+            // and a move then deleted the only original.
             string written = to;
             FileStream dst;
-            try
+            for (int attempt = 0; ; attempt++)
             {
-                dst = new FileStream(to, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                    0, FileOptions.Asynchronous | FileOptions.SequentialScan);
-            }
-            catch (IOException ex) when ((ex.HResult & 0xFFFF) is 80 or 183)
-            {
-                written = NameRules.ExactPath(Path.Combine(
-                    Path.GetDirectoryName(NameRules.PlainPath(to))!,
-                    ".copying-" + Guid.NewGuid().ToString("N")[..12] + ".tmp"));
-                dst = new FileStream(written, FileMode.CreateNew, FileAccess.Write, FileShare.None,
-                    0, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                try
+                {
+                    dst = new FileStream(to, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                        0, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                    written = to;
+                    break;
+                }
+                catch (IOException ex) when ((ex.HResult & 0xFFFF) is 80 or 183)
+                {
+                    if (onClash == ClashRule.Overwrite)
+                    {
+                        written = NameRules.ExactPath(Path.Combine(
+                            Path.GetDirectoryName(NameRules.PlainPath(to))!,
+                            ".copying-" + Guid.NewGuid().ToString("N")[..12] + ".tmp"));
+                        dst = new FileStream(written, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                            0, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                        break;
+                    }
+                    if (onClash == ClashRule.Skip) return null;
+
+                    // Keep both: a fresh number now, tried again, because the
+                    // race can repeat.
+                    if (attempt >= 5) throw;
+                    final = UniqueName(destination, null, false);
+                    to = NameRules.ExactPath(final);
+                }
             }
             await using var _ = dst;
 
@@ -1016,6 +1142,7 @@ namespace ExplorerNative
             // closed: set through a handle with buffered data still to go out,
             // the time was overwritten at close and every copy was dated "now".
             CopyDatesAndAttributes(from, to);
+            return final;
         }
 
         /// <summary>
@@ -1029,7 +1156,7 @@ namespace ExplorerNative
         internal static void MoveReplacing(string from, string to)
         {
             try { File.Move(from, to, overwrite: true); }
-            catch (UnauthorizedAccessException)
+            catch (UnauthorizedAccessException denied)
             {
                 // Windows says "access denied" for a file another program has open;
                 // that is "in use", which says what to do about it.
@@ -1039,7 +1166,17 @@ namespace ExplorerNative
                     throw new IOException("it is in use by another program. Close it there, then try again.", held.HResult);
                 }
                 catch { }
-                var attributes = File.GetAttributes(to);
+
+                // Nothing there to be read-only (a move out of a folder that
+                // refuses the delete): the real error is the access denied,
+                // not "could not find" the destination.
+                FileAttributes attributes;
+                try { attributes = File.GetAttributes(to); }
+                catch
+                {
+                    System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(denied).Throw();
+                    throw;
+                }
                 if ((attributes & FileAttributes.ReadOnly) == 0 || (attributes & FileAttributes.Directory) != 0) throw;
                 File.SetAttributes(to, attributes & ~FileAttributes.ReadOnly);
                 try { File.Move(from, to, overwrite: true); }

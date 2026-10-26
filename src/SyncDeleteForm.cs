@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
@@ -23,6 +24,11 @@ namespace ExplorerNative
     /// </summary>
     internal sealed class SyncDeleteForm : Form
     {
+        private const int Margin12 = 12;
+
+        private readonly TextBox _message;
+        private readonly FlowLayoutPanel _buttons;
+
         public SyncDeleteChoice Choice { get; private set; } = SyncDeleteChoice.Cancel;
 
         public SyncDeleteForm(IReadOnlyList<DriveSyncPair> pairs, bool driveSide)
@@ -33,6 +39,7 @@ namespace ExplorerNative
             MinimizeBox = false;
             MaximizeBox = false;
             ShowInTaskbar = false;
+            AutoScaleMode = AutoScaleMode.Font;
             ClientSize = new Size(560, 250);
             Font = SystemFonts.MessageBoxFont;
 
@@ -44,25 +51,41 @@ namespace ExplorerNative
                 ScrollBars = ScrollBars.Vertical,
                 BorderStyle = BorderStyle.None,
                 BackColor = SystemColors.Control,
-                Location = new Point(12, 12),
+                Location = new Point(Margin12, Margin12),
                 Size = new Size(536, 180),
                 TabIndex = 0,
                 AccessibleRole = AccessibleRole.StaticText,
                 AccessibleName = Text,
             };
+            _message = message;
 
-            var remove = new Button { Text = "&Remove the sync, then delete", AutoSize = true, Location = new Point(12, 206), TabIndex = 1 };
-            var anyway = new Button { Text = "&Delete anyway", AutoSize = true, Location = new Point(250, 206), TabIndex = 2 };
+            var remove = new Button { Text = "&Remove the sync, then delete", AutoSize = true, TabIndex = 1 };
+            var anyway = new Button { Text = "&Delete anyway", AutoSize = true, TabIndex = 2 };
             var cancel = new Button
             {
-                Text = "Cancel", DialogResult = DialogResult.Cancel, Location = new Point(464, 206),
-                Size = new Size(84, 30), TabIndex = 3,
+                Text = "Cancel", DialogResult = DialogResult.Cancel,
+                AutoSize = true, MinimumSize = new Size(84, 30), TabIndex = 3,
             };
 
             remove.Click += (_, _) => { Choice = SyncDeleteChoice.RemoveSyncThenDelete; DialogResult = DialogResult.OK; Close(); };
             anyway.Click += (_, _) => { Choice = SyncDeleteChoice.DeleteAnyway; DialogResult = DialogResult.OK; Close(); };
 
-            Controls.AddRange(new Control[] { message, remove, anyway, cancel });
+            // The buttons flow left to right, so a bigger font or DPI pushes
+            // them apart instead of laying one over the next.
+            _buttons = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Margin = Padding.Empty,
+                Padding = Padding.Empty,
+                Location = new Point(Margin12 - 3, message.Bottom + 14),
+                TabIndex = 1,
+            };
+            _buttons.Controls.AddRange(new Control[] { remove, anyway, cancel });
+
+            Controls.AddRange(new Control[] { message, _buttons });
             AcceptButton = cancel;
             CancelButton = cancel;
 
@@ -72,6 +95,22 @@ namespace ExplorerNative
                 message.Focus();
                 message.Select(0, 0);
             };
+        }
+
+        /// <summary>
+        /// Grows the window to fit the buttons once the fonts are resolved,
+        /// and widens the warning to match.
+        /// </summary>
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+
+            _buttons.Top = _message.Bottom + 14;
+            var row = _buttons.PreferredSize;
+            int width = Math.Max(ClientSize.Width, _buttons.Left + row.Width + Margin12);
+            int height = Math.Max(ClientSize.Height, _buttons.Top + row.Height + Margin12);
+            ClientSize = new Size(width, height);
+            _message.Width = ClientSize.Width - _message.Left - Margin12;
         }
     }
 }

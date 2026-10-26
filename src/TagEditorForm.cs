@@ -154,12 +154,15 @@ namespace ExplorerNative
                 var text = box.Text.Trim();
                 if (string.Equals(text, _original[field].Trim(), StringComparison.Ordinal)) continue;
 
-                if (TagFields.IsNumber(field) && text.Length > 0 && !TagFields.TryParseNumber(field, text, out _))
+                // 0 reads back as no value everywhere tags are read, so it is refused here
+                // rather than saved and then shown as blank.
+                if (TagFields.IsNumber(field) && text.Length > 0
+                    && (!TagFields.TryParseNumber(field, text, out var number) || number == 0))
                 {
                     MessageBox.Show(this,
                         field == TagField.Year
-                            ? "The year must be a number from 0 to 9999, or blank."
-                            : "The track number must be a whole number, or blank.",
+                            ? "The year must be a number from 1 to 9999, or blank."
+                            : "The track number must be a whole number from 1 to 99999, or blank.",
                         Text, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     box.Focus();
                     box.SelectAll();

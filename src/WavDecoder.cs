@@ -729,7 +729,11 @@ namespace ExplorerNative
                 int bytes = frames * _blockAlign;
                 if (_block.Length < bytes) _block = new byte[bytes];
                 if (_decoded.Length < frames * Channels) _decoded = new float[frames * Channels];
-                frames = ReadData(_block, bytes) / _blockAlign;
+                int got = ReadData(_block, bytes);
+                // A short read (a network drop) keeps only whole frames: the next
+                // read starts on a frame, not part way into one (byte-shifted noise).
+                _dataPosition -= got % _blockAlign;
+                frames = got / _blockAlign;
                 if (frames <= 0) return false;
                 DecodePcm(frames);
                 _decodedFrames = frames;
@@ -738,6 +742,13 @@ namespace ExplorerNative
 
             int read = ReadData(_block, _blockAlign);
             if (read <= 0) return false;
+            // Cut short before the end of the sound (a network drop): the block is
+            // read again whole next time, rather than its headers taken from its middle.
+            if (read < _blockAlign && _dataPosition < _dataLength)
+            {
+                _dataPosition -= read;
+                return false;
+            }
             _decodedFrames = _codec switch
             {
                 Codec.ImaWav => read >= 4 * Channels ? DecodeIma(read) : 0,

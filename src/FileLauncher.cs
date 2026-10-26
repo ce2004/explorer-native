@@ -190,6 +190,13 @@ namespace ExplorerNative
 
             exe = Environment.ExpandEnvironmentVariables(exe);
 
+            // The arguments come back unexpanded too (REG_EXPAND_SZ text), so the
+            // classic Photo Viewer command handed rundll32 a literal
+            // "%ProgramFiles%\Windows Photo Viewer\PhotoViewer.dll". Expand them
+            // before the placeholder rewriting below. %1, %L and %* are not
+            // environment variables, so they pass through untouched.
+            rest = Environment.ExpandEnvironmentVariables(rest);
+
             // The environment variable has to be expanded before the split is
             // tested, not after: the registered command for text files has always
             // been "%SystemRoot%\system32\NOTEPAD.EXE %1", and %SystemRoot%\... is

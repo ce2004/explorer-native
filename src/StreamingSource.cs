@@ -34,7 +34,9 @@ namespace ExplorerNative
             // Asynchronous, so a read still out when the track is closed can be
             // called off. A process that exits with a read of a cloud placeholder
             // still pending never finishes exiting.
-            _file = new FileStream(path, FileMode.Open, FileAccess.Read,
+            // ExactPath: a share folder ending in a dot or space ("R.E.M.")
+            // would otherwise be trimmed by Win32 and read as missing.
+            _file = new FileStream(NameRules.ExactPath(path), FileMode.Open, FileAccess.Read,
                 FileShare.ReadWrite | FileShare.Delete, 0, FileOptions.RandomAccess | FileOptions.Asynchronous);
             Length = _file.Length;
         }
@@ -832,12 +834,14 @@ namespace ExplorerNative
             // from the thread the player is driven from. Downloads and reads still
             // out are called off — a read of a Drive placeholder left pending
             // when the process ends leaves it unable to finish exiting.
+            long held;
             lock (_gate)
             {
                 if (_disposed) return;
                 _disposed = true;
                 try { _run.Cancel(); } catch { }
                 try { _closing.Cancel(); } catch { }
+                held = _held + (_head?.Length ?? 0) + (_loose?.Length ?? 0);
                 _pieces.Clear();
                 _fetching.Clear();
                 _held = 0;
@@ -846,6 +850,7 @@ namespace ExplorerNative
                 Interlocked.Exchange(ref _prefix, 0);
             }
             Pulse();
+            MemoryGiveBack.Freed(held);
 
             // After the reads have been told to stop; a read still finishing
             // holds its own reference to the handle.

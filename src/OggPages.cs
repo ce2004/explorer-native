@@ -147,7 +147,7 @@ namespace ExplorerNative
         /// </summary>
         public bool FindStream(Func<Page, bool> wanted, out Page first)
         {
-            long at = 0;
+            long at = HeadOffset(_stream);
             while (TryPageAt(at, out first) && first.First)
             {
                 if (wanted(first))
@@ -160,6 +160,70 @@ namespace ExplorerNative
 
             first = default;
             return false;
+        }
+
+        /// <summary>
+        /// Where the Ogg data starts: 0, or just past any ID3v2 tags some
+        /// taggers and download tools put in front of an .ogg or .opus file.
+        /// Reads only the tag headers and four bytes after them, never a scan,
+        /// so it costs almost nothing on the Drive letter or a share. A tag is
+        /// taken only when "OggS" follows it; otherwise the answer is 0. The
+        /// stream's position is put back.
+        /// </summary>
+        public static long HeadOffset(Stream stream)
+        {
+            const int MaxTags = 4;
+            const long MaxSkip = 16L * 1024 * 1024;
+
+            try
+            {
+                if (!stream.CanSeek || !stream.CanRead) return 0;
+                long length = stream.Length;
+                long saved = stream.Position;
+                try
+                {
+                    var head = new byte[10];
+                    long at = 0;
+                    for (int tag = 0; tag < MaxTags; tag++)
+                    {
+                        if (ReadFully(stream, at, head, 10) != 10) break;
+                        if (head[0] != (byte)'I' || head[1] != (byte)'D' || head[2] != (byte)'3' ||
+                            head[3] == 0xFF || head[4] == 0xFF)
+                            break;
+                        if (((head[6] | head[7] | head[8] | head[9]) & 0x80) != 0) break;
+
+                        long size = (head[6] << 21) | (head[7] << 14) | (head[8] << 7) | head[9];
+                        long next = at + 10 + size + ((head[5] & 0x10) != 0 ? 10 : 0);
+                        if (next > MaxSkip || next + 4 > length) break;
+                        at = next;
+                    }
+
+                    if (at == 0) return 0;
+                    if (ReadFully(stream, at, head, 4) != 4) return 0;
+                    return head[0] == (byte)'O' && head[1] == (byte)'g' &&
+                           head[2] == (byte)'g' && head[3] == (byte)'S' ? at : 0;
+                }
+                finally
+                {
+                    stream.Position = saved;
+                }
+            }
+            catch (IOException) { return 0; }
+            catch (NotSupportedException) { return 0; }
+            catch (ObjectDisposedException) { return 0; }
+        }
+
+        private static int ReadFully(Stream stream, long position, byte[] into, int count)
+        {
+            stream.Position = position;
+            int got = 0;
+            while (got < count)
+            {
+                int read = stream.Read(into, got, count - got);
+                if (read <= 0) break;
+                got += read;
+            }
+            return got;
         }
 
         /// <summary>

@@ -121,11 +121,13 @@ namespace ExplorerNative
             string page;
             try { page = await Http.GetStringAsync(Home, token).ConfigureAwait(false); }
             catch (HttpRequestException ex) { throw new AppleMusicException("Apple Music couldn't be reached. " + GoogleNet.Reason(ex)); }
+            catch (TaskCanceledException) when (!token.IsCancellationRequested) { throw new AppleMusicException("Apple Music took too long to answer."); }
             var script = Regex.Match(page, "/(assets/index[~-][^/\"]+\\.js)");
             if (!script.Success) throw new AppleMusicException("Apple Music's web player has changed, and the app can't sign in to it.");
             string js;
             try { js = await Http.GetStringAsync(Home + "/" + script.Groups[1].Value, token).ConfigureAwait(false); }
             catch (HttpRequestException ex) { throw new AppleMusicException("Apple Music couldn't be reached. " + GoogleNet.Reason(ex)); }
+            catch (TaskCanceledException) when (!token.IsCancellationRequested) { throw new AppleMusicException("Apple Music took too long to answer."); }
             var jwt = Regex.Match(js, "\"(eyJ[A-Za-z0-9\\-_]+\\.eyJ[A-Za-z0-9\\-_]+\\.[A-Za-z0-9\\-_]+)\"");
             if (!jwt.Success) throw new AppleMusicException("Apple Music's web player has changed, and the app can't sign in to it.");
             return jwt.Groups[1].Value;

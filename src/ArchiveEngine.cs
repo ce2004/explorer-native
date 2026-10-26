@@ -101,10 +101,12 @@ namespace ExplorerNative
         /// hundreds of cores, where the writer stitching the output together
         /// becomes the limit long before the workers do.
         /// </summary>
-        // Every core but one since 4.2.1 (Conner: "use all my CPU and leave
-        // enough to actually work with"), so the window, NVDA and whatever else
-        // is open keep a core while an archive is made.
-        public static int RecommendedThreads => Math.Clamp(Environment.ProcessorCount - 1, 1, 64);
+        // Every core since 4.2.5 (Conner: "use 100 percent of what's available
+        // but don't freeze the PC"). 4.2.1 kept one core back; now every
+        // thread doing the work runs below normal priority instead, so the
+        // window, NVDA and whatever else is open always come first and the
+        // archive takes only what they leave. See ArchiveWorkers.
+        public static int RecommendedThreads => ArchiveWorkers.Threads;
 
         /// <summary>
         /// How often progress may reach the UI thread.
@@ -526,7 +528,7 @@ namespace ExplorerNative
             IProgress<TransferProgress>? progress,
             CancellationToken token)
         {
-            return Task.Run(() => Compress(sources, archivePath, format, level, threads, progress, token), token);
+            return ArchiveWorkers.RunLong(() => Compress(sources, archivePath, format, level, threads, progress, token), token);
         }
 
         private static ArchiveResult Compress(
@@ -729,7 +731,7 @@ namespace ExplorerNative
             IProgress<TransferProgress>? progress,
             CancellationToken token)
         {
-            return Task.Run(() => Extract(archivePath, destinationDir, policy, ask, threads, progress, token), token);
+            return ArchiveWorkers.RunLong(() => Extract(archivePath, destinationDir, policy, ask, threads, progress, token), token);
         }
 
         private static ArchiveResult Extract(
@@ -894,8 +896,14 @@ namespace ExplorerNative
         /// Setting it by path afterwards was another open and close of every
         /// file extracted. Best effort, as it always was.
         /// </param>
+        /// <param name="expectedLength">
+        /// How long the file will be, when the archive says: a big file's
+        /// space is then asked for in one piece before it is written, rather
+        /// than grown a megabyte at a time, and a disk without room for it
+        /// says so before anything is written rather than part way through.
+        /// </param>
         internal static void WriteCommitted(string target, Action<FileStream> write, int bufferSize = 1 << 20,
-            DateTime? modified = null)
+            DateTime? modified = null, long expectedLength = 0)
         {
             var folder = Path.GetDirectoryName(target);
 
@@ -906,7 +914,29 @@ namespace ExplorerNative
 
             // Readable as well, so a writer can check what it wrote before it
             // is given its name — the bare .gz reads back its last member.
-            FileStream Open() => new(temporary, FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, bufferSize);
+            FileStream Open()
+            {
+                var options = new FileStreamOptions
+                {
+                    Mode = FileMode.CreateNew,
+                    Access = FileAccess.ReadWrite,
+                    Share = FileShare.None,
+                    BufferSize = bufferSize,
+                };
+                if (expectedLength < PreallocateFrom) return new FileStream(temporary, options);
+
+                // A damaged header can claim any size at all. Space that cannot
+                // be had up front is not a failure: the file is written as it
+                // always was, and only a real shortage of space says so.
+                options.PreallocationSize = expectedLength;
+                try { return new FileStream(temporary, options); }
+                catch (IOException ex) when (ex is not DirectoryNotFoundException)
+                {
+                    try { File.Delete(temporary); } catch { }
+                    options.PreallocationSize = 0;
+                    return new FileStream(temporary, options);
+                }
+            }
 
             // The folder is made only when the file cannot be: it is nearly
             // always there already, and asking for it was a request to the disk
@@ -955,6 +985,9 @@ namespace ExplorerNative
                 throw;
             }
         }
+
+        /// <summary>Files this big or bigger have their space asked for before they are written.</summary>
+        internal const long PreallocateFrom = 1L << 20;
 
         /// <summary>Why a file was not written over a folder of the same name.</summary>
         internal const string FolderInTheWay = "a folder of the same name is already there, so it was not replaced";

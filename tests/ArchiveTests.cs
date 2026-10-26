@@ -52,6 +52,7 @@ namespace ExplorerNative
             SystemTarOptionTests();
             CommandWiringTests();
             await ArchiveFixTests.RunAll(check);
+            await ArchiveSpeedTests.RunAll(check);
         }
 
         // ---------- CRC-32 ----------

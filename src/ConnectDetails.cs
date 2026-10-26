@@ -358,6 +358,9 @@ namespace ExplorerNative
 
             if (m.Container == null && m.Audio.Count == 0 && m.Video.Count == 0 && m.Tags.Count == 0) return null;
 
+            // A damaged header can give an infinite or NaN length, which JSON cannot carry.
+            if (m.Duration is { } d && !(double.IsFinite(d) && d > 0)) m.Duration = null;
+
             if (m.Duration is > 0 && m.OverallBitrate == null)
                 m.OverallBitrate = (long)Math.Round(bytes.Length * 8 / m.Duration.Value);
             if (m.Bitrate == null)
@@ -1383,7 +1386,8 @@ namespace ExplorerNative
             [PreserveSig] int GetGUID(ref Guid key, out Guid value);
         }
 
-        [StructLayout(LayoutKind.Explicit)]
+        // 24 bytes on 64-bit Windows: the reader copies a whole PROPVARIANT into it.
+        [StructLayout(LayoutKind.Explicit, Size = 24)]
         private struct PropVariant
         {
             [FieldOffset(0)] public ushort Type;

@@ -477,7 +477,22 @@ namespace ExplorerNative
                 if (Mounted)
                 {
                     if (!NeedsSignIn) return true;
-                    return await RenewSignIn(linked.Token).ConfigureAwait(false);
+                    var (renewed, otherAccount) = await RenewSignIn(linked.Token).ConfigureAwait(false);
+                    if (!otherAccount) return renewed;
+
+                    // Signed in again as somebody else. Every placeholder, the
+                    // path-to-id map and the search graph belong to the old
+                    // account, and its ids sent with the new token fail
+                    // everywhere, so the letter is mounted again from scratch.
+                    // TearDown, not Unmount: Unmount cancels _lifetime, and with
+                    // it the token this mount runs on. The new sign-in is already
+                    // saved to disk, and MountFresh reads it from there.
+                    GoogleAuth? old;
+                    lock (_gate) { old = _auth; _otherAccountsSwept = false; }
+                    if (old != null) old.SignInLapsed -= OnSignInLapsed;
+                    TearDown();
+                    if (linked.IsCancellationRequested) return false;
+                    return await MountFresh(settings, linked.Token, quietly: true).ConfigureAwait(false);
                 }
 
                 return await MountFresh(settings, linked.Token, quietly).ConfigureAwait(false);
@@ -505,13 +520,16 @@ namespace ExplorerNative
         /// <summary>
         /// Asks for consent again through the client the live mount is already
         /// using, so every placeholder and every cache stays where it is.
+        /// OtherAccount is true when the person chose a different Google
+        /// account: the mount then belongs to nobody signed in, and the caller
+        /// mounts again from scratch.
         /// </summary>
-        private async Task<bool> RenewSignIn(CancellationToken token)
+        private async Task<(bool Ok, bool OtherAccount)> RenewSignIn(CancellationToken token)
         {
             GoogleAuth? auth;
             DriveClient? client;
             lock (_gate) { auth = _auth; client = _client; }
-            if (auth == null || client == null) return false;
+            if (auth == null || client == null) return (false, false);
 
             // Consent for this request alone; see GoogleAuth.ConsentScope.
             try
@@ -519,23 +537,26 @@ namespace ExplorerNative
                 string user;
                 using (GoogleAuth.ConsentScope())
                     (user, _, _) = await client.Whoami(token).ConfigureAwait(false);
+                bool other;
                 lock (_gate)
                 {
-                    // Signed in again as somebody else: the sizes held are theirs.
-                    if (_account != null && !string.Equals(_account, user, StringComparison.OrdinalIgnoreCase))
-                        _sizes = null;
-                    _account = user;
+                    other = _account != null && !string.Equals(_account, user, StringComparison.OrdinalIgnoreCase);
+                    // The old account's sizes are left for TearDown to save
+                    // under that account's own name.
+                    if (!other) _account = user;
                 }
+                if (auth.ConsentGranted) Say("drive.signin.done", $"Signed in to Google Drive as {user}");
+                if (other) return (false, true);
+
                 NeedsSignIn = false;
                 Interlocked.Exchange(ref _lapseSaid, 0);
-                if (auth.ConsentGranted) Say("drive.signin.done", $"Signed in to Google Drive as {user}");
                 Status = $"{user} on {Letter}";
-                return true;
+                return (true, false);
             }
             catch (Exception ex)
             {
                 Status = $"Could not sign in again: {GoogleNet.Reason(ex)}";
-                return false;
+                return (false, false);
             }
         }
 
@@ -727,12 +748,14 @@ namespace ExplorerNative
             }
             catch (Exception ex)
             {
+                // TearDown first: it sets "Not connected.", and the reason must
+                // be the last word, because the tray and Preferences read it.
+                TearDown();
                 Status = token.IsCancellationRequested
                     ? "Not connected."
                     : $"Could not connect: {GoogleNet.Reason(ex)}";
                 FailedOnNetwork = !token.IsCancellationRequested && ex is not GoogleSignInRequiredException &&
                                   DriveHealth.LooksLikeNetwork(ex);
-                TearDown();
                 return false;
             }
         }

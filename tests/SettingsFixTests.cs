@@ -380,7 +380,10 @@ namespace ExplorerNative
 
                 // The Hotkey page: Shift and P ticked and chosen, then OK.
                 uint mods = 99, key = 99;
-                bool accepted = false;
+                bool accepted = true;
+                string warned = "";
+                var oldWarn = SettingsForm.Warn;
+                SettingsForm.Warn = (_, text, _) => warned = text;
                 error = OnSta(() =>
                 {
                     using var window = new SettingsForm(new Settings { SpeakEnabled = false, GlobalHotkeyEnabled = true }, null);
@@ -393,8 +396,11 @@ namespace ExplorerNative
                     mods = window.Result.HotkeyModifiers;
                     key = window.Result.HotkeyKey;
                 });
+                SettingsForm.Warn = oldWarn;
                 Equal("Preferences builds for the hotkey check", "", error);
-                Check("OK still closes", accepted);
+                // 4.2.5: refused in a message and Preferences stays open, rather than closing with it thrown away.
+                Check("OK is refused, so the choice is not silently lost", !accepted);
+                Check("and the refusal says why", warned.Contains("needs Control, Alt or the Windows key", StringComparison.Ordinal), warned);
                 Equal("Shift+P is not made the window shortcut", "0 0", $"{mods} {key}");
             }
             finally { Cleanup(dir); }

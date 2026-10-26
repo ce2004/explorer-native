@@ -130,6 +130,13 @@ namespace ExplorerNative
             /// <summary>Letters typed recently, for jump-to-name.</summary>
             public readonly TypeAheadBuffer TypeAhead = new();
 
+            /// <summary>
+            /// A navigation is under way and the rows on screen are still the
+            /// folder being left. Letters typed meanwhile wait in the buffer for
+            /// the new rows rather than matching the old ones.
+            /// </summary>
+            public bool StaleRows;
+
             /// <summary>The folder this pane last finished loading.</summary>
             public string LastLoadedPath = "";
 
@@ -212,6 +219,18 @@ namespace ExplorerNative
             /// <summary>When the live size check last ran for this pane, and whether one is running.</summary>
             public long SizeCheckedAt;
             public bool SizeBusy;
+
+            /// <summary>
+            /// When the live size check last finished walking each folder of
+            /// <see cref="SizeWalksFor"/>, and how long the walk took. A folder
+            /// that is written to all the time (AppData, Windows) is measured
+            /// again only after a rest ten times as long as its walk, so the
+            /// disk is not kept busy re-walking it for as long as it is on screen.
+            /// UI thread only.
+            /// </summary>
+            public readonly Dictionary<string, (long FinishedAt, long Took)> SizeWalks =
+                new(StringComparer.OrdinalIgnoreCase);
+            public string SizeWalksFor = "";
 
             /// <summary>
             /// The folder a watcher is being built for on a worker, or null.
@@ -628,6 +647,10 @@ namespace ExplorerNative
                     return;
                 }
 
+                // Asked again: a paste or move started during the download
+                // would be cut off by the installer's <exit>, which never asks.
+                if (!ConfirmAbandonTransfers("Update")) return;
+
                 Announce("Installing update. Explorer Native will restart");
                 CaptureState();
                 CaptureWindowGeometry();
@@ -758,6 +781,7 @@ namespace ExplorerNative
         {
             _settings = settings;
             ApplySettingsToUi();
+            RefreshAudioShortcuts();
             if (_syncConfiguratorItem != null) _syncConfiguratorItem.Visible = DriveMonitorForm.OnFileMenu(settings);
 
             // Hidden files, sorting and folders-first change the other tab's
@@ -1192,18 +1216,40 @@ namespace ExplorerNative
             var info = AudioActions.For(action);
             var item = new ToolStripMenuItem(info.MenuText);
 
-            // The registered shortcut, shown as text. ShortcutKeys cannot be used:
-            // these are global hotkeys owned by the tray, and letting WinForms
-            // claim them as menu accelerators too would give one key two owners.
-            var shortcut = Shortcut.Parse(info.Get(_settings));
+            ApplyAudioShortcut(item, action);
+            _audioShortcutItems.Add((item, action));
+
+            item.Click += (_, _) => Program.RunAudioAction(action);
+            return item;
+        }
+
+        /// <summary>Audio menu items whose shortcut text follows the settings.</summary>
+        private readonly List<(ToolStripMenuItem Item, AudioAction Action)> _audioShortcutItems = new();
+
+        /// <summary>
+        /// The registered shortcut, shown as text. ShortcutKeys cannot be used:
+        /// these are global hotkeys owned by the tray, and letting WinForms
+        /// claim them as menu accelerators too would give one key two owners.
+        /// Run again when the shortcuts change, so the menu never reads an old key.
+        /// </summary>
+        private void ApplyAudioShortcut(ToolStripMenuItem item, AudioAction action)
+        {
+            var shortcut = Shortcut.Parse(AudioActions.For(action).Get(_settings));
             if (shortcut.IsAssigned)
             {
                 item.ShortcutKeyDisplayString = shortcut.ToString();
                 item.ShowShortcutKeys = true;
             }
+            else
+            {
+                item.ShortcutKeyDisplayString = null;
+                item.ShowShortcutKeys = false;
+            }
+        }
 
-            item.Click += (_, _) => Program.RunAudioAction(action);
-            return item;
+        private void RefreshAudioShortcuts()
+        {
+            foreach (var (item, action) in _audioShortcutItems) ApplyAudioShortcut(item, action);
         }
 
         /// <summary>
@@ -1214,6 +1260,7 @@ namespace ExplorerNative
         private void RefreshAudioMenu()
         {
             var state = Program.AudioState;
+            RefreshAudioShortcuts();
 
             var playPause = AudioActions.For(AudioAction.PlayPause);
             bool playing = state is { Playing: true };
@@ -1317,7 +1364,7 @@ namespace ExplorerNative
             // playing still is, and may well be the track taken out of it.
             var path = Active.Archive == null && !AppleMusic.Is(Active.CurrentPath) ? FocusedPath() : null;
 
-            if (path == null || !AudioFiles.IsAudio(path, _settings.AudioExtensions))
+            if (path == null || IsDirectoryInView(path) || !AudioFiles.IsAudio(path, _settings.AudioExtensions))
                 path = state is { HasTrack: true } ? state.Path : path;
 
             if (path == null) { Announce("Nothing selected"); return; }
@@ -1326,6 +1373,17 @@ namespace ExplorerNative
             {
                 var said = AppleMusic.Details(path) ?? state?.Name;
                 AnnounceAfterMenu("applemusic.details", string.IsNullOrEmpty(said) ? "Nothing is playing" : said);
+                return;
+            }
+
+            // Nothing playing and the cursor on a folder, a drive or a document:
+            // there are no song properties to show, and Edit tags would write
+            // music fields into a file that is not music.
+            bool isTrack = state is { HasTrack: true } &&
+                           string.Equals(path, state.Path, StringComparison.OrdinalIgnoreCase);
+            if (!isTrack && (IsDirectoryInView(path) || !AudioFiles.IsAudio(path, _settings.AudioExtensions)))
+            {
+                Announce("Nothing is playing, and this is not an audio file");
                 return;
             }
 
@@ -1780,7 +1838,9 @@ namespace ExplorerNative
             Width = Math.Max(_settings.WindowWidth, MinimumSize.Width);
             Height = Math.Max(_settings.WindowHeight, MinimumSize.Height);
 
-            if (_settings.WindowX >= 0 && _settings.WindowY >= 0 &&
+            // -1, -1 is "never saved". Anything else may be negative: a
+            // monitor left of or above the primary has negative coordinates.
+            if (!(_settings.WindowX == -1 && _settings.WindowY == -1) &&
                 IsOnAScreen(_settings.WindowX, _settings.WindowY))
             {
                 StartPosition = FormStartPosition.Manual;
@@ -1902,6 +1962,7 @@ namespace ExplorerNative
         /// </summary>
         private void SetEntries(Pane pane, List<Entry> entries, string? preferPath = null)
         {
+            pane.StaleRows = false;
             pane.Entries = entries;
             pane.ItemCache = new ListViewItem?[entries.Count];
             pane.CachedCount = 0;
@@ -2063,8 +2124,9 @@ namespace ExplorerNative
         /// </summary>
         private void ScheduleTabAnnouncement()
         {
+            // Not gated on SpeakEnabled: the status bar and a chosen Windows
+            // notification still show nav.tab with speech off.
             if (IsDisposed) return;
-            if (!_settings.SpeakEnabled) return;
 
             if (_tabAnnounceTimer == null)
             {
@@ -2185,6 +2247,12 @@ namespace ExplorerNative
             // the last one are never what was meant.
             pane.TypeAhead.Reset();
 
+            // Until new rows go on screen, the ones there are the folder being
+            // left, and type-ahead must not match them. Not for a reload of the
+            // folder already showing, whose rows are the right ones.
+            pane.StaleRows = !string.Equals(path.TrimEnd('\\'), pane.LastLoadedPath.TrimEnd('\\'),
+                StringComparison.OrdinalIgnoreCase);
+
             // A new folder starts with a clean record: failures counted against
             // the last one say nothing about this one.
             _consecutiveProbeFailures = 0;
@@ -2201,6 +2269,10 @@ namespace ExplorerNative
                     Announce($"Could not open {FolderDisplayName(path)}: {ex.Message}", isError: true);
                     return false;
                 }
+                finally
+                {
+                    if (pane.NavigationId == mine) pane.StaleRows = false;
+                }
             }
 
             // Inside the archive the pane is already in: a folder of a listing
@@ -2216,6 +2288,10 @@ namespace ExplorerNative
                 {
                     Announce($"Could not open folder: {ex.Message}", isError: true);
                     return false;
+                }
+                finally
+                {
+                    if (pane.NavigationId == mine) pane.StaleRows = false;
                 }
             }
 
@@ -2237,6 +2313,7 @@ namespace ExplorerNative
                 LoadDrivesInto(pane, driveToken,
                     preferPath ?? (cameFrom == DrivesPath ? FocusedPathOf(pane) : SafePathRoot(cameFrom)), quiet);
 
+                if (pane.NavigationId == mine) pane.StaleRows = false;
                 return pane.NavigationId == mine;
             }
 
@@ -2384,6 +2461,11 @@ namespace ExplorerNative
             finally
             {
                 if (pane.Probing == mine) pane.Probing = 0;
+
+                // Arrived, refused or fell back: either new rows are on screen or
+                // the old folder is where we still are. An overtaken navigation
+                // leaves the flag to the one that overtook it.
+                if (pane.NavigationId == mine) pane.StaleRows = false;
             }
         }
 
@@ -2690,7 +2772,10 @@ namespace ExplorerNative
                 {
                     if (string.IsNullOrEmpty(full) || !current()) return;
                     var plain = NameRules.PlainPath(full);
+                    // Forgotten in every mode, so a size asked for on demand is not the old one.
                     _folderSizes.Forget(plain);
+                    // Sizes on demand: nothing measures these again by itself.
+                    if (_settings.FolderSizes != FolderSizeMode.Automatic) return;
                     string relative;
                     try { relative = Path.GetRelativePath(path, plain); } catch { return; }
                     int slash = relative.IndexOf('\\');
@@ -2707,7 +2792,7 @@ namespace ExplorerNative
                 {
                     if (!current()) return;
                     _folderSizes.Forget(path);
-                    pane.SizeAllDirty = true;
+                    if (_settings.FolderSizes == FolderSizeMode.Automatic) pane.SizeAllDirty = true;
                 };
                 sizes.EnableRaisingEvents = true;
                 return sizes;
@@ -2749,15 +2834,34 @@ namespace ExplorerNative
             {
                 if (pane.SizeDirty.IsEmpty && !pane.SizeAllDirty) return;
                 if (now - pane.SizeCheckedAt < 8_000) return;
+
+                if (!string.Equals(pane.SizeWalksFor, shown, StringComparison.OrdinalIgnoreCase))
+                {
+                    pane.SizeWalks.Clear();
+                    pane.SizeWalksFor = shown;
+                }
+
+                // Measured from when the last walk ended: at least 8 seconds,
+                // ten times the walk, at most five minutes. A folder that is
+                // not due yet stays marked and is measured on a later tick.
+                bool Due(string folder) =>
+                    !pane.SizeWalks.TryGetValue(folder, out var walk) ||
+                    now - walk.FinishedAt >= Math.Clamp(walk.Took * 10, 8_000, 300_000);
+
                 if (pane.SizeAllDirty)
                 {
                     pane.SizeAllDirty = false;
-                    pane.SizeDirty.Clear();
-                    folders = pane.Entries.Where(e => e.IsDir).Select(e => e.Path).ToList();
+                    folders = new List<string>();
+                    foreach (var e in pane.Entries)
+                    {
+                        if (!e.IsDir) continue;
+                        if (Due(e.Path)) { folders.Add(e.Path); pane.SizeDirty.TryRemove(e.Path, out _); }
+                        else pane.SizeDirty[e.Path] = 0;
+                    }
                 }
                 else
                 {
-                    folders = pane.SizeDirty.Keys.ToList();
+                    folders = pane.SizeDirty.Keys.Where(Due).ToList();
                     foreach (var f in folders) pane.SizeDirty.TryRemove(f, out _);
                 }
             }
@@ -2787,8 +2891,15 @@ namespace ExplorerNative
                     }
                     else
                     {
+                        long started = Environment.TickCount64;
                         var measured = await _folderSizes.CalculateAsync(folder, token);
                         if (token.IsCancellationRequested) return;
+
+                        // How long the walk took and when it ended: the rest
+                        // before this folder is measured again is counted from here.
+                        long ended = Environment.TickCount64;
+                        if (string.Equals(pane.SizeWalksFor, shown, StringComparison.OrdinalIgnoreCase))
+                            pane.SizeWalks[folder] = (ended, ended - started);
                         text = SizeFormatter.Format(measured.Bytes, _settings.SizeUnits) + (measured.Complete ? "" : "+");
                     }
                     if (IsDisposed || token.IsCancellationRequested ||
@@ -3975,7 +4086,9 @@ namespace ExplorerNative
                 if (!_landed && CurrentIndex(_pane) < 0)
                 {
                     _landed = true;
-                    int target = _prefer != null && _pane.IndexByPath.TryGetValue(_prefer, out var i) ? i
+                    int typed = TypedRow(entries);
+                    int target = typed >= 0 ? typed
+                        : _prefer != null && _pane.IndexByPath.TryGetValue(_prefer, out var i) ? i
                         : _form._settings.SelectFirstItemOnNavigate && entries.Count > 0 ? 0 : -1;
                     if (target >= 0)
                     {
@@ -3996,7 +4109,11 @@ namespace ExplorerNative
                     Shown = true;
                     bool preferHere = _prefer == null ||
                                       entries.Exists(e => string.Equals(e.Path, _prefer, StringComparison.OrdinalIgnoreCase));
-                    if (preferHere)
+
+                    // Letters typed before anything was shown are a choice too,
+                    // and SetEntries lands on them ahead of the remembered row.
+                    bool typedHere = TypedRow(entries) >= 0;
+                    if (preferHere || typedHere)
                     {
                         _form.SetEntries(_pane, entries, _prefer);
                         _landed = true;
@@ -4028,6 +4145,14 @@ namespace ExplorerNative
                     if (!marksStay && (now != CurrentIndex(_pane) || selected.Count > 1))
                         _form.Reselect(_pane, now, selected);
                 }
+                else if (!_landed && TypedRow(entries) is var typed && typed >= 0)
+                {
+                    // A name typed while the folder was arriving beats the row
+                    // to come back to, as it does in SetEntries.
+                    _landed = true;
+                    _form.SelectIndex(_pane, typed);
+                    _form.FocusListAndRow(_pane, readRowAloud: true);
+                }
                 else if (!_landed && _prefer != null && _pane.IndexByPath.TryGetValue(_prefer, out var wanted))
                 {
                     // The row to come back to has arrived, and nobody has moved yet.
@@ -4035,6 +4160,15 @@ namespace ExplorerNative
                     _form.SelectIndex(_pane, wanted);
                     _form.FocusListAndRow(_pane, readRowAloud: true);
                 }
+            }
+
+            /// <summary>The row the letters still waiting in the buffer name, or -1.</summary>
+            private int TypedRow(List<Entry> entries)
+            {
+                var pending = _pane.TypeAhead.Current(Environment.TickCount64);
+                if (pending.Length == 0 || entries.Count == 0) return -1;
+                bool extensions = _form._settings.ShowExtensions;
+                return TypeAhead.FindFolded(entries.Count, i => entries[i].FoldedDisplayName(extensions), pending, -1);
             }
         }
 
@@ -4106,6 +4240,7 @@ namespace ExplorerNative
         /// <summary>A first showing that chooses no row. See ProgressiveLoad.</summary>
         private void SetEntriesWithoutLanding(Pane pane, List<Entry> entries)
         {
+            pane.StaleRows = false;
             pane.Entries = entries;
             pane.ItemCache = new ListViewItem?[entries.Count];
             pane.CachedCount = 0;
@@ -4152,8 +4287,10 @@ namespace ExplorerNative
             int i = -1;
             while ((i = (int)SendMessage(pane.List.Handle, LVM_GETNEXTITEM, new IntPtr(i), new IntPtr(LVNI_SELECTED))) >= 0)
             {
+                // No cap: a reload re-selects from this list, and one that
+                // stopped at 100,001 dropped the rest of a Ctrl+A on 200,000
+                // files, so the next Delete or Copy acted on half of them.
                 if (i < pane.Entries.Count) paths.Add(pane.Entries[i].Path);
-                if (paths.Count > 100_000) break;
             }
             return paths;
         }
@@ -4170,6 +4307,7 @@ namespace ExplorerNative
         /// </summary>
         private void SwapEntriesQuietly(Pane pane, List<Entry> entries, string focusPath, List<string> selected)
         {
+            pane.StaleRows = false;
             var list = pane.List;
             int oldFocus = FocusedIndex(list);
             var oldSelected = new HashSet<int>();
@@ -4215,6 +4353,24 @@ namespace ExplorerNative
         {
             SelectIndex(pane, focus);
             if (selected.Count <= 1 || !pane.List.IsHandleCreated) return;
+
+            // Everything was selected and the listing is the same set of rows
+            // (a Ctrl+A on 200,000 files, then a reload or a re-sort): one
+            // message, not one per row, which froze the window. Only when no
+            // row is new, so a file that has just arrived is never selected
+            // behind somebody's back.
+            if (selected.Count == pane.Entries.Count && selected.TrueForAll(pane.IndexByPath.ContainsKey))
+            {
+                _suppressStatus++;
+                try
+                {
+                    var all = new LVITEM { mask = LVIF_STATE, state = LVIS_SELECTED, stateMask = LVIS_SELECTED };
+                    SendMessage(pane.List.Handle, LVM_SETITEMSTATE, new IntPtr(-1), ref all);
+                }
+                finally { _suppressStatus--; }
+                ScheduleStatusUpdate();
+                return;
+            }
 
             _suppressStatus++;
             try
@@ -4867,6 +5023,7 @@ namespace ExplorerNative
             pane.Searching = false;
 
             bool sameFolder = string.Equals(pane.LastLoadedPath, full, StringComparison.OrdinalIgnoreCase);
+            int previousCount = pane.Entries.Count;
             var previousRow = sameFolder ? FocusedPathOf(pane) : null;
             if (keepFocus && sameFolder) preferPath = previousRow ?? preferPath;
             preferPath ??= PreferredRowFor(pane, full, cameFrom);
@@ -4933,7 +5090,9 @@ namespace ExplorerNative
                            string.Equals(previousRow, FocusedPathOf(pane), StringComparison.OrdinalIgnoreCase);
             FocusListAndRow(pane, readRowAloud: !(quiet && sameRow));
 
-            if (entries.Count == 0 && pane == Active) AnnounceOperation("nav.empty", "This folder is empty");
+            // Not again for a folder that was already empty (F5, a quiet reload).
+            if (entries.Count == 0 && pane == Active && (!sameFolder || previousCount > 0))
+                AnnounceOperation("nav.empty", "This folder is empty");
             return true;
         }
 
@@ -4956,6 +5115,7 @@ namespace ExplorerNative
             AppleMusic.LoadPlaylistsSoon();   // for Add to playlist on Shift+F10
 
             bool sameFolder = string.Equals(pane.LastLoadedPath, full, StringComparison.OrdinalIgnoreCase);
+            int previousCount = pane.Entries.Count;
             var previousRow = sameFolder ? FocusedPathOf(pane) : null;
             if (keepFocus && sameFolder) preferPath = previousRow ?? preferPath;
 
@@ -5028,7 +5188,7 @@ namespace ExplorerNative
                            string.Equals(previousRow, FocusedPathOf(pane), StringComparison.OrdinalIgnoreCase);
             FocusListAndRow(pane, readRowAloud: !(quiet && sameRow));
 
-            if (entries.Count == 0 && pane == Active)
+            if (entries.Count == 0 && pane == Active && (!sameFolder || previousCount > 0))
                 AnnounceOperation("nav.empty", full.Equals(AppleMusic.SearchFolder, StringComparison.OrdinalIgnoreCase)
                     ? "No searches yet. Press F1 to search Apple Music"
                     : "This list is empty");
@@ -5398,10 +5558,34 @@ namespace ExplorerNative
                     candidate = candidate[..2] + "\\" + candidate[2..];
                 try
                 {
-                    return Path.IsPathFullyQualified(candidate) || candidate.StartsWith(@"\\")
-                        || (candidate.Length >= 2 && candidate[1] == ':')
-                        ? candidate
-                        : Path.GetFullPath(Path.Combine(Active.CurrentPath, candidate));
+                    if (Path.IsPathFullyQualified(candidate) || candidate.StartsWith(@"\\")
+                        || (candidate.Length >= 2 && candidate[1] == ':'))
+                        return candidate;
+
+                    // "\foo": the root of the drive on screen.
+                    if (Path.IsPathRooted(candidate))
+                        return Path.GetFullPath(Path.Combine(Active.CurrentPath, candidate));
+
+                    // Resolved a segment at a time rather than by GetFullPath,
+                    // which strips a trailing dot or space: "Backup." opened
+                    // the folder called Backup beside it.
+                    var resolved = Active.CurrentPath;
+                    var root = Path.GetPathRoot(resolved) ?? "";
+                    if (resolved.Length > root.Length) resolved = resolved.TrimEnd('\\', '/');
+                    if (resolved.Length < root.Length) resolved = root;
+                    foreach (var segment in candidate.Split('\\', '/'))
+                    {
+                        if (segment.Length == 0 || segment == ".") continue;
+                        if (segment == "..")
+                        {
+                            if (resolved.Length > root.Length &&
+                                Path.GetDirectoryName(resolved) is { Length: > 0 } up)
+                                resolved = up;
+                            continue;
+                        }
+                        resolved = Path.Combine(resolved, segment);
+                    }
+                    return resolved;
                 }
                 catch { return candidate; }
             }
@@ -6173,7 +6357,12 @@ namespace ExplorerNative
             // SetEntries applies them the moment there is something to search.
             var query = pane.TypeAhead.Accept(e.KeyChar, Environment.TickCount64);
 
-            if (pane.Entries.Count == 0) return;
+            // The rows on screen still the folder being left: matching them
+            // read a file from the wrong folder, or "Nothing starts with".
+            // Only while that navigation is still probing or listing, so a flag
+            // left by one that was overtaken and went nowhere cannot stop
+            // type-ahead for good.
+            if (pane.Entries.Count == 0 || (pane.StaleRows && (pane.Probing != 0 || pane.Loading))) return;
 
             int current = CurrentIndex(pane);
 
@@ -6398,6 +6587,9 @@ namespace ExplorerNative
                 if (pane.Archive != null || pane.SearchTerm != null || string.IsNullOrEmpty(pane.CurrentPath) ||
                     AppleMusic.Is(pane.CurrentPath) || pane.CurrentPath == DrivesPath) continue;
                 if (!string.Equals(pane.CurrentPath.TrimEnd('\\'), folder, StringComparison.OrdinalIgnoreCase)) continue;
+                // Still arriving: the rows are only those listed so far, or the
+                // folder before it, and would answer "last track" too soon.
+                if (!string.Equals(pane.LastLoadedPath?.TrimEnd('\\'), folder, StringComparison.OrdinalIgnoreCase)) continue;
                 return pane.Entries.Where(e => !e.IsDir && AudioFiles.IsAudio(e.Path, _settings.AudioExtensions))
                     .Select(e => e.Path).ToList();
             }
@@ -7337,8 +7529,11 @@ namespace ExplorerNative
             var parts = new List<string>(4) { DisplayNameOf(entry) };
             if (selected) parts.Add("selected");
 
-            if (!entry.IsDir && entry.Size >= 0)
-                parts.Add(SizeFormatter.Format(entry.Size, _settings.SizeUnits));
+            // The Size column's text: a folder's measured size and a drive's
+            // free space live in SizeOverride, a file's size is formatted.
+            var size = entry.SizeOverride
+                ?? (entry.IsDir || entry.Size < 0 ? "" : SizeFormatter.Format(entry.Size, _settings.SizeUnits));
+            if (size.Length > 0) parts.Add(size);
 
             if (entry.Modified != default)
                 parts.Add(TimeFormatter.Format(entry.Modified, _settings.VerboseModifiedInfo));
@@ -7399,8 +7594,9 @@ namespace ExplorerNative
             // on it, rather than opening it. A result is an answer to "where did
             // I put that", and the folder it is in is the rest of that answer —
             // the tracks either side of it, and somewhere to press Enter a second
-            // time if opening it was what was wanted after all.
-            if (Active.SearchTerm != null)
+            // time if opening it was what was wanted after all. Shift+Enter
+            // still opens the result itself in its own app.
+            if (!openExternally && Active.SearchTerm != null)
             {
                 var folder = Path.GetDirectoryName(entry.Path);
                 if (!string.IsNullOrEmpty(folder))
@@ -9243,6 +9439,17 @@ namespace ExplorerNative
             var chosen = SelectedPathsOf(Active);
             if (chosen.Count > 1 && chosen.Contains(archive, StringComparer.OrdinalIgnoreCase))
             {
+                // Refused from the paths alone, before anything is opened: telling
+                // archives apart reads the first bytes of each file, and on the
+                // Drive letter every one of those reads is a download.
+                if (Drive is { } drive && (drive.Owns(Active.CurrentPath) || chosen.Any(drive.Owns)))
+                {
+                    Announce("Archives on Google Drive cannot be extracted in place. " +
+                             "Copy the archive to a local folder first.", isError: true);
+                    RestoreListFocus();
+                    return;
+                }
+
                 try
                 {
                     var archives = await Task.Run(() => chosen
@@ -9256,7 +9463,10 @@ namespace ExplorerNative
                     if (archives.Count < chosen.Count)
                         Announce($"Extracting {NameRules.Counted(archives.Count, "archive")}; " +
                                  $"{NameRules.Items(chosen.Count - archives.Count)} selected {(chosen.Count - archives.Count == 1 ? "isn't an archive" : "aren't archives")}");
-                    await Task.WhenAll(archives.Select(a => ExtractOneAsync(a, intoNewFolder)));
+                    // One set of claimed folder names for the batch: photos.zip and
+                    // photos.7z extracted at once each get a folder of their own.
+                    var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    await Task.WhenAll(archives.Select(a => ExtractOneAsync(a, intoNewFolder, claimed)));
                 }
                 catch (Exception ex)
                 {
@@ -9274,8 +9484,14 @@ namespace ExplorerNative
             }
         }
 
+        /// <summary>
+        /// Lets one extract's conflict question be on screen at a time. Never
+        /// disposed: a worker may still be waiting on it.
+        /// </summary>
+        private readonly SemaphoreSlim _extractAskGate = new(1, 1);
+
         /// <summary>One archive extracted, with its own progress window.</summary>
-        private async Task ExtractOneAsync(string archive, bool intoNewFolder)
+        private async Task ExtractOneAsync(string archive, bool intoNewFolder, HashSet<string>? claimed = null)
         {
             // The folder the archive is in: in search results that is not the
             // folder the search started from.
@@ -9305,9 +9521,20 @@ namespace ExplorerNative
             // existence checks, and the folder this is running in may be a share
             // whose server has gone away — which is exactly the moment the window
             // must not freeze.
+            // Archives extracted together share claimed: none of them has made
+            // its folder yet, so the disk alone would hand them all the same one.
             var destination = intoNewFolder
-                ? await Task.Run(() => FileOperations.UniqueName(
-                    Path.Combine(here, ArchiveFormats.BaseName(archive)), folder: true))
+                ? await Task.Run(() =>
+                {
+                    var desired = Path.Combine(here, ArchiveFormats.BaseName(archive));
+                    if (claimed == null) return FileOperations.UniqueName(desired, folder: true);
+                    lock (claimed)
+                    {
+                        var unique = FileOperations.UniqueName(desired, claimed, folder: true);
+                        claimed.Add(unique);
+                        return unique;
+                    }
+                })
                 : here;
 
             var cts = new CancellationTokenSource();   // cancelled, never disposed: a worker may still hold its token
@@ -9321,13 +9548,26 @@ namespace ExplorerNative
             // BeginInvoke because the answer is what the worker is waiting for,
             // and it does not deadlock: the UI thread is back in the message loop
             // at this point, awaiting the task below.
+            //
+            // One question at a time across every extract: several running at
+            // once each asked through Invoke, and the first dialog's modal loop
+            // let the next one open on top of it. Waiting with the token means a
+            // cancelled extract stops waiting for its turn.
             Func<IReadOnlyList<string>, FileOperations.ConflictChoice> ask = names =>
-                (FileOperations.ConflictChoice)Invoke(new Func<FileOperations.ConflictChoice>(() =>
+            {
+                _extractAskGate.Wait(cts.Token);
+                try
                 {
-                    var choice = ConflictForm.Ask(this, names, FolderDisplayName(destination));
-                    RestoreListFocus();
-                    return choice;
-                }));
+                    return (FileOperations.ConflictChoice)Invoke(new Func<FileOperations.ConflictChoice>(() =>
+                    {
+                        var choice = ConflictForm.Ask(this, names,
+                            FolderDisplayName(destination) + " (" + Path.GetFileName(archive) + ")");
+                        RestoreListFocus();
+                        return choice;
+                    }));
+                }
+                finally { _extractAskGate.Release(); }
+            };
 
             BeginTransferTo(destination);
             RunningTransfers++;

@@ -157,7 +157,7 @@ namespace ExplorerNative
                 _queue = new BlockingCollection<Task<Chunk>>(_lanes * 2 + 2);
 
                 _current = new byte[ChunkBytes];
-                _emitter = Task.Run(Emit);
+                _emitter = ArchiveWorkers.RunLong(Emit);
             }
 
             public override bool CanRead => false;
@@ -235,7 +235,7 @@ namespace ExplorerNative
 
                 _lane.Wait(_token);
 
-                var work = Task.Run(() =>
+                var work = ArchiveWorkers.Run(() =>
                 {
                     try
                     {
@@ -392,6 +392,350 @@ namespace ExplorerNative
                 // that sees this has a half-written archive, which is what the
                 // engines above delete on the way out.
                 ThrowIfFailed();
+            }
+        }
+
+        /// <summary>
+        /// Reads a gzip file on every core, when it is made of members the way
+        /// <see cref="Writer"/> makes them, and straight through
+        /// <see cref="GZipStream"/> when it is not.
+        ///
+        /// A member cannot be found without decompressing what is before it,
+        /// in general. But a member that <see cref="Writer"/> (or .NET, or
+        /// zlib) wrote starts with the same ten bytes every time: the magic,
+        /// deflate, no flags and no time. So the file is cut at every place
+        /// those bytes appear, each piece is inflated by a worker on its own,
+        /// and a piece is believed only when it holds exactly one member: what
+        /// came out has the checksum and length in the last eight bytes of the
+        /// piece. The first piece starts at the start of the file, and every
+        /// believed piece ends where the next begins, so every cut that is
+        /// used is a real boundary between members.
+        ///
+        /// Anything else — a member written by another tool (a name, a time),
+        /// a file of one member, the ten bytes turning up by chance inside the
+        /// compressed data, damage, something after the end — makes a piece
+        /// that is not believed. From the start of that piece the rest of the
+        /// file is read the ordinary way, one thread and GZipStream, exactly as
+        /// before, so what comes out and every error it raises are what they
+        /// always were. Measured on 1GB of ParallelGZip's own output, eight
+        /// cores: see CLAUDE.md, Compressing and extracting.
+        /// </summary>
+        public sealed class Reader : Stream
+        {
+            /// <summary>The ten bytes every plain member begins with, less the last two (XFL and OS vary).</summary>
+            private static readonly byte[] PlainHeader = { 0x1f, 0x8b, 0x08, 0x00, 0, 0, 0, 0 };
+
+            /// <summary>
+            /// The longest piece looked for before giving up on finding the
+            /// next member: a member of <see cref="ChunkBytes"/> compresses to
+            /// at most a little over that, so a piece this long is a file made
+            /// by something else, read the ordinary way.
+            /// </summary>
+            internal const int MaxPiece = 8 * 1024 * 1024;
+
+            /// <summary>The most one piece may inflate to before it is not believed.</summary>
+            internal const int MaxOutput = 64 * 1024 * 1024;
+
+            private const int ReadBlock = 1 << 20;
+
+            private readonly Stream _file;
+            private readonly long _origin;
+            private readonly int _ahead;
+            private readonly CancellationToken _token;
+            private readonly bool _leaveOpen;
+
+            private readonly System.Collections.Generic.Queue<Task<Piece>> _pending = new();
+
+            /// <summary>What has been read from the file and not yet handed to a worker; starts at file offset _bufferAt.</summary>
+            private byte[] _buffer = new byte[2 * ReadBlock];
+            private int _buffered;
+            private long _bufferAt;
+            private int _searchedTo;
+            private bool _fileEnded;
+            private bool _cutsDone;
+
+            private Piece? _current;
+            private int _currentAt;
+
+            /// <summary>Set once the pieces stopped being believed: the rest of the file, read the ordinary way.</summary>
+            private GZipStream? _plain;
+            private CountedRead? _plainSource;
+            private long _plainFrom;
+
+            private long _consumed;
+
+            /// <summary>For the tests: how many pieces were inflated in parallel, and whether the ordinary way took over.</summary>
+            internal int ParallelPieces { get; private set; }
+            internal bool FellBack => _plain != null;
+
+            private sealed record Piece(long Start, long End, byte[]? Data, int Length);
+
+            /// <param name="file">Readable and seekable, positioned at the start of the gzip data.</param>
+            public Reader(Stream file, int threads, CancellationToken token, bool leaveOpen = true)
+            {
+                _file = file;
+                _origin = file.Position;
+                _bufferAt = _origin;
+                _ahead = Math.Max(2, Math.Max(1, threads) * 2);
+                _token = token;
+                _leaveOpen = leaveOpen;
+
+                // One thread, or a stream that cannot be repositioned: nothing
+                // to gain, and no way back to the ordinary read if a piece is
+                // not believed. Read the ordinary way from the start.
+                if (threads <= 1 || !file.CanSeek) StartPlain(_origin, seek: false);
+            }
+
+            /// <summary>How far through the file reading has got, for progress.</summary>
+            public long Consumed => Interlocked.Read(ref _consumed);
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position
+            {
+                get => throw new NotSupportedException();
+                set => throw new NotSupportedException();
+            }
+
+            public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+
+            public override int Read(Span<byte> into)
+            {
+                if (into.IsEmpty) return 0;
+
+                while (true)
+                {
+                    _token.ThrowIfCancellationRequested();
+
+                    if (_plain != null)
+                    {
+                        int got = _plain.Read(into);
+                        Interlocked.Exchange(ref _consumed, _plainFrom - _origin + _plainSource!.Count);
+                        return got;
+                    }
+
+                    if (_current != null && _currentAt < _current.Length)
+                    {
+                        int take = Math.Min(into.Length, _current.Length - _currentAt);
+                        _current.Data.AsSpan(_currentAt, take).CopyTo(into);
+                        _currentAt += take;
+                        return take;
+                    }
+
+                    _current = null;
+                    TopUp();
+                    if (_pending.Count == 0) return 0;
+
+                    var next = _pending.Dequeue();
+                    Piece piece;
+                    try
+                    {
+                        next.Wait(_token);
+                        piece = next.Result;
+                    }
+                    catch (AggregateException bundle) when (bundle.InnerException is OperationCanceledException cancelled)
+                    {
+                        throw new OperationCanceledException(cancelled.Message, cancelled, _token);
+                    }
+
+                    if (piece.Data == null)
+                    {
+                        // Not believed: from here on, the ordinary way.
+                        StartPlain(piece.Start, seek: true);
+                        continue;
+                    }
+
+                    Interlocked.Exchange(ref _consumed, piece.End - _origin);
+                    _current = piece;
+                    _currentAt = 0;
+                }
+            }
+
+            /// <summary>Keeps enough pieces in the workers' hands that none of them waits.</summary>
+            private void TopUp()
+            {
+                while (!_cutsDone && _pending.Count < _ahead)
+                {
+                    _token.ThrowIfCancellationRequested();
+                    if (!NextPiece()) break;
+                }
+            }
+
+            /// <summary>Cuts off the next piece and hands it to a worker. False when there is no more.</summary>
+            private bool NextPiece()
+            {
+                while (true)
+                {
+                    // The next header after this piece's own.
+                    int from = Math.Max(_searchedTo, 1);
+                    int found = -1;
+                    if (_buffered - from >= PlainHeader.Length)
+                    {
+                        int at = _buffer.AsSpan(from, _buffered - from).IndexOf(PlainHeader);
+                        if (at >= 0) found = from + at;
+                        else _searchedTo = _buffered - PlainHeader.Length + 1;
+                    }
+
+                    if (found > 0)
+                    {
+                        Dispatch(found, last: false);
+                        return true;
+                    }
+
+                    if (_fileEnded)
+                    {
+                        if (_buffered == 0) { _cutsDone = true; return false; }
+                        Dispatch(_buffered, last: true);
+                        _cutsDone = true;
+                        return true;
+                    }
+
+                    if (_buffered >= MaxPiece)
+                    {
+                        // No member boundary where one of ours would have one:
+                        // not our kind of file. Everything from here is read
+                        // the ordinary way.
+                        _pending.Enqueue(Task.FromResult(new Piece(_bufferAt, _bufferAt, null, 0)));
+                        _cutsDone = true;
+                        return true;
+                    }
+
+                    Fill();
+                }
+            }
+
+            private void Fill()
+            {
+                if (_buffer.Length - _buffered < ReadBlock)
+                    Array.Resize(ref _buffer, Math.Max(_buffer.Length * 2, _buffered + ReadBlock));
+
+                int got = _file.Read(_buffer, _buffered, ReadBlock);
+                if (got <= 0) _fileEnded = true;
+                else _buffered += got;
+            }
+
+            private void Dispatch(int length, bool last)
+            {
+                var bytes = _buffer.AsSpan(0, length).ToArray();
+                long start = _bufferAt;
+                long end = _bufferAt + length;
+
+                // What is left becomes the front of the buffer.
+                int rest = _buffered - length;
+                Buffer.BlockCopy(_buffer, length, _buffer, 0, rest);
+                _buffered = rest;
+                _bufferAt = end;
+                _searchedTo = 0;
+
+                ParallelPieces++;
+                _pending.Enqueue(ArchiveWorkers.Run(() => Inflate(bytes, start, end)));
+            }
+
+            /// <summary>
+            /// One piece, inflated and believed only if it is exactly one whole
+            /// member; otherwise a piece with no data, which hands over to the
+            /// ordinary read.
+            /// </summary>
+            private static Piece Inflate(byte[] bytes, long start, long end)
+            {
+                var refused = new Piece(start, end, null, 0);
+
+                // A header, the smallest deflate block and a trailer.
+                if (bytes.Length < 20) return refused;
+
+                uint storedCrc = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(bytes.Length - 8));
+                uint storedSize = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(bytes.AsSpan(bytes.Length - 4));
+
+                try
+                {
+                    int guess = storedSize <= MaxOutput ? (int)storedSize : bytes.Length * 4;
+                    var output = new byte[Math.Max(64, Math.Min(MaxOutput, guess))];
+                    int length = 0;
+
+                    using (var gzip = new GZipStream(new MemoryStream(bytes, writable: false), CompressionMode.Decompress))
+                    {
+                        while (true)
+                        {
+                            if (length == output.Length)
+                            {
+                                if (output.Length >= MaxOutput) return refused;
+                                Array.Resize(ref output, (int)Math.Min(MaxOutput, (long)output.Length * 2));
+                            }
+                            int got = gzip.Read(output, length, output.Length - length);
+                            if (got <= 0) break;
+                            length += got;
+                        }
+                    }
+
+                    if ((uint)length != storedSize) return refused;
+                    if (Crc32.Append(Crc32.Seed, output.AsSpan(0, length)) != storedCrc) return refused;
+                    return new Piece(start, end, output, length);
+                }
+                catch (Exception ex) when (ex is InvalidDataException or IOException or NotSupportedException)
+                {
+                    return refused;
+                }
+            }
+
+            private void StartPlain(long from, bool seek)
+            {
+                // Whatever is still being inflated is not wanted; its result is
+                // dropped when it ends.
+                while (_pending.Count > 0)
+                    _pending.Dequeue().ContinueWith(t => { _ = t.Exception; }, TaskScheduler.Default);
+                _cutsDone = true;
+                _buffer = Array.Empty<byte>();
+                _buffered = 0;
+
+                if (seek) _file.Position = from;
+                _plainFrom = from;
+                _plainSource = new CountedRead(_file);
+                _plain = new GZipStream(_plainSource, CompressionMode.Decompress, leaveOpen: true);
+            }
+
+            public override void Flush() { }
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    while (_pending.Count > 0)
+                        _pending.Dequeue().ContinueWith(t => { _ = t.Exception; }, TaskScheduler.Default);
+                    _plain?.Dispose();
+                    if (!_leaveOpen) _file.Dispose();
+                }
+                base.Dispose(disposing);
+            }
+
+            /// <summary>A pass-through that counts what the ordinary read has taken, for progress.</summary>
+            private sealed class CountedRead : Stream
+            {
+                private readonly Stream _inner;
+                private long _count;
+                public CountedRead(Stream inner) => _inner = inner;
+                public long Count => Interlocked.Read(ref _count);
+                public override bool CanRead => true;
+                public override bool CanSeek => false;
+                public override bool CanWrite => false;
+                public override long Length => _inner.Length;
+                public override long Position { get => _inner.Position; set => throw new NotSupportedException(); }
+                public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+                public override int Read(Span<byte> buffer)
+                {
+                    int got = _inner.Read(buffer);
+                    if (got > 0) Interlocked.Add(ref _count, got);
+                    return got;
+                }
+                public override void Flush() { }
+                public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+                public override void SetLength(long value) => throw new NotSupportedException();
+                public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+                protected override void Dispose(bool disposing) { }
             }
         }
 

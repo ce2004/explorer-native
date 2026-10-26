@@ -285,8 +285,12 @@ namespace ExplorerNative
 
             string state;
             if (pair.Paused) state = "paused";
-            else if (status?.Problem is { } waiting && waiting.StartsWith("waiting", StringComparison.Ordinal))
-                state = waiting;
+            else if (status?.Problem is { } waiting && (waiting.StartsWith("waiting", StringComparison.Ordinal) ||
+                                                        waiting.StartsWith(DriveClient.DailyUploadLimitSaid, StringComparison.Ordinal)))
+                // Google's daily cap stalls a running pass for hours; the row
+                // says so rather than reading the frozen progress.
+                state = waiting.StartsWith("waiting", StringComparison.Ordinal)
+                    ? waiting : char.ToLowerInvariant(waiting[0]) + waiting[1..];
             else if (status is { Running: true, CheckTotal: > 0 })
                 state = $"checking with Google what is already there, {status.CheckDone:N0} of {status.CheckTotal:N0} " +
                         $"files compared, {status.LocalFound:N0} on the PC and {status.DriveFound:N0} on Drive";
@@ -419,9 +423,14 @@ namespace ExplorerNative
                 lines.Add($"Copied: {DriveMonitor.Words(status.DoneBytes)} of {DriveMonitor.Words(status.TotalBytes)}");
 
             // Conner's request: how long the rest takes at the speed it is going now.
+            // A crawl of a few bytes a second over terabytes is years, past what
+            // TimeSpan holds (it threw, from the timer); left out, as meaningless.
             if (running && live != null && status.TotalBytes > status.DoneBytes && live.UpPerSecond + live.DownPerSecond > 0)
-                lines.Add("Time left: about " +
-                          TimeLeft(TimeSpan.FromSeconds((status.TotalBytes - status.DoneBytes) / (double)(live.UpPerSecond + live.DownPerSecond))));
+            {
+                double seconds = (status.TotalBytes - status.DoneBytes) / (double)(live.UpPerSecond + live.DownPerSecond);
+                if (double.IsFinite(seconds) && seconds <= TimeSpan.FromDays(365).TotalSeconds)
+                    lines.Add("Time left: about " + TimeLeft(TimeSpan.FromSeconds(seconds)));
+            }
 
             // Conner's request: Google's 750 GB a day, seen coming. All pairs
             // together, since the allowance is the account's.
@@ -546,12 +555,20 @@ namespace ExplorerNative
             return pairs;
         }
 
-        /// <summary>A shared drive's name as a folder on the PC: what Windows refuses in a name becomes "_".</summary>
+        /// <summary>
+        /// A shared drive's name as a folder on the PC, by the same rules as the
+        /// Drive letter's names (DriveMount.Sanitise): what Windows refuses
+        /// becomes "_", trailing dots and spaces go until neither is left ("Team ."
+        /// is "Team", which Windows would make of it anyway, so it collides in
+        /// 'taken'), and a device name such as CON becomes CON_.
+        /// </summary>
         internal static string WindowsName(string name)
         {
-            var bad = Path.GetInvalidFileNameChars();
-            var safe = new string(name.Select(c => Array.IndexOf(bad, c) >= 0 ? '_' : c).ToArray()).Trim().TrimEnd('.');
-            return safe.Length == 0 ? "Shared drive" : safe;
+            foreach (var bad in Path.GetInvalidFileNameChars()) name = name.Replace(bad, '_');
+            var cleaned = name.Trim();
+            while (cleaned.Length > 0 && (cleaned[^1] == '.' || cleaned[^1] == ' '))
+                cleaned = cleaned[..^1];
+            return cleaned.Length == 0 ? "Shared drive" : DriveMount.Sanitise(cleaned);
         }
 
         /// <summary>

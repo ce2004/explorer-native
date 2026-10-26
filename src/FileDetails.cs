@@ -49,7 +49,18 @@ namespace ExplorerNative
             var exact = NameRules.ExactPath(path);
             var info = new FileInfo(exact);
             if (!info.Exists || info.Length > MaxTextBytes) return null;
-            return CountText(File.ReadAllText(exact));
+            // Shared for writing and deleting, so a log another program is
+            // still appending to can be counted (File.ReadAllText refuses
+            // write sharing). Read no more than the length just checked: a
+            // fast-growing log must not turn into an unbounded read. A
+            // character is at least one byte, so the whole checked length fits.
+            using var stream = new FileStream(exact, FileMode.Open, FileAccess.Read,
+                FileShare.ReadWrite | FileShare.Delete);
+            using var reader = new StreamReader(stream, System.Text.Encoding.UTF8,
+                detectEncodingFromByteOrderMarks: true);
+            var buffer = new char[(int)info.Length];
+            int read = reader.ReadBlock(buffer, 0, buffer.Length);
+            return CountText(new string(buffer, 0, read));
         }
 
         /// <summary>"120 words, 640 characters". Words are runs of anything that is not white space.</summary>

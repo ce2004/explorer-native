@@ -25,7 +25,8 @@ namespace ExplorerNative
             check("7-Zip is carried in the build and unpacks", exe != null && File.Exists(exe), exe);
             if (exe == null) return;
             check("7z goes through 7-Zip", BsdTar.UsesSevenZip(ArchiveFormats.SevenZip), null);
-            check("7-Zip leaves one core free", BsdTar.SevenZipThreads == Math.Max(1, Environment.ProcessorCount - 1), null);
+            // 4.2.5: every core, below normal priority (it left one free before).
+            check("7-Zip is given every core", BsdTar.SevenZipThreads == Environment.ProcessorCount, null);
             check("a second ask reuses the unpacked copy", BsdTar.SevenZipExecutable == exe, null);
 
             var dir = Path.Combine(Path.GetTempPath(), "EN-7z-" + Guid.NewGuid().ToString("N")[..8]);

@@ -1180,7 +1180,34 @@ namespace ExplorerNative
                         => "That isn't available for Apple Music",
                     _ => "",
                 };
-                if (m.Length > 0) SayAudio(AudioActions.For(action).NotificationId, m);
+                if (m.Length == 0) return;
+                // File the answer under what happened, as the built-in player
+                // does: resumed is not paused, unmuted is not muted, the cap is
+                // volume.max, and "Nothing is playing" is said whatever the
+                // key's own category is switched to.
+                string id = AudioActions.For(action).NotificationId;
+                switch (action)
+                {
+                    case AudioAction.PlayPause:
+                        id = m == "Paused" ? "audio.pause" : "audio.resume";
+                        break;
+                    case AudioAction.Mute:
+                        id = m == "Muted" ? "volume.muted" : "volume.unmuted";
+                        break;
+                    case AudioAction.VolumeUp when AppleMusicPlayer.VolumePercent == 100:
+                        id = "volume.max";
+                        break;
+                    case AudioAction.VolumeDown when AppleMusicPlayer.VolumePercent == 0:
+                        id = "volume.min";
+                        break;
+                    case AudioAction.WhatIsPlaying or AudioAction.SayElapsed
+                        or AudioAction.SayRemaining or AudioAction.SayTotal:
+                        break;
+                    default:
+                        if (m == "Nothing is playing") id = "audio.nothing";
+                        break;
+                }
+                SayAudio(id, m);
                 return;
             }
 
@@ -1838,6 +1865,7 @@ namespace ExplorerNative
             if (shown != null) return PlayNeighbourIn(shown, current, direction);
 
             int ticket = ++_neighbourTicket;
+            int play = System.Threading.Volatile.Read(ref _playRequest);
             var extensions = _settings.AudioExtensions;
             var id = direction > 0 ? "audio.next" : "audio.previous";
             _ = System.Threading.Tasks.Task.Run(() =>
@@ -1845,17 +1873,40 @@ namespace ExplorerNative
                 List<string> files;
                 try
                 {
-                    files = new System.IO.DirectoryInfo(folder).EnumerateFiles()
-                        .Where(f => (f.Attributes & (System.IO.FileAttributes.Hidden | System.IO.FileAttributes.System)) == 0 &&
-                                    AudioFiles.IsAudio(f.FullName, extensions))
-                        .Select(f => f.FullName)
-                        .ToList();
+                    if (_drive.Owns(folder))
+                    {
+                        // Never walk the letter from this process: each
+                        // placeholder is a request, and an unlisted folder
+                        // would call back into us. The mount's listing only.
+                        if (!_drive.TryListing(folder, out var placed))
+                        {
+                            _drive.Populate(folder);
+                            _drive.TryListing(folder, out placed);
+                        }
+                        files = placed?.Where(e => !e.IsFolder && AudioFiles.IsAudio(e.Name, extensions))
+                            .Select(e => System.IO.Path.Combine(folder, e.Name))
+                            .ToList() ?? new List<string>();
+                    }
+                    else
+                    {
+                        files = new System.IO.DirectoryInfo(folder).EnumerateFiles()
+                            .Where(f => (f.Attributes & (System.IO.FileAttributes.Hidden | System.IO.FileAttributes.System)) == 0 &&
+                                        AudioFiles.IsAudio(f.FullName, extensions))
+                            .Select(f => f.FullName)
+                            .ToList();
+                    }
                     files.Sort((a, b) => NameRules.CompareNames(System.IO.Path.GetFileName(a), a, System.IO.Path.GetFileName(b), b));
                 }
                 catch (Exception) { files = new List<string>(); }
                 PostUi(() =>
                 {
-                    if (ticket != _neighbourTicket) return;   // pressed again meanwhile
+                    // Pressed again meanwhile, or another track (or Apple Music)
+                    // was started, or the track was stopped: drop this answer.
+                    if (ticket != _neighbourTicket ||
+                        play != System.Threading.Volatile.Read(ref _playRequest) ||
+                        AppleMusicPlayer.IsActive) return;
+                    var now = AudioState;
+                    if (!now.HasTrack || !string.Equals(now.Path, current, StringComparison.OrdinalIgnoreCase)) return;
                     var said = PlayNeighbourIn(files, current, direction);
                     if (said.Length > 0) SayAudio(id, said);
                 });

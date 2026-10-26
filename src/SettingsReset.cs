@@ -13,6 +13,8 @@ namespace ExplorerNative
     /// - The web app's pairing code, whether the web app is on, and its port:
     ///   a new code or a closed port signs out every phone and browser that
     ///   was paired.
+    /// - The Apple Music sign-in (AppleMusicUserToken): a credential, like the
+    ///   pairing code, and losing it means exporting cookies.txt again.
     /// - The Google Drive sync pairs, and Google Drive staying on: the
     ///   configurator is where pairs are removed, and switching Drive off
     ///   stops every sync with no word said.
@@ -29,6 +31,7 @@ namespace ExplorerNative
         public const string KeptSentence =
             "Kept: the folders each tab is in, the window's size and place, " +
             "Google Drive and its sync pairs, the web app with its pairing code and port, " +
+            "your Apple Music sign-in, " +
             "and whether Explorer Native opens your folders and is on the Windows context menu. " +
             "Everything else goes back to how it was when Explorer Native was first installed, " +
             "including the audio player, the shortcuts and what is spoken.";
@@ -63,6 +66,9 @@ namespace ExplorerNative
             WindowWidth = old.WindowWidth,
             WindowHeight = old.WindowHeight,
             ConnectCode = old.ConnectCode,
+            // A sign-in, not a preference: emptied, Apple Music vanished from
+            // the drives and cookies.txt had to be exported again.
+            AppleMusicUserToken = old.AppleMusicUserToken,
             WebAppEnabled = old.WebAppEnabled,
             WebAppPort = old.WebAppPort,
             GoogleDriveEnabled = old.GoogleDriveEnabled,

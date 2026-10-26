@@ -1762,6 +1762,10 @@ namespace ExplorerNative
 
             StartQuietly(process);
             KeepWithUs(process);
+
+            // Below normal, like 7-Zip and every archive thread of ours: zstd
+            // and xz run on every core, and the desktop and NVDA come first.
+            try { process.PriorityClass = ProcessPriorityClass.BelowNormal; } catch { }
             process.BeginErrorReadLine();
 
             return new Run { Process = process, Errors = collected };

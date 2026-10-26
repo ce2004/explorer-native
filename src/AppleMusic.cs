@@ -768,7 +768,10 @@ namespace ExplorerNative
                     if (kept.Count == rows.Count) continue;
                     Listings[key] = kept;
                     if (Displayed.TryGetValue(key, out var shown))
-                        Displayed[key] = shown.Where(p => kept.Any(r => string.Equals(r.Path, p, StringComparison.OrdinalIgnoreCase))).ToList();
+                    {
+                        var keptPaths = new HashSet<string>(kept.Select(r => r.Path), StringComparer.OrdinalIgnoreCase);
+                        Displayed[key] = shown.Where(keptPaths.Contains).ToList();
+                    }
                     changed.Add(key);
                 }
             }

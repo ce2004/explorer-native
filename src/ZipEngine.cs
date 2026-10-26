@@ -219,7 +219,7 @@ namespace ExplorerNative
         {
             int lanes = Math.Max(1, threads);
             var compression = ArchiveEngine.ToCompressionLevel(level);
-            var budget = new Budget(Math.Clamp(lanes * 24L * 1024 * 1024, 128L << 20, 512L << 20));
+            var budget = new Budget(ArchiveWorkers.ZipBudget(lanes));
 
             // How many entries may be *being compressed* at once.
             //
@@ -231,16 +231,16 @@ namespace ExplorerNative
             // for sixteen produced the same wall clock, and a machine could not be
             // told to leave itself some processor for anything else.
             //
-            // Taken by the producer and released by the writer, exactly like the
-            // byte budget below it. Doing it that way rather than waiting inside
+            // Taken by the producer and released by the worker as it finishes
+            // (the byte budget is the one the writer releases). Doing it that way rather than waiting inside
             // the worker matters: a pool thread that is blocked on a semaphore is
             // a thread that is not compressing anything, and the pool answers that
             // by starting more of them.
             using var lane = new SemaphoreSlim(lanes, lanes);
 
-            // Two spare slots so a worker never finishes into a full queue while
-            // the writer is busy with a big entry.
-            using var queue = new BlockingCollection<Task<Prepared>>(lanes + 2);
+            // Room for many small entries finished ahead of a writer that is busy
+            // with a big one; the byte budget, not this, is what bounds the memory.
+            using var queue = new BlockingCollection<Task<Prepared>>(Math.Max(64, lanes * 16));
 
             Exception? producerFailure = null;
 
@@ -287,7 +287,12 @@ namespace ExplorerNative
 
                         // Streamed by the writer: nothing to reserve, nothing to
                         // spread. Data stays null and Length is -1 to say so.
-                        if (item.Size > WorkerMaxBytes || StoreWholesale(item, level))
+                        // Only what is too big to hold. A small file that is
+                        // stored rather than deflated (a photo, a song) used to
+                        // be read and checksummed by the writer too, one after
+                        // another, with every worker waiting behind it; a
+                        // worker now reads it into memory like any other.
+                        if (item.Size > WorkerMaxBytes)
                         {
                             queue.Add(Task.FromResult(new Prepared
                             {
@@ -301,6 +306,8 @@ namespace ExplorerNative
                             continue;
                         }
 
+                        bool store = StoreWholesale(item, level);
+
                         // Deflate adds five bytes per 64KB stored block to data that
                         // will not compress, which is what the buffer below is sized
                         // for; reserved the same.
@@ -309,17 +316,23 @@ namespace ExplorerNative
                         try { lane.Wait(halt); }
                         catch { budget.Give(reserved); throw; }
 
-                        var work = Task.Run(() => CompressToMemory(item, compression, reserved, reporter, halt), halt);
+                        // The lane goes back the moment the work is done, not when
+                        // the writer gets to it. Held until written, every lane
+                        // was soon an entry finished and waiting while the writer
+                        // copied one big file, and the workers stood idle: a
+                        // mixed folder used five of eight cores. The memory it
+                        // holds stays reserved until it is written.
+                        var work = ArchiveWorkers.Run(() =>
+                        {
+                            try { return CompressToMemory(item, store ? null : compression, reserved, reporter, halt); }
+                            finally { Release(lane, lanes); }
+                        }, halt);
                         try { queue.Add(work, halt); }
                         catch
                         {
                             // A task that never reaches the queue is never drained,
                             // so it gives back what it holds itself, once it ends.
-                            work.ContinueWith(t =>
-                            {
-                                budget.Give(reserved);
-                                Release(lane, lanes);
-                            }, TaskScheduler.Default);
+                            work.ContinueWith(t => budget.Give(reserved), TaskScheduler.Default);
                             throw;
                         }
                     }
@@ -334,7 +347,7 @@ namespace ExplorerNative
                     catch (InvalidOperationException) { }
                 }
             })
-            { IsBackground = true, Name = "zip-plan" };
+            { IsBackground = true, Name = "zip-plan", Priority = ThreadPriority.BelowNormal };
 
             int written = 0;
 
@@ -420,7 +433,6 @@ namespace ExplorerNative
                         finally
                         {
                             budget.Give(prepared.Reserved);
-                            if (prepared.Reserved > 0) Release(lane, lanes);
                         }
                     }
                 }
@@ -441,7 +453,6 @@ namespace ExplorerNative
                             _ = t.Exception;
                             if (t.Status != TaskStatus.RanToCompletion || t.Result.Reserved <= 0) return;
                             budget.Give(t.Result.Reserved);
-                            Release(lane, lanes);
                         }, TaskScheduler.Default);
 
                     producer.Join(TimeSpan.FromSeconds(10));
@@ -481,7 +492,8 @@ namespace ExplorerNative
         /// compress ten to one keeps ten times as many in flight as one that does
         /// not, without anybody choosing that.
         /// </summary>
-        private static Prepared CompressToMemory(ArchiveItem item, CompressionLevel level,
+        /// <param name="level">Null for a file that is stored rather than deflated: read and checksummed only.</param>
+        private static Prepared CompressToMemory(ArchiveItem item, CompressionLevel? level,
             long reserved, ArchiveEngine.Reporter reporter, CancellationToken token)
         {
             try
@@ -509,7 +521,9 @@ namespace ExplorerNative
                 long read = 0;
 
                 var buffer = Scratch(1 << 16);
-                using (var deflate = new DeflateStream(into, level, leaveOpen: true))
+                using (Stream deflate = level is { } squeeze
+                           ? new DeflateStream(into, squeeze, leaveOpen: true)
+                           : new NotClosing(into))
                 {
                     while (true)
                     {
@@ -538,7 +552,7 @@ namespace ExplorerNative
                 return new Prepared
                 {
                     Item = item,
-                    Method = MethodDeflate,
+                    Method = level == null ? MethodStored : MethodDeflate,
                     Crc = crc,
                     Uncompressed = read,
                     Data = into.GetBuffer(),
@@ -556,6 +570,25 @@ namespace ExplorerNative
                     Error = $"{item.Name}: {ex.Message}",
                 };
             }
+        }
+
+        /// <summary>Writes through to a stream and leaves it open when disposed.</summary>
+        private sealed class NotClosing : Stream
+        {
+            private readonly Stream _inner;
+            public NotClosing(Stream inner) => _inner = inner;
+            public override bool CanRead => false;
+            public override bool CanSeek => false;
+            public override bool CanWrite => true;
+            public override long Length => _inner.Length;
+            public override long Position { get => _inner.Position; set => throw new NotSupportedException(); }
+            public override void Write(byte[] buffer, int offset, int count) => _inner.Write(buffer, offset, count);
+            public override void Write(ReadOnlySpan<byte> buffer) => _inner.Write(buffer);
+            public override void Flush() { }
+            public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            protected override void Dispose(bool disposing) { }
         }
 
         /// <summary>
@@ -1134,6 +1167,23 @@ namespace ExplorerNative
             catch { return null; }
         }
 
+        /// <summary>Runs of at least this many compressed bytes go first; see <see cref="BigFirst"/>.</summary>
+        internal const long BigRunBytes = 8L * 1024 * 1024;
+
+        /// <summary>
+        /// The runs holding <see cref="BigRunBytes"/> or more, biggest first,
+        /// then every other run in the order it had. The longest jobs started
+        /// first is what keeps every worker busy to the end.
+        /// </summary>
+        internal static List<(int Start, int End)> BigFirst(List<(int Start, int End)> runs,
+            Func<(int Start, int End), long> bytesOf)
+        {
+            var sized = runs.Select(r => (Run: r, Bytes: bytesOf(r))).ToList();
+            return sized.Where(s => s.Bytes >= BigRunBytes).OrderByDescending(s => s.Bytes)
+                .Concat(sized.Where(s => s.Bytes < BigRunBytes))
+                .Select(s => s.Run).ToList();
+        }
+
         /// <summary>The most extraction lanes worth opening for an archive of this many entries.</summary>
         internal static int LanesFor(int entries) => Math.Max(1, 1_000_000 / Math.Max(1, entries));
 
@@ -1204,6 +1254,18 @@ namespace ExplorerNative
                 return slash < 0 ? "" : name[..slash];
             }, i => index.Entries[i].Length);
 
+            // The big ones first. A worker handed a 150MB log at the end of the
+            // archive inflated it alone while every other worker had finished:
+            // the last second of the extraction ran on one core. Taken first,
+            // the small runs fill in around them. Only order changes: where
+            // each entry goes was settled above, in archive order.
+            runs = BigFirst(runs, run =>
+            {
+                long bytes = 0;
+                for (int i = run.Start; i < run.End; i++) bytes += Math.Max(0, index.Entries[i].CompressedLength);
+                return bytes;
+            });
+
             int nextRun = -1;
             int done = 0;
             int lanes = Math.Clamp(threads, 1, Math.Max(1, runs.Count));
@@ -1225,7 +1287,7 @@ namespace ExplorerNative
             var workers = new Task[lanes];
             for (int lane = 0; lane < lanes; lane++)
             {
-                workers[lane] = Task.Run(() =>
+                workers[lane] = ArchiveWorkers.RunLong(() =>
                 {
                     using var file = new FileStream(archivePath, FileMode.Open, FileAccess.Read,
                         FileShare.ReadWrite, 1 << 16);
@@ -1334,7 +1396,7 @@ namespace ExplorerNative
                             bufferSize: 0,
                             // Through the handle, after a flush, so closing it
                             // does not overwrite it.
-                            modified: When(entry));
+                            modified: When(entry), expectedLength: entry.Length);
 
                             Interlocked.Increment(ref done);
                             Volatile.Write(ref settled[at], 1);

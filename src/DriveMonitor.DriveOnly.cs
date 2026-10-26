@@ -69,6 +69,12 @@ namespace ExplorerNative
             return changed;
         }
 
+        /// <summary>Stops a running pass of the pair at its next file, as an edit of its settings does.</summary>
+        internal void InterruptPair(string pairId)
+        {
+            lock (_gate) _generation[pairId] = (_generation.TryGetValue(pairId, out var g) ? g : 0) + 1;
+        }
+
         /// <summary>
         /// Drops a pair's records of one folder, between its passes. False when
         /// its saved state could not be read just now, so nothing was changed.
@@ -80,8 +86,12 @@ namespace ExplorerNative
             if (relative.Length == 0) return false;
             var only = new List<string> { relative };
 
-            // A pass under way stops at its next file once the pair is edited;
-            // one waiting on Google is woken to notice.
+            // A pass under way holds the lock to its end, which on a big pair is
+            // hours. Keep on Drive only has already edited the pair, so it stops
+            // at its next file; Put back has not yet (it edits under the lock),
+            // so it tells the pass to stop here. One waiting on Google is woken
+            // to notice. The next pass picks up whatever was left.
+            if (listAgain) InterruptPair(pairId);
             CutWait();
             var records = RecordsLock(pairId);
             await records.WaitAsync(token).ConfigureAwait(false);
@@ -157,7 +167,7 @@ namespace ExplorerNative
 
         /// <summary>What checking a PC folder against Drive found.</summary>
         private sealed record FolderCheck(List<CheckedFile> Matching, List<string> Leftovers, List<string> NotOnDrive,
-            string? Link, List<string> NeverSynced, List<string>? LeftOnPc = null);
+            string? Link, List<string> NeverSynced, List<string>? LeftOnPc = null, List<string>? LeftOutByRules = null);
 
         /// <summary>
         /// Every file under <paramref name="pcFolder"/>, hidden ones included,
@@ -166,13 +176,15 @@ namespace ExplorerNative
         /// in progress) need no copy. A link inside is never followed.
         /// </summary>
         private static async Task<FolderCheck> CheckAgainstDriveAsync(string pcFolder,
-            IReadOnlyDictionary<string, SyncFile> remote, CancellationToken token)
+            IReadOnlyDictionary<string, SyncFile> remote, CancellationToken token,
+            SyncRules? rules = null, string pairRelative = "")
         {
             var matching = new List<CheckedFile>();
             var leftovers = new List<string>();
             var notOnDrive = new List<string>();
             var neverSynced = new List<string>();
             var leftOnPc = new List<string>();
+            var leftOutByRules = new List<string>();
             // Each folder carries whether the scan would leave it out: it skips a
             // hidden or system folder whole (ScanLocalFolder), so nothing inside
             // one is ever uploaded, whatever the file's own attributes say.
@@ -205,6 +217,12 @@ namespace ExplorerNative
                         // them out), so waiting for a pass to send them was 5 minutes
                         // for a refusal that could never come right.
                         if (folderLeftOut || (file.Attributes & leftOut) != 0) neverSynced.Add(relative);
+                        // So are files the pair's own settings leave out: the skip
+                        // list, and anything over its size limit.
+                        else if (rules != null &&
+                                 (rules.SkipsType(pairRelative.Length == 0 ? relative : pairRelative + "/" + relative) ||
+                                  (rules.MaxBytes > 0 && file.Length > rules.MaxBytes)))
+                            leftOutByRules.Add(relative);
                         notOnDrive.Add(relative);
                         continue;
                     }
@@ -230,14 +248,17 @@ namespace ExplorerNative
                         notOnDrive.Add(relative);
                 }
             }
-            return new FolderCheck(matching, leftovers, notOnDrive, null, neverSynced, leftOnPc);
+            return new FolderCheck(matching, leftovers, notOnDrive, null, neverSynced, leftOnPc, leftOutByRules);
         }
 
         /// <summary>
         /// Runs a pass of one pair now and waits, at most <paramref name="max"/>,
-        /// for it to finish. False when it did not (paused, offline, too long).
+        /// for it to finish. False when it did not (paused, stopped, too long),
+        /// with the pair's problem when the pass hit one that lasts. Only a
+        /// pass that began after the ask counts: one already running may have
+        /// looked at the folder before the files came.
         /// </summary>
-        private async Task<bool> SyncPairNowAsync(string pairId, TimeSpan max, CancellationToken token)
+        private async Task<(bool Synced, string? Problem)> SyncPairNowAsync(string pairId, TimeSpan max, CancellationToken token)
         {
             var asked = DateTime.UtcNow;
             lock (_gate) _due.Add(pairId);
@@ -247,9 +268,24 @@ namespace ExplorerNative
             {
                 await Task.Delay(250, token).ConfigureAwait(false);
                 lock (_gate)
-                    if (_lastChecked.TryGetValue(pairId, out var at) && at > asked && _running != pairId) return true;
+                {
+                    // Paused or removed meanwhile: no pass is coming.
+                    if (_removed.Contains(pairId) || !_pairs.Any(p => p.Id == pairId && !p.Paused)) return (false, null);
+                    if (_running == pairId || !_ranFrom.TryGetValue(pairId, out var ran) || ran <= asked) continue;
+                    // A pass sets _lastChecked only when it went through, before
+                    // _running is cleared.
+                    if (_lastChecked.TryGetValue(pairId, out var at) && at >= ran) return (true, null);
+                    var problem = _status.TryGetValue(pairId, out var status) ? status.Problem : null;
+                    // No problem left: it was stopped (paused, edited or removed).
+                    if (problem == null) return (false, null);
+                    // Offline: the pair stays due and runs again on reconnect.
+                    if (problem.StartsWith("offline", StringComparison.Ordinal)) continue;
+                    // Anything else (Google's "not now" is waited out inside the
+                    // pass) would only happen again.
+                    return (false, problem);
+                }
             }
-            return false;
+            return (false, null);
         }
 
         /// <summary>How long Keep on Drive only waits for a pass to send what is not in Drive yet. The suite shortens it.</summary>
@@ -297,6 +333,7 @@ namespace ExplorerNative
 
             // Drive's copy, and every PC file against it. Anything not there yet
             // gets one pass of the pair to go up, then it is looked at again.
+            var rules = SyncRules.For(pair);
             FolderCheck check;
             for (int round = 0; ; round++)
             {
@@ -304,7 +341,7 @@ namespace ExplorerNative
                 var remote = folderId == null
                     ? new Dictionary<string, SyncFile>(SyncNameComparer.Instance)
                     : (await ScanRemoteAsync(client, folderId, subfolders: true, token).ConfigureAwait(false)).Files;
-                check = await CheckAgainstDriveAsync(pcFolder, remote, token).ConfigureAwait(false);
+                check = await CheckAgainstDriveAsync(pcFolder, remote, token, rules, relative).ConfigureAwait(false);
                 if (check.Link != null)
                     return new(false, $"{name} holds a link to somewhere else ({Leaf(check.Link)}), so it was left as it is");
                 if (check.NotOnDrive.Count == 0 && folderId != null) break;
@@ -314,7 +351,19 @@ namespace ExplorerNative
                     return new(false, $"{hidden} in {name} {(check.NeverSynced.Count == 1 ? "is" : "are")} never synced ({SomeOf(check.NeverSynced)}), " +
                                       "so it can't be kept on Google Drive only. Nothing was removed");
                 }
-                if (round > 0 || pair.Paused || !await SyncPairNowAsync(pairId, DriveOnlySyncWait, token).ConfigureAwait(false))
+                if (check.LeftOutByRules is { Count: > 0 } byRules)
+                {
+                    var files = NameRules.Counted(byRules.Count, "file");
+                    return new(false, $"{files} in {name} {(byRules.Count == 1 ? "is" : "are")} left out by the sync settings of {DisplayName(pair)} ({SomeOf(byRules)}), " +
+                                      "so it can't be kept on Google Drive only. Nothing was removed");
+                }
+                bool synced = false;
+                string? passProblem = null;
+                if (round == 0 && !pair.Paused)
+                    (synced, passProblem) = await SyncPairNowAsync(pairId, DriveOnlySyncWait, token).ConfigureAwait(false);
+                if (passProblem != null)
+                    return new(false, $"{DisplayName(pair)} could not sync just now ({passProblem}), so {name} was left as it is. Nothing was removed");
+                if (!synced)
                 {
                     if (check.NotOnDrive.Count == 0)
                         return new(false, $"{name} is not in Google Drive yet. Nothing was removed. Try again once it has synced");
@@ -428,10 +477,13 @@ namespace ExplorerNative
             // copy would go to the trash.
             // Off the list under the same lock, so no pass that began with it
             // still on can list Drive afresh, skip it, and leave the feed past it.
+            // On a worker: with the lock free nothing below really waits, and the
+            // state file (decrypted, read, rewritten) would be handled on the UI
+            // thread, freezing the window on a big pair.
             bool listed = true;
-            if (!await ForgetFolderAsync(pairId, entry, token, listAgain: true, thenWhileHeld: () =>
+            if (!await Task.Run(() => ForgetFolderAsync(pairId, entry, token, listAgain: true, thenWhileHeld: () =>
                     listed = EditPair(pairId, p => p.DriveOnlyFolders.RemoveAll(f =>
-                        SyncNameComparer.Instance.Equals(DriveOnlyFolders.Normal(f), entry))) != null)
+                        SyncNameComparer.Instance.Equals(DriveOnlyFolders.Normal(f), entry))) != null), token)
                 .ConfigureAwait(false))
                 return new(false, $"The sync records of {DisplayName(pair)} could not be opened just now, so {Leaf(entry)} was left on Google Drive only. Try again in a moment");
             if (!listed) return new(false, "That folder is no longer synced");

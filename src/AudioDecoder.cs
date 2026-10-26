@@ -116,7 +116,8 @@ namespace ExplorerNative
             [PreserveSig] int SetGUID(ref Guid key, ref Guid value);            // 21
         }
 
-        [StructLayout(LayoutKind.Explicit)]
+        // 24 bytes on 64-bit Windows: Windows copies a whole PROPVARIANT into it.
+        [StructLayout(LayoutKind.Explicit, Size = 24)]
         private struct PropVariant
         {
             [FieldOffset(0)] public ushort Type;

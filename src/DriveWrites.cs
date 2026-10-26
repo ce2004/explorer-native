@@ -1411,6 +1411,16 @@ namespace ExplorerNative
                     catch (Exception ex)
                     {
                         lastProblem = ex.Message; lastFailure = ex;
+
+                        // The network went away while Google was being asked how
+                        // much it holds: waited out, not charged to the attempts,
+                        // as a small file's outage is. Asked again once back.
+                        if (await WaitOutNetwork(ex, $"sending {name}", token))
+                        {
+                            askFirst = true;
+                            waited = true;
+                            attempt--;
+                        }
                         continue;
                     }
                 }
@@ -1453,6 +1463,12 @@ namespace ExplorerNative
                         // The question failed, not the upload: asked again on the
                         // next pass, which is what the attempts are for.
                         lastProblem = ex.Message; lastFailure = ex;
+                        if (await WaitOutNetwork(ex, $"sending {name}", token))
+                        {
+                            askFirst = true;
+                            waited = true;
+                            attempt--;
+                        }
                         continue;
                     }
                 }
@@ -1547,6 +1563,18 @@ namespace ExplorerNative
                             busy.Said = true;
                             Say("drive.upload.retrying", $"Retrying {name}: {Explain(busyAnswer.Status, busyAnswer.Body)}");
                         }
+                        sent = before;
+                        askFirst = true;
+                        waited = true;
+                        attempt--;
+                        continue;
+                    }
+
+                    // The network went away mid-send: waited out rather than
+                    // charged to the attempts, then Google is asked how much
+                    // it holds.
+                    if (await WaitOutNetwork(ex, $"sending {name}", token))
+                    {
                         sent = before;
                         askFirst = true;
                         waited = true;

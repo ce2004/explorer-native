@@ -1350,8 +1350,8 @@ namespace ExplorerNative
             // A blank title leaves a window with no name, which is a window a
             // screen reader cannot announce and Alt+Tab cannot label.
             WindowTitle = WindowTitle?.Trim() ?? "";
+            if (WindowTitle.Length > 120) WindowTitle = CutAtCharacter(WindowTitle, 120).TrimEnd();
             if (WindowTitle.Length == 0) WindowTitle = DefaultWindowTitle;
-            if (WindowTitle.Length > 120) WindowTitle = WindowTitle[..120];
 
             return this;
         }

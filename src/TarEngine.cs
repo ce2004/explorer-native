@@ -99,7 +99,7 @@ namespace ExplorerNative
             using var file = OpenFile(archivePath);
             if (format.Id != "tar.gz") return ReadIndex(file, token);
 
-            using var gzip = new GZipStream(file, CompressionMode.Decompress);
+            using var gzip = new ParallelGZip.Reader(file, ArchiveWorkers.Threads, token);
             return ReadIndex(gzip, token);
         }
 
@@ -112,22 +112,28 @@ namespace ExplorerNative
             CancellationToken token, bool estimate = false)
         {
             using var file = OpenFile(archivePath);
+
+            if (format.SingleFile || format.Id == "tar.gz")
+            {
+                // Members inflated on every core where they are ParallelGZip's
+                // own, and read straight through GZipStream otherwise — which
+                // reads every member of a multi-member file and joins them, so
+                // anything pigz writes, and two .gz files concatenated, read too.
+                using var gzip = new ParallelGZip.Reader(file, threads, token);
+
+                // A bare .gz has no listing worth the name — one entry, and no
+                // size without decompressing it — so it is always measured this way.
+                if (estimate || format.SingleFile)
+                    reporter.Estimate(file.Length, () => gzip.Consumed);
+
+                return format.SingleFile
+                    ? ExpandOneFile(archivePath, gzip, rules, reporter, errors, token)
+                    : ReadInto(gzip, rules, threads, reporter, errors, token);
+            }
+
             var counted = new ReadCounter(file);
-
-            // A bare .gz has no listing worth the name — one entry, and no size
-            // without decompressing it — so it is always measured this way.
-            if (estimate || format.SingleFile)
-                reporter.Estimate(file.Length, () => counted.Consumed);
-
-            if (format.SingleFile) return ExpandOneFile(archivePath, counted, rules, reporter, errors, token);
-
-            if (format.Id != "tar.gz") return ReadInto(counted, rules, threads, reporter, errors, token);
-
-            // GZipStream reads every member of a multi-member file and joins
-            // them, which is what makes anything ParallelGZip writes readable
-            // here — and anything pigz writes, and two .gz files concatenated.
-            using var gzip = new GZipStream(counted, CompressionMode.Decompress, leaveOpen: true);
-            return ReadInto(gzip, rules, threads, reporter, errors, token);
+            if (estimate) reporter.Estimate(file.Length, () => counted.Consumed);
+            return ReadInto(counted, rules, threads, reporter, errors, token);
         }
 
         private static FileStream OpenFile(string path) =>
@@ -146,7 +152,8 @@ namespace ExplorerNative
             return 1;
         }
 
-        private static int ExpandOneFile(string archivePath, Stream source, ExtractionRules rules,
+        /// <param name="gzip">The archive, already being decompressed.</param>
+        private static int ExpandOneFile(string archivePath, Stream gzip, ExtractionRules rules,
             ArchiveEngine.Reporter reporter, List<string> errors, CancellationToken token)
         {
             var name = ArchiveFormats.BaseName(archivePath);
@@ -164,7 +171,6 @@ namespace ExplorerNative
             {
                 ArchiveEngine.WriteCommitted(target, output =>
                 {
-                    using var gzip = new GZipStream(source, CompressionMode.Decompress, leaveOpen: true);
                     var buffer = new byte[1 << 20];
                     uint crc = Crc32.Seed;
                     long length = 0;
@@ -707,23 +713,31 @@ namespace ExplorerNative
             var writers = new Task[lanes];
             for (int lane = 0; lane < lanes; lane++)
             {
-                writers[lane] = Task.Run(() =>
+                writers[lane] = ArchiveWorkers.RunLong(() =>
                 {
                     foreach (var handed in queue.GetConsumingEnumerable())
                     foreach (var pending in handed)
                     {
                         try
                         {
-                            WriteFile(pending.Target, pending.Data, pending.Length, pending.Modified);
+                            if (pending.Pipe is { } pipe) WritePiped(pending.Target, pipe, pending.Modified);
+                            else WriteFile(pending.Target, pending.Data, pending.Length, pending.Modified);
                             Interlocked.Increment(ref done);
                             lock (extracted) extracted[ArchiveName(pending.Name)] = pending.Target;
                         }
+                        catch (Pipe.Abandoned) { rules.Withdraw(pending.Target); }
                         catch (Exception ex)
                         {
                             lock (errors) errors.Add($"{pending.Name}: {ex.Message}");
                             rules.Withdraw(pending.Target);
                         }
-                        finally { reporter.Finished(0); }
+                        finally
+                        {
+                            // Whatever happened to the file, the reader is never
+                            // left blocked handing over pieces nobody takes.
+                            pending.Pipe?.Drain();
+                            reporter.Finished(0);
+                        }
                     }
                 });
             }
@@ -879,44 +893,52 @@ namespace ExplorerNative
                     }
                     else
                     {
+                        // A big file is read here and written by a writer, in
+                        // pieces through a pipe, so the disk is busy with it
+                        // while this thread goes on to the next entry. Written
+                        // by this thread, as it was, every big file in the
+                        // archive went to disk one after another with the
+                        // writers idle: a .tar of 1.6GB unpacked at the speed
+                        // of one thread writing.
+                        var pipe = new Pipe(length);
+                        Hand();
+                        queue.Add(new List<Pending> { new(entry.Name, target, Array.Empty<byte>(), 0,
+                            LocalTime(entry), pipe) }, token);
+
+                        string? failure = null;
                         try
                         {
-                            ArchiveEngine.WriteCommitted(target, output =>
+                            long copied = 0;
+                            while (true)
                             {
-                                var buffer = new byte[1 << 20];
-                                long copied = 0;
-                                while (true)
-                                {
-                                    token.ThrowIfCancellationRequested();
-                                    int got = data.Read(buffer, 0, buffer.Length);
-                                    if (got <= 0) break;
-                                    output.Write(buffer, 0, got);
-                                    copied += got;
-                                    reporter.Advance(got);
-                                }
+                                token.ThrowIfCancellationRequested();
+                                var piece = pipe.Rent();
+                                int got = ReadFully(data, piece, token);
+                                if (got <= 0) { pipe.Return(piece); break; }
+                                copied += got;
+                                reporter.Advance(got);
+                                pipe.Add(piece, got, token);
+                                if (got < piece.Length) break;
+                            }
 
-                                if (copied < length)
-                                    throw new InvalidDataException("the archive ends part way through it");
-                            }, bufferSize: 0, modified: LocalTime(entry));
-
-                            Interlocked.Increment(ref done);
-
-                            // Only once it is written: a link to a file that failed
-                            // copied whatever was already there under the link's name.
-                            lock (extracted) extracted[ArchiveName(entry.Name)] = target;
+                            if (copied < length) failure = "the archive ends part way through it";
+                            else pipe.Whole = true;
                         }
                         catch (OperationCanceledException) { throw; }
-                        catch (Exception ex)
+                        catch (Exception ex) when (ex is InvalidDataException or EndOfStreamException)
                         {
-                            bool broken = ex is InvalidDataException or EndOfStreamException;
-                            if (broken) damaged = true;
-                            lock (errors) errors.Add(broken && ex.Message != "the archive ends part way through it"
-                                ? $"{entry.Name}: the archive is damaged at this point"
-                                : $"{entry.Name}: {ex.Message}");
-                            rules.Withdraw(target);
+                            failure = "the archive is damaged at this point";
                         }
+                        catch (IOException ex) { failure = ex.Message; }
+                        finally { pipe.Close(); }
 
-                        reporter.Finished(0);
+                        // Said here, by the side that saw it; the writer then
+                        // throws its half away without a word.
+                        if (failure != null)
+                        {
+                            lock (errors) errors.Add($"{entry.Name}: {failure}");
+                            if (failure.StartsWith("the archive", StringComparison.Ordinal)) damaged = true;
+                        }
                     }
                 }
 
@@ -1008,7 +1030,77 @@ namespace ExplorerNative
             catch { return null; }
         }
 
-        private sealed record Pending(string Name, string Target, byte[] Data, int Length, DateTime Modified);
+        private sealed record Pending(string Name, string Target, byte[] Data, int Length, DateTime? Modified,
+            Pipe? Pipe = null);
+
+        /// <summary>
+        /// A big file on its way from the reader to the writer that is putting
+        /// it on disk, in pieces of <see cref="PipePiece"/>. Holds at most
+        /// <see cref="PipeDepth"/> pieces, so memory is a few of them whatever
+        /// the size of the file. The pieces are reused.
+        /// </summary>
+        private sealed class Pipe
+        {
+            private readonly BlockingCollection<(byte[] Buffer, int Length)> _pieces = new(PipeDepth);
+            private readonly ConcurrentBag<byte[]> _spare = new();
+
+            /// <summary>Set by the reader once every byte the header promised has gone in.</summary>
+            public volatile bool Whole;
+
+            /// <summary>How long the header says the file is.</summary>
+            public long Expected { get; }
+
+            public Pipe(long expected) => Expected = expected;
+
+            /// <summary>Thrown by the writer for a file the reader gave up on and has already reported.</summary>
+            public sealed class Abandoned : Exception { }
+
+            public byte[] Rent() => _spare.TryTake(out var buffer) ? buffer : new byte[PipePiece];
+            public void Return(byte[] buffer) => _spare.Add(buffer);
+
+            public void Add(byte[] buffer, int length, CancellationToken token)
+            {
+                try { _pieces.Add((buffer, length), token); }
+                catch (InvalidOperationException) { }   // the writer stopped taking; dropped
+            }
+
+            public void Close()
+            {
+                try { _pieces.CompleteAdding(); } catch (ObjectDisposedException) { }
+            }
+
+            /// <summary>Every piece, in order, for the writer.</summary>
+            public IEnumerable<(byte[] Buffer, int Length)> Pieces(CancellationToken token)
+            {
+                foreach (var piece in _pieces.GetConsumingEnumerable(token)) yield return piece;
+            }
+
+            /// <summary>Takes whatever is left, so a reader still handing pieces over is not left waiting.</summary>
+            public void Drain()
+            {
+                try { foreach (var piece in _pieces.GetConsumingEnumerable()) Return(piece.Buffer); }
+                catch (ObjectDisposedException) { }
+            }
+        }
+
+        private const int PipePiece = 4 * 1024 * 1024;
+        private const int PipeDepth = 4;
+
+        private static void WritePiped(string target, Pipe pipe, DateTime? modified)
+        {
+            ArchiveEngine.WriteCommitted(target, output =>
+            {
+                foreach (var (buffer, length) in pipe.Pieces(CancellationToken.None))
+                {
+                    output.Write(buffer, 0, length);
+                    pipe.Return(buffer);
+                }
+
+                // Short, damaged or cancelled: the reader has said what is to
+                // be said, and the half written here is not given the name.
+                if (!pipe.Whole) throw new Pipe.Abandoned();
+            }, bufferSize: 0, modified: modified, expectedLength: pipe.Expected);
+        }
 
         private static string Describe(TarEntryType type) => type switch
         {
@@ -1034,13 +1126,13 @@ namespace ExplorerNative
             return filled;
         }
 
-        private static void WriteFile(string target, byte[] data, int length, DateTime modified)
+        private static void WriteFile(string target, byte[] data, int length, DateTime? modified)
         {
             // One write of the whole file, so no buffer of the stream's own,
             // and the date set through the handle rather than by opening the
             // file again afterwards.
             ArchiveEngine.WriteCommitted(target, output => output.Write(data, 0, length),
-                bufferSize: 0, modified: modified);
+                bufferSize: 0, modified: modified, expectedLength: length);
         }
 
         /// <summary>

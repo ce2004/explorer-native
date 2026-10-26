@@ -33,11 +33,14 @@ namespace ExplorerNative
         /// <summary>Split out from Format so it can be tested against a fixed "now".</summary>
         public static string Relative(DateTime when, DateTime now)
         {
-            if (when > now)
+            if (when > now.AddMinutes(5))
             {
-                // Clock skew, or a file genuinely stamped ahead of us.
+                // A file genuinely stamped well ahead of us.
                 return "in the future";
             }
+            // A few seconds or minutes ahead is clock skew on a share or FAT's
+            // 2-second rounding: the file was just written, so treat it as now.
+            if (when > now) when = now;
 
             var whenDay = when.Date;
             var today = now.Date;

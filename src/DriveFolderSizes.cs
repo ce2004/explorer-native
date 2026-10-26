@@ -508,8 +508,10 @@ namespace ExplorerNative
                 // not stamp the index fresh, and the next question starts another.
                 _generation++;
                 // A changes check is cheap and idempotent, so one may overlap; a
-                // first build of the whole account is never started twice.
-                if (_built) _refreshing = null;
+                // first build of the whole account is never started twice, and
+                // nor is a rebuild after the feed refused its bookmark: while one
+                // runs, _changes is null until the new listing sets it.
+                if (_built && _changes != null) _refreshing = null;
             }
         }
 

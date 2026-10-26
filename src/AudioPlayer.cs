@@ -884,7 +884,18 @@ namespace ExplorerNative
             // to start it even when there is no file to practise on.
             EnsureStarted();
 
-            if (string.IsNullOrEmpty(preloadPath) || !File.Exists(NameRules.ExactPath(preloadPath))) return;
+            if (string.IsNullOrEmpty(preloadPath)) return;
+
+            // Practising on a file somewhere slow costs more than it saves: what
+            // the warm buys is paid once per process, whichever file it is. The
+            // Drive letter is decided from the path alone, before any disk
+            // access, because reading a placeholder from our own process waits
+            // on our own provider and can leave a reader that cannot be killed.
+            try { if (IsDrivePath?.Invoke(preloadPath) == true) return; } catch { return; }
+            if (preloadPath.StartsWith(@"\\", StringComparison.Ordinal) ||
+                AudioPrefetch.LooksRemote(preloadPath)) return;
+
+            if (!File.Exists(NameRules.ExactPath(preloadPath))) return;
 
             try
             {
@@ -932,7 +943,15 @@ namespace ExplorerNative
 
             double target = Math.Max(0, seconds);
             lock (_gate) { _seekTarget = target; _seekTargetAt = Environment.TickCount64; }
-            _direct?.SeekTo(target);
+
+            // A jump back into a finished track plays it again, and its download
+            // may have been let go while it sat finished. Without this the rest
+            // of it played through network reads with nothing fetched ahead.
+            // Not while paused: the release timer would never stop a download
+            // started for a track nobody is playing.
+            var direct = _direct;
+            if (direct is { Ended: true, IsPaused: false }) ResumeBuffering();
+            direct?.SeekTo(target);
         }
 
         /// <summary>Where the track has got to, in seconds. Zero when there is none.</summary>
@@ -2101,6 +2120,13 @@ namespace ExplorerNative
         /// Google. Null, or null for a path, means the file itself.
         /// </summary>
         public static Func<string, IRangeSource?>? RangeSourceFor { get; set; }
+
+        /// <summary>
+        /// Whether a path is on the mounted Google Drive, answered from the path
+        /// alone with no disk access (set to the Drive's <c>Owns</c>). Null means
+        /// no Drive is known, and every path counts as not on it.
+        /// </summary>
+        public static Func<string, bool>? IsDrivePath { get; set; }
 
         private StreamingSource NewStreaming(string path, Action<long, long>? filled = null)
         {

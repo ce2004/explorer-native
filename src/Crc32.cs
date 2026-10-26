@@ -1,6 +1,9 @@
 using System;
 using System.Buffers.Binary;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 using Arm = System.Runtime.Intrinsics.Arm;
+using X86 = System.Runtime.Intrinsics.X86;
 
 namespace ExplorerNative
 {
@@ -127,6 +130,27 @@ namespace ExplorerNative
                 return ~running;
             }
 
+            // x64 (4.2.5): carry-less multiplication folds 64 bytes a step, the
+            // method of Intel's "Fast CRC Computation for Generic Polynomials
+            // Using PCLMULQDQ" and of Linux's crc32-pclmul. Measured on this
+            // x64 machine, the tables below gave one core ~1GB/s, and the zip
+            // writer checksums every byte of a big file on its one thread
+            // while eight workers deflate it. The tail under 16 bytes goes
+            // through the tables.
+            if (data.Length >= 64 && X86.Pclmulqdq.IsSupported && X86.Sse41.IsSupported)
+            {
+                int bulk = data.Length & ~15;
+                crc = ~Folded(~crc, data[..bulk]);
+                data = data[bulk..];
+                if (data.IsEmpty) return crc;
+            }
+
+            return Table(crc, data);
+        }
+
+        /// <summary>The slicing-by-eight tables alone, whatever the machine. Also what the tests check the others against.</summary>
+        internal static uint Table(uint crc, ReadOnlySpan<byte> data)
+        {
             uint current = ~crc;
             var tables = Tables;
 
@@ -157,6 +181,76 @@ namespace ExplorerNative
                 current = (current >> 8) ^ tables[0][(current ^ data[i]) & 0xFF];
 
             return ~current;
+        }
+
+        // The folding constants for the reflected IEEE polynomial: x^(4*128+32),
+        // x^(4*128-32), x^(128+32), x^(128-32), x^64 mod P, and Barrett's
+        // mu and P itself, as Linux's crc32-pclmul_asm.S has them.
+
+        /// <summary>
+        /// The running value (not inverted on the way in or out) over
+        /// <paramref name="data"/>, at least 64 bytes and a multiple of 16.
+        /// </summary>
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveOptimization)]
+        internal static uint Folded(uint running, ReadOnlySpan<byte> data)
+        {
+            // Built here rather than kept in static fields, so the JIT can hold
+            // them in registers as constants.
+            var K1K2 = Vector128.Create(0x154442bd4UL, 0x1c6e41596UL);
+            var K3K4 = Vector128.Create(0x1751997d0UL, 0x0ccaa009eUL);
+            var K5 = Vector128.Create(0x163cd6124UL, 0UL);
+            var PolyMu = Vector128.Create(0x1db710641UL, 0x1f7011641UL);
+            var Low32 = Vector128.Create(0xFFFFFFFFUL, 0UL);
+
+            ref byte at = ref MemoryMarshal.GetReference(data);
+            nuint length = (nuint)data.Length;
+
+            [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+            static Vector128<ulong> Load(ref byte from, nuint offset) =>
+                Vector128.LoadUnsafe(ref from, offset).AsUInt64();
+
+            [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.AggressiveInlining)]
+            static Vector128<ulong> Fold(Vector128<ulong> x, Vector128<ulong> k) =>
+                X86.Pclmulqdq.CarrylessMultiply(x, k, 0x00) ^ X86.Pclmulqdq.CarrylessMultiply(x, k, 0x11);
+
+            var x1 = Load(ref at, 0) ^ Vector128.CreateScalar((ulong)running);
+            var x2 = Load(ref at, 16);
+            var x3 = Load(ref at, 32);
+            var x4 = Load(ref at, 48);
+            nuint offset = 64;
+
+            // Four lanes of 16 bytes, each folded 64 bytes forward a step.
+            while (length - offset >= 64)
+            {
+                x1 = Fold(x1, K1K2) ^ Load(ref at, offset);
+                x2 = Fold(x2, K1K2) ^ Load(ref at, offset + 16);
+                x3 = Fold(x3, K1K2) ^ Load(ref at, offset + 32);
+                x4 = Fold(x4, K1K2) ^ Load(ref at, offset + 48);
+                offset += 64;
+            }
+
+            // The four into one, then what is left 16 bytes at a time.
+            x1 = Fold(x1, K3K4) ^ x2;
+            x1 = Fold(x1, K3K4) ^ x3;
+            x1 = Fold(x1, K3K4) ^ x4;
+            while (length - offset >= 16)
+            {
+                x1 = Fold(x1, K3K4) ^ Load(ref at, offset);
+                offset += 16;
+            }
+
+            // 128 bits to 64, adding the 32 zero bits the CRC is defined with.
+            x1 = X86.Sse2.ShiftRightLogical128BitLane(x1, 8) ^ X86.Pclmulqdq.CarrylessMultiply(K3K4, x1, 0x01);
+
+            // 64 to 32.
+            var high = X86.Sse2.ShiftRightLogical128BitLane(x1, 4);
+            x1 = X86.Pclmulqdq.CarrylessMultiply(x1 & Low32, K5, 0x00) ^ high;
+
+            // Barrett reduction to the remainder.
+            var keep = x1;
+            x1 = X86.Pclmulqdq.CarrylessMultiply(x1 & Low32, PolyMu, 0x10);
+            x1 = X86.Pclmulqdq.CarrylessMultiply(x1 & Low32, PolyMu, 0x00) ^ keep;
+            return X86.Sse41.Extract(x1.AsUInt32(), 1);
         }
     }
 }

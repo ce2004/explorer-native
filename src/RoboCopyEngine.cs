@@ -213,6 +213,16 @@ namespace ExplorerNative
         private sealed record Job(string SourceDir, string DestDir, List<string> Files, bool WholeTree);
 
         /// <summary>
+        /// Progress handled on the reporting thread, in order. Progress&lt;T&gt;
+        /// made on a worker posts each report to the thread pool, where two can
+        /// arrive the wrong way round and the window counts backwards.
+        /// </summary>
+        private sealed class InlineProgress<T>(Action<T> handler) : IProgress<T>
+        {
+            public void Report(T value) => handler(value);
+        }
+
+        /// <summary>
         /// How many characters of file names one robocopy call is given. The
         /// limit is 32,767 for the whole command line; the two folders and the
         /// switches take the rest.
@@ -487,6 +497,95 @@ namespace ExplorerNative
             // records having already fixed once, in its other form.
             int managedFiles = 0;
 
+            // Files a Fill gaps merge by the managed engine left in the source
+            // because the destination already had them. Not collisions, so not in
+            // its Collisions: a move of a dotted folder said "Move complete" over
+            // them.
+            int managedAlreadyThere = 0;
+
+            // Progress for the managed engine's phases (keep both, a second
+            // source of one name, dotted folders and Replace). They reported
+            // nothing at all, and robocopy's ticker is not running yet, so a 20GB
+            // keep-both copy sat at "Starting" for its whole length. One clock
+            // and one rate across every phase, with what the earlier phases
+            // finished carried as a base, so the count never goes backwards
+            // from one phase to the next — or into robocopy's after them.
+            var managedClock = new Stopwatch();
+            var managedRate = new RecentRate();
+            var managedGate = new object();
+            long managedBaseBytes = 0;
+            int managedBaseItems = 0;
+            FileOpProgress? managedLast = null;
+
+            // Under the gate, so a tick and a fresh report can never be sent the
+            // wrong way round.
+            void ManagedReport()
+            {
+                if (progress == null) return;
+                lock (managedGate)
+                {
+                    var p = managedLast;
+                    long done = managedBaseBytes + (p?.BytesDone ?? 0);
+                    var elapsed = managedClock.Elapsed;
+                    double speed = managedRate.Observe(done, elapsed);
+
+                    // Before a phase has planned there is no total to give: what
+                    // the earlier phases did, as items so far.
+                    if (p == null)
+                    {
+                        progress.Report(new TransferProgress(done, 0, managedBaseItems, 0, "", speed, elapsed));
+                        return;
+                    }
+
+                    progress.Report(new TransferProgress(
+                        done, managedBaseBytes + p.BytesTotal,
+                        managedBaseItems + p.ItemsDone, managedBaseItems + p.ItemsTotal,
+                        p.CurrentItem, speed, elapsed, ItemsKnown: true));
+                }
+            }
+
+            IProgress<FileOpProgress>? managedSink = progress == null
+                ? null
+                : new InlineProgress<FileOpProgress>(p =>
+                {
+                    lock (managedGate)
+                    {
+                        managedLast = p;
+                        ManagedReport();
+                    }
+                });
+
+            // Keeps Elapsed and Speed moving through one huge file, as robocopy's
+            // ticker does. Started and stopped with each phase.
+            using var managedTicker = new Timer(_ => ManagedReport(), null, Timeout.Infinite, Timeout.Infinite);
+
+            async Task<FileOpResult> RunManagedAsync(
+                IReadOnlyList<string> list, PasteConflictPolicy policy, IEnumerable<string> reserved)
+            {
+                managedClock.Start();
+                managedTicker.Change(250, 250);
+                try
+                {
+                    return await FileOperations.RunAsync(
+                        list, destinationDir, move, policy,
+                        threads, bufferKilobytes, managedSink, null, token, reserved: reserved);
+                }
+                finally
+                {
+                    managedTicker.Change(Timeout.Infinite, Timeout.Infinite);
+                    managedClock.Stop();
+                    lock (managedGate)
+                    {
+                        if (managedLast != null)
+                        {
+                            managedBaseBytes += managedLast.BytesDone;
+                            managedBaseItems += managedLast.ItemsDone;
+                            managedLast = null;
+                        }
+                    }
+                }
+            }
+
             if (colliding.Count > 0)
             {
                 if (conflictPolicy == PasteConflictPolicy.Skip)
@@ -512,9 +611,7 @@ namespace ExplorerNative
                     // Against every name this paste is about to write, too: "a"
                     // renamed to "a (2)" beside a source called "a (2)" was then
                     // written over by robocopy's copy of it.
-                    var managed = await FileOperations.RunAsync(
-                        colliding, destinationDir, move, PasteConflictPolicy.AutoRename,
-                        threads, bufferKilobytes, null, null, token, reserved: targets);
+                    var managed = await RunManagedAsync(colliding, PasteConflictPolicy.AutoRename, targets);
 
                     renamed = managed.Collisions.RenamedCount;
                     managedFiles = managed.Succeeded;
@@ -533,9 +630,7 @@ namespace ExplorerNative
             // this paste is about to write as well as what is already there.
             if (sameName.Count > 0)
             {
-                var numbered = await FileOperations.RunAsync(
-                    sameName, destinationDir, move, PasteConflictPolicy.AutoRename,
-                    threads, bufferKilobytes, null, null, token, reserved: targets);
+                var numbered = await RunManagedAsync(sameName, PasteConflictPolicy.AutoRename, targets);
 
                 renamed += numbered.Collisions.RenamedCount;
                 managedFiles += numbered.Succeeded;
@@ -555,10 +650,9 @@ namespace ExplorerNative
                 foreach (var source in literalFolders)
                     others.Remove(Path.Combine(destinationDir, Path.GetFileName(source.TrimEnd(Path.DirectorySeparatorChar))));
 
-                var exact = await FileOperations.RunAsync(
-                    literalFolders, destinationDir, move,
+                var exact = await RunManagedAsync(literalFolders,
                     conflictPolicy == PasteConflictPolicy.Ask ? PasteConflictPolicy.AutoRename : conflictPolicy,
-                    threads, bufferKilobytes, null, null, token, reserved: others);
+                    others);
 
                 renamed += exact.Collisions.RenamedCount;
                 renamedNames.AddRange(exact.Collisions.Renamed);
@@ -567,10 +661,13 @@ namespace ExplorerNative
                 managedReplaced += exact.Collisions.OverwrittenCount;
                 managedReplacedNames.AddRange(exact.Collisions.Overwritten);
                 managedFiles += exact.Succeeded;
+                // Skipped is the collisions it skipped plus what Fill gaps found
+                // already there; only the second is left in the source.
+                managedAlreadyThere += Math.Max(0, exact.Skipped - exact.Collisions.SkippedCount);
                 failed += exact.Failed;
                 errors.AddRange(exact.Errors);
                 if (exact.Cancelled)
-                    return new TransferResult(managedFiles, failed, true, errors, Collisions());
+                    return new TransferResult(managedFiles, failed, true, errors, Collisions(), managedAlreadyThere);
             }
 
             // A move that can be a rename is one. Robocopy's /MOVE copies every
@@ -622,8 +719,10 @@ namespace ExplorerNative
                     void Moved(string name)
                     {
                         done++;
-                        progress?.Report(new TransferProgress(0, 0, done, planned, name, 0, clock.Elapsed,
-                            ItemsKnown: true));
+                        // After whatever the managed phases did, so the count
+                        // and the clock carry on from where they were.
+                        progress?.Report(new TransferProgress(0, 0, managedBaseItems + done, managedBaseItems + planned,
+                            name, 0, managedClock.Elapsed + clock.Elapsed, ItemsKnown: true));
                     }
 
                     foreach (var (source, target) in linkMoves)
@@ -665,7 +764,7 @@ namespace ExplorerNative
                 Trace($"renamed {moved} in {clock.ElapsedMilliseconds}ms");
 
                 if (token.IsCancellationRequested)
-                    return new TransferResult(managedFiles, failed, true, errors, Collisions());
+                    return new TransferResult(managedFiles, failed, true, errors, Collisions(), managedAlreadyThere);
             }
 
             // Built from whichever counts are filled in by the time it is called,
@@ -690,7 +789,7 @@ namespace ExplorerNative
             }
 
             if (clean.Count == 0)
-                return new TransferResult(managedFiles, failed, false, errors, Collisions());
+                return new TransferResult(managedFiles, failed, false, errors, Collisions(), managedAlreadyThere);
 
             // Each refusal is a failure: "cannot copy a folder into itself" for
             // one of two folders went into the list and the other copied, and
@@ -703,7 +802,7 @@ namespace ExplorerNative
             var jobs = await Task.Run(() => BuildJobs(clean, destinationDir, errors, refusedSources));
             failed += errors.Count - beforeRefusals;
             if (jobs.Count == 0)
-                return new TransferResult(managedFiles, failed, false, errors, Collisions());
+                return new TransferResult(managedFiles, failed, false, errors, Collisions(), managedAlreadyThere);
 
             // Totals are computed alongside the copy rather than before it, so a
             // huge tree does not sit silent while it is measured.
@@ -861,14 +960,16 @@ namespace ExplorerNative
                 double speed = rate.Observe(done, started.Elapsed);
                 Trace($"report done={done} total={Interlocked.Read(ref bytesTotal)} " +
                       $"planned={planning.IsCompleted} items={Volatile.Read(ref itemsDone)}");
+                // On top of what the managed phases already did, which the
+                // window has been showing.
                 progress.Report(new TransferProgress(
-                    done,
-                    Interlocked.Read(ref bytesTotal),
-                    renamedItems + ItemsFinished(),
-                    renamedItems + Volatile.Read(ref itemsTotal),
+                    managedBaseBytes + done,
+                    managedBaseBytes + Interlocked.Read(ref bytesTotal),
+                    managedBaseItems + renamedItems + ItemsFinished(),
+                    managedBaseItems + renamedItems + Volatile.Read(ref itemsTotal),
                     Volatile.Read(ref current),
                     speed,
-                    started.Elapsed));
+                    managedClock.Elapsed + started.Elapsed));
             }
 
             // Where each planned file lands, so that a file appearing in the
@@ -1285,7 +1386,7 @@ namespace ExplorerNative
             // robocopy says it copied rather than from the plan: a file that
             // failed, one it would not put over a folder, and one Fill gaps left
             // alone were all counted as copied, and "Failed" counted runs.
-            int jobCopied = 0, alreadyThere = 0;
+            int jobCopied = 0, alreadyThere = managedAlreadyThere;
             bool allCounted = true;
             var failedSources = new List<string>();
 
@@ -1331,6 +1432,23 @@ namespace ExplorerNative
                 Interlocked.Add(ref finishedJobBytes, outcome.BytesWritten);
                 failedSources.AddRange(outcome.FailedSources);
 
+                // Links inside a moved folder. /XJ keeps robocopy from following
+                // them (which moved, so deleted, what they pointed at), and so it
+                // leaves them where they were: across disks the destination had
+                // no link, the source folder stayed, and the walk below skips
+                // folder links, so "Move complete" was said over both.
+                int fileLinksLeft = 0;
+                if (move && job.WholeTree && !token.IsCancellationRequested)
+                {
+                    var links = await Task.Run(() => MoveLinksLeftIn(job, token));
+                    // Counted with the managed engine's files, which every
+                    // result below adds whatever robocopy's own count says.
+                    managedFiles += links.Moved;
+                    failed += links.Problems.Count;
+                    errors.AddRange(links.Problems);
+                    fileLinksLeft = links.FileLinksLeft;
+                }
+
                 if (outcome.Counts is { } c)
                 {
                     int problems = c.Failed + c.Mismatch + c.DirMismatch + c.DirFailed;
@@ -1342,7 +1460,8 @@ namespace ExplorerNative
                         // already had, which Fill gaps leaves and robocopy excludes.
                         // A Fill gaps move said "Move complete" over them.
                         int left = token.IsCancellationRequested ? 0 : await Task.Run(() => FilesLeftIn(job));
-                        int stayed = Math.Max(0, left - c.Failed - c.Mismatch);
+                        // A file link that could not be moved is already a failure.
+                        int stayed = Math.Max(0, left - c.Failed - c.Mismatch - fileLinksLeft);
                         jobCopied += c.Copied + Math.Max(0, c.Skipped - stayed);
                         alreadyThere += stayed;
                     }
@@ -1408,12 +1527,125 @@ namespace ExplorerNative
                 double seconds = Math.Max(0.001, started.Elapsed.TotalSeconds);
                 long done = Math.Max(BytesLanded(), 0);
                 progress.Report(new TransferProgress(
-                    done, Interlocked.Read(ref bytesTotal),
-                    renamedItems + Volatile.Read(ref itemsDone), renamedItems + Volatile.Read(ref itemsTotal),
-                    Volatile.Read(ref current), done / seconds, started.Elapsed));
+                    managedBaseBytes + done, managedBaseBytes + Interlocked.Read(ref bytesTotal),
+                    managedBaseItems + renamedItems + Volatile.Read(ref itemsDone),
+                    managedBaseItems + renamedItems + Volatile.Read(ref itemsTotal),
+                    Volatile.Read(ref current), done / seconds, managedClock.Elapsed + started.Elapsed));
             }
 
             return new TransferResult(copied, failed, false, errors, Collisions(), alreadyThere);
+        }
+
+        /// <summary>
+        /// After a whole-folder robocopy move: the links still in its source,
+        /// which /XJ made it leave, moved to the same place under the destination
+        /// as links (never followed, never their targets), and then the source's
+        /// folders that are empty now taken away, deepest first, one at a time
+        /// and never recursively. A finished move leaves almost nothing, so the
+        /// walk is short. <c>FileLinksLeft</c> is how many of the links that
+        /// could not be moved are file links, which the left-behind count would
+        /// otherwise count a second time.
+        /// </summary>
+        private static (int Moved, List<string> Problems, int FileLinksLeft) MoveLinksLeftIn(Job job, CancellationToken token)
+        {
+            var problems = new List<string>();
+            int moved = 0, fileLinksLeft = 0;
+
+            try
+            {
+                var exactRoot = NameRules.ExactPath(job.SourceDir);
+                if (!Directory.Exists(exactRoot) || FileOperations.IsLinkAt(exactRoot)) return (0, problems, 0);
+            }
+            catch { return (0, problems, 0); }
+
+            var folders = new List<string>();
+            var links = new List<(string Path, bool Folder)>();
+            var stack = new Stack<string>();
+            stack.Push(job.SourceDir);
+            var options = new EnumerationOptions
+            {
+                AttributesToSkip = 0,
+                IgnoreInaccessible = false,
+                RecurseSubdirectories = false,
+            };
+
+            while (stack.Count > 0)
+            {
+                if (token.IsCancellationRequested) return (moved, problems, fileLinksLeft);
+                var dir = stack.Pop();
+                folders.Add(dir);
+
+                List<(string Path, bool Folder, bool Reparse)> entries;
+                try
+                {
+                    entries = new System.IO.Enumeration.FileSystemEnumerable<(string, bool, bool)>(
+                        NameRules.ExactPath(dir),
+                        (ref System.IO.Enumeration.FileSystemEntry e) => (e.ToFullPath(), e.IsDirectory,
+                            (e.Attributes & FileAttributes.ReparsePoint) != 0),
+                        options).ToList();
+                }
+                catch { continue; }
+
+                foreach (var (entry, folder, reparse) in entries)
+                {
+                    var plain = NameRules.PlainPath(entry);
+                    if (reparse)
+                    {
+                        // The same reparse check as the walks: only a link is
+                        // one, and one that cannot be asked is taken as a link,
+                        // so it is never walked into.
+                        bool link;
+                        try
+                        {
+                            link = folder
+                                ? NameRules.IsLink(new DirectoryInfo(entry))
+                                : NameRules.IsLink(new FileInfo(entry));
+                        }
+                        catch { link = true; }
+
+                        if (link) { links.Add((plain, folder)); continue; }
+                    }
+                    if (folder) stack.Push(plain);
+                }
+            }
+
+            // Nothing /XJ left behind: the folders are robocopy's business.
+            if (links.Count == 0) return (0, problems, 0);
+
+            foreach (var (link, folder) in links)
+            {
+                if (token.IsCancellationRequested) return (moved, problems, fileLinksLeft);
+                try
+                {
+                    var target = Path.Combine(job.DestDir, Path.GetRelativePath(job.SourceDir, link));
+                    var parent = Path.GetDirectoryName(target);
+                    if (!string.IsNullOrEmpty(parent)) Directory.CreateDirectory(NameRules.ExactPath(parent));
+                    FileOperations.MoveLink(link, target);
+                    moved++;
+                }
+                catch (Exception ex)
+                {
+                    if (!folder) fileLinksLeft++;
+                    problems.Add($"{link}: the link could not be moved ({ex.Message})");
+                }
+            }
+
+            // Deepest first, and never recursive: a folder that still holds
+            // anything — a link that would not move, a file Fill gaps left —
+            // refuses, and stays.
+            foreach (var dir in folders.OrderByDescending(d => d.Length))
+            {
+                try
+                {
+                    var exact = NameRules.ExactPath(dir);
+                    if (Directory.Exists(exact) && !FileOperations.IsLinkAt(exact) &&
+                        !Directory.EnumerateFileSystemEntries(exact).Any())
+                        Directory.Delete(exact, recursive: false);
+                }
+                catch { }
+            }
+
+            return (moved, problems, fileLinksLeft);
         }
 
         /// <summary>Files still in a moved job's source: what did not move.</summary>

@@ -265,7 +265,7 @@ namespace ExplorerNative
                         {
                             var text = string.Join(Environment.NewLine, ProtectedFile.ReadLog(path));
                             if (_console) Console.Out.WriteLine(text);
-                            else ShowNotice(Path.GetFileName(path), text);
+                            else if (!_quiet) ShowNotice(Path.GetFileName(path), text);
                         }
                         catch (Exception ex) { Fail("Could not read the log", ex.Message); }
                         return true;
@@ -591,9 +591,20 @@ namespace ExplorerNative
             Process[] others;
             try
             {
-                others = Process.GetProcessesByName(Path.GetFileNameWithoutExtension(AppInstall.ExePath))
-                                .Where(p => p.Id != Environment.ProcessId)
-                                .ToArray();
+                // The pipe and the lock are this session's only, so a copy in
+                // another session (the same account over RDP) is never asked to
+                // go and must not be waited on or reported.
+                int mine;
+                using (var self = Process.GetCurrentProcess()) mine = self.SessionId;
+                var kept = new List<Process>();
+                foreach (var p in Process.GetProcessesByName(Path.GetFileNameWithoutExtension(AppInstall.ExePath)))
+                {
+                    bool keep;
+                    try { keep = p.Id != Environment.ProcessId && p.SessionId == mine; }
+                    catch { keep = true; }
+                    if (keep) kept.Add(p); else p.Dispose();
+                }
+                others = kept.ToArray();
             }
             catch { others = Array.Empty<Process>(); }
 

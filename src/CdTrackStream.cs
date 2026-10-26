@@ -222,6 +222,11 @@ namespace ExplorerNative
             int count = (int)Math.Min(SectorsPerRead, _track.SectorCount - sector);
             if (count <= 0) return false;
 
+            // The block is about to be written over, so it no longer holds the
+            // old sectors even if this load fails part way.
+            _blockSector = -1;
+            _blockSectors = 0;
+
             long first = _track.FirstSector + sector;
             if (_drive.Read(first, count, _block))
             {

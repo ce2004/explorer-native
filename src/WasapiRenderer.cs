@@ -210,7 +210,8 @@ namespace ExplorerNative
         /// Enough of a PROPVARIANT to read a string out of one. The union is
         /// eight bytes in, and for VT_LPWSTR it holds the pointer.
         /// </summary>
-        [StructLayout(LayoutKind.Explicit)]
+        // 24 bytes on 64-bit Windows: Windows copies a whole PROPVARIANT into it.
+        [StructLayout(LayoutKind.Explicit, Size = 24)]
         private struct PropVariant
         {
             [FieldOffset(0)] public ushort Type;

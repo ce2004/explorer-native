@@ -552,10 +552,74 @@ namespace ExplorerNative
         /// <summary>
         /// Channels changed by hand, for the rare decoder that would not do it:
         /// to mono by averaging, from mono by copying, otherwise the first
-        /// channels kept and any extra filled from the last one.
+        /// channels kept and any extra filled from the last one. Down to
+        /// stereo from 3 to 8 channels uses a fixed ITU-style mix in WAVE
+        /// order (LFE dropped), so the centre and surrounds are kept; any
+        /// other down-mix folds channel c into output c % to. Each mix is
+        /// divided by its fixed total weight, so it cannot clip.
         /// </summary>
         internal static void MapChannels(float[] input, int from, float[] output, int to, int frames)
         {
+            const float g = 0.7071f;
+            if (to == 2 && from >= 3 && from <= 8)
+            {
+                float norm = from switch
+                {
+                    3 or 4 => 1f / (1f + g),
+                    5 or 6 => 1f / (1f + 2f * g),
+                    7 => 1f / (1.5f + 2f * g),
+                    _ => 1f / (1f + 3f * g),
+                };
+                for (int i = 0; i < frames; i++)
+                {
+                    int s = i * from, d = i * 2;
+                    float fl = input[s], fr = input[s + 1], l, r;
+                    switch (from)
+                    {
+                        case 3:
+                            l = fl + g * input[s + 2];
+                            r = fr + g * input[s + 2];
+                            break;
+                        case 4:
+                            l = fl + g * input[s + 2];
+                            r = fr + g * input[s + 3];
+                            break;
+                        case 5:
+                            l = fl + g * input[s + 2] + g * input[s + 3];
+                            r = fr + g * input[s + 2] + g * input[s + 4];
+                            break;
+                        case 6:
+                            l = fl + g * input[s + 2] + g * input[s + 4];
+                            r = fr + g * input[s + 2] + g * input[s + 5];
+                            break;
+                        case 7:
+                            l = fl + g * input[s + 2] + g * input[s + 5] + 0.5f * input[s + 4];
+                            r = fr + g * input[s + 2] + g * input[s + 6] + 0.5f * input[s + 4];
+                            break;
+                        default:
+                            l = fl + g * input[s + 2] + g * input[s + 4] + g * input[s + 6];
+                            r = fr + g * input[s + 2] + g * input[s + 5] + g * input[s + 7];
+                            break;
+                    }
+                    output[d] = l * norm;
+                    output[d + 1] = r * norm;
+                }
+                return;
+            }
+            if (from > to && to > 1)
+            {
+                var total = new float[to];
+                for (int c = 0; c < from; c++) total[c % to] += c < to ? 1f : g;
+                for (int i = 0; i < frames; i++)
+                {
+                    int s = i * from, d = i * to;
+                    for (int o = 0; o < to; o++) output[d + o] = 0f;
+                    for (int c = 0; c < from; c++)
+                        output[d + c % to] += (c < to ? 1f : g) * input[s + c];
+                    for (int o = 0; o < to; o++) output[d + o] /= total[o];
+                }
+                return;
+            }
             for (int i = 0; i < frames; i++)
             {
                 int src = i * from, dst = i * to;

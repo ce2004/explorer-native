@@ -70,6 +70,7 @@ namespace ExplorerNative
 
         /// <summary>The half-written new copy, before it is renamed into place.</summary>
         private const string StagingMarker = ".installing-";
+        private const string SweepingMarker = ".sweeping";
 
         /// <summary>
         /// Per-user, so installing needs no administrator rights and cannot
@@ -317,10 +318,30 @@ namespace ExplorerNative
                     if (parent == null || !parent.Name.Equals("ExplorerNative", StringComparison.OrdinalIgnoreCase) ||
                         parent.Parent?.Name.Equals(".net", StringComparison.OrdinalIgnoreCase) != true || !mine.Exists)
                         continue;
-                    foreach (var other in parent.EnumerateDirectories())
+                    foreach (var other in parent.GetDirectories())
                     {
                         if (other.Name.Equals(mine.Name, StringComparison.OrdinalIgnoreCase)) continue;
-                        try { other.Delete(recursive: true); removed++; } catch { }
+                        // Renamed aside first: Windows refuses to rename a folder
+                        // while a running copy has a library in it loaded, so a
+                        // build still in use is left whole instead of having its
+                        // unloaded libraries deleted out from under it. A delete
+                        // that stops part way leaves the .sweeping folder for the
+                        // next launch, and only a finished delete counts.
+                        try
+                        {
+                            string doomed;
+                            if (other.Name.EndsWith(SweepingMarker, StringComparison.OrdinalIgnoreCase))
+                                doomed = other.FullName;
+                            else
+                            {
+                                doomed = other.FullName + SweepingMarker;
+                                if (System.IO.Directory.Exists(doomed)) continue;
+                                System.IO.Directory.Move(other.FullName, doomed);
+                            }
+                            System.IO.Directory.Delete(doomed, recursive: true);
+                            removed++;
+                        }
+                        catch { }
                     }
                     break;
                 }

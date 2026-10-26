@@ -305,6 +305,7 @@ namespace ExplorerNative
             {
                 cleaned = replacement + cleaned[top.Length..];
                 Record(_renamedNames, ref _renamedCount, replacement);
+                lock (_gate) _renamedTops.Add(replacement);
             }
 
             var target = ArchiveEngine.SafeTarget(_root, cleaned, out var refusal);
@@ -361,6 +362,7 @@ namespace ExplorerNative
         }
 
         private readonly HashSet<string> _given = new(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _renamedTops = new(StringComparer.OrdinalIgnoreCase);
         private readonly HashSet<string> _skippedTopsCounted = new(StringComparer.OrdinalIgnoreCase);
 
         private void Record(List<string> into, ref int count, string name)
@@ -414,11 +416,14 @@ namespace ExplorerNative
 
                 // Renames are counted per entry as the tree goes past, and a
                 // renamed folder is one rename however many files are inside it.
+                // Counted from every name given, not from the names kept for
+                // the sentence: those stop at 32, so forty folders renamed were
+                // announced as 32.
                 return new ConflictOutcomes(
                     _renamedNames.ToArray(),
                     _skippedNames.ToArray(),
                     _overwrittenNames.ToArray(),
-                    _renamedNames.Count,
+                    _renamedTops.Count,
                     _skippedCount,
                     _overwrittenCount);
             }

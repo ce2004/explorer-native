@@ -444,15 +444,31 @@ namespace ExplorerNative
                     long hour = HourOf(nowUtc);
                     hours[hour] = hours.GetValueOrDefault(hour) + bytes;
                     foreach (var old in hours.Keys.Where(h => h < hour - 24).ToList()) hours.Remove(old);
+                    _unsaved = true;
                     if (_savedAt != 0 && Environment.TickCount64 - _savedAt < SaveEveryMs) return;
-                    _savedAt = Environment.TickCount64;
-                    try
-                    {
-                        Directory.CreateDirectory(Path.GetDirectoryName(_file)!);
-                        ProtectedFile.WriteAllUtf8(_file, JsonSerializer.SerializeToUtf8Bytes(hours));
-                    }
-                    catch { }
+                    Write(hours);
                 }
+            }
+
+            private bool _unsaved;
+
+            private void Write(Dictionary<long, long> hours)
+            {
+                _savedAt = Environment.TickCount64;
+                try
+                {
+                    Directory.CreateDirectory(Path.GetDirectoryName(_file)!);
+                    ProtectedFile.WriteAllUtf8(_file, JsonSerializer.SerializeToUtf8Bytes(hours));
+                    _unsaved = false;
+                }
+                catch { }
+            }
+
+            /// <summary>Writes what the last 30 seconds added, if anything (on the way out).</summary>
+            public void Flush()
+            {
+                lock (_gate)
+                    if (_unsaved && _byHour != null) Write(_byHour);
             }
 
             /// <summary>Bytes sent in the last 24 hours (the current hour and the 23 whole ones before it, plus part of the 24th).</summary>
@@ -471,11 +487,14 @@ namespace ExplorerNative
             }
         }
 
+        /// <summary>The name of <see cref="UploadedRecently"/>'s file in <see cref="StateDirectory"/>; not a pair's records.</summary>
+        internal const string UploadedFileName = "uploaded.json";
+
         private UploadedRecently? _uploadedRecently;
 
         /// <summary>See <see cref="UploadedRecently"/>.</summary>
         internal UploadedRecently Uploads =>
-            _uploadedRecently ??= new UploadedRecently(Path.Combine(StateDirectory, "uploaded.json"));
+            _uploadedRecently ??= new UploadedRecently(Path.Combine(StateDirectory, UploadedFileName));
 
         /// <summary>What every pair has sent to Google Drive in the last 24 hours, in bytes.</summary>
         public long UploadedLast24Hours => Uploads.Last24Hours(DateTime.UtcNow);
@@ -3196,6 +3215,7 @@ namespace ExplorerNative
             var held = new List<HeldItem>();
             var allSkips = new SyncSkips();
             var visited = new HashSet<string>(comparer);
+            var linkTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);  // where links led (see WalkIntoLink)
             var listedAll = new HashSet<string>(comparer);
             var nextDirty = new HashSet<string>(comparer);
             var foldersToMake = new List<string>();
@@ -3229,7 +3249,7 @@ namespace ExplorerNative
                         var dir = new DirectoryInfo(f.Length == 0 ? root : LocalPathFor(root, f));
                         if (f.Length == 0 || dir.Exists)
                         {
-                            ScanLocalFolder(dir, f, pair.IncludeSubfolders, local, skips, localClashing, subs, null, _ => links = true);
+                            ScanLocalFolder(dir, f, pair.IncludeSubfolders, local, skips, localClashing, subs, null, _ => links = true, linkTargets);
                             onPcHere.Add(f);
                         }
                         localSubfolders[f] = subs.Select(x => x.Relative).ToList();
@@ -3836,8 +3856,12 @@ namespace ExplorerNative
                 // New small files first, many at once (see UploadNewSmallAsync).
                 // One at a time, a folder of a million tiny files was a month
                 // of waiting on Google's round trips, not of sending bytes.
+                // Creates Google may have and would not say: never sent again
+                // this pass (that made a second copy), but counted as failed,
+                // so the next pass lists their folders and adopts what landed.
+                var doubtful = new Dictionary<string, string>(SyncNameComparer.Instance);
                 var sentFast = await UploadNewSmallAsync(client, pair, state, plan, local, remote, folders, root,
-                    generation, uploadedThisPass, n => { lock (_fastGate) Moved(n); }, token, freeUp).ConfigureAwait(false);
+                    generation, uploadedThisPass, n => { lock (_fastGate) Moved(n); }, token, doubtful, freeUp).ConfigureAwait(false);
                 uploaded += sentFast.Count;
                 foreach (var path in sentFast)
                 {
@@ -3851,7 +3875,7 @@ namespace ExplorerNative
 
                 // New song-sized PC files, many at once too (see UploadNewMediumAsync).
                 var sentMedium = await UploadNewMediumAsync(client, pair, state, plan, local, remote, folders, root,
-                    generation, uploadedThisPass, n => { lock (_fastGate) Moved(n); }, token, freeUp).ConfigureAwait(false);
+                    generation, uploadedThisPass, n => { lock (_fastGate) Moved(n); }, token, doubtful, freeUp).ConfigureAwait(false);
                 uploaded += sentMedium.Count;
                 foreach (var path in sentMedium)
                 {
@@ -3860,6 +3884,14 @@ namespace ExplorerNative
                     SyncHistory.Add(pair.Id, "Uploaded", path);
                 }
                 sentFast.UnionWith(sentMedium);
+                foreach (var (path, why) in doubtful)
+                {
+                    if (sentFast.Contains(path)) continue;
+                    failed++;
+                    lastError = $"{Path.GetFileName(path)}: {why}";
+                    SyncHistory.Add(pair.Id, "Could not sync", path, why);
+                    sentFast.Add(path);
+                }
 
                 // And new Drive files coming down, many at once (see DownloadNewSmallAsync).
                 var gotFast = await DownloadNewSmallAsync(client, pair, state, plan, local, remote, root, generation,
@@ -4733,8 +4765,11 @@ namespace ExplorerNative
 
         /// <summary>A folder and everything under it, into <paramref name="files"/>, as <see cref="ScanLocal"/> does the whole pair.</summary>
         private static void ScanLocalTree(DirectoryInfo top, string topRelative, bool subfolders, Dictionary<string, SyncFile> files,
-            SyncSkips? skipped, List<string>? clashing, Action<int>? found, Action<string>? linked, ISet<string>? folders = null)
+            SyncSkips? skipped, List<string>? clashing, Action<int>? found, Action<string>? linked, ISet<string>? folders = null,
+            HashSet<string>? linkTargets = null)
         {
+            // Where this walk's links have led, so none is walked twice or round in a loop.
+            linkTargets ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var pending = new Stack<(DirectoryInfo Folder, string Relative)>();
             pending.Push((top, topRelative));
             if (topRelative.Length > 0) folders?.Add(topRelative);
@@ -4750,12 +4785,12 @@ namespace ExplorerNative
             {
                 if (serial >= SerialFolders && pending.Count >= ParallelFrom && ScanWorkers > 1)
                 {
-                    ScanLocalTreeParallel(pending, subfolders, files, skipped, clashing, found, linked, folders);
+                    ScanLocalTreeParallel(pending, subfolders, files, skipped, clashing, found, linked, folders, linkTargets);
                     return;
                 }
                 var (folder, relative) = pending.Pop();
                 under.Clear();
-                ScanLocalFolder(folder, relative, subfolders, files, skipped, clashing, under, found, linked);
+                ScanLocalFolder(folder, relative, subfolders, files, skipped, clashing, under, found, linked, linkTargets);
                 foreach (var child in under)
                 {
                     pending.Push(child);
@@ -4784,7 +4819,7 @@ namespace ExplorerNative
         /// </summary>
         private static void ScanLocalTreeParallel(Stack<(DirectoryInfo Folder, string Relative)> start, bool subfolders,
             Dictionary<string, SyncFile> files, SyncSkips? skipped, List<string>? clashing,
-            Action<int>? found, Action<string>? linked, ISet<string>? folders = null)
+            Action<int>? found, Action<string>? linked, ISet<string>? folders = null, HashSet<string>? linkTargets = null)
         {
             var pending = new System.Collections.Concurrent.ConcurrentStack<(DirectoryInfo Folder, string Relative)>(start.Reverse());
             int busy = 0;
@@ -4822,7 +4857,7 @@ namespace ExplorerNative
                         {
                             under.Clear();
                             mine.Clear();
-                            ScanLocalFolder(next.Folder, next.Relative, subfolders, mine, skips, clashes, under, null, linkedSafe);
+                            ScanLocalFolder(next.Folder, next.Relative, subfolders, mine, skips, clashes, under, null, linkedSafe, linkTargets);
                             if (under.Count > 0)
                             {
                                 pending.PushRange(under.ToArray());
@@ -4891,6 +4926,7 @@ namespace ExplorerNative
                     set.Add(folder);
                 }
 
+            var linkTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);  // where links led (see WalkIntoLink)
             var listed = new HashSet<string>(comparer);       // listed again on their own
             var replaced = new HashSet<string>(comparer);     // everything under them is what was found now (or nothing)
             var fresh = new Dictionary<string, SyncFile>(comparer);
@@ -4976,7 +5012,7 @@ namespace ExplorerNative
                 var dir = new DirectoryInfo(folder.Length == 0 ? root : LocalPathFor(root, folder));
                 subs.Clear();
                 listed.Add(folder);
-                ScanLocalFolder(dir, folder, subfolders, fresh, skipped, clashing, subs, null, linked);
+                ScanLocalFolder(dir, folder, subfolders, fresh, skipped, clashing, subs, null, linked, linkTargets);
                 if (!subfolders) continue;
                 var here = new HashSet<string>(comparer);
                 foreach (var (_, sub) in subs)
@@ -5000,7 +5036,7 @@ namespace ExplorerNative
                 // One inside another tree is already covered by it.
                 if (tree.Length > 0 && UnderReplacedAbove(tree)) continue;
                 var dir = new DirectoryInfo(tree.Length == 0 ? root : LocalPathFor(root, tree));
-                ScanLocalTree(dir, tree, subfolders, fresh, skipped, clashing, null, linked, folders);
+                ScanLocalTree(dir, tree, subfolders, fresh, skipped, clashing, null, linked, folders, linkTargets);
             }
 
             bool UnderReplacedAbove(string tree)
@@ -5039,6 +5075,66 @@ namespace ExplorerNative
         private static readonly EnumerationOptions LocalScanOptions = new() { IgnoreInaccessible = false, AttributesToSkip = 0 };
 
         /// <summary>
+        /// Whether a walk goes on into a junction or symbolic link found in
+        /// <paramref name="folder"/> (at <paramref name="under"/> inside the
+        /// pair). Not when it leads to the pair's own folder or anything inside
+        /// it (that tree is walked already), to the folder being read or a
+        /// folder above it (a loop), to a folder another link of this walk
+        /// already led to or into, or somewhere Windows cannot say.
+        /// <paramref name="visited"/> is shared by a walk's workers, locked on itself.
+        /// </summary>
+        private static bool WalkIntoLink(DirectoryInfo link, DirectoryInfo folder, string under, HashSet<string>? visited)
+        {
+            string target;
+            try
+            {
+                var resolved = link.ResolveLinkTarget(returnFinalTarget: true);
+                if (resolved == null) return false;
+                target = Plain(resolved.FullName);
+            }
+            catch { return false; }
+
+            try
+            {
+                // The pair's folder: as the walk spells it, and wherever it
+                // really is when it is a link itself.
+                var root = folder;
+                if (under.Length > 0)
+                    foreach (var _ in under.Split('/'))
+                        root = root.Parent ?? root;
+                var roots = new List<string> { Plain(root.FullName) };
+                try { if (root.ResolveLinkTarget(returnFinalTarget: true) is { } real) roots.Add(Plain(real.FullName)); } catch { }
+
+                foreach (var r in roots)
+                    if (Within(target, r)) return false;              // the pair's tree again
+                if (Within(Plain(folder.FullName), target)) return false; // a folder above this one: a loop
+
+                if (visited != null)
+                    lock (visited)
+                    {
+                        foreach (var seen in visited)
+                            if (Within(target, seen)) return false;     // that tree is walked already
+                        visited.Add(target);
+                    }
+                return true;
+            }
+            catch { return false; }
+
+            static string Plain(string path)
+            {
+                if (path.StartsWith(@"\\?\UNC\", StringComparison.Ordinal)) path = @"\\" + path[8..];
+                else if (path.StartsWith(@"\\?\", StringComparison.Ordinal) || path.StartsWith(@"\??\", StringComparison.Ordinal)) path = path[4..];
+                return path.TrimEnd('\\', '/');
+            }
+
+            // Whether path is inside, or is, folder.
+            static bool Within(string path, string folder) =>
+                path.Equals(folder, StringComparison.OrdinalIgnoreCase) ||
+                (path.Length > folder.Length && path.StartsWith(folder, StringComparison.OrdinalIgnoreCase) &&
+                 (path[folder.Length] == '\\' || path[folder.Length] == '/'));
+        }
+
+        /// <summary>
         /// One PC folder of <see cref="ScanLocal"/>: its files into
         /// <paramref name="files"/>, the subfolders to walk into
         /// <paramref name="subfoldersOut"/>, and whatever is left out into
@@ -5047,7 +5143,8 @@ namespace ExplorerNative
         /// </summary>
         internal static void ScanLocalFolder(DirectoryInfo folder, string under, bool subfolders,
             Dictionary<string, SyncFile> files, SyncSkips? skipped, List<string>? clashing,
-            List<(DirectoryInfo Folder, string Relative)> subfoldersOut, Action<int>? found = null, Action<string>? linked = null)
+            List<(DirectoryInfo Folder, string Relative)> subfoldersOut, Action<int>? found = null, Action<string>? linked = null,
+            HashSet<string>? linkTargets = null)
         {
             const FileAttributes leftOut = FileAttributes.Hidden | FileAttributes.System;
 
@@ -5099,9 +5196,23 @@ namespace ExplorerNative
                     }
                     // A junction or symbolic link: what changes behind it is on
                     // another folder's account, and maybe another volume's journal.
-                    if (linked != null && (attributes & FileAttributes.ReparsePoint) != 0)
+                    if ((attributes & FileAttributes.ReparsePoint) != 0)
                     {
-                        try { if (entry.LinkTarget != null) linked(relative); } catch { linked(relative); }
+                        bool isLink;
+                        try { isLink = entry.LinkTarget != null; } catch { isLink = true; }
+                        if (isLink)
+                        {
+                            linked?.Invoke(relative);
+                            // A link back to the pair's folder or above it went
+                            // round and round (Music/All/All/...), a copy of the
+                            // whole library each time, up to 63 deep. Left out
+                            // instead, so nothing under it reads as deleted.
+                            if (!WalkIntoLink((DirectoryInfo)entry, folder, under, linkTargets))
+                            {
+                                skipped?.Folder(relative);
+                                continue;
+                            }
+                        }
                     }
                     subfoldersOut.Add(((DirectoryInfo)entry, relative));
                     continue;
@@ -5492,7 +5603,8 @@ namespace ExplorerNative
         private async Task<HashSet<string>> UploadNewSmallAsync(
             DriveClient client, DriveSyncPair pair, PairState state, List<SyncAction> plan,
             Dictionary<string, SyncFile> local, Dictionary<string, SyncFile> remote, Dictionary<string, string> folders,
-            string root, int generation, long alreadyUp, Action<long> moved, CancellationToken token, FreeUpLane? freeUp = null)
+            string root, int generation, long alreadyUp, Action<long> moved, CancellationToken token,
+            Dictionary<string, string> doubtful, FreeUpLane? freeUp = null)
         {
             var sent = new HashSet<string>(SyncNameComparer.Instance);
             long room = _drive.QuotaLimit > 0 ? _drive.QuotaLimit - _drive.QuotaUsed - alreadyUp : long.MaxValue;
@@ -5586,6 +5698,16 @@ namespace ExplorerNative
                                 Progress, ct, null, _ => { }, null), file.Size, ct).ConfigureAwait(false);
                         }
                     }
+                    catch (Exception ex) when (!ct.IsCancellationRequested && replaces == null &&
+                                               DriveClient.UnknownIfLandedException.In(ex))
+                    {
+                        // Google may have it and will not say: never sent again
+                        // this pass (the careful loop would, with no lookup, and
+                        // make a second copy). The next pass lists its folder and
+                        // adopts it if it landed.
+                        lock (_fastGate) doubtful[path] = DriveClient.UnknownIfLandedException.Find(ex)!.Message;
+                        return false;
+                    }
                     catch (Exception) when (!ct.IsCancellationRequested)
                     {
                         // Never landed: left for the one-at-a-time loop, which
@@ -5639,7 +5761,8 @@ namespace ExplorerNative
         private async Task<HashSet<string>> UploadNewMediumAsync(
             DriveClient client, DriveSyncPair pair, PairState state, List<SyncAction> plan,
             Dictionary<string, SyncFile> local, Dictionary<string, SyncFile> remote, Dictionary<string, string> folders,
-            string root, int generation, long alreadyUp, Action<long> moved, CancellationToken token, FreeUpLane? freeUp = null)
+            string root, int generation, long alreadyUp, Action<long> moved, CancellationToken token,
+            Dictionary<string, string> doubtful, FreeUpLane? freeUp = null)
         {
             var sent = new HashSet<string>(SyncNameComparer.Instance);
             long room = _drive.QuotaLimit > 0 ? _drive.QuotaLimit - _drive.QuotaUsed - alreadyUp : long.MaxValue;
@@ -5685,6 +5808,12 @@ namespace ExplorerNative
                 {
                     up = await UploadAsync(client, folders, pair, state, path, LocalPathFor(root, path), local[path],
                         null, null, moved, upToken).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (!ct.IsCancellationRequested && DriveClient.UnknownIfLandedException.In(ex))
+                {
+                    // Not sent again this pass (see UploadNewSmallAsync).
+                    lock (_fastGate) doubtful[path] = DriveClient.UnknownIfLandedException.Find(ex)!.Message;
+                    return false;
                 }
                 catch (Exception) when (!ct.IsCancellationRequested) { return false; }
                 lock (_fastGate)
@@ -6433,17 +6562,48 @@ namespace ExplorerNative
         /// <summary>Removes what was remembered for pairs that no longer exist.</summary>
         public static void ForgetRemovedPairs(IEnumerable<DriveSyncPair> pairs)
         {
+            List<string> asked;
+            try { asked = pairs.Select(p => p.Id).ToList(); }
+            catch { return; }
+
+            // Off the UI thread: a pass writing a big state holds StateLock for
+            // the whole write, and Pause or Edit froze the window (NVDA silent)
+            // until it finished. One clean-up at a time, in the order asked.
+            if (SynchronizationContext.Current != null)
+            {
+                lock (ForgetChainGate)
+                    _forgetChain = _forgetChain.ContinueWith(_ => ForgetRemovedPairsNow(asked),
+                        CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
+                return;
+            }
+            ForgetRemovedPairsNow(asked);
+        }
+
+        private static readonly object ForgetChainGate = new();
+        private static Task _forgetChain = Task.CompletedTask;
+
+        private static void ForgetRemovedPairsNow(List<string> asked)
+        {
             try
             {
                 if (!Directory.Exists(StateDirectory)) return;
-                var keep = new HashSet<string>(pairs.Select(p => p.Id + ".json"), StringComparer.OrdinalIgnoreCase);
 
                 // Under the state lock, so a save already under way finishes
                 // first, and the next one sees the pair removed.
                 lock (StateLock)
                 {
+                    // What to keep is decided now, not when this was asked: a
+                    // pair added since (the monitor has it) is never deleted.
+                    var keep = new HashSet<string>(asked.Select(id => id + ".json"), StringComparer.OrdinalIgnoreCase);
+                    if (Current is { } monitor)
+                        foreach (var pair in monitor.Pairs) keep.Add(pair.Id + ".json");
+
                     foreach (var file in Directory.GetFiles(StateDirectory, "*.json"))
+                    {
+                        // The 24-hour upload tally lives here too, and is no pair's.
+                        if (Path.GetFileName(file).Equals(UploadedFileName, StringComparison.OrdinalIgnoreCase)) continue;
                         if (!keep.Contains(Path.GetFileName(file))) { try { File.Delete(file); } catch { } }
+                    }
                     foreach (var dir in Directory.GetDirectories(StateDirectory, "*.shards"))
                         if (!keep.Contains(Path.GetFileNameWithoutExtension(dir) + ".json")) { try { Directory.Delete(dir, true); } catch { } }
                     foreach (var pattern in new[] { "*.history", "*.listing", "*.running" })
@@ -6481,6 +6641,8 @@ namespace ExplorerNative
                 _settled = null;
             }
             try { _loop.Wait(StopWait); } catch { }
+            // The last 30 seconds of uploads are kept for the 24-hour tally too.
+            try { _uploadedRecently?.Flush(); } catch { }
             if (Current == this) Current = null;
         }
     }

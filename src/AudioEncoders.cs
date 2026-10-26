@@ -39,6 +39,9 @@ namespace ExplorerNative
     {
         public const string DefaultId = "mp3-192";
 
+        /// <summary>The highest bit rate an AAC .m4a has; anything above it is Apple Lossless.</summary>
+        public const int MostAacKbps = 320;
+
         public static readonly IReadOnlyList<AudioFormatChoice> All = new[]
         {
             new AudioFormatChoice("mp3-128", AudioFormatKind.Mp3, 128, 0),
@@ -95,8 +98,11 @@ namespace ExplorerNative
         /// the converter cannot write that format and the editor has to ask. A
         /// lossy file is written back at the nearest offered rate at or above
         /// its own, so an edit does not cost more quality than it must.
+        /// An .m4a that is Apple Lossless (said by the caller, or given away
+        /// by a bit rate no AAC file has) gets null: writing it back as AAC
+        /// would silently throw its lossless quality away, so the editor asks.
         /// </summary>
-        public static AudioFormatChoice? SameFormatAs(string extension, int? sourceKbps)
+        public static AudioFormatChoice? SameFormatAs(string extension, int? sourceKbps, bool sourceLossless = false)
         {
             var ext = (extension ?? "").ToLowerInvariant();
             AudioFormatKind? kind = ext switch
@@ -112,6 +118,10 @@ namespace ExplorerNative
 
             if (kind == AudioFormatKind.Flac) return ById("flac");
             if (kind == AudioFormatKind.Wav) return ById("wav-keep");
+
+            // AAC tops out at 320 kbps; Apple Lossless runs from about 400 up.
+            if (kind == AudioFormatKind.M4a && (sourceLossless || sourceKbps > MostAacKbps))
+                return null;
 
             var offered = QualitiesOf(kind.Value).ToList();
             if (sourceKbps is not > 0)

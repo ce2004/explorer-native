@@ -288,10 +288,16 @@ namespace ExplorerNative
         {
             var pins = new List<IntPtr>();
             var names = new List<string>(1);
+            // The folder's key, and the current attempt's way to put back what
+            // its build claimed — kept out here so the catch can reach them.
+            string relativeKey = "";
+            bool built = false;
+            Action? undo = null;
             try
             {
                 string? relative = KeyFor(parentFullPath);
                 if (relative == null) return null;
+                relativeKey = relative;
 
                 // Something new inside a shared drive is in that drive, and a folder
                 // that does not know so lists as empty.
@@ -336,10 +342,21 @@ namespace ExplorerNative
                     var key = (relative.Length == 0 ? wanted : relative + "\\" + wanted).ToLowerInvariant();
                     _ids.TryGetValue(key, out var previousId);
                     _folders.TryGetValue(key, out var previousFolder);
+                    _driveIds.TryGetValue(key, out var previousDriveId);
+                    bool wasWhere = _whereIs.TryGetValue(entry.Id, out var previousWhere);
 
                     names.Clear();
+                    built = false;
                     var array = BuildPlaceholders(relative, new List<DriveEntry> { entry }, pins, used, names);
                     if (array.Length == 0 || names.Count == 0) return null;
+
+                    // From here a failure, thrown or returned, puts back what the
+                    // build claimed for this name.
+                    built = true;
+                    var placedName = names[0];
+                    (string Folder, string Name)? whereBefore = wasWhere ? previousWhere : null;
+                    undo = () => Undo(key, previousId, previousFolder, previousDriveId,
+                        whereBefore, placedName, listedBefore);
 
                     int hr = CfCreatePlaceholders(target, array, (uint)array.Length,
                         CF_PLACEHOLDER_CREATE_FLAGS.NONE, out _);
@@ -347,11 +364,21 @@ namespace ExplorerNative
                     if (hr == 0 || (IsAlreadyThere(hr) && previousId == entry.Id))
                     {
                         name = names[0];
+                        built = false;
                         if (hr != 0) RefreshNow(target, ExistingToCheck(array, null));
                         break;
                     }
 
-                    if (!IsAlreadyThere(hr)) return null;
+                    // Not placed at all — a name too long for the path, the
+                    // folder gone, access refused. The map and the listing were
+                    // left saying it was: the pane showed a file that opening
+                    // said was not there, and the path stayed bound to its id.
+                    if (!IsAlreadyThere(hr))
+                    {
+                        built = false;
+                        undo();
+                        return null;
+                    }
 
                     // Held by a placeholder nothing here is bound to any more —
                     // a file since trashed, forgotten by the listing that noticed.
@@ -361,23 +388,15 @@ namespace ExplorerNative
                         RefreshOne(target, names[0], entry.Id, Math.Max(0, entry.Size), StampOf(entry)))
                     {
                         name = names[0];
+                        built = false;
                         break;
                     }
 
                     // Put back what the failed claim overwrote: this name's binding
                     // and this name's row, and nothing else. Putting back the whole
                     // listing wiped rows other uploads had added meanwhile.
-                    if (previousId != null) _ids[key] = previousId; else _ids.TryRemove(key, out _);
-                    if (previousFolder != null) _folders[key] = previousFolder; else _folders.TryRemove(key, out _);
-
-                    var clash = names[0];
-                    var oldRow = listedBefore?.FirstOrDefault(p => p.Name.Equals(clash, StringComparison.OrdinalIgnoreCase));
-                    EditListing(relative, listedNow =>
-                    {
-                        var rows = listedNow.Where(p => !p.Name.Equals(clash, StringComparison.OrdinalIgnoreCase)).ToList();
-                        if (oldRow != null) rows.Add(oldRow);
-                        return rows.ToArray();
-                    });
+                    built = false;
+                    undo();
                     // used already holds the clashing name, so the next build moves on.
                 }
 
@@ -392,8 +411,52 @@ namespace ExplorerNative
 
                 return name;
             }
-            catch { return null; }
+            catch
+            {
+                // Thrown after this attempt's build claimed the name: put it back,
+                // as a returned failure does.
+                if (built) { try { undo?.Invoke(); } catch { } }
+                return null;
+            }
             finally { foreach (var p in pins) Marshal.FreeHGlobal(p); }
+
+            // Only what still says what this entry's build wrote is put back, so
+            // a writer that has since claimed the name or moved the id keeps it.
+            void Undo(string key, string? previousId, string? previousFolder, string? previousDriveId,
+                (string Folder, string Name)? previousWhere, string clash, DrivePlaced[]? listedBefore)
+            {
+                if (previousId != null) _ids.TryUpdate(key, previousId, entry.Id);
+                else _ids.TryRemove(new KeyValuePair<string, string>(key, entry.Id));
+
+                if (entry.IsFolder)
+                {
+                    if (previousFolder != null) _folders.TryUpdate(key, previousFolder, entry.Id);
+                    else _folders.TryRemove(new KeyValuePair<string, string>(key, entry.Id));
+
+                    if (!string.IsNullOrEmpty(entry.DriveId))
+                    {
+                        if (previousDriveId != null) _driveIds.TryUpdate(key, previousDriveId, entry.DriveId);
+                        else _driveIds.TryRemove(new KeyValuePair<string, string>(key, entry.DriveId));
+                    }
+                }
+
+                var claimed = (relativeKey, clash);
+                if (previousWhere is { } before) _whereIs.TryUpdate(entry.Id, before, claimed);
+                else _whereIs.TryRemove(new KeyValuePair<string, (string Folder, string Name)>(entry.Id, claimed));
+
+                var oldRow = listedBefore?.FirstOrDefault(p => p.Name.Equals(clash, StringComparison.OrdinalIgnoreCase));
+                EditListing(relativeKey, listedNow =>
+                {
+                    var rows = listedNow.Where(p => !p.Name.Equals(clash, StringComparison.OrdinalIgnoreCase)).ToList();
+                    if (oldRow != null) rows.Add(oldRow);
+                    return rows.ToArray();
+                });
+
+                // A listing the build made for a folder that had none is not a
+                // listing of it; left empty, it would read as an empty folder.
+                if (listedBefore == null && _listings.TryGetValue(relativeKey, out var left) && left.Length == 0)
+                    _listings.TryRemove(new KeyValuePair<string, DrivePlaced[]>(relativeKey, left));
+            }
         }
 
         /// <summary>
@@ -1381,13 +1444,29 @@ namespace ExplorerNative
             // been listed: an upload making two sibling folders looked for the
             // second in a parent whose listing had not arrived, did not find it,
             // and made another in Drive.
+            //
+            // A patient caller whose wait ends with the folder still unlisted —
+            // the listing it waited on was an interactive one that gave up on a
+            // blip — takes the claim and lists it itself, in the time it has
+            // left, rather than giving up on a listing it was meant to wait for.
             var mine = new ManualResetEventSlim(false);
-            var running = _populating.GetOrAdd(relative, mine);
-            if (!ReferenceEquals(running, mine))
+            var claimClock = System.Diagnostics.Stopwatch.StartNew();
+            while (true)
             {
-                try { running.Wait(allowed); } catch { }
-                return false;
+                var running = _populating.GetOrAdd(relative, mine);
+                if (ReferenceEquals(running, mine)) break;
+
+                var waitFor = allowed - claimClock.Elapsed;
+                if (waitFor > TimeSpan.Zero)
+                {
+                    try { running.Wait(waitFor); } catch { }
+                }
+                if (interactive || _populated.ContainsKey(relative) ||
+                    allowed - claimClock.Elapsed < TimeSpan.FromSeconds(5))
+                    return false;
             }
+            // Whatever the wait used is not given again to the listing.
+            var listFor = allowed - claimClock.Elapsed;
 
             if (!_populated.TryAdd(relative, true))
             {
@@ -1413,7 +1492,14 @@ namespace ExplorerNative
             // once Drive is back — and remembered, so that coming back online
             // drops it (DropOfflineAnswers). Not marked fully populated either:
             // that kept a folder opened during a blip stale for the session.
-            if (_drive.Health.IsOffline && _listings.TryGetValue(relative, out var held))
+            //
+            // Only for somebody waiting on the screen, and only for a folder
+            // once listed whole: a patient caller about to create on the
+            // answer waits the blip out instead (a stale listing missed a
+            // folder made on the web and made a second one), and the single
+            // row PlaceOne merges into a folder never listed is not its contents.
+            if (interactive && _drive.Health.IsOffline && _listedAt.ContainsKey(relative) &&
+                _listings.TryGetValue(relative, out var held))
             {
                 _log($"  populate '{relative}': offline, {held.Length} entries from the last listing");
                 if (held.Length > 0 && onPlaced != null)
@@ -1437,7 +1523,7 @@ namespace ExplorerNative
             // The same deadline the callback has. Without one this waited out an
             // offline spell for as long as it lasted — holding a navigation, a
             // paste's conflict check or a search, with nothing able to call it off.
-            using var deadline = new CancellationTokenSource(allowed);
+            using var deadline = new CancellationTokenSource(listFor);
 
             // Written into the real path, not the drive letter: the letter is
             // an alias this process made, and the API wants the directory the
@@ -1954,6 +2040,16 @@ namespace ExplorerNative
                 _log($"  populate '{(relative.Length == 0 ? "\\" : relative)}' -> {entries.Count} entries");
 
                 TransferPlaceholders(ref opInfo, relative, entries);
+            }
+            catch (OperationCanceledException ex)
+            {
+                // The deadline, or the mount going. "A task was canceled" is not
+                // a sentence anybody should hear; and while quitting, every
+                // listing still running would have said it once.
+                _log($"  populate '{relative}' cancelled: {ex.Message}");
+                if (!_closing.IsCancellationRequested)
+                    Say("drive.folder.failed", $"Could not read {Path.GetFileName(relative)}: Google Drive took too long");
+                try { FailPlaceholders(ref opInfo); } catch { }
             }
             catch (Exception ex)
             {
@@ -2898,6 +2994,10 @@ namespace ExplorerNative
         {
             public int InFlight;
             public bool Refused;
+            // The process has gone while a read was still in flight here: the
+            // last read out removes the entry, refused or not, because the id
+            // may be given to another process that must not inherit the refusal.
+            public bool Forgotten;
             public readonly CancellationTokenSource Stop = new();
         }
 
@@ -2949,8 +3049,11 @@ namespace ExplorerNative
         public void ForgetReader(int processId)
         {
             lock (_readersGate)
-                if (_readers.TryGetValue(processId, out var reader) && reader.InFlight == 0)
-                    _readers.Remove(processId);
+            {
+                if (!_readers.TryGetValue(processId, out var reader)) return;
+                if (reader.InFlight == 0) _readers.Remove(processId);
+                else reader.Forgotten = true;
+            }
         }
 
         private void OnFetchData(
@@ -3155,7 +3258,9 @@ namespace ExplorerNative
                     lock (_readersGate)
                     {
                         reader.InFlight--;
-                        if (reader.InFlight == 0 && !reader.Refused) _readers.Remove(processId);
+                        if (reader.InFlight == 0 && (!reader.Refused || reader.Forgotten) &&
+                            _readers.TryGetValue(processId, out var current) && ReferenceEquals(current, reader))
+                            _readers.Remove(processId);
                     }
                 }
                 Interlocked.Decrement(ref _callbacksInFlight);

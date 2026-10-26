@@ -29,19 +29,29 @@ namespace ExplorerNative
             MinimizeBox = false;
             MaximizeBox = false;
             ShowInTaskbar = false;
-            ClientSize = new Size(520, 330);
+            AutoScaleMode = AutoScaleMode.Font;
             Font = SystemFonts.MessageBoxFont;
 
+            // Everything is sized from the font, so nothing is cut off or
+            // overlaps at 150 percent or with a larger system font. The old
+            // layout was 496 wide at a 15 pixel font.
+            var unit = Math.Max(1, Font.Height);
+            var width = Math.Max(496, 496 * unit / 15);
+
+            var messageText = $"Version {version} is available. You have {Updater.CurrentText}. " +
+                              "Install it now? Explorer Native will restart.";
+            var measured = TextRenderer.MeasureText(messageText, Font, new Size(width, 0),
+                TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
             var message = new TextBox
             {
-                Text = $"Version {version} is available. You have {Updater.CurrentText}. " +
-                       "Install it now? Explorer Native will restart.",
+                Text = messageText,
                 ReadOnly = true,
                 Multiline = true,
                 BorderStyle = BorderStyle.None,
                 BackColor = SystemColors.Control,
-                Location = new Point(12, 12),
-                Size = new Size(496, 40),
+                Width = width,
+                Height = measured.Height + unit / 2,
+                Margin = new Padding(3, 3, 3, 8),
                 TabIndex = 0,
                 AccessibleRole = AccessibleRole.StaticText,
                 AccessibleName = "Update available",
@@ -51,14 +61,13 @@ namespace ExplorerNative
             {
                 Text = $"&Changes in {version}:",
                 AutoSize = true,
-                Location = new Point(12, 60),
                 TabIndex = 1,
             };
 
             var changes = new ListBox
             {
-                Location = new Point(12, 80),
-                Size = new Size(496, 200),
+                Width = width,
+                Height = unit * 13,
                 TabIndex = 2,
                 HorizontalScrollbar = true,
                 AccessibleName = $"Changes in {version}",
@@ -68,24 +77,53 @@ namespace ExplorerNative
             changes.Items.AddRange(lines.ToArray());
             changes.SelectedIndex = 0;
 
+            var buttonSize = new Size(Math.Max(84, 84 * unit / 15), unit + 13);
             var update = new Button
             {
                 Text = "&Update",
                 DialogResult = DialogResult.OK,
-                Location = new Point(332, 292),
-                Size = new Size(84, 28),
+                AutoSize = true,
+                MinimumSize = buttonSize,
                 TabIndex = 3,
             };
             var cancel = new Button
             {
                 Text = "Cancel",
                 DialogResult = DialogResult.Cancel,
-                Location = new Point(424, 292),
-                Size = new Size(84, 28),
+                AutoSize = true,
+                MinimumSize = buttonSize,
                 TabIndex = 4,
             };
 
-            Controls.AddRange(new Control[] { message, changesLabel, changes, update, cancel });
+            // Right to left, so Cancel is added first and sits on the right.
+            var buttons = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.RightToLeft,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Dock = DockStyle.Fill,
+                Margin = new Padding(0, 8, 0, 0),
+                TabIndex = 3,
+            };
+            buttons.Controls.Add(cancel);
+            buttons.Controls.Add(update);
+
+            var layout = new TableLayoutPanel
+            {
+                ColumnCount = 1,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(9),
+                Location = new Point(0, 0),
+                TabIndex = 0,
+            };
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            layout.Controls.Add(message);
+            layout.Controls.Add(changesLabel);
+            layout.Controls.Add(changes);
+            layout.Controls.Add(buttons);
+
+            Controls.Add(layout);
             AcceptButton = update;
             CancelButton = cancel;
 
@@ -94,6 +132,14 @@ namespace ExplorerNative
                 message.Focus();
                 message.Select(0, 0);
             };
+        }
+
+        /// <summary>Sized from what is on it, so nothing is cut off at 150 percent.</summary>
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            var panel = Controls[0];
+            ClientSize = new Size(panel.PreferredSize.Width, panel.PreferredSize.Height);
         }
 
         // Private-use characters standing in for code spans and escaped

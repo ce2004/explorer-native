@@ -65,11 +65,40 @@ namespace ExplorerNative
         internal static bool UnpacksWithSevenZip(ArchiveFormat? format) =>
             format?.Id is "7z" or "tar.xz" or "tar.bz2" && SevenZipExecutable != null;
 
-        /// <summary>Every core but one, so the window and everything else keep one for themselves.</summary>
-        internal static int SevenZipThreads => Math.Max(1, Environment.ProcessorCount - 1);
+        /// <summary>
+        /// Every core (4.2.5; it was every core but one). 7-Zip runs in the
+        /// below-normal priority class, so whatever else is running comes
+        /// first; see <see cref="ArchiveWorkers"/>.
+        /// </summary>
+        internal static int SevenZipThreads => ArchiveWorkers.Threads;
 
-        /// <summary>The share of the machine's memory 7-Zip may use, in percent.</summary>
+        /// <summary>
+        /// Threads asked of 7-Zip when it makes an archive. LZMA2 at Balanced
+        /// and Smallest runs each block's encoder as a pair, an encoder and a
+        /// match finder that is idle part of the time, so asking for one thread
+        /// a core kept half the machine idle: measured on 1.6GB, eight cores,
+        /// -mmt8 used 4.2 cores and -mmt16 7.4. Fastest has no match-finder
+        /// thread, and bzip2 has one thread a block, so those get one a core.
+        /// The memory switch still decides how many 7-Zip really starts.
+        /// </summary>
+        internal static int SevenZipMakeThreads(ArchiveFormat format, ArchiveLevel level) =>
+            format.Id is "7z" or "tar.xz" && level != ArchiveLevel.Fastest
+                ? Math.Min(128, SevenZipThreads * 2)
+                : SevenZipThreads;
+
+        /// <summary>
+        /// The share of the machine's memory Windows' tar may give xz threads,
+        /// in percent (<see cref="XzThreads"/>). 7-Zip itself is given
+        /// <see cref="SevenZipMemory"/> instead.
+        /// </summary>
         internal const int SevenZipMemoryPercent = 40;
+
+        /// <summary>
+        /// 7-Zip's memory switch: what is free now, less the headroom kept for
+        /// everything else (4.2.5; it was a flat 40 percent of the machine,
+        /// whatever was already in use). Asked afresh for each run.
+        /// </summary>
+        internal static string SevenZipMemory => $"-mmemuse={ArchiveWorkers.SevenZipMegabytes()}m";
 
         /// <summary>
         /// Writes 7za.exe to %LOCALAPPDATA%\ExplorerNative\7-Zip\&lt;version&gt;-&lt;arch&gt;
@@ -182,8 +211,8 @@ namespace ExplorerNative
                 {
                     foreach (var a in new[]
                              {
-                                 "a", "-t7z", SevenZipLevel(level), $"-mmt{SevenZipThreads}",
-                                 $"-mmemuse=p{SevenZipMemoryPercent}", "-snl", "-y",
+                                 "a", "-t7z", SevenZipLevel(level), $"-mmt{SevenZipMakeThreads(format, level)}",
+                                 SevenZipMemory, "-snl", "-y",
                                  "-bso0", "-bse1", "-bsp1", "-sccUTF-8", "-scsUTF-8",
                              })
                         start.ArgumentList.Add(a);
@@ -202,7 +231,7 @@ namespace ExplorerNative
                     foreach (var a in new[]
                              {
                                  "a", "-si", format.Id == "tar.xz" ? "-txz" : "-tbzip2", SevenZipLevel(level),
-                                 $"-mmt{SevenZipThreads}", $"-mmemuse=p{SevenZipMemoryPercent}", "-y",
+                                 $"-mmt{SevenZipMakeThreads(format, level)}", SevenZipMemory, "-y",
                                  "-bso0", "-bse1", "-bsp0", "-sccUTF-8",
                              })
                         start.ArgumentList.Add(a);
@@ -287,7 +316,7 @@ namespace ExplorerNative
                              : new[]
                              {
                                  "x", "-y", "-aos", "-pExplorerNative", $"-mmt{SevenZipThreads}",
-                                 $"-mmemuse=p{SevenZipMemoryPercent}", "-bso1", "-bse1", "-bsp1", "-bb1",
+                                 SevenZipMemory, "-bso1", "-bse1", "-bsp1", "-bb1",
                                  "-sccUTF-8", "-o" + SevenZipPath(staging), "--",
                              })
                     start.ArgumentList.Add(a);
@@ -307,7 +336,7 @@ namespace ExplorerNative
                 Feeder? feeding = compressedTar
                     ? new Feeder(exe, new[]
                     {
-                        "x", "-so", "-y", $"-mmt{SevenZipThreads}", $"-mmemuse=p{SevenZipMemoryPercent}",
+                        "x", "-so", "-y", $"-mmt{SevenZipThreads}", SevenZipMemory,
                         "-bse2", "-bsp2", "-sccUTF-8", "--", SevenZipPath(archivePath),
                     }, (p, _, _) => Interlocked.Exchange(ref percentNow, p), token)
                     : null;
