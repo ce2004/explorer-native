@@ -111,9 +111,57 @@ namespace ExplorerNative
         /// </summary>
         public static bool RegistrationIsBroken()
         {
-            var target = RegisteredCommandTarget(@"Software\Classes\Directory\shell\open\command");
-            if (target == null) return false;
-            try { return !File.Exists(target); } catch { return false; }
+            foreach (var cls in OpenVerbClasses)
+            {
+                var commandKey = $@"Software\Classes\{cls}\shell\open\command";
+
+                // No command and DelegateExecute blanked: Windows has nothing at
+                // all to run, and every folder on the machine fails with
+                // "Application not found". The worst state there is, and it used
+                // to read as "not broken" because there was no path to check.
+                if (OpensNothing(commandKey)) return true;
+
+                var target = RegisteredCommandTarget(commandKey);
+                if (target == null) continue;
+                try { if (!File.Exists(target)) return true; } catch { }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// The narrower question the running app asks every half minute: has
+        /// this application's own registration stopped working? Somebody
+        /// else's dead handler is theirs, and repairing it on a timer would mean
+        /// telling the shell associations changed every thirty seconds.
+        /// </summary>
+        public static bool OurRegistrationIsBroken()
+        {
+            foreach (var cls in OpenVerbClasses)
+            {
+                var commandKey = $@"Software\Classes\{cls}\shell\open\command";
+                if (OpensNothing(commandKey)) return true;
+                if (!CommandIsOurs(commandKey)) continue;
+                var target = RegisteredCommandTarget(commandKey);
+                if (target == null) continue;
+                try { if (!File.Exists(target)) return true; } catch { }
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// True when a folder-open key has DelegateExecute blanked, which only this
+        /// application does, and no command to run in its place.
+        /// </summary>
+        internal static bool OpensNothing(string commandKeyPath)
+        {
+            try
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(commandKeyPath);
+                if (key == null) return false;
+                return key.GetValue("DelegateExecute") is "" &&
+                       string.IsNullOrWhiteSpace(key.GetValue(null) as string);
+            }
+            catch { return false; }
         }
 
         // ---------- Context menu verbs ----------
@@ -175,7 +223,20 @@ namespace ExplorerNative
         {
             bool moved = !string.Equals(settings.RegisteredExePath, ExePath, StringComparison.OrdinalIgnoreCase);
 
-            if (settings.RegisterContextMenu)
+            bool exeThere;
+            try { exeThere = File.Exists(ExePath); } catch { exeThere = false; }
+
+            // A menu entry naming a file that is gone does nothing; this copy's
+            // exe was moved or deleted while it ran and nothing is installed.
+            // The next copy to start puts it back.
+            if (settings.RegisterContextMenu && !exeThere)
+            {
+                var named = RegisteredCommandTarget(DirectoryDefaultCommand);
+                bool dead;
+                try { dead = named != null && !File.Exists(named); } catch { dead = false; }
+                if (dead) RemoveVerb(ContextTargets, VerbName);
+            }
+            else if (settings.RegisterContextMenu)
             {
                 // The same rule the folder verb has lived by, which this had
                 // somehow never been given: a copy that is not the installed one
@@ -249,7 +310,9 @@ namespace ExplorerNative
         {
             if (!settings.SetAsDefaultFileExplorer)
             {
-                if (IsDefaultFileExplorer()) SetDefaultFileExplorer(false);
+                // A key we left opening nothing is ours to clear too, setting or
+                // no setting: it is not a takeover, it is folders not working.
+                if (IsDefaultFileExplorer() || RegistrationIsBroken()) SetDefaultFileExplorer(false);
                 return;
             }
 
@@ -458,8 +521,29 @@ namespace ExplorerNative
         {
             bool was = IsDefaultFileExplorer();
 
-            if (enabled) ClaimFolderOpen();
-            else ReleaseFolderOpen();
+            // One copy at a time, across processes. An update, a second copy
+            // started from another folder and the running one all reconcile at
+            // once, and a release interleaved with a claim is one way to end up
+            // with the command deleted and DelegateExecute still blanked.
+            using (var gate = TakeRegistryGate())
+            {
+                if (enabled)
+                {
+                    // Never a command naming a file that is not there: that breaks
+                    // every folder just as surely as an empty one. A running copy
+                    // whose exe was moved or deleted, with nothing installed,
+                    // hands folders back to Windows instead.
+                    bool exists;
+                    try { exists = File.Exists(ExePath); } catch { exists = false; }
+                    if (exists) ClaimFolderOpen();
+                    else
+                    {
+                        ReleaseFolderOpen();
+                        enabled = false;
+                    }
+                }
+                else ReleaseFolderOpen();
+            }
             NotifyShell();
 
             // ReconcileFolderOpen also comes through here to *repair* a
@@ -622,6 +706,21 @@ namespace ExplorerNative
 
                 RestoreOrRemove(commandKey, null, ours);
                 RestoreOrRemove(commandKey, "DelegateExecute", ours);
+
+                // A backup taken from an already broken key says "DelegateExecute
+                // was blank", and restoring it leaves folders opening nothing.
+                // Whatever the notes say, that state is never handed back.
+                if (OpensNothing(commandKey))
+                {
+                    try
+                    {
+                        using var key = Registry.CurrentUser.OpenSubKey(commandKey, writable: true);
+                        key?.DeleteValue("DelegateExecute", throwOnMissingValue: false);
+                        if (key?.GetValue(null) is string blank && string.IsNullOrWhiteSpace(blank))
+                            key.DeleteValue("", throwOnMissingValue: false);
+                    }
+                    catch { }
+                }
                 PruneIfEmpty(commandKey);
                 PruneIfEmpty($@"Software\Classes\{cls}\shell\open");
 
@@ -689,12 +788,46 @@ namespace ExplorerNative
         /// <summary>True when the command in this key launches this program.</summary>
         private static bool CommandIsOurs(string commandKeyPath)
         {
+            // A key opening nothing is our leftover: nobody else blanks
+            // DelegateExecute. Counted as ours so standing down clears it, and so
+            // a claim does not back it up as "what was there before" — a release
+            // would then faithfully put the broken state back.
+            if (OpensNothing(commandKeyPath)) return true;
             try
             {
                 using var key = Registry.CurrentUser.OpenSubKey(commandKeyPath);
                 return PointsAtUs(key?.GetValue(null) as string);
             }
             catch { return false; }
+        }
+
+        /// <summary>
+        /// A named mutex every copy of the application shares, held while the
+        /// folder keys are written. Null if it cannot be had in five seconds,
+        /// in which case the write goes ahead anyway: folders left broken is
+        /// worse than the race.
+        /// </summary>
+        private static IDisposable? TakeRegistryGate()
+        {
+            try
+            {
+                var mutex = new System.Threading.Mutex(false, @"Local\ExplorerNative.ShellRegistration");
+                bool held;
+                try { held = mutex.WaitOne(5000); }
+                catch (System.Threading.AbandonedMutexException) { held = true; }
+                if (!held) { mutex.Dispose(); return null; }
+                return new Held(mutex);
+            }
+            catch { return null; }
+        }
+
+        private sealed class Held(System.Threading.Mutex mutex) : IDisposable
+        {
+            public void Dispose()
+            {
+                try { mutex.ReleaseMutex(); } catch { }
+                mutex.Dispose();
+            }
         }
 
         /// <summary>

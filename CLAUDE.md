@@ -97,6 +97,7 @@ $p.WaitForExit(120000)
 | AudioTags / SongPropertiesForm | Property-system tags, read and written / as a list |
 | TagEditing / TagEditorForm | Tag editor: merge, refusals (Drive, Ogg, playing), write, one summary / its window |
 | Shortcut / ShortcutBox / ShortcutsForm / HotkeyManager / ReservedShortcuts | Key text / capture box / shortcut page / RegisterHotKey / refused keys |
+| WinKeyHook | Win+key shortcuts Windows refuses (error 1409 for 24 of 26 Win+letters): low-level hook on its own thread, posts WM_HOTKEY, 0xE8 mask key stops the Start menu, IsHeld feeds HoldRepeat; ShortcutBox captures through it while focused. Quick group winkeys (also runs shell registration) |
 | GoogleDrive / GoogleAuth / GoogleSignInRequiredException | Mount, orphan sweep / OAuth, DPAPI token |
 | CfApi / DriveMount / DriveLetter / DriveFileCache | Cloud Files + CheckLayout / provider / subst / chunk cache |
 | DriveClient / DriveWrites / DriveUpload / DriveHealth / DriveQuotaException | Drive v3 / upload, move, trash / tree upload / online state / lasting refusal |

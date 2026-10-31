@@ -97,7 +97,7 @@ namespace ExplorerNative
 
         /// <summary>How the key is asked about. Replaced in tests.</summary>
         public Func<int, bool> IsKeyDown { get; set; } =
-            vk => (GetAsyncKeyState(vk) & 0x8000) != 0;
+            vk => (GetAsyncKeyState(vk) & 0x8000) != 0 || WinKeyHook.IsHeld(vk);
 
         public HoldRepeat() => _timer.Tick += (_, _) => Tick();
 

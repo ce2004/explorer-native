@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 
@@ -113,15 +113,47 @@ namespace ExplorerNative
             if ((GetKeyState(VK_LWIN) & 0x8000) != 0 || (GetKeyState(VK_RWIN) & 0x8000) != 0)
                 mods |= HotkeyManager.MOD_WIN;
 
-            var candidate = new Shortcut(mods, (uint)key);
+            Accept(new Shortcut(mods, (uint)key));
+            return true;
+        }
 
+        // The shell takes most Windows key combinations before this box ever
+        // sees them: Win+E opened File Explorer instead of being captured. While
+        // the box has focus, WinKeyHook hands them here instead.
+        private Action<uint, uint>? _winKeys;
+
+        protected override void OnGotFocus(EventArgs e)
+        {
+            base.OnGotFocus(e);
+            _winKeys ??= (mods, vk) =>
+            {
+                try { BeginInvoke(() => { if (Focused) Accept(new Shortcut(mods, vk)); }); } catch { }
+            };
+            WinKeyHook.SetCapture(_winKeys);
+        }
+
+        protected override void OnLostFocus(EventArgs e)
+        {
+            if (_winKeys != null) WinKeyHook.ClearCapture(_winKeys);
+            base.OnLostFocus(e);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (_winKeys != null) WinKeyHook.ClearCapture(_winKeys);
+            base.Dispose(disposing);
+        }
+
+        /// <summary>Takes a pressed combination, or says why not.</summary>
+        internal void Accept(Shortcut candidate)
+        {
             // A key with no name here — a Japanese IME key, an unnamed OEM key —
             // is written to the file as a number that never parses back, and the
             // shortcut then silently does not exist on the next start.
             if (!Shortcut.Parse(candidate.ToString()).Equals(candidate))
             {
                 Captured?.Invoke("That key cannot be saved as a shortcut. Choose another.");
-                return true;
+                return;
             }
 
             if (!candidate.CanRegister)
@@ -130,7 +162,7 @@ namespace ExplorerNative
                     "A global shortcut needs Control, Alt or the Windows key, or one of the media keys. " +
                     "Shift alone is only enough with a function key. Without them, that key would stop " +
                     "working everywhere else.");
-                return true;
+                return;
             }
 
             // Somebody else's shortcut. Refused rather than taken, because the
@@ -141,13 +173,12 @@ namespace ExplorerNative
             if (!string.IsNullOrEmpty(clash))
             {
                 Captured?.Invoke($"{candidate.Spoken} is already used by {clash}. Not changed.");
-                return true;
+                return;
             }
 
             Value = candidate;
             Changed = true;
             Captured?.Invoke(AccessibleName + " is now " + candidate.Spoken);
-            return true;
         }
     }
 }

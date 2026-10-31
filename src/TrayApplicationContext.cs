@@ -306,6 +306,13 @@ namespace ExplorerNative
                 if (ShellRegistration.Reconcile(_settings)) _settings.Save();
             }
 
+            // And again while running. A launch-time check missed the copy whose
+            // own exe was moved out from under it: the registry still named the
+            // old place, and every folder failed with "Application not found"
+            // until the next start.
+            _registrationWatch.Tick += (_, _) => CheckFolderRegistration();
+            _registrationWatch.Start();
+
             // "Start minimised" is about an unprompted startup — signing in, or
             // the Run key firing. Being handed a folder is a direct request to
             // look at something, so it wins: without this, double-clicking a
@@ -339,6 +346,25 @@ namespace ExplorerNative
         private (string Title, string Text)? _toastWaiting;
 
         private void OnShellRegistrationChanged(string id, string message) => Notify(id, message);
+
+        private readonly System.Windows.Forms.Timer _registrationWatch = new() { Interval = 30_000 };
+
+        /// <summary>
+        /// Repairs folder opening if this application's registration has stopped
+        /// working: pointed back at the installed copy when there is one, handed
+        /// back to Windows when there is not. Never left opening nothing.
+        /// </summary>
+        private void CheckFolderRegistration()
+        {
+            if (_quitting || _settings.UnreadableOnDisk) return;
+            try
+            {
+                if (!ShellRegistration.OurRegistrationIsBroken()) return;
+                EnsureInstalledIfTakingOverFolders();
+                if (ShellRegistration.Reconcile(_settings)) _settings.Save();
+            }
+            catch { }
+        }
 
         private System.Threading.Timer? _settingsRetry;
         /// <summary>What a recovery flag switches off.</summary>
@@ -2537,6 +2563,7 @@ namespace ExplorerNative
             // the pump these arrive on is still running.
             ShellRegistration.Changed -= OnShellRegistrationChanged;
             Speech.Notification -= OnSpeechAvailabilityChanged;
+            _registrationWatch.Stop();
 
             try
             {

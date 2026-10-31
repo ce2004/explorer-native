@@ -83,6 +83,16 @@ namespace ExplorerNative
             Unregister(id);
             if (!shortcut.CanRegister) return false;
 
+            // A Windows key combination is caught at the keyboard, and only while
+            // one of our windows is in front: registering it on each foreground
+            // change would be refused for most letters anyway.
+            if ((shortcut.Modifiers & MOD_WIN) != 0)
+            {
+                WinKeyHook.Add(_window.Handle, id, shortcut, onlyWhenInFront: true);
+                _hooked.Add(id);
+                return true;
+            }
+
             _local[id] = shortcut;
             if (_foregroundHook == IntPtr.Zero)
             {
@@ -134,15 +144,27 @@ namespace ExplorerNative
             if (!shortcut.CanRegister) return false;
 
             if (!RegisterHotKey(_window.Handle, id, shortcut.Modifiers | MOD_NOREPEAT, shortcut.Key))
-                return false;
+            {
+                // Windows keeps nearly every Windows key letter for itself and
+                // refuses it here. The person chose it in Preferences, so it is
+                // caught at the keyboard instead. See WinKeyHook.
+                if ((shortcut.Modifiers & MOD_WIN) == 0) return false;
+                WinKeyHook.Add(_window.Handle, id, shortcut, onlyWhenInFront: false);
+                _hooked.Add(id);
+                return true;
+            }
 
             _registered.Add(id);
             return true;
         }
 
+        /// <summary>Windows key shortcuts caught by <see cref="WinKeyHook"/> rather than registered.</summary>
+        private readonly HashSet<int> _hooked = new();
+
         public void Unregister(int id)
         {
             _local.Remove(id);
+            if (_hooked.Remove(id)) WinKeyHook.Remove(_window.Handle, id);
             if (!_registered.Remove(id) && !_localClaimed.Remove(id)) return;
             try { UnregisterHotKey(_window.Handle, id); } catch { }
         }
@@ -152,6 +174,8 @@ namespace ExplorerNative
             foreach (int id in new List<int>(_registered))
                 Unregister(id);
             foreach (int id in new List<int>(_local.Keys))
+                Unregister(id);
+            foreach (int id in new List<int>(_hooked))
                 Unregister(id);
         }
 

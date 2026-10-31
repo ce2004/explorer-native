@@ -167,6 +167,15 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            // Just Windows key shortcuts and folder registration (4.2.8).
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "winkeys")
+            {
+                ShellRegistrationTests();
+                await WinKeyTests.RunAll(Check, Equal);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             // Just copies out of Drive on a bad connection (4.2.7).
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "badnet")
             {
@@ -502,6 +511,7 @@ namespace ExplorerNative
             await Guard("MainFileOpsFixTests", () => MainFileOpsFixTests.RunAll(Check, Equal));
             await Guard("Sweep308ClientTests", () => Sweep308ClientTests.RunAll(Check, Equal));
             await Guard("BadNetTests", () => BadNetTests.RunAll(Check, Equal));
+            await Guard("WinKeyTests", () => WinKeyTests.RunAll(Check, Equal));
             await Guard("Sweep308CoreTests", () => { Sweep308CoreTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("Sweep308FilesTests", () => Sweep308FilesTests.RunAll(Check));
             await Guard("Sweep308DecoderTests", () => { Sweep308DecoderTests.RunAll(Check, Equal); return Task.CompletedTask; });
@@ -13145,6 +13155,76 @@ namespace ExplorerNative
                 Equal("and standing down gives them to that later handler",
                     later, ReadKey(borrowed).Default ?? "(deleted)");
 
+                WriteKey(borrowed, snapshot[borrowed]);
+
+                // ---- "Application not found" on every folder (4.2.8) ----
+                // No command and DelegateExecute blanked: Windows has nothing to
+                // run for any folder. It read as "not broken" because there was no
+                // path in it to check, so nothing ever repaired it.
+                var drive = @"Software\Classes\Drive\shell\open\command";
+                var driveWas = ReadKey(drive);
+                foreach (var (label, command) in new[] { ("an empty command", (string?)""), ("no command at all", null) })
+                {
+                    WriteKey(borrowed, (command, ""));
+                    Check($"{label} with DelegateExecute blanked counts as broken",
+                        ShellRegistration.RegistrationIsBroken());
+                    Check("...and the running app's check sees it as its own to repair",
+                        ShellRegistration.OurRegistrationIsBroken());
+
+                    ShellRegistration.Reconcile(new Settings { SetAsDefaultFileExplorer = true, RegisterContextMenu = contextWasOn });
+                    Check("...and reconcile repairs it to open with this app",
+                        ShellRegistration.IsDefaultFileExplorer() && !ShellRegistration.RegistrationIsBroken(),
+                        ReadKey(borrowed).Default ?? "(unset)");
+
+                    // Then standing down must hand folders back to Windows, not
+                    // restore "nothing": a claim used to back the broken key up as
+                    // "what was there before us", and turning the takeover off put
+                    // it straight back.
+                    ShellRegistration.SetDefaultFileExplorer(false);
+                    Check("...and standing down afterwards leaves folders opening",
+                        !ShellRegistration.OpensNothing(borrowed) && !ShellRegistration.OpensNothing(drive),
+                        $"default {Show(ReadKey(borrowed).Default)}, delegate {Show(ReadKey(borrowed).Delegate)}");
+                    WriteKey(borrowed, snapshot[borrowed]);
+                    WriteKey(drive, driveWas);
+                }
+
+                // Turning the takeover off from the broken state clears it too.
+                WriteKey(borrowed, (null, ""));
+                ShellRegistration.SetDefaultFileExplorer(false);
+                Check("standing down from a key that opens nothing clears it",
+                    !ShellRegistration.OpensNothing(borrowed),
+                    $"delegate {Show(ReadKey(borrowed).Delegate)}");
+                WriteKey(borrowed, snapshot[borrowed]);
+
+                // And with the setting off, reconcile still clears it: that is not
+                // a takeover, it is folders not working.
+                WriteKey(borrowed, ("", ""));
+                ShellRegistration.Reconcile(new Settings { SetAsDefaultFileExplorer = false, RegisterContextMenu = contextWasOn });
+                Check("with the takeover off, reconcile clears a key that opens nothing",
+                    !ShellRegistration.OpensNothing(borrowed));
+                WriteKey(borrowed, snapshot[borrowed]);
+
+                // The exe the registration names was moved away while the app ran.
+                var gone = Path.Combine(Path.GetTempPath(), "en-moved-" + Guid.NewGuid().ToString("N"),
+                    Path.GetFileName(ShellRegistration.ExePath));
+                ShellRegistration.SetDefaultFileExplorer(true);
+                WriteKey(borrowed, ($"\"{gone}\" \"%1\"", ""));
+                WriteKey(drive, ($"\"{gone}\" \"%1\"", ""));
+                Check("a registration naming a moved exe is seen by the running app's check",
+                    ShellRegistration.OurRegistrationIsBroken());
+                ShellRegistration.Reconcile(new Settings { SetAsDefaultFileExplorer = true, RegisterContextMenu = contextWasOn });
+                Check("...and repaired to a copy that exists",
+                    !ShellRegistration.OurRegistrationIsBroken() &&
+                    ShellRegistration.RegisteredCommandTarget(borrowed) is { } fixedTo && File.Exists(fixedTo),
+                    ReadKey(borrowed).Default ?? "(unset)");
+                ShellRegistration.SetDefaultFileExplorer(false);
+                WriteKey(borrowed, snapshot[borrowed]);
+                WriteKey(drive, driveWas);
+
+                // Somebody else's dead handler is not the timer's business.
+                WriteKey(borrowed, (@"""C:\Gone Away\other.exe"" ""%1""", null));
+                Check("another application's dead handler is not ours to repair on a timer",
+                    !ShellRegistration.OurRegistrationIsBroken());
                 WriteKey(borrowed, snapshot[borrowed]);
 
                 // A full round trip must leave nothing behind at all.

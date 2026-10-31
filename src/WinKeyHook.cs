@@ -1,0 +1,285 @@
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Threading;
+
+namespace ExplorerNative
+{
+    /// <summary>
+    /// Windows key shortcuts that Windows will not hand over through
+    /// RegisterHotKey.
+    ///
+    /// The shell keeps almost every Windows key letter for itself: measured on
+    /// Windows 11, 24 of the 26 Win+letter combinations fail with error 1409,
+    /// and so do a third of the Win+Shift, Win+Alt and Win+Ctrl ones. Somebody
+    /// who picked Win+E in Preferences got a shortcut that never fired. So a
+    /// combination that carries the Windows key and is refused is caught here
+    /// instead, by a low-level keyboard hook that sees the key before the shell
+    /// does, takes it, and posts the same WM_HOTKEY the normal route would have.
+    ///
+    /// The hook only exists while there is something for it to catch, and it
+    /// lives on a thread of its own: Windows drops a low-level hook that keeps
+    /// it waiting, and the UI thread is sometimes busy for longer than that.
+    /// </summary>
+    internal static class WinKeyHook
+    {
+        private const int WH_KEYBOARD_LL = 13;
+        private const int WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101, WM_SYSKEYDOWN = 0x0104, WM_SYSKEYUP = 0x0105;
+        private const int WM_HOTKEY = 0x0312, WM_QUIT = 0x0012;
+        private const int VK_SHIFT = 0x10, VK_CONTROL = 0x11, VK_MENU = 0x12, VK_LWIN = 0x5B, VK_RWIN = 0x5C;
+
+        /// <summary>
+        /// An unassigned virtual key, pressed and let go after a key is taken.
+        /// Without it the shell sees Windows go down and up with nothing between
+        /// and opens the Start menu on the way up.
+        /// </summary>
+        private const byte MaskKey = 0xE8;
+        private const uint KEYEVENTF_KEYUP = 0x0002;
+
+        /// <summary>Marks our own mask key, so the hook lets it straight through.</summary>
+        private static readonly UIntPtr OwnInput = new(0x454E4B48);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct KBDLLHOOKSTRUCT
+        {
+            public uint vkCode, scanCode, flags, time;
+            public UIntPtr dwExtraInfo;
+        }
+
+        private delegate IntPtr HookProc(int code, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr SetWindowsHookEx(int idHook, HookProc proc, IntPtr module, uint threadId);
+        [DllImport("user32.dll")] private static extern bool UnhookWindowsHookEx(IntPtr hook);
+        [DllImport("user32.dll")] private static extern IntPtr CallNextHookEx(IntPtr hook, int code, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll")] private static extern short GetAsyncKeyState(int vKey);
+        [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll")] private static extern bool PostThreadMessage(uint thread, int msg, IntPtr wParam, IntPtr lParam);
+        [DllImport("user32.dll")] private static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+        [DllImport("user32.dll")] private static extern int GetMessage(out MSG msg, IntPtr hwnd, uint min, uint max);
+        [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint process);
+        [DllImport("kernel32.dll")] private static extern IntPtr GetModuleHandle(string? name);
+        [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam, lParam; public uint time; public int x, y; }
+
+        private sealed record Entry(IntPtr Window, int Id, Shortcut Shortcut, bool OnlyWhenInFront);
+
+        private static readonly object Gate = new();
+
+        /// <summary>Replaced whole, never changed in place, so the hook reads it without a lock.</summary>
+        private static volatile Dictionary<(IntPtr, int), Entry> _entries = new();
+
+        private static volatile Action<uint, uint>? _capture;
+
+        private static Thread? _thread;
+        private static uint _threadId;
+        private static HookProc? _proc;
+
+        /// <summary>Keys taken on the way down, so their repeats and the release are taken too.</summary>
+        private static readonly bool[] _taken = new bool[256];
+        private static readonly long[] _seenAt = new long[256];
+        private static readonly uint _ownProcess = (uint)Environment.ProcessId;
+
+        /// <summary>
+        /// Catches <paramref name="shortcut"/> for <paramref name="window"/> under
+        /// <paramref name="id"/>, posting WM_HOTKEY with that id when it is
+        /// pressed. <paramref name="onlyWhenInFront"/> limits it to while one of
+        /// this application's windows is in front.
+        /// </summary>
+        public static void Add(IntPtr window, int id, Shortcut shortcut, bool onlyWhenInFront)
+        {
+            lock (Gate)
+            {
+                var next = new Dictionary<(IntPtr, int), Entry>(_entries)
+                {
+                    [(window, id)] = new Entry(window, id, shortcut, onlyWhenInFront)
+                };
+                _entries = next;
+                EnsureRunning();
+            }
+        }
+
+        public static void Remove(IntPtr window, int id)
+        {
+            lock (Gate)
+            {
+                if (!_entries.ContainsKey((window, id))) return;
+                var next = new Dictionary<(IntPtr, int), Entry>(_entries);
+                next.Remove((window, id));
+                _entries = next;
+                StopIfIdle();
+            }
+        }
+
+        /// <summary>
+        /// While set, every Windows key combination pressed with one of this
+        /// application's windows in front goes here, as modifiers and key, rather
+        /// than to the shell. A shortcut box sets it while it has focus, so
+        /// Win+E can be typed into it at all: the shell otherwise takes the key
+        /// before the box ever sees it. Called on the hook's thread.
+        /// </summary>
+        public static void SetCapture(Action<uint, uint>? capture)
+        {
+            lock (Gate)
+            {
+                _capture = capture;
+                if (capture != null) EnsureRunning();
+                else StopIfIdle();
+            }
+        }
+
+        public static void ClearCapture(Action<uint, uint> capture)
+        {
+            lock (Gate)
+            {
+                if (_capture != capture) return;
+                _capture = null;
+                StopIfIdle();
+            }
+        }
+
+        /// <summary>
+        /// True while a key this hook took is still held down. The shell never
+        /// saw it go down, so GetAsyncKeyState says it is up, and holding a
+        /// shortcut to repeat it would stop after the first press. Guarded by
+        /// time as well: a key whose release was somehow missed stops counting
+        /// as held once its repeats stop arriving.
+        /// </summary>
+        public static bool IsHeld(int vk)
+        {
+            if (vk < 0 || vk > 255 || !Volatile.Read(ref _taken[vk])) return false;
+            return Environment.TickCount64 - Volatile.Read(ref _seenAt[vk]) < 1200;
+        }
+
+        /// <summary>For the tests: whether the hook is installed right now.</summary>
+        internal static bool Running { get { lock (Gate) return _thread != null; } }
+
+        private static void EnsureRunning()
+        {
+            if (_thread != null) return;
+
+            using var ready = new ManualResetEventSlim();
+            var thread = new Thread(() =>
+            {
+                _threadId = GetCurrentThreadId();
+                _proc = OnKey;
+                var hook = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(null), 0);
+                ready.Set();
+                if (hook == IntPtr.Zero) return;
+
+                while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0) { }
+
+                UnhookWindowsHookEx(hook);
+                Array.Clear(_taken);
+            })
+            { IsBackground = true, Name = "Windows key shortcuts" };
+            thread.Start();
+            ready.Wait(2000);
+            _thread = thread;
+        }
+
+        private static void StopIfIdle()
+        {
+            if (_thread == null || _entries.Count > 0 || _capture != null) return;
+            PostThreadMessage(_threadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
+            _thread = null;
+        }
+
+        private static bool Down(int vk) => (GetAsyncKeyState(vk) & 0x8000) != 0;
+
+        private static bool OurWindowInFront()
+        {
+            var foreground = GetForegroundWindow();
+            if (foreground == IntPtr.Zero) return false;
+            GetWindowThreadProcessId(foreground, out var process);
+            return process == _ownProcess;
+        }
+
+        private static IntPtr OnKey(int code, IntPtr wParam, IntPtr lParam)
+        {
+            if (code < 0) return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
+
+            try
+            {
+                var key = Marshal.PtrToStructure<KBDLLHOOKSTRUCT>(lParam);
+                if (key.dwExtraInfo == OwnInput || key.vkCode > 255)
+                    return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
+
+                int vk = (int)key.vkCode;
+                int message = (int)wParam;
+
+                if (message is WM_KEYUP or WM_SYSKEYUP)
+                {
+                    if (!_taken[vk]) return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
+                    Volatile.Write(ref _taken[vk], false);
+                    return (IntPtr)1;
+                }
+
+                if (message is not (WM_KEYDOWN or WM_SYSKEYDOWN))
+                    return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
+
+                // A repeat of a key already taken: taken again, and nothing fired,
+                // the same as MOD_NOREPEAT. HoldRepeat does the repeating.
+                if (_taken[vk])
+                {
+                    Volatile.Write(ref _seenAt[vk], Environment.TickCount64);
+                    return (IntPtr)1;
+                }
+
+                if (IsModifierKey(vk) || !(Down(VK_LWIN) || Down(VK_RWIN)))
+                    return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
+
+                uint mods = HotkeyManager.MOD_WIN;
+                if (Down(VK_CONTROL)) mods |= HotkeyManager.MOD_CONTROL;
+                if (Down(VK_MENU)) mods |= HotkeyManager.MOD_ALT;
+                if (Down(VK_SHIFT)) mods |= HotkeyManager.MOD_SHIFT;
+
+                var capture = _capture;
+                if (capture != null && OurWindowInFront())
+                {
+                    Take(vk);
+                    capture(mods, (uint)vk);
+                    return (IntPtr)1;
+                }
+
+                foreach (var entry in _entries.Values)
+                {
+                    if (!Matches(entry.Shortcut, mods, (uint)vk)) continue;
+                    if (entry.OnlyWhenInFront && !OurWindowInFront()) continue;
+
+                    Take(vk);
+                    PostMessage(entry.Window, WM_HOTKEY, (IntPtr)entry.Id, IntPtr.Zero);
+                    return (IntPtr)1;
+                }
+            }
+            catch
+            {
+                // Never let a fault here take the keyboard with it.
+            }
+
+            return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
+        }
+
+        /// <summary>
+        /// Whether a press is this shortcut. Only the four modifier bits count:
+        /// a saved value can carry MOD_NOREPEAT, and that is not a key.
+        /// </summary>
+        internal static bool Matches(Shortcut shortcut, uint mods, uint vk) =>
+            shortcut.IsAssigned && shortcut.Key == vk && (shortcut.Modifiers & 0xF) == (mods & 0xF);
+
+        private static bool IsModifierKey(int vk) => vk is
+            VK_SHIFT or VK_CONTROL or VK_MENU or VK_LWIN or VK_RWIN or
+            0xA0 or 0xA1 or 0xA2 or 0xA3 or 0xA4 or 0xA5;
+
+        private static void Take(int vk)
+        {
+            Volatile.Write(ref _seenAt[vk], Environment.TickCount64);
+            Volatile.Write(ref _taken[vk], true);
+            keybd_event(MaskKey, 0, 0, OwnInput);
+            keybd_event(MaskKey, 0, KEYEVENTF_KEYUP, OwnInput);
+        }
+    }
+}
