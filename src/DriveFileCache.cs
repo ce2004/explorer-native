@@ -191,6 +191,18 @@ namespace ExplorerNative
         /// <summary>How long a read waits for its chunk before fetching its own bytes.</summary>
         private const int ChunkPatienceMilliseconds = 400;
 
+        /// <summary>The pause before a reader asks again for a chunk whose request failed.</summary>
+        private const int ChunkRetryPauseMilliseconds = 500;
+
+        /// <summary>How long a read waits on a chunk before taking the link for slow and fetching its own bytes.</summary>
+        private const int SlowChunkMilliseconds = 8000;
+
+        /// <summary>How long the read-ahead stays at one stream after a read found the link slow.</summary>
+        private const int SlowLinkHoldMilliseconds = 60_000;
+
+        /// <summary>Until when (TickCount64) the read-ahead keeps to one stream.</summary>
+        private long _slowUntil;
+
         /// <summary>
         /// Chunks a read has already fetched around, once each. More than once
         /// and a copy reading at the download's edge makes a small request for
@@ -444,6 +456,14 @@ namespace ExplorerNative
                         if (Environment.TickCount64 - LastUsed > YieldAfterMilliseconds &&
                             _pool.LastReadAt > LastUsed &&
                             !string.Equals(_pool.LastReader, _poolKey, StringComparison.Ordinal))
+                        {
+                            await _wake.WaitAsync(1000, token);
+                            continue;
+                        }
+
+                        // On a link a read has found slow, one stream at a time,
+                        // so the chunk the reader needs is not split four ways.
+                        if (Environment.TickCount64 < Interlocked.Read(ref _slowUntil) && !_pumpFetching.IsEmpty)
                         {
                             await _wake.WaitAsync(1000, token);
                             continue;
@@ -705,7 +725,42 @@ namespace ExplorerNative
                         }
                     }
 
-                    chunk = await whole.WaitAsync(token);
+                    // A chunk this slow to come is a slow link shared four ways
+                    // with the read-ahead (4.2.7): the read fetches its own bytes,
+                    // and the read-ahead goes down to one stream for a while. A
+                    // callback that waited for the whole chunk took over two
+                    // minutes at 150KB/s, Windows timed it out, and from then on
+                    // refused the file (error 379) until the app restarted.
+                    if (!whole.IsCompleted)
+                    {
+                        var slow = Task.Delay(SlowChunkMilliseconds, token);
+                        if (await Task.WhenAny(whole, slow) != whole)
+                        {
+                            token.ThrowIfCancellationRequested();
+                            Interlocked.Exchange(ref _slowUntil, Environment.TickCount64 + SlowLinkHoldMilliseconds);
+                            int want = (int)Math.Min(Math.Min(length - filled, DirectBytes),
+                                (long)(index + 1) * DriveCachePool.ChunkBytes - at);
+                            var own = await _drive.ReadRange(FileId, at, want, token);
+                            if (own.Length == 0) break;
+                            Buffer.BlockCopy(own, 0, result, filled, own.Length);
+                            filled += own.Length;
+                            continue;
+                        }
+                    }
+
+                    try { chunk = await whole.WaitAsync(token); }
+                    catch (Exception ex) when (!token.IsCancellationRequested && !_cancel.IsCancellationRequested &&
+                                               ex is not DriveClient.DriveStatusException)
+                    {
+                        // The download's request for this chunk failed (4.2.7). The
+                        // reader used to fail with it, at once: on a weak link that
+                        // was "the cloud operation was unsuccessful" and robocopy
+                        // starting the file over. Asked again instead, for as long as
+                        // the reader's own deadline allows. A refusal (deleted, no
+                        // access) is not asked again.
+                        await Task.Delay(ChunkRetryPauseMilliseconds, token);
+                        continue;
+                    }
                 }
 
                 if (within >= chunk.Length) break;

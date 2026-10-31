@@ -1046,6 +1046,93 @@ namespace ExplorerNative
             return mount?.Watch(paths);
         }
 
+        /// <summary>
+        /// One file on the letter, copied to <paramref name="destination"/> straight
+        /// from Google rather than through Windows' cloud layer: streamed, resumed
+        /// from the byte it got to when the connection breaks, checked against
+        /// Drive's size and checksum, and put in place only when whole. Null when
+        /// it worked, otherwise why not.
+        ///
+        /// For a copy out of Drive that robocopy gave up on (4.2.7). Once one read
+        /// of a file has timed out, Windows refuses that file with error 379 ("not
+        /// supported by the cloud sync provider") until the app restarts, so
+        /// robocopy's own retries can never succeed; this does not go through
+        /// Windows at all.
+        /// </summary>
+        internal async Task<string?> DownloadOutAsync(string source, string destination,
+            Action<long>? moved, CancellationToken token)
+        {
+            // A few tries: this is the last chance the file gets, on a line bad
+            // enough that Windows already gave up on it. A refusal is final.
+            string? why = null;
+            for (int attempt = 0; attempt < 4; attempt++)
+            {
+                if (attempt > 0) await Task.Delay(TimeSpan.FromSeconds(2 * attempt), token).ConfigureAwait(false);
+                try { why = await DownloadOutOnceAsync(source, destination, moved, token).ConfigureAwait(false); }
+                catch (DriveClient.DriveStatusException ex) when (ex.Status < 500 && ex.Status != 429) { return GoogleNet.Reason(ex); }
+                catch (DriveClient.DriveStatusException ex) { why = GoogleNet.Reason(ex); continue; }
+                if (why == null) return null;
+            }
+            return why;
+        }
+
+        private async Task<string?> DownloadOutOnceAsync(string source, string destination,
+            Action<long>? moved, CancellationToken token)
+        {
+            DriveMount? mount;
+            DriveClient? client;
+            lock (_gate) { mount = _mount; client = _client; }
+            if (mount == null || client == null || !Owns(mount, source)) return "it is not on Google Drive";
+            var id = mount.IdFor(source);
+            if (id == null) return "Google Drive could not say which file it is";
+
+            // Its read-ahead from the failed copy stops, so the line is this download's.
+            try { mount.ReleaseFile(id); } catch { }
+
+            var folder = Path.GetDirectoryName(destination);
+            var partial = Path.Combine(folder ?? "", "." + Path.GetFileName(destination) + ".partial-" +
+                                                    Guid.NewGuid().ToString("N")[..8]);
+            try
+            {
+                var remote = await client.FileNow(id, token).ConfigureAwait(false);
+                if (remote == null) return "it is no longer on Google Drive";
+                if (remote.IsGoogleDocument) return "it is a Google document, which has no file to copy";
+                if (folder != null) Directory.CreateDirectory(folder);
+
+                using var md5 = remote.Md5 != null
+                    ? System.Security.Cryptography.IncrementalHash.CreateHash(System.Security.Cryptography.HashAlgorithmName.MD5)
+                    : null;
+                await using (var file = new FileStream(partial, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+                                 1 << 16, FileOptions.Asynchronous))
+                {
+                    if (remote.Size > 0)
+                        await client.DownloadTo(id, 0, remote.Size, file, block =>
+                        {
+                            md5?.AppendData(block.Span);
+                            moved?.Invoke(block.Length);
+                        }, token).ConfigureAwait(false);
+                }
+
+                if (new FileInfo(partial).Length != remote.Size)
+                    return "the download came out the wrong size";
+                if (md5 != null && !string.Equals(Convert.ToHexString(md5.GetHashAndReset()), remote.Md5,
+                        StringComparison.OrdinalIgnoreCase))
+                    return "the download did not match Google Drive's copy";
+
+                if (remote.Modified > DateTime.MinValue) File.SetLastWriteTimeUtc(partial, remote.Modified);
+                File.Move(partial, destination, overwrite: true);
+                Note($"copied {Path.GetFileName(source)} straight from Google ({remote.Size:N0} bytes)");
+                return null;
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (DriveClient.DriveStatusException) { throw; }
+            catch (Exception ex) { return GoogleNet.Reason(ex); }
+            finally
+            {
+                try { if (File.Exists(partial)) File.Delete(partial); } catch { }
+            }
+        }
+
         public bool Owns(string path)
         {
             DriveMount? mount;

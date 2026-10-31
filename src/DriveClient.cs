@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -1262,24 +1263,41 @@ namespace ExplorerNative
         public async Task<byte[]> ReadRange(
             string fileId, long offset, int length, CancellationToken token)
         {
-            var spent = Stopwatch.StartNew();
+            // What has arrived is kept, and a retry asks only for the rest (4.2.7).
+            // A connection that broke three megabytes into a four-megabyte piece
+            // used to throw the three away and start the piece again, inside a
+            // twenty-second budget for the whole thing: on a weak link no piece
+            // ever got through, every read failed with "the cloud operation was
+            // unsuccessful", and robocopy started the file over at 100 percent.
+            //
+            // And the budget is now silence, not the clock: a link that keeps
+            // delivering, however slowly and however often it drops, is kept at;
+            // only ReadQuietBudget with not one byte arriving gives up. Callers
+            // still bound the whole read with their token (the callback's
+            // DataDeadline, the cache's lifetime), so it never waits for ever.
+            var into = new byte[length];
+            var got = new StrongBox<int>(0);
+            var quiet = Stopwatch.StartNew();
             Exception? last = null;
+            int fruitless = 0;
 
-            for (int attempt = 0; ; attempt++)
+            while (true)
             {
                 token.ThrowIfCancellationRequested();
 
-                if (attempt > 0)
+                if (fruitless > 0)
                 {
-                    // Room for the attempt as well as the wait. Starting a
-                    // fifteen-second request with two seconds of budget left is
-                    // how a bounded retry stops being bounded.
-                    var wait = ReadRetryDelays[Math.Min(attempt - 1, ReadRetryDelays.Length - 1)];
-                    if (spent.Elapsed + wait >= ReadRetryBudget) break;
+                    var wait = ReadRetryDelays[Math.Min(fruitless - 1, ReadRetryDelays.Length - 1)];
+                    if (quiet.Elapsed + wait >= ReadQuietBudget) break;
                     await Pause(wait, token);
                 }
 
-                try { return await ReadRangeOnce(fileId, offset, length, token); }
+                int before = got.Value;
+                try
+                {
+                    bool whole = await ReadRangeOnce(fileId, offset, into, got, token, () => quiet.Restart());
+                    return whole ? into : into[..got.Value];
+                }
                 catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
                 catch (RetryableReadException ex) { last = ex.InnerException ?? ex; }
                 catch (TimeoutException ex) { last = ex; }
@@ -1289,7 +1307,8 @@ namespace ExplorerNative
                 // it is the most ordinary blip there is.
                 catch (IOException ex) { last = ex; }
 
-                if (spent.Elapsed >= ReadRetryBudget) break;
+                fruitless = got.Value > before ? 1 : fruitless + 1;
+                if (quiet.Elapsed >= ReadQuietBudget) break;
             }
 
             throw last ?? new InvalidOperationException("range read failed");
@@ -1378,13 +1397,12 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// The longest a single ranged read may take, retries included.
-        ///
-        /// Twenty seconds: comfortably more than one fifteen-second request, so a
-        /// blip on the first attempt is still retried, and comfortably less than
-        /// the point at which a blocked callback becomes everybody's problem.
+        /// How long a ranged read keeps trying with nothing at all arriving.
+        /// Bytes arriving reset it, so a slow or flaky link is ridden out; a link
+        /// that is gone fails within this. It was twenty seconds for the whole
+        /// read, which failed every piece on a weak connection (4.2.7).
         /// </summary>
-        private static readonly TimeSpan ReadRetryBudget = TimeSpan.FromSeconds(20);
+        internal static readonly TimeSpan ReadQuietBudget = TimeSpan.FromSeconds(45);
 
         /// <summary>
         /// Short, and not the writes' exponential backoff. What is being waited
@@ -1397,6 +1415,7 @@ namespace ExplorerNative
         {
             TimeSpan.FromMilliseconds(250),
             TimeSpan.FromMilliseconds(750),
+            TimeSpan.FromSeconds(2),
         };
 
         /// <summary>
@@ -1465,27 +1484,37 @@ namespace ExplorerNative
             url.Contains("acknowledgeAbuse=true", StringComparison.Ordinal) &&
             NoAcknowledge.TryAdd(fileId, true);
 
-        private async Task<byte[]> ReadRangeOnce(
-            string fileId, long offset, int length, CancellationToken token)
+        /// <summary>
+        /// One request for what <paramref name="into"/> still lacks, from
+        /// <paramref name="got"/> on. Bytes are counted into <paramref name="got"/>
+        /// as they land, so a failure part way leaves them kept for the retry.
+        /// True when the buffer is full; false when the file ended first.
+        /// </summary>
+        private async Task<bool> ReadRangeOnce(
+            string fileId, long offset, byte[] into, StrongBox<int> got, CancellationToken token, Action arrived)
         {
             using var attempt = CancellationTokenSource.CreateLinkedTokenSource(token);
             attempt.CancelAfter(ReadAttemptLimit);
 
             try
             {
-                return await ReadRangeWithin(fileId, offset, length, attempt.Token,
-                    () => { try { attempt.CancelAfter(ReadAttemptLimit); } catch { } });
+                return await ReadRangeWithin(fileId, offset, into, got, attempt.Token,
+                    () => { arrived(); try { attempt.CancelAfter(ReadAttemptLimit); } catch { } });
             }
             catch (OperationCanceledException) when (!token.IsCancellationRequested)
             {
                 throw new TimeoutException(
-                    $"Google Drive stopped sending [{offset:N0} +{length:N0}] part way through");
+                    $"Google Drive stopped sending [{offset + got.Value:N0} +{into.Length - got.Value:N0}] part way through");
             }
         }
 
-        private async Task<byte[]> ReadRangeWithin(
-            string fileId, long offset, int length, CancellationToken token, Action arrived)
+        private async Task<bool> ReadRangeWithin(
+            string fileId, long start, byte[] into, StrongBox<int> got, CancellationToken token, Action arrived)
         {
+            long offset = start + got.Value;
+            int length = into.Length - got.Value;
+            if (length <= 0) return true;
+
             string url = MediaUrl(fileId);
             using var request = await Request(HttpMethod.Get, url, token);
             request.Headers.Range = new RangeHeaderValue(offset, offset + length - 1);
@@ -1526,13 +1555,13 @@ namespace ExplorerNative
                 promised = to - from + 1;
 
             using var stream = await response.Content.ReadAsStreamAsync(token);
-            var buffer = new byte[length];
             int total = 0;
             while (total < length)
             {
-                int n = await stream.ReadAsync(buffer.AsMemory(total, length - total), token);
+                int n = await stream.ReadAsync(into.AsMemory(got.Value, length - total), token);
                 if (n <= 0) break;
                 total += n;
+                got.Value += n;
                 arrived();
             }
 
@@ -1540,7 +1569,7 @@ namespace ExplorerNative
                 throw new RetryableReadException(
                     $"the range [{offset:N0} +{length:N0}] ended after {total:N0} of {promised:N0} bytes");
 
-            return total == length ? buffer : buffer[..total];
+            return total == length;
         }
 
         /// <summary>

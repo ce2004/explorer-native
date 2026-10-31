@@ -744,7 +744,7 @@ namespace ExplorerNative
                 Format(RoboCopyEngine.RetriesFor(new[] { Path.Combine(temp, "a") }, temp, cloudSource: false)));
             Equal("retries: a share keeps the long wait", "20/5",
                 Format(RoboCopyEngine.RetriesFor(new[] { @"\\server\share\a" }, temp, cloudSource: false)));
-            Equal("retries: so does a copy out of Drive", "20/5",
+            Equal("retries: a copy out of Drive tries twice, then fetches the file straight from Google", "2/5",
                 Format(RoboCopyEngine.RetriesFor(new[] { Path.Combine(temp, "a") }, temp, cloudSource: true)));
 
             static string Format((int Count, int WaitSeconds) r) => $"{r.Count}/{r.WaitSeconds}";

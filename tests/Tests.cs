@@ -167,6 +167,14 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            // Just copies out of Drive on a bad connection (4.2.7).
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "badnet")
+            {
+                await BadNetTests.RunAll(Check, Equal);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             // Just searching, the shortcuts list and the 4.2.0 fixes.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "search")
             {
@@ -493,6 +501,7 @@ namespace ExplorerNative
             await Guard("WebArchiveAudioFixTests", () => WebArchiveAudioFixTests.RunAll(Check, Equal));
             await Guard("MainFileOpsFixTests", () => MainFileOpsFixTests.RunAll(Check, Equal));
             await Guard("Sweep308ClientTests", () => Sweep308ClientTests.RunAll(Check, Equal));
+            await Guard("BadNetTests", () => BadNetTests.RunAll(Check, Equal));
             await Guard("Sweep308CoreTests", () => { Sweep308CoreTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("Sweep308FilesTests", () => Sweep308FilesTests.RunAll(Check));
             await Guard("Sweep308DecoderTests", () => { Sweep308DecoderTests.RunAll(Check, Equal); return Task.CompletedTask; });

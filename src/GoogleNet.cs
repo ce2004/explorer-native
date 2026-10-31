@@ -111,7 +111,7 @@ namespace ExplorerNative
             try
             {
                 await socket.ConnectAsync(new IPEndPoint(address, port), token).ConfigureAwait(false);
-                return new NetworkStream(socket, ownsSocket: true);
+                return BadNet.Wrap(new NetworkStream(socket, ownsSocket: true));
             }
             catch
             {

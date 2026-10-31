@@ -238,6 +238,15 @@ namespace ExplorerNative
         public static Action<int>? AfterKill;
 
         /// <summary>
+        /// Copies one file out of the Drive letter straight from Google (source,
+        /// destination, bytes arrived, token), null when it worked, otherwise why
+        /// not. A copy out of Drive hands it whatever robocopy gave up on (4.2.7):
+        /// after one timed-out read Windows refuses that file with error 379 until
+        /// the app restarts, so robocopy's retries never get it.
+        /// </summary>
+        public static Func<string, string, Action<long>?, CancellationToken, Task<string?>>? DownloadFromCloud;
+
+        /// <summary>
         /// The whole transfer, on a worker.
         ///
         /// Everything in it is filesystem work — an existence check per source
@@ -1506,6 +1515,42 @@ namespace ExplorerNative
                     ? Math.Max(Volatile.Read(ref itemsTotal), Volatile.Read(ref itemsDone))
                     : Volatile.Read(ref itemsDone));
 
+            // Out of Drive, what robocopy gave up on is fetched straight from
+            // Google instead (4.2.7). Its retries cannot get it: after one read
+            // timed out, Windows refuses the file with error 379 until the app
+            // restarts, and the window sat at 100 percent through every retry.
+            if (cloudSource && failedSources.Count > 0 && DownloadFromCloud is { } fromGoogle &&
+                !token.IsCancellationRequested)
+            {
+                foreach (var source in failedSources.ToList())
+                {
+                    if (token.IsCancellationRequested) break;
+                    if (LandingFor(source) is not { } landing) continue;
+
+                    Volatile.Write(ref current, $"Downloading {Path.GetFileName(source)} straight from Google Drive");
+                    Report();
+                    string? why;
+                    try { why = await fromGoogle(source, landing, null, token); }
+                    catch (OperationCanceledException) { break; }
+                    catch (Exception ex) { why = ex.Message; }
+
+                    if (why != null)
+                    {
+                        Trace($"straight from Google failed for {source}: {why}");
+                        continue;
+                    }
+
+                    Trace($"straight from Google: {source}");
+                    failedSources.Remove(source);
+                    failed = Math.Max(0, failed - 1);
+                    copied++;
+                    errors.RemoveAll(e => e.Contains(source, StringComparison.OrdinalIgnoreCase));
+                }
+
+                if (failedSources.Count == 0)
+                    errors.RemoveAll(e => e.StartsWith("robocopy reported failures copying", StringComparison.Ordinal));
+            }
+
             if (token.IsCancellationRequested)
             {
                 // On a worker. Deleting a part-written 20GB file, and waiting out
@@ -2546,7 +2591,12 @@ namespace ExplorerNative
         internal static (int Count, int WaitSeconds) RetriesFor(
             IEnumerable<string> sources, string destination, bool cloudSource)
         {
-            if (cloudSource || IsRemote(destination)) return (20, 5);
+            if (IsRemote(destination)) return (20, 5);
+            // Out of Drive: two tries for a blip, then the file is fetched straight
+            // from Google (DownloadFromCloud). After a read timed out, Windows
+            // refuses the file (error 379) and twenty retries five seconds apart
+            // were nearly two minutes at 100 percent doing nothing (4.2.7).
+            if (cloudSource) return (2, 5);
             foreach (var folder in sources.Select(s => Path.GetDirectoryName(NameRules.PlainPath(s)) ?? s)
                          .Distinct(StringComparer.OrdinalIgnoreCase))
                 if (IsRemote(folder)) return (20, 5);

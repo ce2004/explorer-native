@@ -8736,12 +8736,16 @@ namespace ExplorerNative
             bool fromDrive = Drive != null && paths.Any(p => Drive.Owns(p));
             using var fetches = fromDrive ? Drive!.WatchFetches(paths) : null;
             long shown = 0;
+            int restartsSeen = 0;
             var downloadRate = new RecentRate();
 
             var progress = new Progress<TransferProgress>(p =>
             {
                 if (fetches != null)
                 {
+                    // A file started over after a failed read: the window may go
+                    // back, or it sat at 100 percent while the file came down again.
+                    if (fetches.Restarts != restartsSeen) { restartsSeen = fetches.Restarts; shown = 0; }
                     p = RoboCopyEngine.WithDownloads(p, fetches.BytesServed, fetches.Current, shown, downloadRate);
                     shown = p.BytesDone;
                 }

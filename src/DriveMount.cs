@@ -1179,9 +1179,27 @@ namespace ExplorerNative
                 end = Math.Min(end, size);
                 if (end <= start) return;
 
+                // The file read from its first byte again after more than a chunk
+                // of it had gone: robocopy starting it over after a failed read
+                // (4.2.7). Counted afresh, so the window shows the copy going again
+                // rather than sitting at 100 percent while it does.
+                if (start == 0 && _served.TryGetValue(relative, out var had) && had.Total > RestartAfterBytes)
+                {
+                    _served[relative] = new Ranges();
+                    Interlocked.Increment(ref _restarts);
+                }
+
                 _served.GetOrAdd(relative, _ => new Ranges()).Add(start, end);
                 Volatile.Write(ref _current, Path.GetFileName(relative));
             }
+
+            /// <summary>How much of a file must have gone before a read from byte zero counts as starting over.</summary>
+            internal const long RestartAfterBytes = 4L * 1024 * 1024;
+
+            private int _restarts;
+
+            /// <summary>How many times a file was started over; the window may go back when this moves.</summary>
+            public int Restarts => Volatile.Read(ref _restarts);
 
             /// <summary>A set of byte ranges, merged as they arrive.</summary>
             internal sealed class Ranges
@@ -1343,7 +1361,15 @@ namespace ExplorerNative
         /// </summary>
         private static readonly TimeSpan PlaceholderDeadline = TimeSpan.FromSeconds(45);
 
+        /// <summary>How long one piece (PieceBytes) of a data callback may take.</summary>
         private static readonly TimeSpan DataDeadline = TimeSpan.FromSeconds(90);
+
+        /// <summary>The most one transfer to Windows holds; see OnFetchData.</summary>
+        private const long PieceBytes = 256 * 1024;
+
+        /// <summary>Every data callback, start and end, in the Drive log when one is being kept.</summary>
+        private static readonly bool TraceFetches =
+            !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("EXPLORERNATIVE_DRIVELOG"));
 
         private List<DriveEntry> ListFolder(string relative, string folderId, CancellationToken token,
             Action<List<DriveEntry>>? onPage = null, bool interactive = true)
@@ -3066,6 +3092,7 @@ namespace ExplorerNative
             DriveFileCache? leased = null;
 
             Interlocked.Increment(ref _callbacksInFlight);
+            string outcome = "failed";
 
             int processId = info.ProcessInfo == IntPtr.Zero
                 ? 0 : Marshal.ReadInt32(info.ProcessInfo, ProcessInfoProcessIdOffset);
@@ -3088,6 +3115,7 @@ namespace ExplorerNative
                 string fileId = info.FileIdentity == IntPtr.Zero
                     ? "" : Marshal.PtrToStringUni(info.FileIdentity) ?? "";
                 if (fileId.Length == 0) { Fail(ref info, offset, length); return; }
+                if (TraceFetches) _log($"  fetch {fileId[..Math.Min(8, fileId.Length)]} [{offset:N0} +{length:N0}] pid {processId}");
 
                 // A ref parameter cannot be captured by the lambda, and the size
                 // is the one thing the cache needs that it cannot ask Drive for
@@ -3138,6 +3166,11 @@ namespace ExplorerNative
                 var deadline = reader == null
                     ? CancellationTokenSource.CreateLinkedTokenSource(_closing.Token)
                     : CancellationTokenSource.CreateLinkedTokenSource(reader.Stop.Token, _closing.Token);
+                // DataDeadline per piece, and pieces are a quarter megabyte (4.2.7):
+                // a piece that takes longer is a line under 3KB a second, and the
+                // copy does better failing the read so the file is fetched straight
+                // from Google (RoboCopyEngine.DownloadFromCloud) than holding
+                // Windows' read until Windows cancels it, five minutes later.
                 deadline.CancelAfter(DataDeadline);
                 using (deadline)
                 using (new Timer(
@@ -3154,7 +3187,14 @@ namespace ExplorerNative
                     long at = start;
                     while (at < end)
                     {
-                        long pieceEnd = Math.Min(end, (at / DriveCachePool.ChunkBytes + 1) * DriveCachePool.ChunkBytes);
+                        // At most a quarter megabyte a piece (4.2.7), handed over as
+                        // it comes: on a slow link a whole megabyte held Windows'
+                        // read with nothing sent for most of a minute, near the point
+                        // where Windows times it out and refuses the file for good.
+                        // Aligned, since `at` is: chunk boundaries and PieceBytes
+                        // are both multiples of the 4KB alignment.
+                        long pieceEnd = Math.Min(end, Math.Min(
+                            (at / DriveCachePool.ChunkBytes + 1) * DriveCachePool.ChunkBytes, at + PieceBytes));
                         long want = pieceEnd - at;
 
                         byte[] bytes;
@@ -3202,6 +3242,7 @@ namespace ExplorerNative
                         if (hr == ErrorCloudFileCancelled)
                         {
                             Interlocked.Increment(ref CancelledTransfers);
+                            outcome = "cancelled by Windows";
                             return;
                         }
                         if (hr != 0)
@@ -3239,6 +3280,7 @@ namespace ExplorerNative
                 // 891 entries for one 232MB track — and an unbounded one on a
                 // mount that stays up all day is a list of hundreds of thousands
                 // of tuples nobody will ever read.
+                outcome = fromMemory ? "ok from memory" : "ok";
                 Fetches.Enqueue((offset, length, clock.ElapsedMilliseconds, fromMemory));
                 while (Fetches.Count > MostRememberedFetches) Fetches.TryDequeue(out _);
             }
@@ -3253,6 +3295,7 @@ namespace ExplorerNative
                 // marked it read already; one that failed before that is a
                 // failure, and must not start the whole file downloading.
                 leased?.EndLease(warm: false);
+                if (TraceFetches) _log($"  fetch [{offset:N0} +{length:N0}] {outcome} in {clock.ElapsedMilliseconds:N0}ms");
                 if (reader != null)
                 {
                     lock (_readersGate)
@@ -3697,7 +3740,7 @@ namespace ExplorerNative
         /// have changed in Drive: a cache sized for the old contents would serve
         /// them under the new placeholder.
         /// </summary>
-        private void ReleaseFile(string id)
+        internal void ReleaseFile(string id)
         {
             if (!_caches.TryGetValue(id, out var cache)) return;
             if (!cache.TryRetire())

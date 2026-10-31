@@ -226,6 +226,7 @@ namespace ExplorerNative
             // A cancelled copy out of Drive ends robocopy; not mid-read.
             RoboCopyEngine.BeforeKill = _drive.StandDownReads;
             RoboCopyEngine.AfterKill = _drive.ForgetReader;
+            RoboCopyEngine.DownloadFromCloud = _drive.DownloadOutAsync;
 
             // On a worker, because both are directory walks, deletes and a pass
             // over every drive letter, and none of it is needed to put a window
