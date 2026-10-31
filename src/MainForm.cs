@@ -494,7 +494,7 @@ namespace ExplorerNative
                 // anything remembered. The folder goes to tab one, so restoring
                 // tab two over the top of it meant double-clicking a folder
                 // opened a window showing a different folder entirely.
-                if (_settings.ActiveTab == 1 && string.IsNullOrEmpty(_settings.InitialFolderOverride))
+                if (_settings.ActiveTab == 1 && _settings.TwoTabs && string.IsNullOrEmpty(_settings.InitialFolderOverride))
                 {
                     _activeIndex = 1;
                     ShowActivePane();
@@ -789,6 +789,10 @@ namespace ExplorerNative
             _settings = settings;
             ApplySettingsToUi();
             RefreshAudioShortcuts();
+
+            // Down to one tab while the second was in front: back to the first.
+            if (!settings.TwoTabs && _activeIndex == 1) SetActiveTab(0);
+            UpdateTitle();
             if (_syncConfiguratorItem != null) _syncConfiguratorItem.Visible = DriveMonitorForm.OnFileMenu(settings);
 
             // Hidden files, sorting and folders-first change the other tab's
@@ -905,6 +909,11 @@ namespace ExplorerNative
                 // the new folder's name back while the keyboard is in here; this
                 // is where it gets put on.
                 list.Leave += (_, _) => ApplyPendingName(_panes[index]);
+
+                // An empty list says nothing when focus lands on it: switching to
+                // a tab showing an empty folder, or Tab coming back round to it,
+                // was silence, and silence sounds like the app has broken.
+                list.Enter += (_, _) => SayIfEmpty(_panes[index]);
 
                 _panes[i] = new Pane { List = list };
                 Controls.Add(list);
@@ -2068,7 +2077,16 @@ namespace ExplorerNative
                 _panes[i].List.Visible = i == _activeIndex;
         }
 
-        private void SwitchTab() => SetActiveTab(1 - _activeIndex);
+        private void SwitchTab()
+        {
+            // One tab: there is nothing to switch to.
+            if (!_settings.TwoTabs) return;
+            SetActiveTab(1 - _activeIndex);
+        }
+
+        /// <summary>"Tab 1, " before what is said, or nothing with only one tab.</summary>
+        private string TabSaid(string separator) =>
+            _settings.TwoTabs ? $"Tab {_activeIndex + 1}{separator}" : "";
 
         private void SetActiveTab(int index)
         {
@@ -2158,7 +2176,7 @@ namespace ExplorerNative
             // Routed rather than spoken straight at NVDA, so "Switched tab" in
             // Choose what is spoken is the one switch for it.
             AnnounceOperation("nav.tab",
-                $"Tab {_activeIndex + 1}, {name}, {NameRules.Items(Active.Entries.Count)}");
+                $"{TabSaid(", ")}{name}, {NameRules.Items(Active.Entries.Count)}");
         }
 
         // ---------- Navigation ----------
@@ -6056,7 +6074,7 @@ namespace ExplorerNative
             int other = 1 - _activeIndex;
             var title = NameRules.WindowTitle(_settings.DisplayTitle,
                 Open(Active) ? TitleLabelFor(Active) : null,
-                other >= 0 && other < _panes.Length && Open(_panes[other]) ? TitleLabelFor(_panes[other]) : null,
+                _settings.TwoTabs && other >= 0 && other < _panes.Length && Open(_panes[other]) ? TitleLabelFor(_panes[other]) : null,
                 other + 1);
             if (Text != title) Text = title;
         }
@@ -6429,13 +6447,14 @@ namespace ExplorerNative
             // Ctrl+Tab works from anywhere in the window, which plain Tab cannot:
             // Tab only switches tabs while the list has focus, so from the menu or
             // the status bar there was previously no way to change tab at all.
-            if (keyData == (Keys.Control | Keys.Tab) || keyData == (Keys.Control | Keys.Shift | Keys.Tab))
+            if (_settings.TwoTabs &&
+                (keyData == (Keys.Control | Keys.Tab) || keyData == (Keys.Control | Keys.Shift | Keys.Tab)))
             {
                 SwitchTab();
                 return true;
             }
 
-            if ((keyData == Keys.Tab || keyData == (Keys.Shift | Keys.Tab)) && Active.List.Focused)
+            if (_settings.TwoTabs && (keyData == Keys.Tab || keyData == (Keys.Shift | Keys.Tab)) && Active.List.Focused)
             {
                 SwitchTab();
                 return true;
@@ -7465,6 +7484,29 @@ namespace ExplorerNative
         /// Puts the deferred name on once the keyboard has gone, where changing
         /// it is silent.
         /// </summary>
+        /// <summary>
+        /// Says "This folder is empty" when focus arrives on a list with nothing
+        /// in it. A moment late, so the screen reader names the list first and
+        /// this follows it rather than being cut off by it.
+        /// </summary>
+        private void SayIfEmpty(Pane pane)
+        {
+            if (!IsEmptyAndSettled(pane)) return;
+            var wait = new System.Windows.Forms.Timer { Interval = 200 };
+            wait.Tick += (_, _) =>
+            {
+                wait.Dispose();
+                if (IsDisposed || pane != Active || !pane.List.Focused || !IsEmptyAndSettled(pane)) return;
+                AnnounceOperation("nav.empty", pane.SearchTerm != null ? "No results" : "This folder is empty");
+            };
+            wait.Start();
+        }
+
+        /// <summary>Nothing listed, and nothing on its way: not a folder still loading.</summary>
+        private static bool IsEmptyAndSettled(Pane pane) =>
+            pane.Entries.Count == 0 && !pane.Loading && pane.Probing == 0 && !pane.Searching &&
+            !string.IsNullOrEmpty(pane.CurrentPath);
+
         private static void ApplyPendingName(Pane pane)
         {
             var name = pane.PendingName;
@@ -11004,7 +11046,7 @@ namespace ExplorerNative
         {
             var count = Active.Entries.Count;
             var where = IsDrivesView ? "Drives" : AppleMusic.DisplayPath(Active.CurrentPath);
-            Announce($"Tab {_activeIndex + 1}, {where}, {count} item{(count == 1 ? "" : "s")}");
+            Announce($"{TabSaid(", ")}{where}, {count} item{(count == 1 ? "" : "s")}");
         }
 
         // ---------- Status & speech ----------
@@ -11066,7 +11108,7 @@ namespace ExplorerNative
             var pane = Active;
             int total = pane.Entries.Count;
             int selected = pane.List.SelectedIndices.Count;
-            var prefix = $"Tab {_activeIndex + 1} — ";
+            var prefix = TabSaid(" — ");
 
             // A list that stopped at the search cap says so, every time it is
             // read rather than once when the search finished. The announcement is

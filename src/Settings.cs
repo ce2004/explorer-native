@@ -90,6 +90,12 @@ namespace ExplorerNative
         public bool ShowSystemFiles { get; set; } = false;
         public bool ShowExtensions { get; set; } = true;
         public bool FoldersFirst { get; set; } = true;
+
+        /// <summary>
+        /// Two tabs, switched with Tab and Ctrl+Tab. Off is one tab: those keys
+        /// do not switch, and nothing says "Tab 1".
+        /// </summary>
+        public bool TwoTabs { get; set; } = true;
         public SortColumn SortBy { get; set; } = SortColumn.Name;
         public bool SortAscending { get; set; } = true;
 

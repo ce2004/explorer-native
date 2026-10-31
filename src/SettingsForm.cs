@@ -524,6 +524,9 @@ namespace ExplorerNative
             AddCheck(panel, "Show system files", _working.ShowSystemFiles, v => _working.ShowSystemFiles = v);
             AddCheck(panel, "Show file extensions", _working.ShowExtensions, v => _working.ShowExtensions = v);
             AddCheck(panel, "List folders before files", _working.FoldersFirst, v => _working.FoldersFirst = v);
+            AddCheck(panel, "Use two tabs", _working.TwoTabs, v => _working.TwoTabs = v);
+            AddInfo(panel, "With two tabs, Tab and Control+Tab switch between them. With one, there is " +
+                           "a single list and those keys do not switch.");
 
             // There is no Type column, so Type is not offered. A file that still
             // says Type shows as Name and keeps saying Type until somebody picks.

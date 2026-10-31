@@ -1,3 +1,7 @@
+4.2.10
+New feature: you can choose one tab or two. In Preferences, on the Display page, untick Use two tabs, and you get a single list, with Tab and Control+Tab no longer switching to a second one.
+Bug fixed: if you switched to a tab showing an empty folder, NVDA said nothing, so it sounded like Explorer Native had stopped working. Now it says the folder is empty.
+
 4.2.8
 Bug fixed: if Explorer Native opened your folders and you moved or deleted its program file while it was running, every folder on your PC could stop opening, with the error “Application not found”. Now Explorer Native checks every 30 seconds that folders still open. If they don't, it points them at the installed copy, or hands them back to File Explorer if there isn't one, and turning the setting off always gives folders back to Windows.
 Bug fixed: if you set a shortcut that used the Windows key with a letter, such as Windows+E, it did nothing, because Windows keeps almost all of those keys for itself. Now Explorer Native catches the keys before Windows does, so any Windows key shortcut you pick works, and you can press it straight into the shortcut boxes in Preferences.
