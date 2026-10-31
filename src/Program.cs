@@ -1057,6 +1057,7 @@ namespace ExplorerNative
             // covered too rather than only the main window.
             Application.ThreadException += (_, e) => ReportCrash(e.Exception);
             AppDomain.CurrentDomain.UnhandledException += (_, e) => ReportCrash(e.ExceptionObject as Exception);
+            Application.AddMessageFilter(new InputLanguageGuard());
 
             Speech.Init();
             PerfCounters.Start();
@@ -1138,9 +1139,41 @@ namespace ExplorerNative
             return saved;
         }
 
+        /// <summary>
+        /// WinForms' own failure when the keyboard language changes. It looks the
+        /// language up by number (InputLanguage.LanguageTag, .Culture), and with
+        /// InvariantGlobalization that throws CultureNotFoundException: the error
+        /// box came up whenever the layout switched (crash.log, 2026-10-28,
+        /// Japanese 0x0411). The switch itself is Windows' and still happens.
+        /// </summary>
+        internal static bool IsInputLanguageLookup(Exception ex) =>
+            ex is System.Globalization.CultureNotFoundException &&
+            (ex.StackTrace ?? "").Contains("InputLanguage", StringComparison.Ordinal);
+
+        /// <summary>
+        /// Hands WM_INPUTLANGCHANGEREQUEST straight to Windows, so WinForms never
+        /// looks the language up (see <see cref="IsInputLanguageLookup"/>) and the
+        /// layout still changes.
+        /// </summary>
+        private sealed class InputLanguageGuard : IMessageFilter
+        {
+            private const int WmInputLangChangeRequest = 0x0050;
+
+            [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+            private static extern IntPtr DefWindowProcW(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+            public bool PreFilterMessage(ref Message m)
+            {
+                if (m.Msg != WmInputLangChangeRequest) return false;
+                try { DefWindowProcW(m.HWnd, m.Msg, m.WParam, m.LParam); } catch { }
+                return true;
+            }
+        }
+
         private static void ReportCrash(Exception? ex)
         {
             if (ex == null) return;
+            if (IsInputLanguageLookup(ex)) return;
             try
             {
                 var path = Path.Combine(Settings.AppDataDir, "crash.log");

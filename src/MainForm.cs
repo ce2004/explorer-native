@@ -238,6 +238,13 @@ namespace ExplorerNative
             /// seconds, so it is never done on the UI thread.
             /// </summary>
             public string? ArmingPath;
+            /// <summary>
+            /// A folder whose watcher could not be made, and when. For a minute Tab
+            /// does not retry it (each retry reloaded the folder, 4.2.6); after that
+            /// it is tried again, so a share that comes back gets watched.
+            /// </summary>
+            public string? WatchFailedPath;
+            public long WatchFailedAt;
 
             /// <summary>
             /// Bumped whenever the pane's watcher is let go, so a watcher still
@@ -2678,6 +2685,11 @@ namespace ExplorerNative
             bool wanted = !IsDisposed && Visible && pane.WatchGeneration == generation &&
                           string.Equals(pane.CurrentPath, path, StringComparison.OrdinalIgnoreCase);
             if (pane.WatchGeneration == generation) pane.ArmingPath = null;
+            if (wanted && made.Watcher == null)
+            {
+                pane.WatchFailedPath = path;
+                pane.WatchFailedAt = Environment.TickCount64;
+            }
             if (!wanted || made.Watcher == null)
             {
                 DisposeWatch(made.Watcher, made.Removal);
@@ -2886,7 +2898,7 @@ namespace ExplorerNative
                     string? text = null;
                     if (drive != null)
                     {
-                        if (await drive.FolderSizeAsync(folder, token) is { } known)
+                        if (await Task.Run(() => drive.FolderSizeAsync(folder, token)) is { } known)
                             text = SizeFormatter.Format(known.Bytes, _settings.SizeUnits);
                     }
                     else
@@ -3306,7 +3318,11 @@ namespace ExplorerNative
         private static bool NeedsWatcher(Pane pane) =>
             pane.Removal == null && pane.Archive == null && !AppleMusic.Is(pane.CurrentPath) &&
             !string.IsNullOrEmpty(pane.CurrentPath) && pane.CurrentPath != DrivesPath &&
-            pane.Watcher == null && pane.ArmingPath == null && !string.IsNullOrEmpty(pane.LastLoadedPath);
+            pane.Watcher == null && pane.ArmingPath == null && !string.IsNullOrEmpty(pane.LastLoadedPath) &&
+            !(string.Equals(pane.WatchFailedPath, pane.CurrentPath, StringComparison.OrdinalIgnoreCase) &&
+              Environment.TickCount64 - pane.WatchFailedAt < WatchRetryAfterMs);
+
+        private const long WatchRetryAfterMs = 60_000;
 
         /// <summary>
         /// Minimised, the availability poll stops — a probe of a share every four
@@ -10629,7 +10645,7 @@ namespace ExplorerNative
                 if (Drive is { } drive && drive.Owns(path))
                 {
                     FolderSizeResult? fromDrive = null;
-                    try { fromDrive = await drive.FolderSizeAsync(path); } catch { }
+                    try { fromDrive = await Task.Run(() => drive.FolderSizeAsync(path)); } catch { }
                     if (IsDisposed) return;
                     if (fromDrive is { } known) result = known;
                     else
@@ -10707,7 +10723,7 @@ namespace ExplorerNative
                 if (drive != null && drive.Owns(folder))
                 {
                     FolderSizeResult? known;
-                    try { known = await drive.FolderSizeAsync(folder, token); }
+                    try { known = await Task.Run(() => drive.FolderSizeAsync(folder, token)); }
                     catch (OperationCanceledException) { return; }
                     if (IsDisposed || token.IsCancellationRequested) return;
                     if (known is { } size)

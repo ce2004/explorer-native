@@ -1,3 +1,8 @@
+4.2.6
+Bug fixed: if you opened Google Drive and pressed Tab, Explorer Native could freeze while it worked out folder sizes or read the Drive folder again. Now that work happens in the background, and pressing Tab only switches tabs.
+Bug fixed: if you opened or copied some files from Google Drive, such as 7z archives, the copy sat at 100 percent and then failed with error 389, "The cloud operation was unsuccessful". Google was holding those files back for about half a minute before sending them, and Explorer Native gave up first. Now they open and copy straight away, and synced folders download them too.
+Bug fixed: if you switched keyboard language, for example to Japanese, Explorer Native could show an error and stop what you were doing. Now the language switches and nothing goes wrong.
+
 4.2.5
 New feature: compressing and extracting now use all of your processor's cores at low priority, so your PC and NVDA stay responsive while they work. Unzipping a big tar.gz is about twice as fast, zip and tar are quicker both ways, and making a 7z takes about 40 percent less time.
 Bug fixed: if you extracted an archive and more than 32 items had to be renamed, Explorer Native said only 32 were renamed. Now it gives the real number.

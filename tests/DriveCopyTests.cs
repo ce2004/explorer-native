@@ -48,6 +48,16 @@ namespace ExplorerNative
         /// </summary>
         private static void SharedDrivesTests()
         {
+            // 4.2.6: without acknowledgeAbuse Google held some files ~27s per
+            // range, past the read's 15s, so they never opened or copied.
+            string media = DriveClient.MediaUrl("ackfile");
+            Check("content is asked with acknowledgeAbuse", media.EndsWith("?alt=media&acknowledgeAbuse=true", StringComparison.Ordinal));
+            Check("a 403 for it is a retry, once", DriveClient.RefusedAcknowledge("ackfile", 403, media));
+            Check("then the file is asked plain", DriveClient.MediaUrl("ackfile").EndsWith("?alt=media", StringComparison.Ordinal));
+            Check("and a plain refusal is a refusal", !DriveClient.RefusedAcknowledge("ackfile", 403, DriveClient.MediaUrl("ackfile")));
+            Check("other files keep it", DriveClient.MediaUrl("otherfile").Contains("acknowledgeAbuse=true", StringComparison.Ordinal));
+            Check("a 404 is not about it", !DriveClient.RefusedAcknowledge("otherfile", 404, DriveClient.MediaUrl("otherfile")));
+
             Equal("a request asks for every drive",
                 "https://www.googleapis.com/drive/v3/files/abc?alt=media&supportsAllDrives=true",
                 DriveClient.AllDrives("https://www.googleapis.com/drive/v3/files/abc?alt=media"));

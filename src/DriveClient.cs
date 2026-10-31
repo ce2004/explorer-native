@@ -1330,12 +1330,15 @@ namespace ExplorerNative
                     attempt.CancelAfter(ReadAttemptLimit);
                     try
                     {
-                        using var request = await Request(HttpMethod.Get, $"{Files}/{fileId}?alt=media", attempt.Token);
+                        string url = MediaUrl(fileId);
+                        using var request = await Request(HttpMethod.Get, url, attempt.Token);
                         request.Headers.Range = new RangeHeaderValue(offset, null);
                         using var response = await Send(request, HttpCompletionOption.ResponseHeadersRead, attempt.Token);
                         if (response.StatusCode != HttpStatusCode.PartialContent && response.StatusCode != HttpStatusCode.OK)
                         {
                             var body = await response.Content.ReadAsStringAsync(attempt.Token);
+                            if (RefusedAcknowledge(fileId, (int)response.StatusCode, url))
+                                throw new RetryableReadException("refused with acknowledgeAbuse; asking plain");
                             throw ReadRefused((int)response.StatusCode, body);
                         }
                         // The whole file sent from byte zero, when the middle was asked for.
@@ -1437,6 +1440,31 @@ namespace ExplorerNative
         /// </summary>
         private static readonly TimeSpan ReadAttemptLimit = TimeSpan.FromSeconds(15);
 
+        /// <summary>
+        /// A file's content URL. With acknowledgeAbuse, because without it Google
+        /// holds some files (measured on Conner's nvda.7z: every range, 25 to 29s
+        /// before the first byte; 0.5s with it) past ReadAttemptLimit, so they
+        /// never opened or copied: "the cloud operation was unsuccessful" at 100
+        /// percent. Harmless on files shared with him (measured). Should Google
+        /// ever refuse a request for carrying it, that file is asked plain from
+        /// then on (<see cref="RefusedAcknowledge"/>).
+        /// </summary>
+        internal static string MediaUrl(string fileId) =>
+            NoAcknowledge.ContainsKey(fileId)
+                ? $"{Files}/{fileId}?alt=media"
+                : $"{Files}/{fileId}?alt=media&acknowledgeAbuse=true";
+
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, bool> NoAcknowledge = new();
+
+        /// <summary>
+        /// A 400 or 403 to a request that carried acknowledgeAbuse: true the first
+        /// time, and the file is asked plain from then on, so the caller retries.
+        /// </summary>
+        internal static bool RefusedAcknowledge(string fileId, int status, string url) =>
+            (status == 400 || status == 403) &&
+            url.Contains("acknowledgeAbuse=true", StringComparison.Ordinal) &&
+            NoAcknowledge.TryAdd(fileId, true);
+
         private async Task<byte[]> ReadRangeOnce(
             string fileId, long offset, int length, CancellationToken token)
         {
@@ -1458,7 +1486,8 @@ namespace ExplorerNative
         private async Task<byte[]> ReadRangeWithin(
             string fileId, long offset, int length, CancellationToken token, Action arrived)
         {
-            using var request = await Request(HttpMethod.Get, $"{Files}/{fileId}?alt=media", token);
+            string url = MediaUrl(fileId);
+            using var request = await Request(HttpMethod.Get, url, token);
             request.Headers.Range = new RangeHeaderValue(offset, offset + length - 1);
 
             using var response = await Send(request, HttpCompletionOption.ResponseHeadersRead, token);
@@ -1467,6 +1496,8 @@ namespace ExplorerNative
                 response.StatusCode != HttpStatusCode.OK)
             {
                 var body = await response.Content.ReadAsStringAsync(token);
+                if (RefusedAcknowledge(fileId, (int)response.StatusCode, url))
+                    throw new RetryableReadException("refused with acknowledgeAbuse; asking plain");
                 throw ReadRefused((int)response.StatusCode, body);
             }
 
