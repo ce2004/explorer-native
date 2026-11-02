@@ -30,6 +30,7 @@ namespace ExplorerNative
             try
             {
                 await WithWatchdog("a WAV over 4GB played through a download", () => BigWavThroughDownloadTests(dir));
+                await WithWatchdog("a share or Drive that stops answering", () => NotAnsweringTests(dir));
             }
             finally
             {
@@ -47,6 +48,60 @@ namespace ExplorerNative
             }
             if (run.Exception != null)
                 Check($"{what} ran to the end", false, run.Exception.InnerException?.ToString() ?? run.Exception.ToString());
+        }
+
+        // ---------- A share or Drive that stops answering ----------
+
+        /// <summary>
+        /// A track on a share that stopped answering, or on Drive while it is
+        /// offline, was said as "is no longer there" (File.Exists answers false
+        /// for a share it cannot reach) and handed to another app.
+        /// </summary>
+        private static void NotAnsweringTests(string dir)
+        {
+            var here = Path.Combine(dir, "here.wav");
+            File.WriteAllBytes(here, new byte[16]);
+            var gone = Path.Combine(dir, "gone.flac");
+            var goneFolder = Path.Combine(dir, "no-such-folder", "gone.flac");
+            var deadShare = @"\\localhost\no-such-share-" + Guid.NewGuid().ToString("N") + @"\Music\song.flac";
+
+            Equal("a file that is there is There", "There", AudioPlayer.WhereIs(here).ToString());
+            Equal("a file deleted from a folder that answers is Gone", "Gone", AudioPlayer.WhereIs(gone).ToString());
+            Equal("a file whose folder went from a drive that answers is Gone", "Gone", AudioPlayer.WhereIs(goneFolder).ToString());
+            Equal("a file on a share that does not answer is NotAnswering, not Gone", "NotAnswering", AudioPlayer.WhereIs(deadShare).ToString());
+
+            var was = AudioPlayer.DriveUnreachable;
+            try
+            {
+                AudioPlayer.DriveUnreachable = p => p.StartsWith(dir, StringComparison.OrdinalIgnoreCase);
+                Equal("a file on Drive while Drive is offline is NotAnswering", "NotAnswering", AudioPlayer.WhereIs(gone).ToString());
+                AudioPlayer.DriveUnreachable = null;
+
+                // End to end: what is said, and whether it is handed to another app.
+                using var player = new AudioPlayer();
+                player.VolumePercent = 0;
+                var said = new System.Collections.Generic.List<(string id, string text)>();
+                bool handedOver = false;
+                player.Notify = (id, text) => { lock (said) said.Add((id, text)); };
+                player.Failed += _ => handedOver = true;
+                var answer = player.Play(deadShare);
+                string all;
+                lock (said) all = string.Join(" | ", said.ConvertAll(x => x.id + ": " + x.text));
+                if (all.Contains("No audio output"))
+                {
+                    Console.WriteLine("  (no output device; the end-to-end share check is skipped)");
+                    return;
+                }
+                Check("a track on a share that does not answer does not start", answer == null, answer);
+                Check("a track on a share that does not answer is not said to be gone", !all.Contains("audiofile.missing"), all);
+                Check("a track on a share that does not answer says the share isn't answering",
+                    all.Contains("audio.failed") && all.Contains("isn't answering"), all);
+                Check("a track on a share that does not answer is not handed to another app", !handedOver, all);
+            }
+            finally
+            {
+                AudioPlayer.DriveUnreachable = was;
+            }
         }
 
         // ---------- A WAV over 4GB on a share or Drive ----------

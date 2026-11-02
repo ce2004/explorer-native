@@ -215,6 +215,10 @@ namespace ExplorerNative
             // A track on the Drive letter downloads straight from Google.
             AudioPlayer.RangeSourceFor = path => _drive.OpenRange(path);
 
+            // And a track there that would not open while Drive is offline is
+            // said as Drive being offline, not as the file having gone.
+            AudioPlayer.DriveUnreachable = path => _drive.Owns(path) && !_drive.LetterShown;
+
             // Apple Music's browsing sign-in; the player signs in on its own.
             AppleMusic.Configure(_settings.AppleMusicUserToken);
             AppleMusic.Autoplay = _settings.AppleMusicAutoplay;
