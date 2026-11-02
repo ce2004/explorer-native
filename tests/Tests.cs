@@ -168,6 +168,67 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            // Area groups for the 5.0.0 sweep's fixers: web, mainform, core, playback, files.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "web")
+            {
+                await Guard("ConnectTests", () => ConnectTests.RunAll(Check, Equal));
+                await Guard("Sweep308WebTests", () => Sweep308WebTests.RunAll(Check, Equal));
+                await Guard("Sweep309WebTests", () => Sweep309WebTests.RunAll(Check, Equal));
+                await Guard("WebArchiveAudioFixTests", () => WebArchiveAudioFixTests.RunAll(Check, Equal));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "mainform")
+            {
+                await Guard("MainFixTests", () => { MainFixTests.RunAll(Check, Equal); return Task.CompletedTask; });
+                await Guard("MainFileOpsFixTests", () => MainFileOpsFixTests.RunAll(Check, Equal));
+                await Guard("Sweep308MainFormTests", () => { Sweep308MainFormTests.RunAll(Check); return Task.CompletedTask; });
+                await Guard("Sweep309MainFormTests", () => { Sweep309MainFormTests.RunAll(Check, Equal); return Task.CompletedTask; });
+                await Guard("Sweep308DotPathTests", () => { Sweep308DotPathTests.RunAll(Check); return Task.CompletedTask; });
+                await Guard("ShortcutSortDetailsTests", () => ShortcutSortDetailsTests.RunAll(Check, Equal));
+                await Guard("AppleMusicTests", () => AppleMusicTests.RunAll(Check, Equal));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "core")
+            {
+                await Guard("SettingsFixTests", () => { SettingsFixTests.RunAll(Check, Equal); return Task.CompletedTask; });
+                await Guard("SettingsTransferTests", () => { SettingsTransferTests.RunAll(Check, Equal); return Task.CompletedTask; });
+                await Guard("Sweep308CoreTests", () => { Sweep308CoreTests.RunAll(Check, Equal); return Task.CompletedTask; });
+                await Guard("Sweep309CoreTests", () => { Sweep309CoreTests.RunAll(Check, Equal); return Task.CompletedTask; });
+                await Guard("UpdateFixTests", () => UpdateFixTests.RunAll(Check, Equal));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "playback")
+            {
+                await Guard("AudioFixTests", () => { AudioFixTests.RunAll(Check, Equal); return Task.CompletedTask; });
+                await Guard("ExactSeekTests", () => { ExactSeekTests.RunAll(Check); return Task.CompletedTask; });
+                await Guard("Sweep308PlaybackTests", () => { Sweep308PlaybackTests.RunAll(Check, Equal); return Task.CompletedTask; });
+                await Guard("Sweep309PlaybackTests", () => { Sweep309PlaybackTests.RunAll(Check, Equal); return Task.CompletedTask; });
+                await Guard("Sweep308DecoderTests", () => { Sweep308DecoderTests.RunAll(Check, Equal); return Task.CompletedTask; });
+                await Guard("Sweep309DecoderTests", () => { Sweep309DecoderTests.RunAll(Check, Equal); return Task.CompletedTask; });
+                await Guard("TagEditTests", () => { TagEditTests.RunAll(Check, Equal); return Task.CompletedTask; });
+                await Guard("AudioConvertTests", () => AudioConvertTests.RunAll(Check, Equal));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "files")
+            {
+                await Guard("TransferFixTests", () => TransferFixTests.RunAll(Check, Equal));
+                await Guard("FilesR2Tests", () => FilesR2Tests.RunAll(Check, Equal));
+                await Guard("DeleteTests", () => { DeleteTests.RunAll(Check, Equal); return Task.CompletedTask; });
+                await Guard("Sweep308FilesTests", () => Sweep308FilesTests.RunAll(Check));
+                await Guard("Sweep309FilesTests", () => Sweep309FilesTests.RunAll(Check));
+                await Guard("DriveCopyTests", () => DriveCopyTests.RunAll(Check, Equal));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             // Just the decoder sweep (CAF, WAV and Ogg damage, Opus in CAF).
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "decoders")
             {
