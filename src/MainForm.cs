@@ -174,6 +174,13 @@ namespace ExplorerNative
             public string? QuietSearchTerm;
 
             /// <summary>
+            /// The running search is the quiet re-run after a rename or delete
+            /// in results: the results are still on screen, nobody asked for a
+            /// search, so Escape leaves them rather than stopping it.
+            /// </summary>
+            public bool SearchQuietly;
+
+            /// <summary>
             /// A listing is on its way in. The folder watcher leaves its mark
             /// standing rather than cancel it and start again — on a slow share with
             /// a download growing in it, that was a reload that never finished.
@@ -1878,7 +1885,8 @@ namespace ExplorerNative
             // the way past every other entry, and an Extract that can only ever
             // answer "that is not an archive" is a word heard on every single
             // opening of the menu to be useful on almost none of them. Compress
-            // stays, because anything selected can be compressed.
+            // stays, because anything selected can be compressed, except on the
+            // Drive letter, where no archive can be written (ShowOurContextMenu).
             _compressItem = ArchiveHidden(Item("Co&mpress…", Keys.None, CompressSelection));
             _contextMenu.Items.Add(_compressItem);
 
@@ -2267,6 +2275,11 @@ namespace ExplorerNative
 
             _activeIndex = index;
 
+            // The new list's Enter fires inside ShowActivePane or Focus; either
+            // way SayIfEmpty must know the tab announcement is coming.
+            _switchingTab = true;
+            try
+            {
             // Showing one list and hiding the other is a layout change, and the
             // form would otherwise re-lay-out every child — menu, status bar, both
             // lists — twice per switch. Held down, Tab repeats about thirty times
@@ -2287,6 +2300,8 @@ namespace ExplorerNative
             finally { ResumeLayout(performLayout: false); }
 
             Active.List.Focus();
+            }
+            finally { _switchingTab = false; }
 
             // Deferred, both of them. Totalling the selection and building the
             // announcement are wasted on a tab you are passing through on the way
@@ -6219,6 +6234,7 @@ namespace ExplorerNative
             pane.Searching = true;
             // Set by every walk, so it is never left over from an older one.
             pane.QuietSearchTerm = quiet ? term : null;
+            pane.SearchQuietly = quiet;
             try
             {
                 var drive = Drive;
@@ -6276,6 +6292,7 @@ namespace ExplorerNative
                 // produced; a flag put down by a superseded search is Escape
                 // doing nothing while one is still going.
                 if (ReferenceEquals(pane.EnumCts, mine)) pane.Searching = false;
+                if (ReferenceEquals(pane.EnumCts, mine)) pane.SearchQuietly = false;
             }
 
             if (IsDisposed) return;
@@ -6552,7 +6569,9 @@ namespace ExplorerNative
                 // being gathered, the way to stop. Nothing else in the list has
                 // ever used Escape, and it is what every other dialog and mode in
                 // this application means by "take me back".
-                case Keys.Escape when pane.Searching:
+                // A quiet re-run after a rename or delete in results is not a
+                // search anybody started: Escape leaves the results instead.
+                case Keys.Escape when pane.Searching && !pane.SearchQuietly:
                     CancelSearch();
                     e.Handled = e.SuppressKeyPress = true;
                     break;
@@ -6605,10 +6624,20 @@ namespace ExplorerNative
                     }));
                     break;
 
+                // Ctrl+Space is never part of a name, so it toggles even
+                // mid-word, and choosing a row ends the word.
                 case Keys.Space when !e.Alt && !e.Shift &&
-                                     pane.TypeAhead.Current(Environment.TickCount64).Length == 0:
+                                     (e.Control || pane.TypeAhead.Current(Environment.TickCount64).Length == 0):
+                    pane.TypeAhead.Reset();
                     if (ToggleFocusedRow(pane) && e.Control) _selectedWithCtrl = true;
                     e.Handled = e.SuppressKeyPress = true;
+                    break;
+
+                // Mid-word, a plain Space is part of the name: kept from the
+                // control (which would select that row alone and drop the
+                // rest), but not suppressed, so KeyPress still adds it.
+                case Keys.Space when !e.Alt && !e.Shift:
+                    e.Handled = true;
                     break;
             }
 
@@ -6692,7 +6721,9 @@ namespace ExplorerNative
             // typed and to the selection otherwise, and a buffer that never
             // expires until the next keystroke answers "still typing" for ever —
             // so a pause after any letter left Space unable to select again.
-            if (e.KeyChar == ' ' && pane.TypeAhead.Current(Environment.TickCount64).Length == 0) return;
+            // A space typed with Ctrl held is Ctrl+Space, a selection key.
+            if (e.KeyChar == ' ' && ((ModifierKeys & Keys.Control) != 0 ||
+                                     pane.TypeAhead.Current(Environment.TickCount64).Length == 0)) return;
 
             // Ours now. Left unhandled, the control would run its own search over
             // the same keystroke and move the cursor a second time.
@@ -6820,13 +6851,19 @@ namespace ExplorerNative
             var focused = FocusedPath();
             // Apple Music counts as an archive here: read-only, and nothing in it is on disk.
             bool inArchive = Active.Archive != null || AppleMusic.Is(Active.CurrentPath);
-            bool looksLikeArchive = focused != null && !inArchive &&
+            // On the Drive letter an archive can be neither extracted in place
+            // nor written, so Extract and Compress could only refuse there.
+            bool onDrive = Drive != null && Drive.Owns(Active.CurrentPath);
+            bool looksLikeArchive = focused != null && !inArchive && !onDrive &&
+                                    !(Drive != null && Drive.Owns(focused)) &&
                                     !IsDirectoryInView(focused) &&
                                     ArchiveFormats.FromName(focused) is { CanExtract: true };
 
             // Inside an archive, which is read-only: what would change it, and
             // what needs a real file on disk, can only refuse there.
             ShowArchiveHidden();
+            // After ShowArchiveHidden, which shows Compress again on every open.
+            if (onDrive) _compressItem.Visible = false;
 
             // On an Apple Music song, Enter plays it, and the menu says so.
             bool appleSong = focused != null && AppleMusic.ItemAt(focused) is { IsSong: true };
@@ -7817,15 +7854,52 @@ namespace ExplorerNative
         private void SayIfEmpty(Pane pane)
         {
             if (!IsEmptyAndSettled(pane)) return;
-            var wait = new System.Windows.Forms.Timer { Interval = 200 };
-            wait.Tick += (_, _) =>
+
+            // On a tab switch the tab announcement already says "0 items"; a
+            // second message 80ms later cut it off before the folder was named.
+            // Only when that announcement is not spoken does this one stand in.
+            if (_switchingTab && _settings.SpeakEnabled &&
+                Notifications.ChannelsFor("nav.tab", _settings) == NotificationChannel.Speech) return;
+
+            // One timer, restarted: a held Tab gives one message after the last press.
+            _emptyPane = pane;
+            if (_emptyTimer == null)
             {
-                wait.Dispose();
-                if (IsDisposed || pane != Active || !pane.List.Focused || !IsEmptyAndSettled(pane)) return;
-                AnnounceOperation("nav.empty", pane.SearchTerm != null ? "No results" : "This folder is empty");
-            };
-            wait.Start();
+                _emptyTimer = new System.Windows.Forms.Timer { Interval = 200 };
+                _emptyTimer.Tick += (_, _) =>
+                {
+                    _emptyTimer?.Stop();
+                    var waiting = _emptyPane;
+                    _emptyPane = null;
+                    if (IsDisposed || waiting == null || waiting != Active || !waiting.List.Focused ||
+                        !IsEmptyAndSettled(waiting)) return;
+                    var words = EmptyWords(waiting);
+                    // Never interrupting: the screen reader's own name for the
+                    // list finishes first and this follows it.
+                    ShowStatus(words);
+                    WindowsToasts.Raise("nav.empty", words, _settings);
+                    if (_settings.SpeakEnabled &&
+                        Notifications.ChannelsFor("nav.empty", _settings) == NotificationChannel.Speech)
+                        Speech.Speak(words, interrupt: false);
+                };
+            }
+            _emptyTimer.Stop();
+            _emptyTimer.Start();
         }
+
+        private System.Windows.Forms.Timer? _emptyTimer;
+        private Pane? _emptyPane;
+
+        /// <summary>Set while SetActiveTab moves focus, so SayIfEmpty knows the tab announcement follows.</summary>
+        private bool _switchingTab;
+
+        /// <summary>What an empty list is called: the same words navigation uses.</summary>
+        private static string EmptyWords(Pane pane) =>
+            pane.SearchTerm != null ? "No results"
+            : string.Equals(pane.CurrentPath, AppleMusic.SearchFolder, StringComparison.OrdinalIgnoreCase)
+                ? "No searches yet. Press F1 to search Apple Music"
+            : AppleMusic.Is(pane.CurrentPath) ? "This list is empty"
+            : "This folder is empty";
 
         /// <summary>Nothing listed, and nothing on its way: not a folder still loading.</summary>
         private static bool IsEmptyAndSettled(Pane pane) =>
@@ -8182,6 +8256,14 @@ namespace ExplorerNative
         {
             if (IsDrivesView) { Announce("Cannot paste into the drive list", isError: true); return; }
             if (RefuseInArchive()) return;
+            // Once, up front, by path alone: otherwise the upload surveyed,
+            // opened a window and refused every file one by one.
+            if (Drive is { } trashDrive &&
+                (trashDrive.IsTrashFolder(Active.CurrentPath) || trashDrive.IsInTrash(Active.CurrentPath)))
+            {
+                Announce("Nothing can be pasted into the Google Drive trash", isError: true);
+                return;
+            }
 
             if (!ClipboardInterop.TryGetFiles(out var paths, out bool isCut))
             {
@@ -9261,15 +9343,10 @@ namespace ExplorerNative
                     // One id for both verbs: a move that half succeeded is the
                     // same event as a copy that half succeeded, and the sentence
                     // already says which it was.
-                    // A move out of Drive with any failure removed no original: it was a copy, and is said so.
-                    bool keptAll = move && fromDrive;
-                    bool moved = move && !keptAll;
+                    // A move out of Drive with any failure trashed nothing, so
+                    // it is said as the copy it was.
                     AnnounceOperation("copy.partial",
-                        result.Copied == 0
-                            ? $"Nothing was {(move ? "moved" : "copied")}: {NameRules.Items(result.Failed)} failed"
-                            : $"{(moved ? "Moved" : "Copied")} {NameRules.Items(result.Copied, "file")}, but " +
-                              $"{NameRules.Items(result.Failed)} could not be {(moved ? "moved" : "copied")}" +
-                              (keptAll ? "; nothing was removed from Google Drive" : ""));
+                        NameRules.PartialTransferSentence(result.Copied, result.Failed, move, fromDrive));
                     ShowErrors(result.Errors);
                 }
                 // Not "Move complete" over the warnings that some originals stayed.
@@ -11711,6 +11788,8 @@ namespace ExplorerNative
                 _prefetchTimer?.Dispose();
                 _tabAnnounceTimer?.Stop();
                 _tabAnnounceTimer?.Dispose();
+            _emptyTimer?.Stop();
+            _emptyTimer?.Dispose();
                 _watchTimer?.Stop();
                 _watchTimer?.Dispose();
 

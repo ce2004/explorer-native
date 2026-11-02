@@ -112,9 +112,8 @@ namespace ExplorerNative
             Check("move out of Drive with over 32 skipped: says both that nothing was removed and what was skipped",
                 said != null && said.Contains("nothing was removed from Drive", StringComparison.Ordinal) && said.Contains("33", StringComparison.Ordinal), said);
 
-            var main = Source(Path.Combine("src", "MainForm.cs")) ?? "";
             Check("the window says the same: a failed move out of Drive is a copy with nothing removed from Google Drive",
-                main.Contains("nothing was removed from Google Drive", StringComparison.Ordinal));
+                NameRules.PartialTransferSentence(2, 1, move: true, fromDrive: true).Contains("nothing was removed from Google Drive", StringComparison.Ordinal));
         }
 
         // ---------------- 9. a move inside Drive counts what moved, not what was tried ----------------

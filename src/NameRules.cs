@@ -72,6 +72,20 @@ namespace ExplorerNative
         public static string Items(int count, string noun = "item") =>
             $"{count} {noun}{(count == 1 ? "" : "s")}";
 
+        /// <summary>
+        /// What a paste that partly failed says. A move out of Google Drive runs
+        /// as a copy and trashes the originals only when nothing failed, so with
+        /// any failure it was a copy and must be said as one.
+        /// </summary>
+        public static string PartialTransferSentence(int copied, int failed, bool move, bool fromDrive)
+        {
+            if (copied == 0) return $"Nothing was {(move ? "moved" : "copied")}: {Items(failed)} failed";
+            if (move && fromDrive)
+                return $"Copied {Items(copied, "file")} out of Google Drive, but {Items(failed)} could not be copied, " +
+                       "so nothing was removed from Google Drive";
+            return $"{(move ? "Moved" : "Copied")} {Items(copied, "file")}, but {Items(failed)} could not be {(move ? "moved" : "copied")}";
+        }
+
         private static readonly string[] SmallNumbers =
             { "no", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten" };
 

@@ -164,7 +164,7 @@ namespace ExplorerNative
                 tray.Contains("AudioAction.NextTrack => PlayNeighbourFile(+1),", StringComparison.Ordinal), null);
 
             // 4.1.0: Shift+F10 on a song.
-            var menu = Body("private void ShowOurContextMenu()", 4000);
+            var menu = Body("private void ShowOurContextMenu()", 8000);
             check("Shift+F10 on a song offers Play next",
                 menu.Contains("_playNextItem.Visible = appleSong;", StringComparison.Ordinal), null);
             check("Favorite or Unfavorite shows only once known, saying what it will do",

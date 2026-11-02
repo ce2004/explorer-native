@@ -2467,7 +2467,8 @@ namespace ExplorerNative
             var name = Path.GetFileName(localPath);
             if (InTrash(mount, destinationFolder))
             {
-                Say("drive.upload.failed", $"Could not upload {name}: nothing can be put in the Google Drive trash");
+                // Like every other failure here: a bulk upload says it once, in its summary.
+                if (announce) Say("drive.upload.failed", $"Could not upload {name}: nothing can be put in the Google Drive trash");
                 return null;
             }
 
