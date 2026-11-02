@@ -370,7 +370,8 @@ namespace ExplorerNative
                 lock (_gate)
                 {
                     if (!string.IsNullOrEmpty(_displayName)) return _displayName!;
-                    return _path.Length == 0 ? "" : Path.GetFileName(_path);
+                    if (_path.Length == 0) return _startingPath.Length == 0 ? "" : Path.GetFileName(_startingPath);
+                    return Path.GetFileName(_path);
                 }
             }
         }
@@ -387,6 +388,21 @@ namespace ExplorerNative
         }
 
         public bool HasTrack => NowPlayingPath.Length > 0;
+
+        /// <summary>
+        /// The track being opened, or else the one playing: what Next and
+        /// Previous track step from, and what the tag editor treats as playing.
+        /// </summary>
+        public string OpeningOrPlayingPath { get { lock (_gate) return _startingPath.Length > 0 ? _startingPath : _path; } }
+
+        /// <summary>What the information keys say while a track is still opening, or null when none is.</summary>
+        private string? StillOpening()
+        {
+            lock (_gate) return _startingPath.Length > 0 ? "Still opening " + Path.GetFileName(_startingPath) : null;
+        }
+
+        /// <summary>Lets a test hold a start just after the track before has stopped.</summary>
+        internal Action? OpenHeldForTests;
 
         public bool IsMuted => _muted;
 
@@ -1061,6 +1077,13 @@ namespace ExplorerNative
                 generation = ++_openGeneration;
                 _startingPath = path;
                 _pauseOnStart = false;
+
+                // The track before is stopped as this one opens, so it is no
+                // longer what is playing. Left named, a second Next track during
+                // the open stepped from it again and replayed this same track,
+                // and "what is playing" said nothing was.
+                _path = "";
+                _displayName = null;
             }
 
             try
@@ -1080,17 +1103,29 @@ namespace ExplorerNative
         /// open, and then played the first until the second was ready. What is
         /// already playing is left alone — the opening start stopped it.
         /// </summary>
-        public void CancelOpening()
+        /// <param name="next">
+        /// The track about to be started in its place, if there is one: it
+        /// counts as opening from now, so a Next track pressed before its start
+        /// gets going steps on from it rather than from the track before.
+        /// </param>
+        public void CancelOpening(string next = "")
         {
             StreamingSource? opening = null;
             lock (_gate)
             {
-                if (_startingPath.Length == 0) return;
+                bool wasOpening = _startingPath.Length > 0;
+                if (!wasOpening && next.Length == 0) return;
                 _openGeneration++;
-                _startingPath = "";
+                _startingPath = next;
                 _pauseOnStart = false;
-                opening = _streaming;
-                _streaming = null;
+
+                // Only an open's download: with nothing opening, this is the
+                // playing track's, which plays on until the next one starts.
+                if (wasOpening)
+                {
+                    opening = _streaming;
+                    _streaming = null;
+                }
             }
             try { opening?.Dispose(); } catch { }
         }
@@ -1111,6 +1146,7 @@ namespace ExplorerNative
             StopStreaming();
             CancelFade();
             ForgetSeekTarget();
+            OpenHeldForTests?.Invoke();
 
             var direct = new WasapiPlayback
             {
@@ -1429,6 +1465,10 @@ namespace ExplorerNative
             var extension = Path.GetExtension(path);
             var reason = _lastProblem;
 
+            // Asked only now, on the worker, and not when the device is to blame.
+            var presence = reason.Contains("renderer", StringComparison.OrdinalIgnoreCase)
+                ? Presence.There : WhereIs(path);
+
             if (reason.Contains("renderer", StringComparison.OrdinalIgnoreCase))
             {
                 // Not the file's fault at all, and the sentence has to be built
@@ -1446,7 +1486,20 @@ namespace ExplorerNative
                     "No audio output — nothing will play until an output device is available. " +
                     "Check the device in Preferences.");
             }
-            else if (!FileIsThere(path))
+            else if (presence == Presence.NotAnswering)
+            {
+                // The share or Google Drive stopped answering. Not "no longer
+                // there" (the file is fine) and not handed to another app,
+                // which cannot reach it either.
+                string why = DriveIsUnreachable(path) ? "Google Drive is offline"
+                    : path.StartsWith(@"\\", StringComparison.Ordinal) ? "the network location it is on isn't answering"
+                    : "the drive it is on isn't answering";
+                _lastProblem = (reason.Length > 0 ? reason + "; " : "") + why;
+                Diagnostic = why;
+                Raise("audio.failed", $"Could not play {Path.GetFileName(path)}: {why}");
+                return null;
+            }
+            else if (presence == Presence.Gone)
             {
                 Raise("audiofile.missing", Path.GetFileName(path) + " is no longer there");
             }
@@ -1478,11 +1531,53 @@ namespace ExplorerNative
         /// is waiting on. Here the waiting is over and the question is what to
         /// tell them.
         /// </summary>
-        private static bool FileIsThere(string path)
+        internal static Presence WhereIs(string path)
         {
-            try { return File.Exists(NameRules.ExactPath(path)); }
-            catch { return true; }
+            if (DriveIsUnreachable(path)) return Presence.NotAnswering;
+            try
+            {
+                File.GetAttributes(NameRules.ExactPath(path));
+                return Presence.There;
+            }
+            catch (FileNotFoundException) { return Presence.Gone; }
+            catch (DirectoryNotFoundException) { return RootAnswers(path) ? Presence.Gone : Presence.NotAnswering; }
+            catch (IOException ex) when (IsNetworkError(ex.HResult)) { return Presence.NotAnswering; }
+            // Cannot tell: never claim it has gone.
+            catch { return Presence.There; }
         }
+
+        /// <summary>What <see cref="WhereIs"/> found.</summary>
+        internal enum Presence { There, Gone, NotAnswering }
+
+        /// <summary>
+        /// Whether a path is on the Google Drive letter while Drive is offline
+        /// (set by the tray; answered from the path and the Drive's state alone,
+        /// with no disk access). Null means no Drive is known.
+        /// </summary>
+        public static Func<string, bool>? DriveUnreachable { get; set; }
+
+        private static bool DriveIsUnreachable(string path)
+        {
+            try { return DriveUnreachable?.Invoke(path) == true; }
+            catch { return false; }
+        }
+
+        /// <summary>A folder gone from a drive that answers is gone; a drive or share root that does not answer is not answering.</summary>
+        private static bool RootAnswers(string path)
+        {
+            try
+            {
+                var root = Path.GetPathRoot(path);
+                return !string.IsNullOrEmpty(root) && Directory.Exists(root);
+            }
+            catch { return false; }
+        }
+
+        private static bool IsNetworkError(int hresult) => (hresult & 0xFFFF) switch
+        {
+            53 or 64 or 67 or 59 or 121 or 1231 or 1232 or 1225 or 1222 or 51 or 1311 => (hresult >> 16 & 0x1FFF) == 7,
+            _ => false,
+        };
 
         public string TogglePlayPause()
         {
@@ -1776,7 +1871,12 @@ namespace ExplorerNative
         /// <summary>Jumps to a fraction of the track: 0 for the start, 0.5 for halfway.</summary>
         public string SeekToFraction(double fraction)
         {
-            if (!HasTrack) return NothingLoaded();
+            if (!HasTrack)
+            {
+                lock (_gate)
+                    if (_startingPath.Length > 0) return "Still opening";
+                return NothingLoaded();
+            }
 
             try
             {
@@ -1885,13 +1985,13 @@ namespace ExplorerNative
         /// </summary>
         public string DescribeElapsed()
         {
-            if (!HasTrack) return "Nothing is playing";
+            if (!HasTrack) return StillOpening() ?? "Nothing is playing";
             return SpokenTime(PositionSeconds) + " elapsed";
         }
 
         public string DescribeRemaining()
         {
-            if (!HasTrack) return "Nothing is playing";
+            if (!HasTrack) return StillOpening() ?? "Nothing is playing";
 
             double duration = DurationSeconds;
             if (double.IsNaN(duration) || double.IsInfinity(duration) || duration <= 0)
@@ -1902,7 +2002,7 @@ namespace ExplorerNative
 
         public string DescribeTotal()
         {
-            if (!HasTrack) return "Nothing is playing";
+            if (!HasTrack) return StillOpening() ?? "Nothing is playing";
 
             double duration = DurationSeconds;
             if (double.IsNaN(duration) || double.IsInfinity(duration) || duration <= 0)
@@ -1927,7 +2027,7 @@ namespace ExplorerNative
         public string Describe()
         {
             var direct = _direct;
-            if (direct == null || !HasTrack) return "Nothing is playing";
+            if (direct == null || !HasTrack) return StillOpening() ?? "Nothing is playing";
 
             try
             {
