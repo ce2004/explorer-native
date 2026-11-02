@@ -435,7 +435,7 @@ namespace ExplorerNative
                 try
                 {
                     var (done, _) = BsdTar.Extract(archivePath, tree, PasteConflictPolicy.AutoRename, null,
-                        reporter, errors, token, () => stoppedShort = true);
+                        reporter, errors, token, () => stoppedShort = true, ArchiveEngine.ZoneOf(archivePath));
                     token.ThrowIfCancellationRequested();
 
                     // The reason, not a per-entry line ("name: not extracted ..."):
@@ -598,11 +598,14 @@ namespace ExplorerNative
 
             if (listing.Tree != null) return CopyFromTree(listing, inners, destination, progress, errors, token);
 
+            // A member opened from a downloaded archive is a downloaded file.
+            var zone = ArchiveEngine.ZoneOf(listing.ArchivePath);
             if (listing.Format.Engine == ArchiveEngineKind.Zip)
-                return ExtractZip(listing.ArchivePath, select, destination, progress, errors, token);
+                return ExtractZip(listing.ArchivePath, select, destination, progress, errors, token, zone);
 
             var reporter = new ArchiveEngine.Reporter(progress);
             var rules = ExtractionRules.Selecting(destination, select);
+            rules.Zone = zone;
             int done = TarEngine.Extract(NameRules.ExactPath(listing.ArchivePath), listing.Format, rules,
                 ArchiveEngine.RecommendedThreads, reporter, errors, token, estimate: true);
 
@@ -627,6 +630,7 @@ namespace ExplorerNative
             if (again.Count == 0) return done;
 
             var second = ExtractionRules.Selecting(destination, n => again.TryGetValue(n, out var to) ? to : null);
+            second.Zone = zone;
             return done + TarEngine.Extract(NameRules.ExactPath(listing.ArchivePath), listing.Format, second,
                 1, new ArchiveEngine.Reporter(null), errors, token, estimate: false);
         }
@@ -638,7 +642,7 @@ namespace ExplorerNative
         /// name, as the full extraction checks it.
         /// </summary>
         private static int ExtractZip(string archivePath, Func<string, string?> select, string destination,
-            IProgress<TransferProgress>? progress, List<string> errors, CancellationToken token)
+            IProgress<TransferProgress>? progress, List<string> errors, CancellationToken token, byte[]? zone)
         {
             using var file = new FileStream(NameRules.ExactPath(archivePath), FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 16);
             using var archive = ZipEngine.Open(file);
@@ -744,7 +748,7 @@ namespace ExplorerNative
                                 $"the archive holds {entry.Length:N0} bytes of it and {length:N0} came out");
                         if (crc != entry.Crc32)
                             throw new InvalidDataException("it is damaged in the archive (its checksum does not match)");
-                    }, bufferSize: 0, modified: modified);
+                    }, bufferSize: 0, modified: modified, zone: zone);
 
                     done++;
                 }

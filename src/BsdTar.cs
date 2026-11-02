@@ -304,6 +304,23 @@ namespace ExplorerNative
                     $"A {format.Extension} cannot be made from {Path.GetFileName(dotted.Source)}, whose name " +
                     "ends in a dot or a space. Zip and .tar.gz can.");
 
+            // 7-Zip stores links as links (-snl, so a junction to a parent
+            // folder cannot loop), and that holds for a chosen one too: a
+            // junction chosen on its own went in as one empty link, and
+            // "Created" was said for an archive with no data in it.
+            if (sevenZip)
+            {
+                var linked = tops.FirstOrDefault(p =>
+                    (p.Attributes & FileAttributes.ReparsePoint) != 0 &&
+                    NameRules.IsLink(p.IsDirectory
+                        ? new DirectoryInfo(NameRules.ExactPath(p.Source))
+                        : new FileInfo(NameRules.ExactPath(p.Source))));
+                if (linked != null)
+                    throw new NotSupportedException(
+                        $"A {format.Extension} cannot be made from {Path.GetFileName(linked.Source)}, which is a link " +
+                        "to somewhere else, so it would hold only the link. Zip and .tar.gz put in what it leads to.");
+            }
+
             if (sevenZip) return CreateWithSevenZip(plan, tops, archivePath, format, level, reporter, errors, token);
 
             var aliases = new List<Alias>();
@@ -823,8 +840,10 @@ namespace ExplorerNative
             ArchiveEngine.Reporter reporter,
             List<string> errors,
             CancellationToken token,
-            Action? stoppedShort = null)
+            Action? stoppedShort = null,
+            byte[]? zone = null)
         {
+            // zone: the archive's Mark of the Web, put on every file moved in.
             // stoppedShort: called when bsdtar did not get to the end of the
             // archive (a stall, a crash, an exit that was not "delayed"). The
             // errors alone cannot say that: a link not made or a repeated name
@@ -832,7 +851,7 @@ namespace ExplorerNative
             var identified = ArchiveFormats.Identify(archivePath);
             if (UnpacksWithSevenZip(identified))
                 return ExtractWithSevenZip(archivePath, destination, policy, ask, reporter, errors, token, stoppedShort,
-                    compressedTar: identified!.Id != "7z");
+                    compressedTar: identified!.Id != "7z", zone: zone);
             RequireAvailable();
 
             Directory.CreateDirectory(destination);
@@ -962,7 +981,7 @@ namespace ExplorerNative
 
                 var (done, conflicts, stagedFiles) = Rehome(staging, destination, policy, ask, reporter, errors, token,
                     distrusted.Count > 0 || unfinished ? distrusted : null, unfinished,
-                    staged => Withheld(lines, staged, destination, stripped ? archiveArg : null, token));
+                    staged => Withheld(lines, staged, destination, stripped ? archiveArg : null, token), zone);
 
                 // Two entries with one name — or two that differ only in capitals,
                 // which are one name here — are one file in the staging folder.
@@ -970,11 +989,7 @@ namespace ExplorerNative
                 // last. Now the first is kept and the difference is said.
                 int arrived = lines.Count(l => l.Failure == null && !l.Name.EndsWith('/'));
                 if (!unfinished && arrived > stagedFiles)
-                {
-                    int lost = arrived - stagedFiles;
-                    errors.Add($"{NameRules.Items(lost)} in the archive repeated a name already used " +
-                               "(names that differ only in capitals are one name here); the first of each was kept");
-                }
+                    errors.Add(RepeatedNamesMessage(arrived - stagedFiles));
 
                 if (damaged) errors.Add(ArchiveEngine.DamagedMessage(done));
                 if (unfinished) stoppedShort?.Invoke();
@@ -987,6 +1002,11 @@ namespace ExplorerNative
                 RemoveStaging(staging, errors);
             }
         }
+
+        /// <summary>The one sentence both routes give for entries that repeated a name, of which the first was kept.</summary>
+        internal static string RepeatedNamesMessage(int lost) =>
+            $"{NameRules.Items(lost)} in the archive repeated a name already used " +
+            "(names that differ only in capitals are one name here); the first of each was kept";
 
         /// <summary>Whether one of bsdtar's complaints is about the archive rather than about one entry.</summary>
         private static bool LooksDamaged(string message) =>
@@ -1029,7 +1049,8 @@ namespace ExplorerNative
             IReadOnlyCollection<string> staged,
             string destination,
             string? listAgain,
-            CancellationToken token)
+            CancellationToken token,
+            bool sevenZip = false)
         {
             var withheld = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var present = new HashSet<string>(staged, StringComparer.OrdinalIgnoreCase);
@@ -1038,8 +1059,20 @@ namespace ExplorerNative
             {
                 if (failure != null) continue;
                 var name = raw.TrimEnd('/');
-                if (name.Length == 0 || name.Any(c => c >= 128)) continue;
+                // 7-Zip's names are exact UTF-8, so none is passed over, and
+                // it renames in its own way: CON as _CON, "trail." as trail_.
+                if (name.Length == 0 || (!sevenZip && name.Any(c => c >= 128))) continue;
                 if (ArchiveEngine.SafeTarget(destination, WithoutDotSegments(name), out var reason) != null || reason == null) continue;
+
+                if (sevenZip)
+                {
+                    foreach (var spelled in SevenZipSpellings(name))
+                    {
+                        var exact = ExtractionRules.Normalise(spelled);
+                        if (present.Contains(exact)) withheld.TryAdd(exact, reason);
+                    }
+                    continue;
+                }
 
                 if (name.Contains('?'))
                 {
@@ -1147,6 +1180,36 @@ namespace ExplorerNative
             return new string(chars).TrimEnd('.', ' ');
         }));
 
+        /// <summary>
+        /// What 7-Zip (25.01) does on Windows to a name it cannot store, in each
+        /// segment: the forbidden characters become underscores, each trailing
+        /// dot or space becomes one ("trail." is "trail_"), and a device name,
+        /// with or without an extension, gets one in front ("aux.txt" is
+        /// "_aux.txt").
+        /// </summary>
+        internal static string CleanLike7Zip(string name) => CleanLike7Zip(name, devices: true);
+
+        private static string CleanLike7Zip(string name, bool devices) =>
+            string.Join('/', name.Replace('\\', '/').Split('/').Select(segment =>
+            {
+                var chars = segment.Select(c => c < 32 || ":*?\"<>|".IndexOf(c) >= 0 ? '_' : c).ToArray();
+                for (int i = chars.Length - 1; i >= 0 && chars[i] is '.' or ' '; i--) chars[i] = '_';
+                var clean = new string(chars);
+                int dot = segment.IndexOf('.');
+                var stem = (dot < 0 ? segment : segment[..dot]).ToUpperInvariant();
+                bool device = stem is "CON" or "PRN" or "AUX" or "NUL" ||
+                              (stem.Length == 4 && (stem.StartsWith("COM") || stem.StartsWith("LPT")) && stem[3] is >= '1' and <= '9');
+                return devices && device ? "_" + clean : clean;
+            }));
+
+        /// <summary>
+        /// Every spelling a refused name may have in 7-Zip's staging: as 7-Zip
+        /// renames it, the same without the device-name underscore, and as it
+        /// is (a name the rules refuse that Windows takes as it stands).
+        /// </summary>
+        private static IEnumerable<string> SevenZipSpellings(string name) =>
+            new[] { CleanLike7Zip(name, devices: true), CleanLike7Zip(name, devices: false), name };
+
         /// <summary>A name without the drive letters and leading slashes bsdtar removes.</summary>
         private static string StripRoot(string name)
         {
@@ -1252,7 +1315,8 @@ namespace ExplorerNative
             CancellationToken token,
             IReadOnlyCollection<string>? stoppedAt,
             bool unfinished,
-            Func<IReadOnlyCollection<string>, Dictionary<string, string>> withhold)
+            Func<IReadOnlyCollection<string>, Dictionary<string, string>> withhold,
+            byte[]? zone = null)
         {
             var entries = new List<ArchiveEntryInfo>();
             var folders = new List<ArchiveEntryInfo>();
@@ -1433,6 +1497,10 @@ namespace ExplorerNative
                     }
 
                     reporter.Starting(entry.Name);
+
+                    // Marked in staging, so it never appears under its real
+                    // name without the archive's Mark of the Web.
+                    ArchiveEngine.Mark(from, zone);
 
                     // Read-only cleared only when the move is refused for it:
                     // asked first, a target that was not there threw and was

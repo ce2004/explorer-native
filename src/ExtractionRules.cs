@@ -154,6 +154,12 @@ namespace ExplorerNative
 
         private Func<string, string?>? _select;
 
+        /// <summary>
+        /// The archive's Mark of the Web (<see cref="ArchiveEngine.ZoneOf"/>),
+        /// given to every file written under these rules. Null for none.
+        /// </summary>
+        internal byte[]? Zone { get; set; }
+
         private static ExtractionRules Skipping(string destination, List<string> clashing)
         {
             var skipped = new HashSet<string>(clashing, StringComparer.OrdinalIgnoreCase);
