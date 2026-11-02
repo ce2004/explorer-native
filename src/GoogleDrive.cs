@@ -774,6 +774,15 @@ namespace ExplorerNative
                 : char.ToUpperInvariant(configured.Trim()[0]);
 
         /// <summary>
+        /// Whether the letter setting itself changed, read the way the mount reads
+        /// it ("g", "G:" and blank are all G). Only then does OK move the drive:
+        /// on its fallback letter (G: held by a stick) every OK took the letter
+        /// away and put it back, or moved it lower.
+        /// </summary>
+        internal static bool LetterSettingChanged(string? before, string? after) =>
+            PreferredLetter(before ?? "") != PreferredLetter(after ?? "");
+
+        /// <summary>
         /// Takes Drive off its letter, and stops any mount still on its way up.
         /// </summary>
         public void Unmount()

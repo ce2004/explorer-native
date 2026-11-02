@@ -29,6 +29,7 @@ namespace ExplorerNative
             LaunchesOutwaitAQuitThatIsDraining();
             TrayMenuAccessKeysAreUnique();
             QuitDuringTheWinFspQuestionLeavesDriveOn();
+            OkMovesDriveOnlyForANewLetter();
             await Task.CompletedTask;
         }
 
@@ -348,6 +349,23 @@ namespace ExplorerNative
             var turnOffBody = Body(tray, "private void TurnOffDriveWithoutWinFsp(");
             Check("winfsp question: Drive is never saved as off once quitting has begun",
                 At(turnOffBody, "_quitting") >= 0 && At(turnOffBody, "_settings.Save()") > At(turnOffBody, "_quitting"));
+        }
+
+        // ---- 13: every OK remounted a Drive that was on its fallback letter ----
+
+        private static void OkMovesDriveOnlyForANewLetter()
+        {
+            Check("drive letter: the same letter written differently is no change", !GoogleDrive.LetterSettingChanged("G", "g:"));
+            Check("drive letter: blank is G", !GoogleDrive.LetterSettingChanged("", "G"));
+            Check("drive letter: nothing before is G too", !GoogleDrive.LetterSettingChanged(null, "G"));
+            Check("drive letter: a new letter is a change", GoogleDrive.LetterSettingChanged("G", "K"));
+
+            var apply = Body(Source("TrayApplicationContext.cs"), "public void ApplySettings(");
+            int move = At(apply, "_drive.MoveLetter(_settings.GoogleDriveLetter)");
+            int ifAt = move >= 0 ? apply.LastIndexOf("if (", move, StringComparison.Ordinal) : -1;
+            Check("drive letter: OK moves the drive only when the letter setting changed",
+                ifAt >= 0 && apply.IndexOf("LetterSettingChanged(", ifAt, StringComparison.Ordinal) is int changed &&
+                changed > ifAt && changed < move);
         }
 
         private static IEnumerable<T> All<T>(System.Windows.Forms.Control root) where T : System.Windows.Forms.Control

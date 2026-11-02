@@ -783,6 +783,7 @@ namespace ExplorerNative
             // the fallback over it.
             bool portSettingChanged = settings.WebAppPort != _settings.WebAppPort;
             int savedPortWas = _settings.WebAppPort;
+            string? letterWas = _settings.GoogleDriveLetter;
             _settings = settings;
             AppleMusic.Configure(settings.AppleMusicUserToken);
             AppleMusic.Autoplay = settings.AppleMusicAutoplay;
@@ -864,8 +865,10 @@ namespace ExplorerNative
 
                 // A new letter in Preferences moves a mounted drive straight
                 // away. It used to wait for the next start, so changing it
-                // appeared to do nothing.
-                if (_drive.MoveLetter(_settings.GoogleDriveLetter) is (string from, string to))
+                // appeared to do nothing. Only a new letter: OK on anything else
+                // left a drive on its fallback letter unmounted and mounted again.
+                if (GoogleDrive.LetterSettingChanged(letterWas, _settings.GoogleDriveLetter) &&
+                    _drive.MoveLetter(_settings.GoogleDriveLetter) is (string from, string to))
                 {
                     _form?.DriveLetterMoved(from, to);
                     Notify("drive.mounted", $"Google Drive is on {to}");
