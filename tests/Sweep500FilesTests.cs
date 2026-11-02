@@ -25,6 +25,8 @@ namespace ExplorerNative
 
             Console.WriteLine("Sweep 5.0.0, copying, moving and deleting:");
             await SystemToolsByFullPath();
+            DefaultAppChangesAreSeen();
+            RiskyTypesGoThroughTheShell();
         }
 
         private static string? FindSrc()
@@ -91,6 +93,63 @@ namespace ExplorerNative
                 Environment.SetEnvironmentVariable("NoDefaultCurrentDirectoryInExePath", oldVar);
                 try { Directory.Delete(root, true); } catch { }
             }
+        }
+
+        /// <summary>
+        /// A default app changed while the app runs is used within half a
+        /// minute, and the Open With picker is never remembered.
+        /// </summary>
+        private static void DefaultAppChangesAreSeen()
+        {
+            long clock = 0;
+            string answer = @"C:\A\a.exe";
+            FileLauncher.ForgetAll();
+            FileLauncher.ClockForTests = () => clock;
+            FileLauncher.ResolverForTests = _ => (answer, "\"%1\"");
+            try
+            {
+                Equal("the first open uses the handler Windows names", @"C:\A\a.exe", FileLauncher.ResolveHandlerPath(".zzztest") ?? "(null)");
+                answer = @"C:\B\b.exe";
+                clock = 1_000;
+                Equal("a moment later the handler is still the remembered one", @"C:\A\a.exe", FileLauncher.ResolveHandlerPath(".zzztest") ?? "(null)");
+                clock = 31_000;
+                Equal("half a minute after the default app changed, the new app opens the file", @"C:\B\b.exe", FileLauncher.ResolveHandlerPath(".zzztest") ?? "(null)");
+
+                FileLauncher.ForgetAll();
+                answer = @"C:\Windows\system32\OpenWith.exe";
+                Equal("an unknown type goes to the Open With picker", answer, FileLauncher.ResolveHandlerPath(".zzzpick") ?? "(null)");
+                answer = @"C:\B\b.exe";
+                Equal("after choosing an app with Always, the next open goes to that app at once", @"C:\B\b.exe", FileLauncher.ResolveHandlerPath(".zzzpick") ?? "(null)");
+            }
+            finally
+            {
+                FileLauncher.ResolverForTests = null;
+                FileLauncher.ClockForTests = null;
+                FileLauncher.ForgetAll();
+            }
+        }
+
+        /// <summary>
+        /// Scripts and installers go through the shell, so Windows can show its
+        /// security warning for a downloaded one.
+        /// </summary>
+        private static void RiskyTypesGoThroughTheShell()
+        {
+            FileLauncher.ForgetAll();
+            foreach (var ext in new[] { ".js", ".vbs", ".msi", ".msc", ".cpl", ".reg", ".hta", ".wsf" })
+            {
+                Check($"{ext} is opened through the shell's security check",
+                    FileLauncher.ResolveHandlerPath(ext) == null && FileLauncher.DescribeCommandLine(ext, @"C:\x\a" + ext) == null,
+                    FileLauncher.ResolveHandlerPath(ext) ?? "(null)");
+            }
+            Check("the risky-type rule ignores case", FileLauncher.MustGoThroughShell(".JS"));
+            Check("music and text still open the fast way",
+                !FileLauncher.MustGoThroughShell(".flac") && !FileLauncher.MustGoThroughShell(".txt"));
+
+            var src = FindSrc();
+            var text = src == null ? "" : File.ReadAllText(Path.Combine(src, "FileLauncher.cs"));
+            Check("the shell fallback lets the shell show its prompts for risky types",
+                Regex.IsMatch(text, @"ErrorDialog\s*=\s*MustGoThroughShell"));
         }
     }
 }
