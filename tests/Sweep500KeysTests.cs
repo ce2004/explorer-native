@@ -28,6 +28,7 @@ namespace ExplorerNative
             Console.WriteLine("Sweep 5.0.0, keys, speech and search:");
             WinKeyMaskIsNotAPress();
             OwnHotkeysPauseWhileChoosingShortcuts();
+            DatesFollowTheWindowsRegion();
             await Task.CompletedTask;
         }
 
@@ -105,6 +106,43 @@ namespace ExplorerNative
             Check("the shortcut page lets the app's hotkeys go so a box can take them", during);
             Check("closing the page claims them again", !after);
             Check("and unregistering afterwards still lets go", restoredFires);
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SystemTime { public ushort Year, Month, DayOfWeek, Day, Hour, Minute, Second, Ms; }
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetDateFormatEx(string? locale, uint flags, ref SystemTime date, string? format, char[] buffer, int size, string? calendar);
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetTimeFormatEx(string? locale, uint flags, ref SystemTime time, string? format, char[] buffer, int size);
+
+        /// <summary>
+        /// The shipped exe is InvariantGlobalization, so .NET's "g" is always
+        /// MM/dd/yyyy HH:mm. Exact dates must come out the way Windows writes them
+        /// for this PC's region, even with an invariant culture.
+        /// </summary>
+        private static void DatesFollowTheWindowsRegion()
+        {
+            var stamp = new DateTime(2026, 3, 4, 14, 30, 0);
+            var st = new SystemTime { Year = 2026, Month = 3, DayOfWeek = (ushort)stamp.DayOfWeek, Day = 4, Hour = 14, Minute = 30 };
+            var b = new char[128];
+            int n = GetDateFormatEx(null, 0x1, ref st, null, b, b.Length, null);
+            string date = new string(b, 0, n - 1);
+            n = GetTimeFormatEx(null, 0x2, ref st, null, b, b.Length);
+            string expected = date + " " + new string(b, 0, n - 1);
+            n = GetDateFormatEx(null, 0x2, ref st, null, b, b.Length, null);
+            string longExpected = new string(b, 0, n - 1) + expected.Substring(date.Length);
+
+            var culture = System.Globalization.CultureInfo.CurrentCulture;
+            try
+            {
+                System.Globalization.CultureInfo.CurrentCulture = System.Globalization.CultureInfo.InvariantCulture;
+                Equal("an exact Modified date is written the way this PC's region writes it, even in invariant mode",
+                    expected, TimeFormatter.Format(stamp, verbose: true));
+                Equal("Song properties' Modified date is the region's long date and time",
+                    longExpected, TimeFormatter.WindowsDateTime(stamp, longDate: true));
+            }
+            finally { System.Globalization.CultureInfo.CurrentCulture = culture; }
+            Console.WriteLine("  (.NET says " + stamp.ToString("g") + ", Windows " + expected + (stamp.ToString("g") == expected ? ", the same" : ", different") + ")");
         }
     }
 }

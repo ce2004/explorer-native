@@ -259,7 +259,7 @@ namespace ExplorerNative
                 if (info.Exists)
                 {
                     Add(rows, "Size", SizeFormatter.Format(info.Length, SizeUnitStyle.FullWords));
-                    Add(rows, "Modified", info.LastWriteTime.ToString("f"));
+                    Add(rows, "Modified", TimeFormatter.WindowsDateTime(info.LastWriteTime, longDate: true));
                 }
                 Add(rows, "Folder", Path.GetDirectoryName(path));
             }
