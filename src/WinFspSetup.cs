@@ -56,7 +56,11 @@ namespace ExplorerNative
                 {
                     using var process = Process.Start(new ProcessStartInfo
                     {
-                        FileName = "msiexec.exe",
+                        // Full path and System32 as the working folder: a bare
+                        // msiexec.exe is looked for in the current folder first,
+                        // and this one is about to be elevated.
+                        FileName = Path.Combine(Environment.SystemDirectory, "msiexec.exe"),
+                        WorkingDirectory = Environment.SystemDirectory,
                         Arguments = $"/i \"{path}\" /passive /norestart",
                         UseShellExecute = true,
                         Verb = "runas",

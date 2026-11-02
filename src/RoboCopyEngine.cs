@@ -167,6 +167,15 @@ namespace ExplorerNative
     public static class RoboCopyEngine
     {
         /// <summary>
+        /// System32's robocopy, by full path. A bare "robocopy.exe" is looked
+        /// for beside our own exe and in the current folder before System32,
+        /// so a robocopy.exe sitting in Downloads next to a portable copy
+        /// would run in its place on the first paste.
+        /// </summary>
+        internal static string RobocopyExecutable { get; } =
+            Path.Combine(Environment.SystemDirectory, "robocopy.exe");
+
+        /// <summary>
         /// A robocopy report, corrected by what the Drive mount has actually handed
         /// over, for a copy out of the Drive letter.
         ///
@@ -2212,7 +2221,7 @@ namespace ExplorerNative
             args.Add("/UNILOG:" + Quote(logPath));
             args.Add("/TEE");
 
-            var psi = new ProcessStartInfo("robocopy.exe")
+            var psi = new ProcessStartInfo(RobocopyExecutable)
             {
                 Arguments = string.Join(" ", args),
                 RedirectStandardOutput = true,
