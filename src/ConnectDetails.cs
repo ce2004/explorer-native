@@ -351,7 +351,9 @@ namespace ExplorerNative
             else if (StartsWith(head, "OggS")) Try(() => Ogg(bytes, m));
             else if (sniff is "ftyp" or "moov" or "mdat" or "wide" or "free" or "skip") Try(() => Mp4(bytes, m, path, token));
             else if (head.Length >= 4 && head[0] == 0x1A && head[1] == 0x45 && head[2] == 0xDF && head[3] == 0xA3) Try(() => Mkv(bytes, m, token));
-            else if (StartsWith(head, "ID3") || ext == ".mp3" || (head.Length > 2 && head[0] == 0xFF && (head[1] & 0xE0) == 0xE0)) Try(() => Mp3(bytes, m));
+            // A sync with layer bits 00 is ADTS (raw AAC), which Media Foundation reads; never the MP3 parser's.
+            else if (StartsWith(head, "ID3") || ext == ".mp3" || (head.Length > 2 && head[0] == 0xFF && (head[1] & 0xE0) == 0xE0 && ((head[1] >> 1) & 3) != 0))
+                Try(() => Mp3(bytes, m));
 
             // Media Foundation for the streams, where the file's own header did not already say.
             Try(() => MediaFoundation(bytes, m, token));
@@ -717,15 +719,51 @@ namespace ExplorerNative
             { 0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160 },           // MPEG2 layers II, III
         };
 
+        /// <summary>The length in bytes of the MPEG audio frame whose header is at <paramref name="i"/>, or 0 when none is.</summary>
+        /// <summary>How deep chapter editions and tags are followed in a Matroska file; real ones go one level.</summary>
+        private const int MostMkvDepth = 8;
+
+        private static int Mp3FrameLength(byte[] scan, int i)
+        {
+            if (i + 4 > scan.Length || scan[i] != 0xFF || (scan[i + 1] & 0xE0) != 0xE0) return 0;
+            int versionBits = (scan[i + 1] >> 3) & 3, layerBits = (scan[i + 1] >> 1) & 3;
+            int bitrateIndex = scan[i + 2] >> 4, rateIndex = (scan[i + 2] >> 2) & 3;
+            if (versionBits == 1 || layerBits == 0 || bitrateIndex is 0 or 15 || rateIndex == 3) return 0;
+            bool mpeg1 = versionBits == 3;
+            int layer = 4 - layerBits;
+            int rate = (versionBits switch { 3 => new[] { 44100, 48000, 32000 }, 2 => new[] { 22050, 24000, 16000 }, _ => new[] { 11025, 12000, 8000 } })[rateIndex];
+            int kbps = Mp3Bitrates[mpeg1 ? layer - 1 : (layer == 1 ? 3 : 4), bitrateIndex];
+            int padding = (scan[i + 2] >> 1) & 1;
+            if (kbps <= 0) return 0;
+            return layer == 1 ? (12 * kbps * 1000 / rate + padding) * 4
+                 : layer == 2 || mpeg1 ? 144 * kbps * 1000 / rate + padding
+                 : 72 * kbps * 1000 / rate + padding;
+        }
+
         private static void Mp3(CachedBytes b, MediaFacts m)
         {
             var pending = new Dictionary<string, string>();
             long at = Id3v2(b, m, pending);
             var scan = b.Get(at, 64 * 1024);
+            // ADTS behind an ID3 tag (an .aac file): the tags are ours, the stream is Media Foundation's.
+            if (scan.Length > 1 && scan[0] == 0xFF && (scan[1] & 0xF0) == 0xF0 && ((scan[1] >> 1) & 3) == 0)
+            { m.Tags.FinishNumbers(pending); return; }
             int s = -1;
+            // A header is believed only when another starts exactly one frame later (or the file ends there):
+            // AAC and other data match a lone header about once every 4 KB.
             for (int i = 0; i + 4 < scan.Length; i++)
-                if (scan[i] == 0xFF && (scan[i + 1] & 0xE0) == 0xE0 && ((scan[i + 1] >> 1) & 3) != 0 && (scan[i + 2] >> 4) is not (0 or 15) && ((scan[i + 2] >> 2) & 3) != 3)
-                { s = i; break; }
+            {
+                int len = Mp3FrameLength(scan, i);
+                if (len <= 0) continue;
+                long next = at + i + len;
+                if (i + len + 4 <= scan.Length)
+                {
+                    if (Mp3FrameLength(scan, i + len) > 0 && (scan[i + len + 1] & 0xFE) == (scan[i + 1] & 0xFE) &&
+                        ((scan[i + len + 2] >> 2) & 3) == ((scan[i + 2] >> 2) & 3))
+                    { s = i; break; }
+                }
+                else if (next == b.Length || next == b.Length - 128) { s = i; break; }
+            }
             if (s < 0) { m.Tags.FinishNumbers(pending); return; }
             var f = scan.AsSpan(s);
             int versionBits = (f[1] >> 3) & 3, layerBits = (f[1] >> 1) & 3;
@@ -1303,11 +1341,14 @@ namespace ExplorerNative
             var chapters = Load(0x1043A770);
             if (chapters != null)
             {
-                void Atoms(long from, long to)
+                void Atoms(long from, long to, int depth)
                 {
+                    // Real files nest an edition once; a crafted one nested thousands deep would overflow the stack,
+                    // which no catch stops and which takes the whole app (and Drive's unsaved writes) with it.
+                    if (depth > MostMkvDepth) return;
                     foreach (var e in Elements(chapters, from, to))
                     {
-                        if (e.Id == 0x45B9) { Atoms(e.DataStart, e.DataStart + e.Size); continue; }
+                        if (e.Id == 0x45B9) { Atoms(e.DataStart, e.DataStart + e.Size, depth + 1); continue; }
                         if (e.Id != 0xB6) continue;
                         double start = 0; string title = "";
                         foreach (var f in Elements(chapters, e.DataStart, e.DataStart + e.Size))
@@ -1320,18 +1361,19 @@ namespace ExplorerNative
                         m.Chapter(title, start);
                     }
                 }
-                Atoms(0, chapters.Length);
+                Atoms(0, chapters.Length, 0);
             }
 
             var tags = Load(0x1254C367);
             if (tags != null)
             {
                 var pending = new Dictionary<string, string>();
-                void Simple(long from, long to)
+                void Simple(long from, long to, int depth)
                 {
+                    if (depth > MostMkvDepth) return;
                     foreach (var e in Elements(tags, from, to))
                     {
-                        if (e.Id == 0x7373) { Simple(e.DataStart, e.DataStart + e.Size); continue; }
+                        if (e.Id == 0x7373) { Simple(e.DataStart, e.DataStart + e.Size, depth + 1); continue; }
                         if (e.Id != 0x67C8) continue;
                         string name = "", value = "";
                         foreach (var f in Elements(tags, e.DataStart, e.DataStart + e.Size))
@@ -1343,7 +1385,7 @@ namespace ExplorerNative
                         else if (name == "BPS" || name == "DURATION") { }
                     }
                 }
-                Simple(0, tags.Length);
+                Simple(0, tags.Length, 0);
                 m.Tags.FinishNumbers(pending);
             }
         }
