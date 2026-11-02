@@ -66,6 +66,46 @@ namespace ExplorerNative
         public HotkeyManager()
         {
             _window.HotkeyReceived += id => HotkeyPressed?.Invoke(id);
+            _thread = Environment.CurrentManagedThreadId;
+            ShortcutsForm.CaptureStarted += Suspend;
+            ShortcutsForm.CaptureEnded += Resume;
+        }
+
+        /// <summary>Global shortcuts by id, so a pause can claim them back.</summary>
+        private readonly Dictionary<int, Shortcut> _globalShortcuts = new();
+        private readonly int _thread;
+        private int _suspended;
+
+        /// <summary>Raised when the hotkeys are let go, so a held key stops repeating.</summary>
+        public event Action? Suspended;
+
+        /// <summary>
+        /// Lets go of every registered key while the shortcut page is open.
+        /// A registered combination never reaches the focused box: Windows turns
+        /// it into WM_HOTKEY, so pressing Ctrl+Alt+P in a box played the music
+        /// instead of typing the key. Counted, and only on this manager's thread.
+        /// </summary>
+        public void Suspend()
+        {
+            if (Environment.CurrentManagedThreadId != _thread) return;
+            if (_suspended++ > 0) return;
+            foreach (var id in _registered) { try { UnregisterHotKey(_window.Handle, id); } catch { } }
+            foreach (var id in _localClaimed) { try { UnregisterHotKey(_window.Handle, id); } catch { } }
+            _localClaimed.Clear();
+            Suspended?.Invoke();
+        }
+
+        /// <summary>Claims back what <see cref="Suspend"/> let go, quietly.</summary>
+        public void Resume()
+        {
+            if (Environment.CurrentManagedThreadId != _thread) return;
+            if (_suspended == 0 || --_suspended > 0) return;
+            foreach (var (id, s) in _globalShortcuts)
+            {
+                if (!_registered.Contains(id)) continue;
+                if (!RegisterHotKey(_window.Handle, id, s.Modifiers | MOD_NOREPEAT, s.Key)) _registered.Remove(id);
+            }
+            SyncLocal(GetForegroundWindow());
         }
 
         /// <summary>
@@ -106,6 +146,7 @@ namespace ExplorerNative
 
         private void SyncLocal(IntPtr foreground)
         {
+            if (_suspended > 0) return;
             bool ours = false;
             if (foreground != IntPtr.Zero)
             {
@@ -143,6 +184,14 @@ namespace ExplorerNative
             Unregister(id);
             if (!shortcut.CanRegister) return false;
 
+            // While paused the key is only noted; Resume claims it.
+            if (_suspended > 0)
+            {
+                _globalShortcuts[id] = shortcut;
+                _registered.Add(id);
+                return true;
+            }
+
             if (!RegisterHotKey(_window.Handle, id, shortcut.Modifiers | MOD_NOREPEAT, shortcut.Key))
             {
                 // Windows keeps nearly every Windows key letter for itself and
@@ -155,6 +204,7 @@ namespace ExplorerNative
             }
 
             _registered.Add(id);
+            _globalShortcuts[id] = shortcut;
             return true;
         }
 
@@ -164,6 +214,7 @@ namespace ExplorerNative
         public void Unregister(int id)
         {
             _local.Remove(id);
+            _globalShortcuts.Remove(id);
             if (_hooked.Remove(id)) WinKeyHook.Remove(_window.Handle, id);
             if (!_registered.Remove(id) && !_localClaimed.Remove(id)) return;
             try { UnregisterHotKey(_window.Handle, id); } catch { }
@@ -181,6 +232,8 @@ namespace ExplorerNative
 
         public void Dispose()
         {
+            ShortcutsForm.CaptureStarted -= Suspend;
+            ShortcutsForm.CaptureEnded -= Resume;
             UnregisterAll();
             if (_foregroundHook != IntPtr.Zero)
             {
