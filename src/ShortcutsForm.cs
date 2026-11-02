@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
@@ -19,6 +20,41 @@ namespace ExplorerNative
         private readonly Dictionary<AudioAction, ShortcutBox> _boxes = new();
         private readonly Dictionary<AudioAction, CheckBox> _global = new();
         private readonly Label _message;
+
+        /// <summary>
+        /// Raised while this page is open, so the app's own hotkeys let go and a
+        /// box can take a key that is already set instead of running it.
+        /// </summary>
+        internal static event Action? CaptureStarted;
+        internal static event Action? CaptureEnded;
+        private bool _capturing;
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            if (_capturing) return;
+            _capturing = true;
+            CaptureStarted?.Invoke();
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            EndCapture();
+            base.OnFormClosed(e);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            EndCapture();
+            base.Dispose(disposing);
+        }
+
+        private void EndCapture()
+        {
+            if (!_capturing) return;
+            _capturing = false;
+            CaptureEnded?.Invoke();
+        }
 
         public ShortcutsForm(Settings working)
         {

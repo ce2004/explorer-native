@@ -59,6 +59,10 @@ namespace ExplorerNative
                 Interlocked.Increment(ref _collections);
             }
             catch { }
+
+            // A key pressed during that pause can make Windows drop the keyboard
+            // hook without a word; put it back.
+            WinKeyHook.Refresh();
         }
     }
 }

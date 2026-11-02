@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 
 namespace ExplorerNative
 {
@@ -24,10 +25,55 @@ namespace ExplorerNative
         {
             if (verbose)
             {
+                // The shipped exe runs with InvariantGlobalization, so .NET's own
+                // "g" is always MM/dd/yyyy HH:mm whatever the region says. Windows
+                // is asked instead, so a UK PC hears 04/03 for the 4th of March.
+                if (exactFormat == DefaultFormat) return WindowsDateTime(when);
                 try { return when.ToString(exactFormat); }
                 catch (FormatException) { return when.ToString("g"); }
             }
             return Relative(when, DateTime.Now);
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SYSTEMTIME
+        {
+            public ushort Year, Month, DayOfWeek, Day, Hour, Minute, Second, Milliseconds;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetDateFormatEx(string? locale, uint flags, ref SYSTEMTIME date,
+            string? format, char[] buffer, int size, string? calendar);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetTimeFormatEx(string? locale, uint flags, ref SYSTEMTIME time,
+            string? format, char[] buffer, int size);
+
+        private const uint DATE_SHORTDATE = 0x1, DATE_LONGDATE = 0x2, TIME_NOSECONDS = 0x2;
+
+        /// <summary>
+        /// Date and time the way this PC's region writes them (the person's own
+        /// overrides included), with no seconds. Long date for property pages.
+        /// The time is taken as given: callers pass local time.
+        /// </summary>
+        public static string WindowsDateTime(DateTime when, bool longDate = false)
+        {
+            try
+            {
+                var st = new SYSTEMTIME
+                {
+                    Year = (ushort)when.Year, Month = (ushort)when.Month, DayOfWeek = (ushort)when.DayOfWeek,
+                    Day = (ushort)when.Day, Hour = (ushort)when.Hour, Minute = (ushort)when.Minute,
+                    Second = (ushort)when.Second, Milliseconds = (ushort)when.Millisecond,
+                };
+                var date = new char[128];
+                var time = new char[128];
+                int d = GetDateFormatEx(null, longDate ? DATE_LONGDATE : DATE_SHORTDATE, ref st, null, date, date.Length, null);
+                int t = GetTimeFormatEx(null, TIME_NOSECONDS, ref st, null, time, time.Length);
+                if (d > 1 && t > 1) return new string(date, 0, d - 1) + " " + new string(time, 0, t - 1);
+            }
+            catch { }
+            return when.ToString(longDate ? "f" : "g");
         }
 
         /// <summary>Split out from Format so it can be tested against a fixed "now".</summary>

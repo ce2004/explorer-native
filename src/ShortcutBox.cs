@@ -80,6 +80,11 @@ namespace ExplorerNative
             var key = keyData & Keys.KeyCode;
             var modifiers = keyData & Keys.Modifiers;
 
+            // WinKeyHook presses this unassigned key after taking a Windows key
+            // combination, so the Start menu stays shut. It is not a key the
+            // person pressed, and answering it said "cannot be saved" over Win+E.
+            if ((int)key == WinKeyHook.MaskKeyCode) return true;
+
             // The way out. Without these the box is a trap: no way to move on, no
             // way to press OK, no way to cancel.
             if (modifiers == Keys.None && key is Keys.Tab or Keys.Escape or Keys.Enter)

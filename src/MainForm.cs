@@ -2023,6 +2023,8 @@ namespace ExplorerNative
                 int found = TypeAhead.FindFolded(entries.Count, i => entries[i].FoldedDisplayName(extensions), pending, -1);
                 if (found >= 0) target = found;
             }
+            // Used: the word now ends after one more ordinary pause.
+            pane.TypeAhead.Release(Environment.TickCount64);
 
             if (target < 0 && preferPath != null &&
                 pane.IndexByPath.TryGetValue(preferPath, out int remembered))
@@ -2300,7 +2302,7 @@ namespace ExplorerNative
                 }
                 finally
                 {
-                    if (pane.NavigationId == mine) pane.StaleRows = false;
+                    if (pane.NavigationId == mine) { pane.StaleRows = false; pane.TypeAhead.Release(Environment.TickCount64); }
                 }
             }
 
@@ -2320,7 +2322,7 @@ namespace ExplorerNative
                 }
                 finally
                 {
-                    if (pane.NavigationId == mine) pane.StaleRows = false;
+                    if (pane.NavigationId == mine) { pane.StaleRows = false; pane.TypeAhead.Release(Environment.TickCount64); }
                 }
             }
 
@@ -2342,7 +2344,7 @@ namespace ExplorerNative
                 LoadDrivesInto(pane, driveToken,
                     preferPath ?? (cameFrom == DrivesPath ? FocusedPathOf(pane) : SafePathRoot(cameFrom)), quiet);
 
-                if (pane.NavigationId == mine) pane.StaleRows = false;
+                if (pane.NavigationId == mine) { pane.StaleRows = false; pane.TypeAhead.Release(Environment.TickCount64); }
                 return pane.NavigationId == mine;
             }
 
@@ -2494,7 +2496,7 @@ namespace ExplorerNative
                 // Arrived, refused or fell back: either new rows are on screen or
                 // the old folder is where we still are. An overtaken navigation
                 // leaves the flag to the one that overtook it.
-                if (pane.NavigationId == mine) pane.StaleRows = false;
+                if (pane.NavigationId == mine) { pane.StaleRows = false; pane.TypeAhead.Release(Environment.TickCount64); }
             }
         }
 
@@ -4134,6 +4136,8 @@ namespace ExplorerNative
                         _form.FocusListAndRow(_pane, readRowAloud: true);
                     }
                 }
+                // The whole folder is in: a word typed while it loaded has had its chance.
+                _pane.TypeAhead.Release(Environment.TickCount64);
             }
 
             /// <param name="unchanged">How many leading rows are the same rows as last time.</param>
@@ -4180,6 +4184,7 @@ namespace ExplorerNative
                 if (focusedPath != null && _pane.IndexByPath.TryGetValue(focusedPath, out var now))
                 {
                     _landed = true;
+                    _pane.TypeAhead.Release(Environment.TickCount64);
                     if (!marksStay && (now != CurrentIndex(_pane) || selected.Count > 1))
                         _form.Reselect(_pane, now, selected);
                 }
@@ -4188,6 +4193,7 @@ namespace ExplorerNative
                     // A name typed while the folder was arriving beats the row
                     // to come back to, as it does in SetEntries.
                     _landed = true;
+                    _pane.TypeAhead.Release(Environment.TickCount64);
                     _form.SelectIndex(_pane, typed);
                     _form.FocusListAndRow(_pane, readRowAloud: true);
                 }
@@ -4195,6 +4201,7 @@ namespace ExplorerNative
                 {
                     // The row to come back to has arrived, and nobody has moved yet.
                     _landed = true;
+                    _pane.TypeAhead.Release(Environment.TickCount64);
                     _form.SelectIndex(_pane, wanted);
                     _form.FocusListAndRow(_pane, readRowAloud: true);
                 }
@@ -6400,7 +6407,13 @@ namespace ExplorerNative
             // Only while that navigation is still probing or listing, so a flag
             // left by one that was overtaken and went nowhere cannot stop
             // type-ahead for good.
-            if (pane.Entries.Count == 0 || (pane.StaleRows && (pane.Probing != 0 || pane.Loading))) return;
+            if (pane.Entries.Count == 0 || (pane.StaleRows && (pane.Probing != 0 || pane.Loading)))
+            {
+                // Nothing to search yet: keep the word for the rows on their way,
+                // or the quarter-second pause throws it out before they land.
+                if (pane.Probing != 0 || pane.Loading) pane.TypeAhead.Hold();
+                return;
+            }
 
             int current = CurrentIndex(pane);
 

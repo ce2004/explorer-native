@@ -154,6 +154,8 @@ namespace ExplorerNative
             Application.Idle += ShowTrayIcon;
 
             _hotkeys.HotkeyPressed += OnHotkey;
+            // The shortcut page lets the hotkeys go; a held key must not keep repeating.
+            _hotkeys.Suspended += () => _hold.Stop();
 
             // Both of these arrive on a Media Foundation worker thread.
             _audio.Finished += path => PostUi(() => OnTrackFinished(path));

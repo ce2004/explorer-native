@@ -53,7 +53,25 @@ namespace ExplorerNative
         }
 
         private bool Expired(long nowMilliseconds) =>
-            _text.Length > 0 && nowMilliseconds - _lastKeyAt > TimeoutMilliseconds;
+            !_held && _text.Length > 0 && nowMilliseconds - _lastKeyAt > TimeoutMilliseconds;
+
+        /// <summary>
+        /// Letters typed while a folder is still loading wait for its rows: a
+        /// Drive folder can take most of a second, and the quarter-second pause
+        /// used to throw the word away before there was anything to search.
+        /// </summary>
+        private bool _held;
+
+        /// <summary>Keeps the word until <see cref="Release"/>: there is nothing to search yet.</summary>
+        public void Hold() { if (_text.Length > 0) _held = true; }
+
+        /// <summary>The rows are in: the word lasts one more ordinary pause from now.</summary>
+        public void Release(long nowMilliseconds)
+        {
+            if (!_held) return;
+            _held = false;
+            _lastKeyAt = nowMilliseconds;
+        }
 
         /// <summary>Adds a character and returns the prefix to search for.</summary>
         public string Accept(char c, long nowMilliseconds)
@@ -64,7 +82,7 @@ namespace ExplorerNative
             return _text;
         }
 
-        public void Reset() => _text = "";
+        public void Reset() { _text = ""; _held = false; }
     }
 
     public static class TypeAhead
