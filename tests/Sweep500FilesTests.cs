@@ -29,6 +29,7 @@ namespace ExplorerNative
             RiskyTypesGoThroughTheShell();
             await StraightFromGoogleShowsProgress();
             StatusSentencesSurviveTheDriveCorrection();
+            await MoveInsideOneShareIsARename();
         }
 
         private static string? FindSrc()
@@ -228,6 +229,81 @@ namespace ExplorerNative
                 "3000000", google.BytesDone.ToString());
             Equal("straight from Google, the sentence is kept",
                 "Downloading b.ogg straight from Google Drive", google.CurrentItem);
+        }
+
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        private struct FileInformation
+        {
+            public uint Attributes;
+            public System.Runtime.InteropServices.ComTypes.FILETIME Created, Accessed, Written;
+            public uint VolumeSerial, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError = true)]
+        [return: System.Runtime.InteropServices.MarshalAs(System.Runtime.InteropServices.UnmanagedType.Bool)]
+        private static extern bool GetFileInformationByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle file, out FileInformation info);
+
+        private static ulong FileId(string path)
+        {
+            using var h = File.OpenHandle(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+            return GetFileInformationByHandle(h, out var info) ? ((ulong)info.IndexHigh << 32) | info.IndexLow : 0;
+        }
+
+        /// <summary>
+        /// A move inside one network share is a rename on the server, not every
+        /// byte pulled down and pushed back.
+        /// </summary>
+        private static async Task MoveInsideOneShareIsARename()
+        {
+            Check("one share: two folders on one share are one volume",
+                RoboCopyEngine.SameVolume(@"\\server\share\a\x", @"\\server\share\b"));
+            Check("one share: the long form of a share path matches the short one",
+                RoboCopyEngine.SameVolume(@"\\?\UNC\server\share\a", @"\\server\share\b"));
+            Check("one share: share names are matched without regard to case",
+                RoboCopyEngine.SameVolume(@"\\Server\Share\a", @"\\server\share\b"));
+            Check("one share: another share on the same server is not",
+                !RoboCopyEngine.SameVolume(@"\\server\share\a", @"\\server\other\a"));
+            Check("one share: the same share name on another server is not",
+                !RoboCopyEngine.SameVolume(@"\\server\share\a", @"\\other\share\a"));
+            Check("one share: the Google Drive volume is never taken for a share",
+                !RoboCopyEngine.SameVolume(@"\\GoogleDrive\acct\a", @"\\GoogleDrive\acct\b"));
+            Check("one share: a local folder and a share are not one volume",
+                !RoboCopyEngine.SameVolume(Path.GetTempPath(), @"\\server\share\x"));
+            Check("one share: a local move is still a rename",
+                RoboCopyEngine.SameVolume(Path.GetTempPath(), Path.Combine(Path.GetTempPath(), "x")));
+
+            // End to end through the admin share, where there is one.
+            var local = Path.Combine(Path.GetTempPath(), "en500-share-" + Guid.NewGuid().ToString("N"));
+            if (local.Length < 3 || local[1] != ':') return;
+            var unc = @"\\localhost\" + char.ToUpperInvariant(local[0]) + "$" + local[2..];
+            Directory.CreateDirectory(local);
+            try
+            {
+                if (!Directory.Exists(unc)) { Console.WriteLine("  (no admin share here: end-to-end share move skipped)"); return; }
+                var src = Path.Combine(unc, "src");
+                var dst = Path.Combine(unc, "dst");
+                Directory.CreateDirectory(Path.Combine(src, "Dir"));
+                Directory.CreateDirectory(dst);
+                var big = Path.Combine(src, "big.bin");
+                File.WriteAllBytes(big, new byte[1 << 20]);
+                File.WriteAllText(Path.Combine(src, "Dir", "x.txt"), "X");
+                ulong bigId = FileId(Path.Combine(local, "src", "big.bin"));
+                ulong xId = FileId(Path.Combine(local, "src", "Dir", "x.txt"));
+
+                var result = await RoboCopyEngine.RunAsync(new[] { big, Path.Combine(src, "Dir") }, dst, move: true, 4,
+                    PasteConflictPolicy.AutoRename, null, CancellationToken.None);
+                var movedBig = Path.Combine(local, "dst", "big.bin");
+                var movedX = Path.Combine(local, "dst", "Dir", "x.txt");
+                Check("one share: a file moved inside a share is the same file, renamed on the server",
+                    File.Exists(movedBig) && !File.Exists(Path.Combine(local, "src", "big.bin")) && FileId(movedBig) == bigId,
+                    $"failed {result.Failed}: {string.Join("; ", result.Errors)}");
+                Check("one share: a folder moved inside a share is the same folder",
+                    File.Exists(movedX) && FileId(movedX) == xId && !Directory.Exists(Path.Combine(local, "src", "Dir")));
+            }
+            finally
+            {
+                try { Directory.Delete(local, true); } catch { }
+            }
         }
 
         /// <summary>

@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -2609,12 +2610,62 @@ namespace ExplorerNative
         /// rename is tried, and the rename itself never copies (see
         /// <see cref="TryRename"/>), so a wrong yes costs one refused call and a
         /// wrong no costs a copy.
+        ///
+        /// Windows names no volume for a share or a mapped letter, so two places
+        /// on one share are matched by the share itself (<see cref="ShareOf"/>),
+        /// first, so a share path never waits on the volume question going
+        /// over the network. The server renames inside a share; if the share
+        /// spans its volumes, the rename is refused and the copy goes ahead.
         /// </summary>
         public static bool SameVolume(string a, string b)
         {
+            var sa = ShareOf(a);
+            var sb = ShareOf(b);
+            if (sa != null || sb != null)
+                return sa != null && string.Equals(sa, sb, StringComparison.OrdinalIgnoreCase);
             var va = VolumeOf(a);
             return va != null && string.Equals(va, VolumeOf(b), StringComparison.OrdinalIgnoreCase);
         }
+
+        /// <summary>
+        /// "\\server\share" for a path on a share, or on a letter mapped to
+        /// one; otherwise null. The Google Drive volume (server GoogleDrive) is
+        /// never a share here: moves there go through the Drive API.
+        /// </summary>
+        internal static string? ShareOf(string path)
+        {
+            try
+            {
+                var plain = NameRules.PlainPath(path);
+                string? share = null;
+                if (plain.StartsWith(@"\\", StringComparison.Ordinal))
+                {
+                    if (plain.StartsWith(@"\\.\", StringComparison.Ordinal)) return null;
+                    var parts = plain[2..].Split('\\');
+                    if (parts.Length < 2 || parts[0].Length == 0 || parts[1].Length == 0) return null;
+                    share = @"\\" + parts[0] + @"\" + parts[1];
+                }
+                else if (plain.Length >= 2 && plain[1] == ':' && char.IsAsciiLetter(plain[0]) &&
+                         GetDriveTypeW(plain[..2] + "\\") == DriveRemote)
+                {
+                    var buffer = new StringBuilder(512);
+                    int length = buffer.Capacity;
+                    if (WNetGetConnectionW(plain[..2], buffer, ref length) != 0) return null;
+                    share = buffer.ToString().TrimEnd('\\');
+                    if (!share.StartsWith(@"\\", StringComparison.Ordinal)) return null;
+                    var parts = share[2..].Split('\\');
+                    if (parts.Length < 2 || parts[0].Length == 0 || parts[1].Length == 0) return null;
+                    share = @"\\" + parts[0] + @"\" + parts[1];
+                }
+                if (share == null) return null;
+                if (share.StartsWith(@"\\GoogleDrive\", StringComparison.OrdinalIgnoreCase)) return null;
+                return share;
+            }
+            catch { return null; }
+        }
+
+        [DllImport("mpr.dll", CharSet = CharSet.Unicode)]
+        private static extern int WNetGetConnectionW(string localName, StringBuilder remoteName, ref int length);
 
         /// <summary>A share, or a drive letter mapped to one.</summary>
         internal static bool IsRemote(string path)
