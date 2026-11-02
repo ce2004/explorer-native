@@ -2905,7 +2905,9 @@ namespace ExplorerNative
 
             int files = 0;
             long bytes = 0;
-            var pending = new List<(string Id, string? Drive, string Name)>();
+            // Trashed carries down: inside a trashed folder everything is trashed
+            // with it, and listed as not trashed the Trash folder measured empty.
+            var pending = new List<(string Id, string? Drive, string Name, bool Trashed)>();
 
             foreach (var path in paths)
             {
@@ -2921,7 +2923,7 @@ namespace ExplorerNative
                     continue;
                 }
                 var id = await IdOrRelist(mount, path, token).ConfigureAwait(false);
-                if (id != null) pending.Add((id, mount.DriveIdFor(path), name));
+                if (id != null) pending.Add((id, mount.DriveIdFor(path), name, InTrash(mount, path)));
             }
 
             while (pending.Count > 0)
@@ -2932,12 +2934,13 @@ namespace ExplorerNative
                 foreach (var item in batch) looking?.Invoke(item.Name);
 
                 var listings = await Task.WhenAll(batch.Select(item =>
-                    client.ListChildren(item.Id, token, max: int.MaxValue, driveId: item.Drive))).ConfigureAwait(false);
+                    client.ListChildren(item.Id, token, max: int.MaxValue, driveId: item.Drive, trashed: item.Trashed)))
+                    .ConfigureAwait(false);
 
                 for (int i = 0; i < batch.Count; i++)
                     foreach (var child in listings[i])
                     {
-                        if (child.IsFolder) pending.Add((child.Id, child.DriveId ?? batch[i].Drive, child.Name));
+                        if (child.IsFolder) pending.Add((child.Id, child.DriveId ?? batch[i].Drive, child.Name, batch[i].Trashed));
                         else { files++; bytes += Math.Max(0, child.Size); }
                     }
             }

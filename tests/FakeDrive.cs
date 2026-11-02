@@ -673,7 +673,8 @@ namespace ExplorerNative
             lock (_gate)
             {
                 var shownBefore = DateTime.UtcNow - ListingLag;
-                var rows = ChildrenOf(parent).Where(i => (binned ? InTrash(i) : !i.Trashed) && i.Id != Root)
+                // As Google: inside a trashed folder everything is trashed with it.
+                var rows = ChildrenOf(parent).Where(i => (binned ? InTrash(i) : !InTrash(i)) && i.Id != Root)
                     .Where(i => ListingLag <= TimeSpan.Zero || i.Created <= shownBefore)
                     .Where(i => tag == null ||
                                 (i.AppProperties.TryGetValue(DriveClient.OperationProperty, out var t) && t == tag))

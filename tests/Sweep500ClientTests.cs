@@ -35,6 +35,7 @@ namespace ExplorerNative
             await Guard("cut listing", CutListingIsNotWhole);
             await Guard("still uploading", StillUploadingFile);
             await Guard("trash current", TrashAndRestoreShowAtOnce);
+            await Guard("trash size", TrashSizeCountsTrashedFolders);
         }
 
         private static async Task Guard(string name, Func<Task> test)
@@ -507,6 +508,28 @@ namespace ExplorerNative
             bool restored = await rig.Drive.RestoreFromTrash(rig.P("Trash", "song.flac"));
             Check("a file is restored", restored && rig.Fake.Get(song) is { Trashed: false });
             Equal("and Music, already listed, shows it back at once", "song.flac", Names(rig.Listed(rig.P("Music"))));
+        }
+
+        // ---- 13. The size of Trash, or of a folder in it, counts what is inside trashed folders ----
+
+        private static async Task TrashSizeCountsTrashedFolders()
+        {
+            using var rig = new Rig();
+            var photos = rig.Fake.AddFolder("Old Photos");
+            rig.Fake.AddFile("a.jpg", new byte[3], When, photos);
+            rig.Fake.AddFile("b.jpg", new byte[5], When, photos);
+            var loose = rig.Fake.AddFile("loose.txt", new byte[7], When, FakeDrive.Root);
+            rig.Fake.Trash(photos);
+            rig.Fake.Trash(loose);
+            rig.Mount.Forget(rig.Root);
+            rig.Listed(rig.Root);
+            rig.Listed(rig.P("Trash"));
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+
+            var folder = await rig.Drive.MeasureOnDrive(new[] { rig.P("Trash", "Old Photos") }, null, cts.Token);
+            Equal("a trashed folder measures what is in it", "2 files, 8 bytes", $"{folder.Files} files, {folder.Bytes} bytes");
+            var all = await rig.Drive.MeasureOnDrive(new[] { rig.P("Trash") }, null, cts.Token);
+            Equal("and Trash measures everything in it", "3 files, 15 bytes", $"{all.Files} files, {all.Bytes} bytes");
         }
 
         // ---- 4. Waiting for the internet is said once per outage ----
