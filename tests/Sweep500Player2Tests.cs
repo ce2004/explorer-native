@@ -27,6 +27,17 @@ namespace ExplorerNative
             Console.WriteLine("Sweep 5.0.0, the audio output and effect dialogs:");
             EffectDialogAccessKeyTests();
             WholeRangeKeepsTheVolumeTests();
+
+            var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "en500-player2-" + Guid.NewGuid().ToString("N"));
+            System.IO.Directory.CreateDirectory(dir);
+            try
+            {
+                ResetDeviceIsReopenedTests(dir);
+            }
+            finally
+            {
+                try { System.IO.Directory.Delete(dir, true); } catch { }
+            }
             await Task.CompletedTask;
         }
 
@@ -173,6 +184,92 @@ namespace ExplorerNative
             Check("the Ceiling access key does not press Cancel", limiterOpen);
             Check("Alt+O from the Attack list leaves the limiter on", limiterOnKept);
             Check("Alt+O from the Attack list presses OK", limiterOk);
+        }
+
+        // ---- bug 4: a picked device that Windows resets ----
+
+        private static bool RunWithin(int milliseconds, Action action)
+        {
+            var thread = new Thread(() => { try { action(); } catch { } })
+            { IsBackground = true, Name = "Sweep500 player2 audio harness" };
+            thread.Start();
+            return thread.Join(milliseconds);
+        }
+
+        private static bool WaitFor(Func<bool> condition, int milliseconds)
+        {
+            long until = Environment.TickCount64 + milliseconds;
+            while (Environment.TickCount64 < until)
+            {
+                if (condition()) return true;
+                Thread.Sleep(20);
+            }
+            return condition();
+        }
+
+        private static WasapiRenderer RendererOf(WasapiPlayback playback) =>
+            (WasapiRenderer)typeof(WasapiPlayback).GetField("_renderer",
+                BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(playback)!;
+
+        private static void Lose(WasapiRenderer renderer) =>
+            typeof(WasapiRenderer).GetMethod("RaiseLost", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(renderer, null);
+
+        /// <summary>
+        /// Windows invalidates a stream when a device is reset (format change,
+        /// Bluetooth hands-free, driver restart, sleep) as well as when it is
+        /// pulled out. A picked device lost that way went straight to the
+        /// default for the rest of the track. It must be opened again by name
+        /// first, and only once in a while, so one that keeps going quiet
+        /// ends on the default rather than in a loop.
+        /// </summary>
+        private static void ResetDeviceIsReopenedTests(string dir)
+        {
+            var endpoint = WasapiRenderer.DefaultEndpointId();
+            if (endpoint == null)
+            {
+                Console.WriteLine("  (no playback device here; the reset-device checks are skipped)");
+                return;
+            }
+
+            var wav = System.IO.Path.Combine(dir, "reset.wav");
+            Tests.WriteTone(wav, 20, 0.5, 44100, 2);
+
+            string problem = "";
+            string afterFirst = "?", afterSecond = "?";
+            int switchesAfterSecond = 0;
+            bool finished = RunWithin(60_000, () =>
+            {
+                using var playback = new WasapiPlayback { Gain = 0f };
+                if (!playback.Start(wav, preferRaw: false)) { problem = "did not start: " + playback.Diagnostic; return; }
+                if (!WaitFor(() => playback.Position > 0.2, 4000)) { problem = "the clock never moved"; return; }
+
+                int switches = 0;
+                playback.DeviceSwitched += (_, ok) => { if (ok) Interlocked.Increment(ref switches); };
+                playback.SwitchDevice(endpoint);
+                if (!WaitFor(() => Volatile.Read(ref switches) >= 1, 15_000)) { problem = "the pick never landed"; return; }
+                if (RendererOf(playback).DeviceId != endpoint) { problem = "the pick was not by name"; return; }
+
+                Lose(RendererOf(playback));
+                if (!WaitFor(() => Volatile.Read(ref switches) >= 2, 15_000)) { problem = "nothing took over after the reset"; return; }
+                afterFirst = RendererOf(playback).DeviceId;
+
+                Lose(RendererOf(playback));
+                if (!WaitFor(() => Volatile.Read(ref switches) >= 3, 15_000)) { problem = "nothing took over after the second reset"; return; }
+                afterSecond = RendererOf(playback).DeviceId;
+                Thread.Sleep(3000);
+                switchesAfterSecond = Volatile.Read(ref switches) - 3;
+                playback.Stop();
+            });
+
+            Check("the reset-device harness finished", finished && problem.Length == 0,
+                finished ? problem : "did not finish in 60 seconds");
+            Check("a picked device that Windows resets is opened again by name, not swapped for the default",
+                afterFirst == endpoint, $"device after the reset: \"{afterFirst}\"");
+            Check("a picked device reset twice within 30 seconds ends on the default",
+                afterSecond == "", $"device after the second reset: \"{afterSecond}\"");
+            Check("and nothing keeps switching after that", switchesAfterSecond == 0,
+                $"{switchesAfterSecond} more switches");
         }
 
         // ---- bug 6: Same lift at any volume and the volume control ----
