@@ -214,6 +214,8 @@ namespace ExplorerNative
 
             // A track on the Drive letter downloads straight from Google.
             AudioPlayer.RangeSourceFor = path => _drive.OpenRange(path);
+            // And the warm never practises on it (decided from the path alone).
+            AudioPlayer.IsDrivePath = path => _drive.Owns(path);
 
             // Apple Music's sign-in; the player reads the token when its page starts.
             AppleMusic.Configure(_settings.AppleMusicUserToken);
@@ -1857,15 +1859,13 @@ namespace ExplorerNative
         /// Gets the player ready before anyone asks it for anything.
         ///
         /// Media Foundation is started on a worker, because loading it is a dozen
-        /// DLLs and none of that needs this thread. The engine itself is built on
-        /// the UI thread — it is the thread that will drive it, and an engine
-        /// created anywhere else has to be marshalled to from here on every
-        /// single call.
+        /// DLLs and none of that needs this thread.
         ///
-        /// Posted rather than called, so it runs once the window is up. This is
-        /// the shell's handler for every folder on the machine and it is started
-        /// afresh on every folder open; a hundred milliseconds spent here would
-        /// be a hundred milliseconds before the folder appears.
+        /// The warm itself runs on a worker too: it checks the file and opens and
+        /// decodes it, and on the UI thread that held the first folder back (a
+        /// sleeping disk or a CD for seconds). It uses no player state of its
+        /// own, only a decoder it makes and disposes, so it can run beside a
+        /// play. The setting is read on the UI thread, which owns the settings.
         /// </summary>
         private void WarmAudio()
         {
@@ -1873,16 +1873,16 @@ namespace ExplorerNative
 
             PostUi(() =>
             {
-                try
+                // The last track, if it is still there, gets Media Foundation
+                // to resolve a source of the right kind. That cost is
+                // per-process, not per-file, so this makes the *next* track
+                // start fast whichever one it turns out to be.
+                var preload = _settings.AudioLastPath;
+                System.Threading.Tasks.Task.Run(() =>
                 {
-                    // The last track, if it is still there, gets Media Foundation
-                    // to resolve a source of the right kind. That cost is
-                    // per-process, not per-file, so this makes the *next* track
-                    // start fast whichever one it turns out to be.
-                    var preload = _settings.AudioLastPath;
-                    _audio.Warm(string.IsNullOrEmpty(preload) ? null : preload);
-                }
-                catch { }
+                    try { _audio.Warm(string.IsNullOrEmpty(preload) ? null : preload); }
+                    catch { }
+                });
             });
         }
 

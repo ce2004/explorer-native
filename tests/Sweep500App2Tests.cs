@@ -30,6 +30,7 @@ namespace ExplorerNative
             CheckBoxNamesHaveNoAccessKeyMarker();
             NewAppleMusicSignInReachesThePlayer();
             HeldKeyAtAnEdgeSpeaksOncePerHold();
+            AudioWarmStaysOffTheUiThread();
             await Task.CompletedTask;
         }
 
@@ -322,6 +323,42 @@ namespace ExplorerNative
             int filePlayer = core.IndexOf("_audio.TogglePlayPause()", StringComparison.Ordinal);
             Check("held edge: Apple Music's maximum and minimum are said once per hold",
                 apple >= 0 && filePlayer > apple && core[apple..filePlayer].Contains("_saidThisHold.Add(", StringComparison.Ordinal));
+        }
+
+        /// <summary>
+        /// The start-up audio warm ran on the UI thread: file checks, then a
+        /// Media Foundation open and decode of the last track. With a CD track or
+        /// a sleeping disk last played, the window froze for seconds at start.
+        /// The warm now runs on a worker, never wakes a CD or removable drive,
+        /// and the Drive guard it promised is wired.
+        /// </summary>
+        private static void AudioWarmStaysOffTheUiThread()
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "en-sweep500app2-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var local = Path.Combine(dir, "tone.wav");
+                File.WriteAllBytes(local, new byte[64]);
+                Check("audio warm: a CD track is not woken for a warm", AudioPlayer.SlowToWake(@"D:\Track05.cda"));
+                Check("audio warm: a CD track named in capitals is not either", AudioPlayer.SlowToWake(@"E:\TRACK01.CDA"));
+                Check("audio warm: a file on the local disk is still warmed", !AudioPlayer.SlowToWake(local));
+
+                var warm = Body(Source("AudioPlayer.cs"), "public void Warm(");
+                int slow = warm.IndexOf("SlowToWake(", StringComparison.Ordinal);
+                int exists = warm.IndexOf("File.Exists(", StringComparison.Ordinal);
+                Check("audio warm: the slow-drive check comes before any access to the file", slow >= 0 && exists > slow);
+
+                var tray = Source("TrayApplicationContext.cs");
+                var warmAudio = Body(tray, "private void WarmAudio(");
+                int run = warmAudio.IndexOf("Task.Run(", StringComparison.Ordinal);
+                if (run < 0) run = warmAudio.IndexOf("ThreadPool.", StringComparison.Ordinal);
+                int call = warmAudio.IndexOf("_audio.Warm(", StringComparison.Ordinal);
+                Check("audio warm: the warm runs on a worker, not in the UI post", run >= 0 && call > run);
+                Check("audio warm: the Drive guard is wired",
+                    System.Text.RegularExpressions.Regex.IsMatch(tray, @"AudioPlayer\.IsDrivePath\s*="));
+            }
+            finally { try { Directory.Delete(dir, true); } catch { } }
         }
     }
 }
