@@ -1136,6 +1136,43 @@ namespace ExplorerNative
 
         // ---- deleting and renaming ------------------------------------------------------
 
+        // ---- one name at a time ------------------------------------------------------------
+        //
+        // WinFsp's own operation guard is off (WinFsp.Host.Create, unguarded): it
+        // made every open, listing and free-space question on the whole drive
+        // wait while one delete, folder create or rename waited on Google. What
+        // it gave is kept here per name instead: a create, a delete and a rename
+        // of one name go one at a time, and so do a create inside a folder and
+        // that folder's removal. Striped and never removed, so a gate taken is
+        // always the gate the next caller takes. Lock order: name gates (two at
+        // most, lower index first), then hold gate, then _treeGate, then Gate.
+        private readonly object[] _nameGates = Enumerable.Range(0, 256).Select(_ => new object()).ToArray();
+
+        private int NameGateAt(string key) =>
+            (StringComparer.Ordinal.GetHashCode(key) & 0x7FFFFFFF) % _nameGates.Length;
+
+        /// <summary>Takes the gates of two names (the same name twice is one gate), in index order.</summary>
+        private NamesHeld HoldNames(string first, string second)
+        {
+            int a = NameGateAt(first), b = NameGateAt(second);
+            if (a > b) (a, b) = (b, a);
+            Monitor.Enter(_nameGates[a]);
+            if (b != a) Monitor.Enter(_nameGates[b]);
+            return new NamesHeld(_nameGates[a], b != a ? _nameGates[b] : null);
+        }
+
+        private readonly struct NamesHeld : IDisposable
+        {
+            private readonly object _first;
+            private readonly object? _second;
+            public NamesHeld(object first, object? second) { _first = first; _second = second; }
+            public void Dispose()
+            {
+                if (_second != null) Monitor.Exit(_second);
+                Monitor.Exit(_first);
+            }
+        }
+
         /// <summary>How long CanDelete's word that a folder is empty on Drive is taken at its close.</summary>
         private const long EmptyTrustedMs = 5000;
 
@@ -1179,6 +1216,9 @@ namespace ExplorerNative
         {
             var key = opened.Key;
             if (Fixed(key)) return;
+            // A create of this name, or inside this folder, waits for the delete
+            // (and one that got here first is seen in the listing below).
+            using var names = HoldNames(key, key);
             if (opened.Folder && _listings.TryGetValue(key, out var rows) && rows.Length > 0) return;
             // Asked when the delete was set; a handle kept open since with
             // delete-on-close is asked again, since Drive may have more by now.
@@ -1323,11 +1363,20 @@ namespace ExplorerNative
             RekeyOpened(fromKey, toKey);
         }
 
+        /// <summary>
+        /// The most a rename waits on Google. Windows holds every open on the
+        /// drive while a rename is answered (WinFsp's driver takes its rename
+        /// lock for it), so a rename is kept short: what can follow it (trashing
+        /// a replaced file) is done behind it.
+        /// </summary>
+        private static readonly TimeSpan RenameFor = TimeSpan.FromSeconds(20);
+
         private int RenameOpened(Opened opened, string fromKey, string toKey, string newName, bool replace)
         {
             if (Fixed(fromKey)) return WinFsp.AccessDenied;
             var fromParent = Parent(fromKey) ?? "";
             var toParent = Parent(toKey) ?? "";
+            using var names = HoldNames(fromKey, toKey);
 
             int status = EnsureListed(toParent, out _);
             if (status != WinFsp.Success) return status == WinFsp.ObjectNameNotFound ? WinFsp.ObjectPathNotFound : status;
@@ -1336,12 +1385,15 @@ namespace ExplorerNative
 
             bool sameKey = toKey == fromKey;
             bool replacing = false;
-            if (!sameKey && Find(toKey, out var target) == WinFsp.Success)
+            // The listing held is the answer; an old one is listed again behind
+            // the rename rather than inside it.
+            if (!sameKey && Find(toKey, out var target, relistOnMiss: false) == WinFsp.Success)
             {
                 if (!replace) return WinFsp.ObjectNameCollision;
                 if (target.Folder || opened.Folder) return WinFsp.AccessDenied;
                 replacing = true;
             }
+            else if (!sameKey && !ListedRecently(toParent, MissRelistAfter)) RefreshBehind(toParent);
 
             string? fromId = null, toId = null;
             if (fromParent != toParent)
@@ -1362,13 +1414,17 @@ namespace ExplorerNative
                 try
                 {
                     using var limit = CancellationTokenSource.CreateLinkedTokenSource(_closing.Token);
-                    limit.CancelAfter(TimeSpan.FromSeconds(90));
+                    limit.CancelAfter(RenameFor);
                     _drive.MoveOrRename(id, newName, fromId, toId, limit.Token, retry: true, interactive: true)
                         .GetAwaiter().GetResult();
                 }
                 catch (Exception ex)
                 {
                     _log($"  could not move {LeafOf(fromKey)} to {newName}: {ex.Message}");
+                    // Google may have made the change with the answer lost: the
+                    // next listing of either folder shows the name it has.
+                    ForgetKey(fromParent);
+                    ForgetKey(toParent);
                     return StatusOf(ex);
                 }
             }
@@ -1392,7 +1448,7 @@ namespace ExplorerNative
                 try
                 {
                     using var limit = CancellationTokenSource.CreateLinkedTokenSource(_closing.Token);
-                    limit.CancelAfter(TimeSpan.FromSeconds(90));
+                    limit.CancelAfter(RenameFor);
                     _drive.MoveOrRename(landedMeanwhile, newName, fromId, toId, limit.Token, retry: true)
                         .GetAwaiter().GetResult();
                 }
@@ -1433,18 +1489,32 @@ namespace ExplorerNative
             // in between is either trashed here or by Landed.
             if (p != null) lock (p.Gate) { id = p.Id; if (id == null) MarkDeleted(p, stopAnyway: false); }
             else id = _ids.TryGetValue(key, out var bound) ? bound : null;
-            if (id != null)
+            var name = RowAt(key)?.Name ?? p?.Name ?? LeafOf(key);
+            var parent = Parent(key) ?? "";
+            RemoveKey(key);
+            if (id == null) return;
+
+            // Trashed behind the rename: Windows holds every other open on the
+            // drive until the rename is answered, and the answer never
+            // depended on this. Kept, it shows again as "name (2)" and is said.
+            var replaced = id;
+            _ = Task.Run(async () =>
             {
                 try
                 {
-                    using var limit = CancellationTokenSource.CreateLinkedTokenSource(_closing.Token);
+                    using var limit = CancellationTokenSource.CreateLinkedTokenSource(_uploadStop.Token);
                     limit.CancelAfter(TimeSpan.FromSeconds(90));
-                    _drive.Trash(id, limit.Token, retry: true).GetAwaiter().GetResult();
-                    NoteTrashed(id);
+                    await _drive.Trash(replaced, limit.Token, retry: true).ConfigureAwait(false);
+                    NoteTrashed(replaced);
                 }
-                catch (Exception ex) { _log($"  could not trash the replaced {LeafOf(key)}: {ex.Message}"); }
-            }
-            RemoveKey(key);
+                catch (Exception ex)
+                {
+                    _log($"  could not trash the replaced {name}: {ex.Message}");
+                    Say("drive.trash.failed", $"Could not delete the old {name} that was replaced: {GoogleNet.Reason(ex)}");
+                    ForgetKey(parent);
+                    RefreshBehind(parent);
+                }
+            });
         }
 
         // ---- going up ---------------------------------------------------------------------

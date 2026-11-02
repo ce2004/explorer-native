@@ -1541,12 +1541,16 @@ namespace ExplorerNative
                 // Two Explorer Native windows signed in to one Drive (two
                 // sessions on one PC) would collide on the name; the second
                 // steps aside.
-                try { host.Create(Prefix, "GoogleDrive", FileInfoTimeoutMs, DispatcherThreads); }
+                // Unguarded: creates, deletes and renames wait on Google, and
+                // WinFsp's guard made every other open on the drive wait with
+                // them. The name gates keep the order that matters instead.
+                try { host.Create(Prefix, "GoogleDrive", FileInfoTimeoutMs, DispatcherThreads, unguarded: true); }
                 catch (InvalidOperationException) when (!Prefix.EndsWith("-" + Environment.ProcessId))
                 {
                     host.Dispose();
                     host = new WinFsp.Host(_volume);
-                    host.Create(Prefix + "-" + Environment.ProcessId, "GoogleDrive", FileInfoTimeoutMs, DispatcherThreads);
+                    host.Create(Prefix + "-" + Environment.ProcessId, "GoogleDrive", FileInfoTimeoutMs, DispatcherThreads,
+                        unguarded: true);
                 }
 
                 lock (_letterGate)

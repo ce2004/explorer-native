@@ -200,6 +200,7 @@ namespace ExplorerNative
         private static delegate* unmanaged<IntPtr, byte*, nuint, int> _notify;
         private static delegate* unmanaged<IntPtr, int> _notifyEnd;
         private static delegate* unmanaged<uint, int> _ntStatusFromWin32;
+        private static delegate* unmanaged<IntPtr, IntPtr, IntPtr, void> _setOperationGuard;
 
         /// <summary>The release of WinFsp this application ships and installs.</summary>
         internal const string BundledVersion = "2.1.25156";
@@ -276,6 +277,10 @@ namespace ExplorerNative
                     _notify = (delegate* unmanaged<IntPtr, byte*, nuint, int>)Get("FspFileSystemNotify");
                     _notifyEnd = (delegate* unmanaged<IntPtr, int>)Get("FspFileSystemNotifyEnd");
                     _ntStatusFromWin32 = (delegate* unmanaged<uint, int>)Get("FspNtStatusFromWin32");
+                    // Optional: without it a volume keeps WinFsp's own operation guard.
+                    _setOperationGuard = NativeLibrary.TryGetExport(lib, "FspFileSystemSetOperationGuardF", out var guard)
+                        ? (delegate* unmanaged<IntPtr, IntPtr, IntPtr, void>)guard
+                        : null;
 
                     _library = lib;
                     problem = _loadProblem = null;
@@ -328,14 +333,24 @@ namespace ExplorerNative
             /// <summary>The letter it is on now ("G:"), or null while it is on none.</summary>
             public string? MountPoint { get; private set; }
 
+            /// <summary>Whether WinFsp's operation guard was turned off (see <see cref="Create"/>).</summary>
+            public bool Unguarded { get; private set; }
+
             public Host(FileSystem owner) => _owner = owner;
 
             /// <summary>
             /// Creates the volume: a network-type file system (WinFsp.Net), so
             /// Windows does not make a Recycle Bin or an index on it, with
             /// <paramref name="prefix"/> as its \\server\share name.
+            ///
+            /// <paramref name="unguarded"/> turns off WinFsp's own operation guard,
+            /// a lock across the whole volume that makes every open, listing and
+            /// free-space question wait while any create, delete or rename is
+            /// answered. A file system that waits on the network in those must
+            /// keep its own order per name instead (DriveMount's name gates).
             /// </summary>
-            public void Create(string prefix, string fileSystemName, uint fileInfoTimeout, uint threads)
+            public void Create(string prefix, string fileSystemName, uint fileInfoTimeout, uint threads,
+                bool unguarded = false)
             {
                 if (!TryLoad(out var problem)) throw new InvalidOperationException(problem);
 
@@ -375,6 +390,8 @@ namespace ExplorerNative
 
                 *(IntPtr*)((byte*)fs + UserContextOffset) = GCHandle.ToIntPtr(_self);
                 _fileSystem = fs;
+                if (unguarded && _setOperationGuard != null) _setOperationGuard(fs, IntPtr.Zero, IntPtr.Zero);
+                Unguarded = unguarded && _setOperationGuard != null;
 
                 status = _startDispatcher(fs, threads);
                 if (status != Success)

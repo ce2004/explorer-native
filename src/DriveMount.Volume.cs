@@ -132,6 +132,9 @@ namespace ExplorerNative
             }
         }
 
+        /// <summary>How long a batch of change notices is tried before it is given up.</summary>
+        private static readonly TimeSpan NoticesKeptFor = TimeSpan.FromMinutes(2);
+
         private void NotifyLoop()
         {
             var batch = new List<(string, uint, uint)>();
@@ -148,10 +151,15 @@ namespace ExplorerNative
 
                     var host = _host;
                     if (host == null) continue;
-                    for (int attempt = 0; attempt < 20; attempt++)
+                    // A rename holds notices off for as long as it waits on
+                    // Google, which can be longer than a few tries: the batch is
+                    // kept and tried again, less often the longer it waits.
+                    var tried = System.Diagnostics.Stopwatch.StartNew();
+                    for (int wait = 50; !_closing.IsCancellationRequested; wait = Math.Min(wait * 2, 1000))
                     {
                         try { if (host.Notify(batch)) break; } catch { break; }
-                        Thread.Sleep(50);   // a rename held it off
+                        if (tried.Elapsed > NoticesKeptFor) { _log($"  {batch.Count} change notice(s) dropped"); break; }
+                        _closing.Token.WaitHandle.WaitOne(wait);
                     }
                 }
             }
@@ -427,7 +435,7 @@ namespace ExplorerNative
         /// <see cref="MissRelistAfter"/>: a file made on the web a minute ago and
         /// opened by path must be found.
         /// </summary>
-        private int Find(string key, out Node node)
+        private int Find(string key, out Node node, bool relistOnMiss = true)
         {
             node = default;
             if (key.Length == 0)
@@ -448,7 +456,7 @@ namespace ExplorerNative
             if (status != WinFsp.Success) return status == WinFsp.ObjectNameNotFound ? WinFsp.ObjectPathNotFound : status;
 
             var row = RowIn(parent, leaf);
-            if (row == null && !listedNow && !_drive.Health.IsOffline && !ListedRecently(parent, MissRelistAfter))
+            if (row == null && relistOnMiss && !listedNow && !_drive.Health.IsOffline && !ListedRecently(parent, MissRelistAfter))
             {
                 long now = Environment.TickCount64;
                 if (!_missRelisted.TryGetValue(parent, out var at) || now - at > MissRelistAfter.TotalMilliseconds)
@@ -641,6 +649,9 @@ namespace ExplorerNative
                 return WinFsp.Success;
             }
 
+            /// <summary>FILE_OPEN_IF, the create disposition WinFsp passes in the top byte of the create options.</summary>
+            private const uint FileOpenIf = 3;
+
             public override int Create(string path, uint createOptions, uint grantedAccess, uint attributes,
                 out object? context, out WinFsp.FileInfo info, out string? normalized)
             {
@@ -653,10 +664,26 @@ namespace ExplorerNative
                 var parent = Parent(key) ?? "";
                 var name = LastName(path);
 
+                // Two creates of one name, or a create in a folder being
+                // removed, one at a time (WinFsp's guard is off; see HoldNames).
+                using var names = _m.HoldNames(parent, key);
+
                 int status = _m.EnsureListed(parent, out _);
                 if (status != WinFsp.Success) return status == WinFsp.ObjectNameNotFound ? WinFsp.ObjectPathNotFound : status;
                 if (_m.ReadOnlyAt(parent)) return WinFsp.AccessDenied;
-                if (_m.Find(key, out _) == WinFsp.Success) return WinFsp.ObjectNameCollision;
+                if (_m.Find(key, out _) == WinFsp.Success)
+                {
+                    // Made by another create while this one waited its turn:
+                    // "open, or create" opens it, as it would have had it come
+                    // second. Anything else that must not open an existing file
+                    // is told the name is taken.
+                    if (((createOptions >> 24) & 0xFF) == FileOpenIf)
+                    {
+                        _m._log($"  {name} was made a moment ago: opened instead");
+                        return Open(path, createOptions, grantedAccess, out context, out info, out normalized);
+                    }
+                    return WinFsp.ObjectNameCollision;
+                }
 
                 var parentId = _m.FolderIdAt(parent);
                 if (parentId == null) return WinFsp.ObjectPathNotFound;
