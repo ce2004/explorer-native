@@ -17,6 +17,13 @@ namespace ExplorerNative
 
         /// <summary>Signed in, but Google wants the sign-in again: the button reconnects.</summary>
         NeedsSignIn,
+
+        /// <summary>
+        /// Switched on and signed in, but not on its letter: still connecting,
+        /// Google out of reach (the tray keeps trying), or something else in
+        /// the way. The sign-in is fine, so the button only tries again.
+        /// </summary>
+        NotConnectedYet,
     }
 
     /// <summary>
@@ -39,8 +46,23 @@ namespace ExplorerNative
         /// </summary>
         internal static Func<DriveAccountState>? AccountState;
 
-        /// <summary>Takes the live drive off its letter, keeping the sign-in. Set by the tray.</summary>
-        internal static Action? DisconnectDrive;
+        /// <summary>
+        /// The account button's state from the drive's. Not on its letter used to
+        /// read as "Google needs you to sign in again" whenever Google simply
+        /// could not be reached, which sent people to sign out for nothing.
+        /// </summary>
+        internal static DriveAccountState AccountStateOf(bool enabled, bool savedSignIn, bool mounted, bool needsSignIn) =>
+            !enabled || !savedSignIn ? DriveAccountState.NotConnected
+            : needsSignIn ? DriveAccountState.NeedsSignIn
+            : mounted ? DriveAccountState.Connected
+            : DriveAccountState.NotConnectedYet;
+
+        /// <summary>
+        /// Takes the live drive off its letter, keeping the sign-in, after asking
+        /// (owned by Preferences) while files are still on their way to Google.
+        /// False when the answer was No. Set by the tray.
+        /// </summary>
+        internal static Func<IWin32Window, bool>? DisconnectDrive;
 
         /// <summary>Checked before OK closes the dialog; false keeps it open.</summary>
         /// <summary>A refusal shown before OK closes. Replaced by the suite, which cannot press OK on a message box.</summary>
@@ -862,6 +884,8 @@ namespace ExplorerNative
                         ("&Disconnect Google Drive", "Takes Google Drive off its drive letter. You stay signed in."),
                     DriveAccountState.NeedsSignIn =>
                         ("Reco&nnect Google Drive", "Google needs you to sign in again."),
+                    DriveAccountState.NotConnectedYet =>
+                        ("Reco&nnect Google Drive", "Google Drive is not connected right now. Press it to try again."),
                     _ => ("Co&nnect Google Drive", "Puts Google Drive on its drive letter."),
                 };
             }
@@ -877,7 +901,8 @@ namespace ExplorerNative
                     // Off its letter and switched off, signed in still, so
                     // connecting again later needs no browser. Preferences stays
                     // open; the drive says "Google Drive disconnected" itself.
-                    DisconnectDrive?.Invoke();
+                    // No to the question about unsent files changes nothing.
+                    if (DisconnectDrive?.Invoke(this) == false) return;
                     driveBox.Checked = false;
                     _working.GoogleDriveEnabled = false;
                     Show(DriveAccountState.NotConnected);

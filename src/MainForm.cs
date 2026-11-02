@@ -710,6 +710,7 @@ namespace ExplorerNative
             // them fighting over the single-instance lock.
             if (!ConfirmAbandonTransfers("Restart")) return;
             if (!AudioEditorForm.ConfirmEndingEditors(this, "Restart")) return;
+            if (!Program.ConfirmUnsavedDrive("restarts", "Restart anyway?")) return;
 
             try
             {

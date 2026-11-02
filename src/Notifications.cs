@@ -226,6 +226,7 @@ namespace ExplorerNative
             Live("drive.mounting", "Connecting to Drive", DriveConnection, Bar, "Connecting to Google Drive"),
             Live("drive.mounted", "Drive is ready", DriveConnection, Pop, "Google Drive is on {0}", "G:"),
             Live("drive.unmounted", "Drive disconnected", DriveConnection, Bar, "Google Drive disconnected"),
+            Live("drive.disconnecting", "Sending files before disconnecting", DriveConnection, Pop, "Sending {0} to Google Drive before it disconnects", "report.docx"),
             Live("drive.offline", "Drive went offline", DriveConnection, Loud, "Google Drive is offline, so {0} is hidden until the connection comes back.", "G:"),
             Live("drive.online", "Drive came back", DriveConnection, Pop, "Google Drive is back online."),
             Live("drive.signin.needed", "Sign-in expired", DriveConnection, Loud, "Google Drive sign-in has expired. Open Preferences, Google Drive, to sign in again."),
