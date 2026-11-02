@@ -545,8 +545,8 @@ async function remove(paths) {
   const gone = new Set(paths.map(leaf));
   const index = state.entries.findIndex((e) => gone.has(e.name));
   try {
-    // Drive trashes one item at a time, most of a second each: many take longer than the usual wait.
-    const r = await api('/api/delete', { method: 'POST', body: { paths }, timeout: 120000 });
+    // Drive trashes one item at a time, most of a second each: the wait grows with the count.
+    const r = await api('/api/delete', { method: 'POST', body: { paths }, timeout: 120000 + paths.length * 2000 });
     const failed = (r.failed || []).length;
     announce(failed ? `Deleted ${r.deleted}. ${plural(failed, 'item', 'items')} could not be deleted: ${r.failed[0].error}` : `Deleted ${what}`, failed > 0);
     state.selectMode = false;
@@ -554,7 +554,16 @@ async function remove(paths) {
     // A row that could not be deleted is still there, and is where it was.
     const kept = (r.failed || []).map((f) => leaf(f.path)).find((n) => gone.has(n));
     focusRow(kept != null ? kept : null, index < 0 ? 0 : index);
-  } catch (err) { announce(err.message, true); return false; }
+  } catch (err) {
+    if (err.status !== 0) { announce(err.message, true); return false; }
+    // No answer: the PC may still be deleting. Show the folder as it is now rather than the old rows.
+    state.selectMode = false;
+    state.selected.clear();
+    const shown = await openFolder(state.path, { push: false, quiet: true }).catch(() => false);
+    if (!shown) { renderFiles(); announce(err.message, true); return false; }
+    focusRow(null, index < 0 ? 0 : index);
+    announce('The PC did not answer in time, so it may still be deleting. The folder has been refreshed, so check what is left.', true);
+  }
   return true;
 }
 
@@ -578,12 +587,19 @@ function hold(paths, cut) {
 async function paste() {
   if (!state.clip || state.path == null) return;
   const { paths, cut } = state.clip;
+  const btn = $('btn-paste');
   try {
     const r = await api(cut ? '/api/move' : '/api/copy', { method: 'POST',
       body: { paths, destination: state.path, conflict: prefs.conflict } });
     trackJob(r.job, `${cut ? 'Moving' : 'Copying'} ${paths.length === 1 ? leaf(paths[0]) : plural(paths.length, 'item', 'items')}`, state.path);
     if (cut) state.clip = null;
     renderFiles();
+    // Move here hides the button that was pressed: focus goes to the next one along, which is still there.
+    const a = document.activeElement;
+    if (btn.hidden && (a === btn || a === document.body || a == null)) {
+      const next = $('btn-select');
+      (next.hidden ? $('files-title') : next).focus();
+    }
     announce(`${cut ? 'Moving' : 'Copying'}. Progress is on the Transfers tab.`);
   } catch (err) { announce(err.message, true); }
 }
@@ -691,6 +707,8 @@ async function newFolder() {
 
 const transfers = [];
 let transferSeq = 0;
+// Multi-file uploads still going, so Stop all can stop the files after the current one.
+const uploadBatches = new Set();
 
 function addTransfer(t) {
   t.key = ++transferSeq;
@@ -710,7 +728,8 @@ function transferText(t) {
     case 'failed': return `${t.name}, failed: ${t.message || 'unknown problem'}`;
     case 'cancelled': return `${t.name}, stopped`;
     case 'waiting': return `${t.name}, waiting for the PC, ${pct} percent`;
-    default: return `${t.name}, ${pct} percent${t.total ? `, ${words(t.done)} of ${words(t.total)}` : ''}`;
+    default: if (t.sending) return `${t.name}, sending`;
+      return `${t.name}, ${pct} percent${t.total ? `, ${words(t.done)} of ${words(t.total)}` : ''}`;
   }
 }
 
@@ -862,6 +881,8 @@ async function uploadSmall(file, folder) {
       t.state = 'waiting';
       renderTransfers();
       await waitForNetwork(Math.min(30000, 2000 * attempt));
+      // Stopped while it waited: Stop stays stopped.
+      if (stopped) return;
       t.state = 'running';
     }
   }
@@ -887,13 +908,14 @@ async function upload(file, folder) {
     id = s.id;
     // Stopped while the PC was making it: Stop had no id to call off, so the PC kept it for a day.
     if (stopped) { api('/api/upload/cancel', { method: 'POST', body: { id } }).catch(() => { }); return; }
-    let offset = 0, failures = 0, busy = 0;
+    let offset = 0, failures = 0, serverFailures = 0, busy = 0;
     while (offset < file.size && !stopped) {
       try {
         const r = await api(`/api/upload/chunk?id=${encodeURIComponent(id)}&offset=${offset}`,
           { method: 'PUT', body: file.slice(offset, Math.min(file.size, offset + CHUNK)), raw: true, timeout: 120000, signal: ctrl.signal });
         offset = r.received;
         failures = 0;
+        serverFailures = 0;
         busy = 0;
         t.state = 'running';
       } catch (err) {
@@ -905,7 +927,15 @@ async function upload(file, folder) {
           if (offset === was) await delay(BUSY[Math.min(busy++, BUSY.length - 1)]);
           continue;
         }
-        if (err.status && err.status !== 0 && err.status < 500) throw err;
+        // Status 0 is no answer (api() also gives it to a 502 or 503 from Tailscale with nothing behind it).
+        // Any other status is the PC itself saying why: a few of those in a row and the upload ends with its sentence.
+        if (err.status !== 0) {
+          if (err.status < 500 || ++serverFailures >= 3) {
+            // The upload cannot go on, so the PC need not keep the partial (a full disk stays full otherwise).
+            api('/api/upload/cancel', { method: 'POST', body: { id } }).catch(() => { });
+            throw err;
+          }
+        }
         // The PC or the network went away: wait and ask how much it has, then carry on.
         t.state = 'waiting';
         renderTransfers();
@@ -921,6 +951,9 @@ async function upload(file, folder) {
     // Asked again if the answer is lost; the PC answers a repeat the same way.
     let f;
     for (let attempt = 1; ; attempt++) {
+      // Stopped while the finish waited for the network: send the cancel again, as the first may have been lost offline.
+      // The finish itself is never called off once sent: the PC may already be making the file.
+      if (stopped) { api('/api/upload/cancel', { method: 'POST', body: { id } }).catch(() => { }); return; }
       // Long: into another drive on the PC, finishing is a copy of the whole file.
       try { f = await api('/api/upload/finish', { method: 'POST', body: { id }, timeout: 600000 }); break; }
       catch (err) {
@@ -929,6 +962,7 @@ async function upload(file, folder) {
         t.state = 'waiting';
         renderTransfers();
         await waitForNetwork(Math.min(30000, 2000 * attempt));
+        if (stopped) continue;
         t.state = 'running';
       }
     }
@@ -953,7 +987,18 @@ async function uploadFiles(files) {
   const folder = state.path;
   if (folder == null) return;
   announce(`Uploading ${plural(files.length, 'file', 'files')}`);
-  for (const f of files) await upload(f, folder);
+  // Stop all stops the files not started yet too, not just the one going up.
+  const batch = { stopped: false };
+  uploadBatches.add(batch);
+  try {
+    let left = files.length;
+    for (const f of files) {
+      if (batch.stopped) break;
+      left--;
+      await upload(f, folder);
+    }
+    if (batch.stopped && left > 0) announce(`${plural(left, 'more file was', 'more files were')} not sent.`);
+  } finally { uploadBatches.delete(batch); }
 }
 
 // ---------- Player ----------
@@ -966,8 +1011,9 @@ const SPEEDS = [0.5, 0.75, 0.8, 0.9, 1, 1.1, 1.2, 1.25, 1.3, 1.5, 1.75, 2, 2.5, 
 
 function speedText(s) { return s === 1 ? 'Normal' : `${s} times`; }
 
-function srcFor(path) {
-  return state.native.has(extOf(path)) ? mediaUrl('/api/file', path) : mediaUrl('/api/audio', path);
+// A track this browser could not play as it is (viaPc) goes through the PC's decoder instead.
+function srcFor(track) {
+  return !track.viaPc && state.native.has(extOf(track.path)) ? mediaUrl('/api/file', track.path) : mediaUrl('/api/audio', track.path);
 }
 
 function playQueue(queue, index) {
@@ -990,7 +1036,7 @@ function loadTrack(index, autoplay, startAt) {
   player.index = index;
   const track = player.queue[index];
   const a = audio();
-  a.src = srcFor(track.path);
+  a.src = srcFor(track);
   a.playbackRate = prefs.speed;
   a.defaultPlaybackRate = prefs.speed;
   a.preservesPitch = true;
@@ -1223,14 +1269,48 @@ function setupAudio() {
     if (player.repeat === 'one') { a.currentTime = 0; a.play().catch(() => announce('Press Play to start.')); return; }
     step(1);
   });
-  let retry = 0;
-  a.addEventListener('error', () => {
+  let retry = 0, skipped = 0;
+  // A track that will not play is skipped, and the queue goes on; a queue where none will play stops.
+  const skip = (why) => {
+    retry = 0;
+    if (player.queue.length === 1) { announce(why, true); return; }
+    if (++skipped >= Math.min(10, player.queue.length)) { skipped = 0; announce('None of the tracks in this queue would play.', true); return; }
+    announce(`${why} It was skipped.`, true);
+    step(1);
+  };
+  a.addEventListener('error', async () => {
     const t = current();
     if (!t) return;
-    // Usually the connection dropped: try again from where it was, a few times.
+    // Aborted: the page itself moved the player on.
+    if (a.error && a.error.code === 1) return;
+    const src = a.src, path = t.path, at0 = a.currentTime;
+    // To the audio element a missing file, a file it can't decode and a dropped line all look alike,
+    // so ask the PC what it says about this one.
+    let res = null;
+    try {
+      res = await timedFetch(src, { headers: { Range: 'bytes=0-0', ...(state.code ? { 'X-Connect-Code': state.code } : {}) } }, 10000);
+    } catch { res = null; }
+    const still = current();
+    if (!still || still.path !== path) return;
+    if (res && !((res.status === 502 || res.status === 503) && !(res.headers.get('content-type') || '').includes('json'))) {
+      if (res.status === 401 && !state.trusted) {
+        showCodeScreen('That pairing code is not right any more. Enter the one shown on the PC.');
+        return;
+      }
+      if (res.ok) {
+        if (res.body) res.body.cancel().catch(() => { });
+        // The PC sent it and this browser can't play it: once through the PC's decoder, then skip it.
+        if (src.includes('/api/file') && !t.viaPc) { t.viaPc = true; loadTrack(player.index, true, at0); return; }
+        skip(`${t.name} can't be played here.`);
+        return;
+      }
+      const data = await res.json().catch(() => null);
+      skip(`Could not play ${t.name}. ${(data && data.error) || `The PC answered ${res.status}.`}`);
+      return;
+    }
+    // No answer: the connection dropped. Try again from where it was, a few times.
     if (retry++ < 5) {
-      const at = a.currentTime;
-      const path = t.path;
+      const at = at0;
       setTimeout(async () => {
         await waitForNetwork(3000);
         // Only if this track is still the one playing: skipped meanwhile, the
@@ -1242,11 +1322,11 @@ function setupAudio() {
       retry = 0;
       // Picked up again from here as soon as the connection is back.
       player.failed = true;
-      player.failedAt = a.currentTime;
+      player.failedAt = at0;
       announce(`Could not play ${t.name}. It carries on when the connection is back.`, true);
     }
   });
-  a.addEventListener('playing', () => { retry = 0; });
+  a.addEventListener('playing', () => { retry = 0; skipped = 0; });
 }
 
 function setSleep(value) {
@@ -1393,10 +1473,12 @@ async function downloadToPhone(url, name) {
   // attempt, and it is tried again like any other dropped connection.
   const quiet = () => { clearTimeout(stall); const c = ctrl; stall = setTimeout(() => c.abort(), 30000); };
   for (let attempt = 1; ; attempt++) {
+    if (stopped) return;
     ctrl = new AbortController();
     try {
       quiet();
       const res = await fetch(url, { cache: 'no-store', signal: ctrl.signal });
+      if (stopped) { ctrl.abort(); return; }
       if (!res.ok) {
         const data = await res.json().catch(() => null);
         throw new ApiError(res.status, (data && data.error) || `The PC answered ${res.status}.`);
@@ -1440,6 +1522,8 @@ async function downloadToPhone(url, name) {
       t.state = 'waiting';
       renderTransfers();
       await waitForNetwork(Math.min(30000, 2000 * attempt));
+      // Stopped while it waited: Stop stays stopped.
+      if (stopped) return;
       t.state = 'running';
     }
   }
@@ -1470,16 +1554,32 @@ async function sendText(text) {
 async function sendFiles(files) {
   const batch = `web${Date.now()}`;
   $('clip-status').textContent = '';
+  let t = null, stopped = false;
   try {
     for (const f of files) {
       announce(`Sending ${f.name}`);
+      // Shown in Transfers with a Stop. One request carries the whole file, so its time limit grows with the size
+      // (about 200 kilobits a second plus five minutes); the PC already gives up on a body that stops arriving.
+      const ctrl = new AbortController();
+      const row = addTransfer({ kind: 'upload', name: f.name, state: 'running', sending: true, done: 0, total: f.size });
+      row.cancel = async () => { stopped = true; ctrl.abort(); finishTransfer(row, 'cancelled'); };
+      t = row;
       await api(`/api/clipboard/send?name=${encodeURIComponent(f.name)}&batch=${batch}`,
-        { method: 'POST', body: f, raw: true, timeout: 300000 });
+        { method: 'POST', body: f, raw: true, timeout: 300000 + Math.ceil(f.size / 25000) * 1000, signal: ctrl.signal });
+      if (stopped) return;
+      t.done = t.total;
+      t.state = 'done';
+      t.message = 'Sent to the PC clipboard';
+      renderTransfers();
+      t = null;
     }
     await api('/api/clipboard/send/commit', { method: 'POST', body: { batch } });
     $('clip-status').textContent = 'Sent to the PC clipboard';
     announce(`Sent to the PC clipboard: ${plural(files.length, 'file', 'files')}. Paste with Control V.`);
-  } catch (err) { announce(err.message, true); }
+  } catch (err) {
+    if (stopped) return;
+    if (t) finishTransfer(t, 'failed', err.message); else announce(err.message, true);
+  }
 }
 
 // ---------- Settings ----------
@@ -1703,6 +1803,7 @@ function bindEvents() {
     renderTransfers(); announce('Cleared');
   });
   $('tr-stop').addEventListener('click', () => {
+    for (const b of uploadBatches) b.stopped = true;
     for (const t of transfers) if (['running', 'waiting'].includes(t.state) && t.cancel) t.cancel();
     announce('Stopping all transfers');
   });
