@@ -29,6 +29,7 @@ namespace ExplorerNative
             WinKeyMaskIsNotAPress();
             OwnHotkeysPauseWhileChoosingShortcuts();
             DatesFollowTheWindowsRegion();
+            LettersTypedWhileLoadingWaitForTheRows();
             await Task.CompletedTask;
         }
 
@@ -143,6 +144,57 @@ namespace ExplorerNative
             }
             finally { System.Globalization.CultureInfo.CurrentCulture = culture; }
             Console.WriteLine("  (.NET says " + stamp.ToString("g") + ", Windows " + expected + (stamp.ToString("g") == expected ? ", the same" : ", different") + ")");
+        }
+
+        /// <summary>
+        /// Letters typed while a slow folder loads used to expire after the
+        /// quarter-second pause, before there was anything to search.
+        /// </summary>
+        private static void LettersTypedWhileLoadingWaitForTheRows()
+        {
+            var held = new TypeAheadBuffer { TimeoutMilliseconds = 250 };
+            held.Accept('m', 1000);
+            held.Hold();
+            Equal("a word typed while a folder loads waits for it", "m", held.Current(1900));
+            held.Accept('u', 2600);
+            Equal("letters typed while still loading join it", "mu", held.Current(2700));
+            held.Release(3000);
+            Equal("rows in: one more pause to keep typing", "mu", held.Current(3200));
+            Equal("then it ends as before, so Space selects again", "", held.Current(3300));
+            held.Accept('x', 4000);
+            held.Hold();
+            held.Reset();
+            Equal("navigating away ends a held word", "", held.Current(4001));
+            held.Accept('y', 5000);
+            Equal("and a reset buffer expires normally", "", held.Current(5300));
+            var idle = new TypeAheadBuffer { TimeoutMilliseconds = 250 };
+            idle.Hold();
+            idle.Accept('z', 6000);
+            Equal("holding with no word typed holds nothing", "", idle.Current(6300));
+
+            var src = File.ReadAllText(Path.Combine(SourceDir(), "MainForm.cs"));
+            string Body(string start)
+            {
+                int i = src.IndexOf(start, StringComparison.Ordinal);
+                if (i < 0) return "";
+                int next = src.IndexOf("\n        private ", i + start.Length, StringComparison.Ordinal);
+                int nextPublic = src.IndexOf("\n            public void ", i + start.Length, StringComparison.Ordinal);
+                int end = new[] { next, nextPublic, src.Length }.Where(x => x > 0).Min();
+                return src.Substring(i, end - i);
+            }
+            Check("a letter typed while the folder loads holds the word", Body("void List_KeyPress(").Contains("TypeAhead.Hold()"));
+            Check("SetEntries lets the word go once it has been used", Body("void SetEntries(").Contains("TypeAhead.Release("));
+            Check("the progressive load's full listing lets the word go", Body("public void Finish(").Contains("TypeAhead.Release("));
+            Check("a navigation that ends without rows lets the word go",
+                Body("Task<bool> NavigateAsync(").Contains("TypeAhead.Release("));
+        }
+
+        private static string SourceDir()
+        {
+            var dir = AppContext.BaseDirectory;
+            while (dir != null && !File.Exists(Path.Combine(dir, "src", "MainForm.cs")))
+                dir = Path.GetDirectoryName(dir.TrimEnd(Path.DirectorySeparatorChar));
+            return Path.Combine(dir ?? ".", "src");
         }
     }
 }
