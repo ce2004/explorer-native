@@ -181,11 +181,15 @@ namespace ExplorerNative
                 !_settings.GoogleDriveEnabled || !GoogleDrive.HasSavedSignIn ? DriveAccountState.NotConnected
                 : _drive.Mounted && !_drive.NeedsSignIn ? DriveAccountState.Connected
                 : DriveAccountState.NeedsSignIn;
-            SettingsForm.DisconnectDrive = () =>
+            // It asks first while files on the letter are still on their way to
+            // Google, as quitting does, with Preferences owning the question.
+            SettingsForm.DisconnectDrive = owner =>
             {
+                if (!ConfirmUnsavedDrive("disconnects", "Disconnect anyway?", owner)) return false;
                 _settings.GoogleDriveEnabled = false;
                 _settings.Save();
-                _drive.Unmount();
+                UnmountInBackground();
+                return true;
             };
 
             // Preferences, Web app: Tailscale Serve on or off, from a worker.
@@ -556,11 +560,17 @@ namespace ExplorerNative
         private void MountGoogleDrive()
         {
             int attempt = Interlocked.Increment(ref _mountAttempt);
+            var goingDown = _driveGoingDown;
             _ = System.Threading.Tasks.Task.Run(async () =>
             {
                 // A leftover sync root or letter is cleared before a new one is
                 // made, as it was when the sweep ran in the constructor.
                 await _sweeps;
+
+                // And a disconnect still sending its files finishes first, so
+                // Connect pressed straight after it never stands a second volume
+                // up beside the old one.
+                await goingDown;
                 bool ok = await _drive.Mount(_settings);
 
                 // No network yet (started with Windows, before it was up: "No such
@@ -682,18 +692,53 @@ namespace ExplorerNative
         /// for up to a minute, but a slow connection or a file still being
         /// written can leave one behind, so somebody quitting is told first.
         /// </summary>
-        private bool ConfirmUnsavedDrive()
+        /// <param name="before">What Explorer Native does once they are sent: "closes", "restarts", "disconnects".</param>
+        /// <param name="question">The question itself, naming the action: "Quit anyway?".</param>
+        /// <param name="owner">The dialog asking (Preferences), which owns the question; null for the window.</param>
+        internal bool ConfirmUnsavedDrive(string before, string question, IWin32Window? owner = null)
         {
             var names = _drive.UploadNames;
             if (names.Count == 0) return true;
             var what = names.Count == 1
                 ? $"{names[0]} is still on its way to Google Drive."
                 : $"{names.Count} files are still on their way to Google Drive, including {string.Join(", ", names.Take(3))}.";
-            var question = what + " Explorer Native finishes sending them before it closes, which can take up to a minute, " +
-                           "but anything still being written by another program will not be saved. Quit anyway?";
-            if (ShowDriveMessage(question, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) return true;
-            if (_form is { IsDisposed: false, Visible: true } window) window.RestoreListFocusExternally();
+            var text = what + $" Explorer Native finishes sending them before it {before}, which can take up to a minute, " +
+                       "but anything still being written by another program will not be saved. " + question;
+            var answer = owner != null
+                ? MessageBox.Show(owner, text, "Explorer Native", MessageBoxButtons.YesNo, MessageBoxIcon.Warning)
+                : ShowDriveMessage(text, MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (answer == DialogResult.Yes) return true;
+            if (owner == null && _form is { IsDisposed: false, Visible: true } window) window.RestoreListFocusExternally();
             return false;
+        }
+
+        /// <summary>
+        /// The last Drive teardown started by <see cref="UnmountInBackground"/>.
+        /// A new mount waits for it, so the old volume is gone before a new one
+        /// takes its letter, and Quit waits for it, so its drain is not cut
+        /// short by the process ending.
+        /// </summary>
+        private System.Threading.Tasks.Task _driveGoingDown = System.Threading.Tasks.Task.CompletedTask;
+
+        /// <summary>
+        /// Takes Drive off its letter on a worker. Unmounting drains the files
+        /// other programs saved there for up to a minute (DriveMount.DrainFor),
+        /// and on the UI thread that froze Preferences and the window, with
+        /// NVDA silent, for as long. Said when there is something to wait for;
+        /// "Google Drive disconnected" follows when it is done.
+        /// </summary>
+        private void UnmountInBackground()
+        {
+            var names = _drive.UploadNames;
+            if (names.Count > 0)
+                Notify("drive.disconnecting", names.Count == 1
+                    ? $"Sending {names[0]} to Google Drive before it disconnects"
+                    : $"Sending {names.Count} files to Google Drive before it disconnects");
+            _driveGoingDown = _driveGoingDown.ContinueWith(_ =>
+            {
+                try { _drive.Unmount(); } catch { }
+            }, CancellationToken.None, System.Threading.Tasks.TaskContinuationOptions.None,
+                System.Threading.Tasks.TaskScheduler.Default);
         }
 
         private DialogResult ShowDriveMessage(string body, MessageBoxButtons buttons, MessageBoxIcon icon)
@@ -816,7 +861,8 @@ namespace ExplorerNative
             {
                 // Unconditionally: a mount still on its way up is not Mounted yet,
                 // and would otherwise arrive after Drive had been switched off.
-                _drive.Unmount();
+                // In the background: see UnmountInBackground.
+                UnmountInBackground();
             }
 
             _monitor.Reload(_settings.DriveSyncPairs);
@@ -2673,7 +2719,7 @@ namespace ExplorerNative
             // at, and then reporting that the file is in use.
             if (ask && _form is { IsDisposed: false } window &&
                 !window.ConfirmAbandonTransfers("Quit")) return;
-            if (ask && !ConfirmUnsavedDrive()) return;
+            if (ask && !ConfirmUnsavedDrive("closes", "Quit anyway?")) return;
 
             // First, while the tray icon and the window are both still there to
             // say it with. Anything below this point has already taken away one
@@ -2772,6 +2818,10 @@ namespace ExplorerNative
                 _connectStreams?.Dispose();
                 _connectClipboard?.Dispose();
                 _monitor.Dispose();
+
+                // A disconnect from Preferences still draining on its worker:
+                // finished first, or the process ending cuts its files off.
+                try { _driveGoingDown.Wait(DriveMount.DrainFor + TimeSpan.FromSeconds(15)); } catch { }
                 _drive.Dispose();
 
                 // What the drain could not send, by name, while the tray is

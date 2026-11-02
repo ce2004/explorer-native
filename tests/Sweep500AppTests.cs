@@ -24,6 +24,7 @@ namespace ExplorerNative
 
             Console.WriteLine("Sweep 5.0.0, the tray, settings, install and updates:");
             QuitSaysWhatDriveDidNotSave();
+            DisconnectAsksAndNeverBlocksTheWindow();
             await Task.CompletedTask;
         }
 
@@ -111,6 +112,102 @@ namespace ExplorerNative
                 At(deliverBody, "Speech.WaitUntilSpoken(") >= 0 && At(deliverBody, "PostUi(") < 0);
             Check("quit notices: the next start says what the last quit left",
                 At(tray, "QuitNotices.TakeFromLastRun()") >= 0);
+        }
+
+        // ---- 2, 3, 10 and 11: turning Drive off froze the window and never asked ----
+
+        private static void DisconnectAsksAndNeverBlocksTheWindow()
+        {
+            // Preferences' Disconnect button, with the tray's hook answering No
+            // and then Yes: No leaves everything as it was.
+            var dir = Path.Combine(Path.GetTempPath(), "en-disconnect-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            var before = Settings.OverrideAppDataDir;
+            var stateHook = SettingsForm.AccountState;
+            var disconnectHook = SettingsForm.DisconnectDrive;
+            Settings.OverrideAppDataDir = dir;
+            try
+            {
+                foreach (bool yes in new[] { false, true })
+                {
+                    int asked = 0;
+                    bool ownedByPreferences = false;
+                    bool enabledAfter = true;
+                    string buttonAfter = "", error = "";
+                    SettingsForm.AccountState = () => DriveAccountState.Connected;
+                    SettingsForm.DisconnectDrive = owner =>
+                    {
+                        asked++;
+                        ownedByPreferences = owner is SettingsForm;
+                        return yes;
+                    };
+                    var thread = new System.Threading.Thread(() =>
+                    {
+                        try
+                        {
+                            using var window = new SettingsForm(new Settings { GoogleDriveEnabled = true }, "Google Drive");
+                            window.BuildAllPages();
+                            var button = All<System.Windows.Forms.Button>(window)
+                                .First(b => b.Text == "&Disconnect Google Drive");
+                            typeof(System.Windows.Forms.Control)
+                                .GetMethod("OnClick", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                                .Invoke(button, new object[] { EventArgs.Empty });
+                            buttonAfter = button.Text;
+                            window.AcceptAsync().GetAwaiter().GetResult();
+                            enabledAfter = window.Result.GoogleDriveEnabled;
+                        }
+                        catch (Exception ex) { error = ex.GetType().Name + ": " + ex.Message; }
+                    });
+                    thread.SetApartmentState(System.Threading.ApartmentState.STA);
+                    thread.Start();
+                    thread.Join(TimeSpan.FromSeconds(30));
+
+                    var answer = yes ? "Yes" : "No";
+                    Equal($"disconnect ({answer}): Preferences builds", "", error);
+                    Equal($"disconnect ({answer}): the tray is asked once", "1", asked.ToString());
+                    Check($"disconnect ({answer}): Preferences owns the question", ownedByPreferences);
+                    Equal($"disconnect ({answer}): the button afterwards",
+                        yes ? "Co&nnect Google Drive" : "&Disconnect Google Drive", buttonAfter);
+                    Equal($"disconnect ({answer}): Drive stays on only after No", (!yes).ToString(), enabledAfter.ToString());
+                }
+            }
+            finally
+            {
+                SettingsForm.AccountState = stateHook;
+                SettingsForm.DisconnectDrive = disconnectHook;
+                Settings.OverrideAppDataDir = before;
+                try { Directory.Delete(dir, true); } catch { }
+            }
+
+            // The tray, which the suite does not compile.
+            var tray = Source("TrayApplicationContext.cs");
+            var disconnect = Body(tray, "SettingsForm.DisconnectDrive =");
+            Check("disconnect: the tray asks about unsent files before anything unmounts",
+                At(disconnect, "ConfirmUnsavedDrive(") >= 0 &&
+                At(disconnect, "UnmountInBackground()") > At(disconnect, "ConfirmUnsavedDrive("));
+            Check("disconnect: no synchronous unmount on the Disconnect button",
+                At(disconnect, "_drive.Unmount()") < 0);
+            Check("disconnect: no synchronous unmount when OK turns Drive off",
+                At(Body(tray, "public void ApplySettings("), "_drive.Unmount()") < 0);
+
+            var background = Body(tray, "private void UnmountInBackground(");
+            Check("disconnect: the unmount runs on a worker, after any earlier one",
+                At(background, "_driveGoingDown") >= 0 && At(background, "TaskScheduler.Default") >= 0 &&
+                At(background, "_drive.Unmount()") > At(background, "ContinueWith("));
+            Check("disconnect: a new mount waits for the old one to finish going",
+                At(Body(tray, "private void MountGoogleDrive("), "await goingDown") >= 0);
+            var quit = Body(tray, "private void Quit(");
+            Check("disconnect: Quit lets a disconnect's drain finish before tearing down",
+                At(quit, "_driveGoingDown.Wait(") >= 0 && At(quit, "_drive.Dispose();") > At(quit, "_driveGoingDown.Wait("));
+        }
+
+        private static IEnumerable<T> All<T>(System.Windows.Forms.Control root) where T : System.Windows.Forms.Control
+        {
+            foreach (System.Windows.Forms.Control child in root.Controls)
+            {
+                if (child is T found) yield return found;
+                foreach (var deeper in All<T>(child)) yield return deeper;
+            }
         }
     }
 }

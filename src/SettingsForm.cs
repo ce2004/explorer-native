@@ -39,8 +39,12 @@ namespace ExplorerNative
         /// </summary>
         internal static Func<DriveAccountState>? AccountState;
 
-        /// <summary>Takes the live drive off its letter, keeping the sign-in. Set by the tray.</summary>
-        internal static Action? DisconnectDrive;
+        /// <summary>
+        /// Takes the live drive off its letter, keeping the sign-in, after asking
+        /// (owned by Preferences) while files are still on their way to Google.
+        /// False when the answer was No. Set by the tray.
+        /// </summary>
+        internal static Func<IWin32Window, bool>? DisconnectDrive;
 
         /// <summary>Checked before OK closes the dialog; false keeps it open.</summary>
         /// <summary>A refusal shown before OK closes. Replaced by the suite, which cannot press OK on a message box.</summary>
@@ -877,7 +881,8 @@ namespace ExplorerNative
                     // Off its letter and switched off, signed in still, so
                     // connecting again later needs no browser. Preferences stays
                     // open; the drive says "Google Drive disconnected" itself.
-                    DisconnectDrive?.Invoke();
+                    // No to the question about unsent files changes nothing.
+                    if (DisconnectDrive?.Invoke(this) == false) return;
                     driveBox.Checked = false;
                     _working.GoogleDriveEnabled = false;
                     Show(DriveAccountState.NotConnected);
