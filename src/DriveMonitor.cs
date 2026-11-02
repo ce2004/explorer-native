@@ -2521,6 +2521,7 @@ namespace ExplorerNative
             {
                 await MakeEmptyFoldersAsync(client, pair, state, rules, pcFolders, folders, driveFoldersBefore, skips, tally, token)
                     .ConfigureAwait(false);
+                ClearFoldersGoneFromDrive(pair, rules, skips, pcFolders, folders, driveFoldersBefore, _ => fullList);
             }
             catch (Exception ex) when (ex is OperationCanceledException or PairStoppedException)
             {
@@ -3249,18 +3250,31 @@ namespace ExplorerNative
             // ---- Drive: the feed, or a full listing ----
             var shardFolders = new HashSet<string>(header.ShardFolders, comparer);
             var recordFolders = new HashSet<string>(header.RecordFolders, comparer);
+            // Which drive's feed to read. A blip is waited out like the feed read;
+            // a drive that cannot be told means a full listing and no token: with
+            // driveId null the feed is My Drive's, and a shared-drive pair read
+            // and saved the wrong feed, missing its own changes for up to a day.
             string? driveId = null;
-            try { driveId = await client.DriveOf(pair.DriveFolderId, token).ConfigureAwait(false); }
-            catch (Exception) when (!token.IsCancellationRequested) { }
+            bool driveKnown = true;
+            try { driveId = await Patiently(pair, () => client.DriveOf(pair.DriveFolderId, token), client, token).ConfigureAwait(false); }
+            catch (Exception) when (!token.IsCancellationRequested) { driveKnown = false; }
+            if (driveKnown) lock (_gate) _driveOf[pair.Id] = driveId;
 
             // The retry after FullListingNeededException comes here with the feed
             // still usable and every recorded folder known: First() then threw
             // "Sequence contains no matching element", and the pair failed every
             // pass until the daily full listing.
             bool canFeed = CanListChangesOnly(ViewOf(header), pair, DateTime.UtcNow);
-            var unknownFolder = recordFolders.FirstOrDefault(f => !header.FolderIds.ContainsKey(f));
-            bool full = forceFull || !canFeed || unknownFolder != null;
-            string why = !canFeed ? "no feed to go on"
+            // Folders Drive has but the pair leaves out (twins, spelling clashes,
+            // unusable names) are known, not missing: read as missing, a folder
+            // with records that became a twin listed all of Drive every pass.
+            var leftOut = new SyncSkips();
+            foreach (var e in header.DriveClashing.Concat(header.DriveUnusable))
+                if (e.EndsWith('/')) leftOut.Folder(e.TrimEnd('/'));
+            var unknownFolder = recordFolders.FirstOrDefault(f => !header.FolderIds.ContainsKey(f) && !leftOut.Covers(f + "/"));
+            bool full = forceFull || !canFeed || unknownFolder != null || !driveKnown;
+            string why = !driveKnown ? "could not tell which drive the folder is on"
+                : !canFeed ? "no feed to go on"
                 : unknownFolder != null ? "records in a folder Drive is not known to have: " + unknownFolder
                 : forceFull ? "a batch met records in a folder Drive is not known to have"
                 : "";
@@ -3305,7 +3319,7 @@ namespace ExplorerNative
             if (full)
             {
                 dirty.Clear();
-                try { nextToken = await client.ChangesStartToken(driveId, token).ConfigureAwait(false); }
+                try { nextToken = driveKnown ? await client.ChangesStartToken(driveId, token).ConfigureAwait(false) : null; }
                 catch (Exception) when (!token.IsCancellationRequested) { nextToken = null; }
             }
 
@@ -3486,7 +3500,8 @@ namespace ExplorerNative
                     listMs = timing.ElapsedMilliseconds - scanMs - recordsMs;
                     allSkips.Include(skips);
                     var seenSoFar = Totals(localSeen, driveSeen, tally.Matched);
-                    Report(pair.Id, s => s with { LocalFound = seenSoFar.Pc, DriveFound = seenSoFar.Drive }, now: true);
+                    int driveSoFar = pair.FreesUpSpace && !full && header.DriveFileTotal is int savedTotal ? savedTotal : seenSoFar.Drive;
+                    Report(pair.Id, s => s with { LocalFound = seenSoFar.Pc, DriveFound = driveSoFar }, now: true);
 
                     // ---- the next batches: subfolders on either side, or in the records ----
                     if (pair.IncludeSubfolders)
@@ -3499,6 +3514,9 @@ namespace ExplorerNative
                             foreach (var n in next)
                             {
                                 if (visited.Contains(n) || allSkips.Covers(n + "/")) continue;
+                                // Left out on Drive last time, and its folder not
+                                // listed again: still left out, records kept.
+                                if (!full && !listed.Contains(f) && leftOut.Covers(n + "/")) { allSkips.Folder(n); continue; }
                                 if (partial)
                                 {
                                     if (wholeTree.Contains(f) || onPc.Contains(n) != known.Contains(n)) wholeTree.Add(n);
@@ -3574,9 +3592,17 @@ namespace ExplorerNative
                         generation, tally, nextDirty, token).ConfigureAwait(false);
 
                 // ---- empty PC folders Drive does not have ----
+                // "Drive had it before this pass" is what Drive had when the pass
+                // began: on a full listing knownAtStart is only the root, and a
+                // folder deleted in Drive was made again straight away.
                 if (foldersToMake.Count > 0 && tally.SpaceProblem == null)
-                    await MakeEmptyFoldersAsync(client, pair, header, rules, foldersToMake, folders, knownAtStart, allSkips, tally, token)
+                {
+                    var driveBefore = new HashSet<string>(header.Remembered?.Keys ?? header.FolderIds.Keys, comparer);
+                    await MakeEmptyFoldersAsync(client, pair, header, rules, foldersToMake, folders, driveBefore, allSkips, tally, token)
                         .ConfigureAwait(false);
+                    ClearFoldersGoneFromDrive(pair, rules, allSkips, foldersToMake, folders, driveBefore,
+                        f => full || listedAll.Contains(SyncMoves.Parent(f)));
+                }
 
                 // ---- records of folders neither side has any more ----
                 // (A pass that looked at only some folders left the rest alone on purpose,
@@ -3642,10 +3668,21 @@ namespace ExplorerNative
             LastFoldersVisited = visited.Count;
             var totals = Totals(localSeen, driveSeen, tally.Matched);
             // Kept as they stand once this pass is done: what it copied is in step now.
+            // Free up space: freed files have no records, so a listed folder's
+            // Drive files were added on top of the saved total and nothing taken
+            // off, and "On Google Drive" grew every pass. As the small path, the
+            // total is what a whole listing found, plus what went up since.
+            int driveTotal = totals.Drive + tally.Uploaded;
+            if (pair.FreesUpSpace)
+            {
+                if (!(full && tally.SpaceProblem == null) && header.DriveFileTotal is int before) driveTotal = before + tally.Uploaded;
+                header.DriveFileTotal = driveTotal;
+            }
             header.PcFiles = totals.Pc + tally.Downloaded;
-            header.DriveFiles = totals.Drive + tally.Uploaded;
+            header.DriveFiles = driveTotal;
             header.MatchedFiles = totals.Matched + tally.Uploaded + tally.Downloaded;     // a moved file is counted as matched already
-            Report(pair.Id, s => s with { LocalFound = totals.Pc, DriveFound = totals.Drive, Matched = totals.Matched }, now: true);
+            int driveFound = pair.FreesUpSpace ? driveTotal : totals.Drive;
+            Report(pair.Id, s => s with { LocalFound = totals.Pc, DriveFound = driveFound, Matched = totals.Matched }, now: true);
             // Stopped short for space: folders it never reached are still owed
             // the changes read for them, so the journal's place stays where it was.
             if (tally.SpaceProblem == null) PcPlanned(pair, header, look, walkedWhole: !partial, links);
@@ -3653,6 +3690,55 @@ namespace ExplorerNative
             SaveState(pair.Id, header);
             await TidyTwinFoldersAsync(client, pair, rules, clashing, folders, tally, token).ConfigureAwait(false);
             FinishPass(pair, header, tally, unusable, clashing, localClashing);
+        }
+
+        /// <summary>
+        /// Whether the pair's Drive folder is in a shared drive. Files there
+        /// count against the organisation's storage, not the person's own, so
+        /// the account's quota says nothing about room there (a full My Drive
+        /// stopped every upload to a shared drive as "Google Drive is full").
+        /// Google's own refusal still stops a shared drive that really is full.
+        /// </summary>
+        private bool OnSharedDrive(DriveSyncPair pair)
+        {
+            if ((pair.DriveFolderPath ?? "").StartsWith("Shared drives/", StringComparison.Ordinal)) return true;
+            lock (_gate) return _driveOf.TryGetValue(pair.Id, out var driveId) && driveId != null;
+        }
+
+        /// <summary>
+        /// Two-way with deletes: a folder deleted in Google Drive goes from the
+        /// PC too, once the pass has recycled its files. Otherwise the empty PC
+        /// folder stayed, and the next walk made it in Drive again. Only folders
+        /// Drive had when the pass began, whose folder above was listed this
+        /// pass (<paramref name="parentListed"/>), not left out, and holding
+        /// nothing at all: the delete is Windows' own, which refuses a folder
+        /// with anything in it, so a file kept or edited on the PC keeps its
+        /// folder. Deepest first, then the folder above the same way.
+        /// </summary>
+        private void ClearFoldersGoneFromDrive(DriveSyncPair pair, SyncRules rules, SyncSkips skips, IEnumerable<string> pcFolders,
+            IReadOnlyDictionary<string, string> folders, IReadOnlySet<string> driveBefore, Func<string, bool> parentListed)
+        {
+            if (rules.Mode != SyncMode.TwoWay || !rules.CopyDeletes || !rules.IncludeSubfolders) return;
+            const FileAttributes kept = FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReparsePoint;
+            bool Gone(string at) => at.Length > 0 && !folders.ContainsKey(at) && driveBefore.Contains(at) && parentListed(at) &&
+                                    !IsLeftOutFolder(at, rules, skips) &&
+                                    !at.Split('/').Any(part => part.Equals(".sync", StringComparison.OrdinalIgnoreCase));
+            foreach (var folder in pcFolders.Distinct(SyncNameComparer.Instance).OrderByDescending(f => f.Count(c => c == '/')))
+            {
+                if (Stopped(pair)) break;
+                for (var at = folder; Gone(at); at = SyncMoves.Parent(at))
+                {
+                    var dir = new DirectoryInfo(LocalPathFor(pair.LocalFolder, at));
+                    try
+                    {
+                        if (!dir.Exists) continue;      // gone already: the one above may be empty now
+                        if ((dir.Attributes & kept) != 0 || dir.EnumerateFileSystemInfos().Any()) break;
+                        dir.Delete(recursive: false);
+                        SyncHistory.Add(pair.Id, "Deleted folder", at, "it was deleted in Google Drive");
+                    }
+                    catch (Exception) { break; }
+                }
+            }
         }
 
         /// <summary>
@@ -4131,7 +4217,7 @@ namespace ExplorerNative
                             break;
                         }
                     }
-                    if (action.Kind is SyncActionKind.Upload or SyncActionKind.KeepBothLocalWins && _drive.QuotaLimit > 0)
+                    if (action.Kind is SyncActionKind.Upload or SyncActionKind.KeepBothLocalWins && _drive.QuotaLimit > 0 && !OnSharedDrive(pair))
                     {
                         long room = _drive.QuotaLimit - _drive.QuotaUsed - uploadedThisPass;
                         if (local[path].Size > room)
@@ -4209,6 +4295,19 @@ namespace ExplorerNative
                                         // since, it is a conflict for the next pass to see.
                                         var now = await client.FileNow(old.Id, token).ConfigureAwait(false);
                                         if (now != null && !SameAsScanned(now, old))
+                                        {
+                                            deferred++;
+                                            break;
+                                        }
+                                        // Moved out of this folder in Drive since the records
+                                        // (the feed only marks where it went): the PC's edit is
+                                        // not written into a file that lives elsewhere now. The
+                                        // folder is listed again next pass, and the file goes
+                                        // up there as a new one.
+                                        var recordedFolder = SyncMoves.Parent(path) is { Length: > 0 } up
+                                            ? folders.TryGetValue(up, out var upId) ? upId : null
+                                            : pair.DriveFolderId;
+                                        if (now?.Parent != null && recordedFolder != null && now.Parent != recordedFolder)
                                         {
                                             deferred++;
                                             break;
@@ -5766,7 +5865,7 @@ namespace ExplorerNative
             Dictionary<string, string> doubtful, FreeUpLane? freeUp = null)
         {
             var sent = new HashSet<string>(SyncNameComparer.Instance);
-            long room = _drive.QuotaLimit > 0 ? _drive.QuotaLimit - _drive.QuotaUsed - alreadyUp : long.MaxValue;
+            long room = _drive.QuotaLimit > 0 && !OnSharedDrive(pair) ? _drive.QuotaLimit - _drive.QuotaUsed - alreadyUp : long.MaxValue;
             var batch = new List<string>();
             foreach (var action in plan)
             {
@@ -5847,6 +5946,8 @@ namespace ExplorerNative
                             // conflict, and the slow path defers it for the next pass.
                             var now = await Patiently(pair, () => client.FileNow(replaces, ct), client, ct).ConfigureAwait(false);
                             if (now == null || !SameAsScanned(now, old)) return false;
+                            // Moved out of the folder in Drive: the careful loop defers it.
+                            if (now.Parent != null && now.Parent != parent) return false;
                             // An update cannot make a second file, so a resend is safe.
                             up = await Patiently(pair, () => client.UploadDetailed(localPath, Path.GetFileName(localPath), parent,
                                 Progress, ct, null, _ => { }, replaces), client, ct).ConfigureAwait(false);
@@ -5924,7 +6025,7 @@ namespace ExplorerNative
             Dictionary<string, string> doubtful, FreeUpLane? freeUp = null)
         {
             var sent = new HashSet<string>(SyncNameComparer.Instance);
-            long room = _drive.QuotaLimit > 0 ? _drive.QuotaLimit - _drive.QuotaUsed - alreadyUp : long.MaxValue;
+            long room = _drive.QuotaLimit > 0 && !OnSharedDrive(pair) ? _drive.QuotaLimit - _drive.QuotaUsed - alreadyUp : long.MaxValue;
             var batch = new List<string>();
             foreach (var action in plan)
             {

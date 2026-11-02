@@ -1,4 +1,11 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace ExplorerNative
@@ -14,13 +21,397 @@ namespace ExplorerNative
         internal static void Check(string what, bool ok, string? detail = null) => _check(what, ok, detail);
         internal static void Equal(string what, string expected, string actual) => _equal(what, expected, actual);
 
+        private const double Fast = 0.0005;
+        private static readonly DateTime T0 = new(2026, 9, 1, 12, 0, 0, DateTimeKind.Utc);
+
         public static async Task RunAll(Action<string, bool, string?> check, Action<string, string, string> equal)
         {
             _check = check;
             _equal = equal;
 
             Console.WriteLine("Sweep 5.0.0, the folder sync engine, second half:");
-            await Task.CompletedTask;
+            var previous = Settings.OverrideAppDataDir;
+            var sandbox = Path.Combine(Path.GetTempPath(), "en-sweep500-sync3-" + Guid.NewGuid().ToString("N")[..8]);
+            Directory.CreateDirectory(sandbox);
+            Settings.OverrideAppDataDir = Path.Combine(sandbox, "appdata");
+            try
+            {
+                await SharedDriveFeedTests(sandbox);
+                await TwinWithRecordsTests(sandbox, "Disc");
+                await TwinWithRecordsTests(sandbox, "disc");
+                await InBatches(() => FolderDeletedOnDriveTests(sandbox, "batched"));
+                await FolderDeletedOnDriveTests(sandbox, "small");
+                await InBatches(() => FreeUpDriveCountTests(sandbox));
+                await SharedDriveQuotaTests(sandbox);
+                await InBatches(() => MovedOutOfPairTests(sandbox, files: 1));
+                await InBatches(() => MovedOutOfPairTests(sandbox, files: 70));
+            }
+            finally
+            {
+                Settings.OverrideAppDataDir = previous;
+                try { Directory.Delete(sandbox, true); } catch { }
+            }
+            Console.WriteLine();
         }
+
+        // ---------------- a small rig ----------------
+
+        private sealed class Rig : IDisposable
+        {
+            public readonly FakeDrive Drive = new();
+            public readonly string Local;
+            public readonly string FolderId;
+            public readonly DriveSyncPair Pair;
+            public readonly DriveClient Client;
+            public readonly DriveMonitor Monitor;
+
+            public Rig(string sandbox, SyncMode mode = SyncMode.TwoWay, bool deletes = false,
+                Func<FakeDrive, HttpMessageHandler>? wrap = null, string drivePath = "My Drive/P", GoogleDrive? drive = null)
+            {
+                var top = Path.Combine(sandbox, Guid.NewGuid().ToString("N")[..8]);
+                Local = Path.Combine(top, "P");
+                Directory.CreateDirectory(Local);
+                FolderId = Drive.AddFolder("P");
+                Pair = new DriveSyncPair
+                {
+                    Name = "P", LocalFolder = Local, DriveFolderId = FolderId, DriveFolderPath = drivePath,
+                    Mode = mode, CopyDeletes = deletes, CheckMinutes = 0,
+                };
+                Client = new DriveClient(wrap?.Invoke(Drive) ?? Drive, Fast);
+                Monitor = new DriveMonitor(drive ?? new GoogleDrive(), (_, _) => { }, _ => { })
+                {
+                    WaitScale = Fast,
+                    DiskOfRoot = _ => (1L << 42, 1L << 43, "T:"),
+                    RecycleLocal = path => { File.Delete(path); return null; },
+                    PatienceLimit = TimeSpan.FromSeconds(3),
+                    SettleTime = TimeSpan.Zero,
+                };
+            }
+
+            public async Task<string?> Pass()
+            {
+                await Monitor.SyncOneAsync(Client, Pair, CancellationToken.None);
+                return Monitor.StatusOf(Pair.Id).Problem;
+            }
+
+            public string Write(string relative, string text, DateTime when)
+            {
+                var path = Path.Combine(Local, relative.Replace('/', '\\'));
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.WriteAllText(path, text);
+                File.SetLastWriteTimeUtc(path, when);
+                return path;
+            }
+
+            public string LocalPath(string relative) => Path.Combine(Local, relative.Replace('/', '\\'));
+
+            public Dictionary<string, string> DriveTree() =>
+                Drive.Tree(FolderId).ToDictionary(kv => kv.Key, kv => Encoding.UTF8.GetString(kv.Value), StringComparer.OrdinalIgnoreCase);
+
+            public void Dispose()
+            {
+                Monitor.Dispose();
+                try { Directory.Delete(Path.GetDirectoryName(Local)!, true); } catch { }
+            }
+        }
+
+        private static async Task InBatches(Func<Task> run)
+        {
+            var (large, batch) = (DriveMonitor.LargePairFiles, DriveMonitor.BatchFiles);
+            DriveMonitor.LargePairFiles = 0;
+            DriveMonitor.BatchFiles = 7;
+            try { await run(); }
+            finally
+            {
+                DriveMonitor.LargePairFiles = large;
+                DriveMonitor.BatchFiles = batch;
+            }
+        }
+
+        // ---------------- a shared drive whose drive could not be told ----------------
+
+        /// <summary>
+        /// Answers "which drive is this folder on" as a shared drive (the fake
+        /// has only one feed), fails that question when told to, and notes every
+        /// changes-feed request so a test can see which feed was read.
+        /// </summary>
+        private sealed class SharedDriveHandler : DelegatingHandler
+        {
+            public int FailBlips;          // 503s still to give
+            public bool Refuse;            // a lasting 400
+            public readonly List<string> Feeds = new();
+
+            public SharedDriveHandler(HttpMessageHandler inner) : base(inner) { }
+
+            protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken token)
+            {
+                var uri = request.RequestUri!;
+                if (uri.AbsolutePath.StartsWith("/drive/v3/changes", StringComparison.Ordinal))
+                    lock (Feeds) Feeds.Add(uri.AbsolutePath + uri.Query);
+                if (request.Method == HttpMethod.Get && uri.AbsolutePath.StartsWith("/drive/v3/files/", StringComparison.Ordinal)
+                    && Uri.UnescapeDataString(uri.Query).Contains("fields=driveId", StringComparison.Ordinal))
+                {
+                    if (Refuse)
+                        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadRequest)
+                        { Content = new StringContent("{\"error\":{\"code\":400,\"message\":\"bad\"}}") });
+                    if (FailBlips > 0)
+                    {
+                        FailBlips--;
+                        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                        { Content = new StringContent("{\"error\":{\"code\":503,\"message\":\"backend\"}}") });
+                    }
+                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+                    { Content = new StringContent("{\"driveId\":\"sd1\"}", Encoding.UTF8, "application/json") });
+                }
+                return base.SendAsync(request, token);
+            }
+        }
+
+        /// <summary>
+        /// A batched pair on a shared drive: when the question "which drive"
+        /// failed, the pass read My Drive's changes feed (no driveId) and saved
+        /// its token as the pair's, so the shared drive's own changes were
+        /// missed until the daily full listing. Now a blip is waited out, and a
+        /// drive that cannot be told lists whole and saves no token.
+        /// </summary>
+        private static async Task SharedDriveFeedTests(string sandbox) => await InBatches(async () =>
+        {
+            SharedDriveHandler handler = null!;
+            using var rig = new Rig(sandbox, wrap: d => handler = new SharedDriveHandler(d));
+            rig.Write("a.txt", "a", T0);
+            var problem = await rig.Pass();
+            await rig.Pass();
+            Check("shared drive feed: the pair settled first", problem == null && rig.DriveTree().ContainsKey("a.txt"), problem);
+
+            lock (handler.Feeds) handler.Feeds.Clear();
+            handler.FailBlips = 1;
+            rig.Drive.AddFile("b.txt", Encoding.UTF8.GetBytes("b"), T0, rig.FolderId);
+            await rig.Pass();
+            await rig.Pass();
+            Check("shared drive feed: a blip on 'which drive' is waited out and the new file comes down",
+                File.Exists(rig.LocalPath("b.txt")));
+
+            handler.Refuse = true;
+            rig.Drive.AddFile("c.txt", Encoding.UTF8.GetBytes("c"), T0, rig.FolderId);
+            problem = await rig.Pass();
+            handler.Refuse = false;
+            await rig.Pass();
+            Check("shared drive feed: a drive that cannot be told still syncs, by a whole listing",
+                File.Exists(rig.LocalPath("c.txt")), problem);
+
+            string[] wrong;
+            lock (handler.Feeds) wrong = handler.Feeds.Where(f => !f.Contains("driveId=sd1", StringComparison.Ordinal)).ToArray();
+            Check("shared drive feed: My Drive's feed is never read or saved for a shared-drive pair",
+                wrong.Length == 0, string.Join(" | ", wrong));
+        });
+
+        // ---------------- a folder deleted in Google Drive ----------------
+
+        /// <summary>
+        /// Two-way with deletes: the person trashes the folder Old in Google
+        /// Drive. Its files were recycled on the PC, but a batched pass made Old
+        /// again in Drive at once (its "Drive had it before this pass" was only
+        /// the root on a full listing), and both kinds of pair left the empty PC
+        /// folder, so the next whole walk made it again. Now the delete is
+        /// mirrored: the folder goes from the PC and stays gone from Drive.
+        /// </summary>
+        private static async Task FolderDeletedOnDriveTests(string sandbox, string kind)
+        {
+            using var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true);
+            rig.Write("Old/a.txt", "a", T0);
+            rig.Write("Keep/k.txt", "k", T0);
+            rig.Write("Kept/Inner/edited.txt", "e", T0);
+            var problem = await rig.Pass();
+            await rig.Pass();
+            Check($"folder deleted on Drive ({kind}): the pair settled first", problem == null && rig.DriveTree().ContainsKey("Old/a.txt"), problem);
+
+            rig.Drive.Trash(rig.Drive.Find(rig.FolderId, "Old")!);
+            problem = await rig.Pass();
+            Check($"folder deleted on Drive ({kind}): it is not made again in Drive", rig.Drive.Find(rig.FolderId, "Old") == null, problem);
+            Check($"folder deleted on Drive ({kind}): its file and folder go from the PC too",
+                !File.Exists(rig.LocalPath("Old/a.txt")) && !Directory.Exists(rig.LocalPath("Old")));
+
+            var every = DriveMonitor.FullListEvery;
+            DriveMonitor.FullListEvery = TimeSpan.Zero;
+            try { problem = await rig.Pass(); }
+            finally { DriveMonitor.FullListEvery = every; }
+            Check($"folder deleted on Drive ({kind}): and the next whole walk does not bring it back", rig.Drive.Find(rig.FolderId, "Old") == null, problem);
+            Check($"folder deleted on Drive ({kind}): folders Drive still has stay on the PC",
+                File.Exists(rig.LocalPath("Keep/k.txt")) && File.Exists(rig.LocalPath("Kept/Inner/edited.txt")));
+        }
+
+        // ---------------- free up: the Google Drive count ----------------
+
+        /// <summary>
+        /// A free up pair in batches: freed files have no records, so each time
+        /// a folder was listed again its Drive files were added to the saved
+        /// count and nothing taken off. "On Google Drive" grew every pass. Now
+        /// it is what the last whole listing found plus what went up since.
+        /// </summary>
+        private static async Task FreeUpDriveCountTests(string sandbox)
+        {
+            using var rig = new Rig(sandbox, SyncMode.UploadOnly);
+            rig.Pair.DeleteAfterUpload = true;
+            for (int f = 0; f < 6; f++)
+                for (int i = 0; i < 3; i++)
+                    rig.Write($"F{f:D2}/s{i}.txt", $"{f}-{i}", T0);
+            await rig.Pass();
+            await rig.Pass();
+            await rig.Pass();
+            Check("free up count: everything went up and was cleared off the PC",
+                rig.DriveTree().Count == 18 && !File.Exists(rig.LocalPath("F00/s0.txt")), $"{rig.DriveTree().Count} on Drive");
+            Equal("free up count: On Google Drive says 18", "18", rig.Monitor.StatusOf(rig.Pair.Id).DriveFound.ToString());
+
+            rig.Write("F00/new.txt", "new", T0);
+            await rig.Pass();
+            await rig.Pass();
+            await rig.Pass();
+            Check("free up count: the new file went up", rig.DriveTree().Count == 19, $"{rig.DriveTree().Count} on Drive");
+            Equal("free up count: and On Google Drive says 19, not the folder counted again", "19",
+                rig.Monitor.StatusOf(rig.Pair.Id).DriveFound.ToString());
+
+            var every = DriveMonitor.FullListEvery;
+            DriveMonitor.FullListEvery = TimeSpan.Zero;
+            try { await rig.Pass(); }
+            finally { DriveMonitor.FullListEvery = every; }
+            Equal("free up count: a whole listing agrees", "19", rig.Monitor.StatusOf(rig.Pair.Id).DriveFound.ToString());
+        }
+
+        // ---------------- a shared drive and the person's own quota ----------------
+
+        /// <summary>
+        /// Files in a shared drive count against the organisation's storage,
+        /// not the person's own. With their own Drive full, every upload to a
+        /// shared-drive pair stopped as "Google Drive is full", in the careful
+        /// loop and the fast lanes alike. A My Drive pair still stops.
+        /// </summary>
+        private static async Task SharedDriveQuotaTests(string sandbox)
+        {
+            async Task<(string? Problem, int OnDrive)> Run(string drivePath, int files, bool batched = false, bool sharedById = false)
+            {
+                var account = new GoogleDrive();
+                account.SetQuotaForTests(1000, 1000);
+                (string?, int) result = default;
+                async Task Go()
+                {
+                    using var rig = new Rig(sandbox, SyncMode.UploadOnly, drivePath: drivePath, drive: account,
+                        wrap: sharedById ? d => new SharedDriveHandler(d) : null);
+                    for (int i = 0; i < files; i++) rig.Write($"f{i:D3}.txt", "ten bytes!", T0);
+                    var problem = await rig.Pass();
+                    result = (problem, rig.DriveTree().Count);
+                }
+                if (batched) await InBatches(Go); else await Go();
+                return result;
+            }
+
+            var (problem, onDrive) = await Run("Shared drives/Team", 1);
+            Check("shared drive quota: a full My Drive does not stop uploads to a shared drive", problem == null && onDrive == 1, problem);
+            (problem, onDrive) = await Run("Shared drives/Team", 70);
+            Check("shared drive quota: nor the fast lane's", problem == null && onDrive == 70, $"{onDrive} up; {problem}");
+            (problem, onDrive) = await Run("Team folder", 1, batched: true, sharedById: true);
+            Check("shared drive quota: a shared drive known by its drive id, not its path, too", problem == null && onDrive == 1, problem);
+            (problem, onDrive) = await Run("My Drive/Music", 1);
+            Check("shared drive quota: a My Drive pair still stops when My Drive is full",
+                problem != null && problem.StartsWith("paused: Google Drive is full", StringComparison.Ordinal) && onDrive == 0, problem);
+        }
+
+        // ---------------- a file moved out of the pair on Drive, edited on the PC ----------------
+
+        /// <summary>
+        /// A batched pair on the feed. The person moves Music/t000.txt out of
+        /// the synced folder on drive.google.com; the feed marks only where it
+        /// went, so Music is not listed again. Then the PC copy is edited: the
+        /// edit was written into the file at its new home outside the pair,
+        /// and Music never got it. Now the in-place update checks the file's
+        /// folder first, as the trash does, and the edit goes up into Music.
+        /// With many files the fast lane makes the same check.
+        /// </summary>
+        private static async Task MovedOutOfPairTests(string sandbox, int files)
+        {
+            var label = $"moved out of the pair ({files} edited): ";
+            using var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true);
+            for (int i = 0; i < files; i++) rig.Write($"Music/t{i:D3}.txt", "old " + i, T0);
+            rig.Write("Other/o.txt", "o", T0);
+            var problem = await rig.Pass();
+            await rig.Pass();
+            Check(label + "the pair settled first", problem == null && rig.DriveTree().ContainsKey("Music/t000.txt"), problem);
+
+            var outside = rig.Drive.AddFolder("Elsewhere");
+            var id = rig.Drive.Find(rig.FolderId, "Music/t000.txt")!;
+            rig.Drive.MoveTo(id, outside);
+            rig.Drive.Changed(id);
+            await rig.Pass();
+
+            for (int i = 0; i < files; i++) rig.Write($"Music/t{i:D3}.txt", "new edit " + i, T0.AddHours(1));
+            await rig.Pass();
+            await rig.Pass();
+            await rig.Pass();
+
+            var moved = rig.Drive.Get(id)!;
+            Equal(label + "the file outside the pair keeps what it held", "old 0", Encoding.UTF8.GetString(moved.Data));
+            Check(label + "and stays where the person put it", moved.Parent == outside && !moved.Trashed);
+            Check(label + "the PC's edit is in Music on Drive",
+                rig.DriveTree().TryGetValue("Music/t000.txt", out var text) && text == "new edit 0", text);
+            Check(label + "and the PC copy is still there", File.Exists(rig.LocalPath("Music/t000.txt")));
+        }
+
+        // ---------------- a recorded folder that became a Drive twin ----------------
+
+        /// <summary>
+        /// A batched pair has records in Disc. A second Drive folder called Disc
+        /// (or disc) appears beside it, both holding files, so both are left out
+        /// as a clash. After one full listing the old Disc id was gone from the
+        /// folder map while the records still named Disc, and every later pass
+        /// listed all of Drive again, for good. Now a folder Drive leaves out is
+        /// known, and the feed carries on.
+        /// </summary>
+        private static async Task TwinWithRecordsTests(string sandbox, string twinName) => await InBatches(async () =>
+        {
+            using var rig = new Rig(sandbox);
+            rig.Write("Disc/a.txt", "a", T0);
+            for (int i = 1; i <= 3; i++) rig.Write($"Other{i}/o.txt", "o" + i, T0);
+            var problem = await rig.Pass();
+            await rig.Pass();
+            Check($"twin {twinName}: the pair settled first", problem == null && rig.DriveTree().ContainsKey("Disc/a.txt"), problem);
+            var discId = rig.Drive.Find(rig.FolderId, "Disc")!;
+            var aId = rig.Drive.Find(rig.FolderId, "Disc/a.txt")!;
+
+            var twin = rig.Drive.AddFolder(twinName, rig.FolderId);
+            rig.Drive.AddFile("b.txt", Encoding.UTF8.GetBytes("b"), T0, twin);
+            var every = DriveMonitor.FullListEvery;
+            DriveMonitor.FullListEvery = TimeSpan.Zero;
+            try { await rig.Pass(); }
+            finally { DriveMonitor.FullListEvery = every; }
+
+            // A listing of all of Drive lists the pair's other folders, which
+            // nothing changed.
+            var others = Enumerable.Range(1, 3).Select(i => rig.Drive.Find(rig.FolderId, $"Other{i}")!).ToHashSet();
+            var listedOthers = new List<string>();
+            rig.Drive.BeforeAnswer = (kind, subject) => { if (kind == "list" && others.Contains(subject)) lock (listedOthers) listedOthers.Add(subject); };
+            problem = await rig.Pass();
+            int lists;
+            lock (listedOthers) { lists = listedOthers.Count; listedOthers.Clear(); }
+            Check($"twin {twinName}: the next pass goes by the feed, not a listing of all of Drive", lists == 0, $"{lists} untouched folders listed");
+
+            await rig.Pass();
+            lock (listedOthers) lists = listedOthers.Count;
+            Check($"twin {twinName}: and so does the one after", lists == 0, $"{lists} untouched folders listed");
+            rig.Drive.BeforeAnswer = null;
+
+            Check($"twin {twinName}: nothing was trashed or deleted on either side",
+                File.Exists(rig.LocalPath("Disc/a.txt")) && rig.Drive.Get(aId) is { Trashed: false } && rig.Drive.Get(discId) is { Trashed: false });
+
+            // The twin goes: Disc syncs again on the records it kept.
+            rig.Drive.Trash(twin);
+            rig.Write("Disc/new.txt", "new", T0);
+            int uploads = rig.Drive.Uploads;
+            problem = await rig.Pass();
+            await rig.Pass();
+            Check($"twin {twinName}: once the twin is gone, a new PC file goes up into Disc",
+                rig.Drive.Find(discId, "new.txt") != null, problem);
+            Check($"twin {twinName}: and the file already there is neither sent again nor trashed",
+                rig.Drive.Uploads - uploads == 1 && rig.Drive.Get(aId) is { Trashed: false } && File.Exists(rig.LocalPath("Disc/a.txt")),
+                $"{rig.Drive.Uploads - uploads} uploads");
+        });
     }
 }
