@@ -10157,9 +10157,9 @@ namespace ExplorerNative
         /// deleted: the PC folder to the Recycle Bin, or the Drive folder to the
         /// Drive trash through the API.
         /// </summary>
-        private async Task DeleteOtherSyncEnds(List<(DriveSyncPair Pair, bool DriveSide)> ends)
+        private async Task<List<string>?> DeleteOtherSyncEnds(List<(DriveSyncPair Pair, bool DriveSide)> ends)
         {
-            if (ends.Count == 0) return;
+            if (ends.Count == 0) return null;
             var owner = Handle;
             var client = Drive?.Client;
             var errors = new List<string>();
@@ -10177,6 +10177,14 @@ namespace ExplorerNative
                         if (driveSide)
                         {
                             if (!Directory.Exists(local)) { }
+                            // Only once Google Drive says its folder went: a trash
+                            // Drive refused (offline, no permission, a shared
+                            // drive's own root) used to send the PC copy to the
+                            // Recycle Bin anyway, with the pair already removed.
+                            else if (client == null)
+                                errors.Add($"{pair.LocalFolder}: kept, because Google Drive is not connected to say whether {pair.DriveFolderPath} went");
+                            else if (await DriveFolderStillThere(client, pair) is { } why)
+                                errors.Add(why);
                             // The shell would read it as "Backup" and recycle that.
                             else if (!string.Equals(local, pair.LocalFolder, StringComparison.Ordinal))
                                 errors.Add($"{pair.LocalFolder}: kept, because Windows cannot put a name ending in a dot or a space in the Recycle Bin");
@@ -10196,9 +10204,28 @@ namespace ExplorerNative
                 }
             });
 
-            if (IsDisposed) return;
-            if (errors.Count > 0) Announce("The other copy was not deleted. " + string.Join("; ", errors), isError: true);
-            else AnnounceOperation("delete.both", "Deleted on both sides");
+            // Said by DeleteSelected after its refresh, as the one closing
+            // sentence: said here, the "Deleted" after the refresh cut it off.
+            return IsDisposed ? null : errors;
+        }
+
+        /// <summary>
+        /// Why the PC end of a pair is kept: its Drive folder is still in Google
+        /// Drive, or Drive could not say. Null once Drive says it went (gone, or
+        /// in the trash itself or under a trashed folder).
+        /// </summary>
+        private static async Task<string?> DriveFolderStillThere(DriveClient client, DriveSyncPair pair)
+        {
+            try
+            {
+                return await client.FileNow(pair.DriveFolderId, CancellationToken.None) == null
+                    ? null
+                    : $"{pair.LocalFolder}: kept, because {pair.DriveFolderPath} is still in Google Drive";
+            }
+            catch (Exception ex)
+            {
+                return $"{pair.LocalFolder}: kept, because Google Drive could not say whether {pair.DriveFolderPath} went ({ex.Message})";
+            }
         }
 
         /// <summary>
@@ -10428,8 +10455,11 @@ namespace ExplorerNative
 
             // Delete anyway, with deletes on: the other end of each pair goes
             // too — to the Recycle Bin or the Drive trash, never for good.
+            // What happened there is said below, after the refresh, so the
+            // "Deleted" that follows it no longer cuts it off.
+            List<string>? otherSide = null;
             if (syncChoice == SyncDeleteChoice.DeleteAnyway)
-                await DeleteOtherSyncEnds(touched.Where(t => t.Pair.CopyDeletes).ToList());
+                otherSide = await DeleteOtherSyncEnds(touched.Where(t => t.Pair.CopyDeletes).ToList());
 
             var refreshing = System.Diagnostics.Stopwatch.StartNew();
             await RefreshAsync(landOn, folder: origin);
@@ -10440,12 +10470,20 @@ namespace ExplorerNative
             {
                 int failedCount = outcome.Errors.Count;
                 AnnounceOperation("delete.failed",
-                    outcome.Done > 0
+                    (outcome.Done > 0
                         ? $"Deleted {NameRules.Items(outcome.Done)}, but {failedCount:N0} could not be deleted"
                         : failedCount == 1 ? $"Could not delete: {outcome.Errors[0]}"
-                        : $"Could not delete {failedCount:N0} items");
-                ShowErrors(outcome.Errors);
+                        : $"Could not delete {failedCount:N0} items")
+                    + (otherSide is { Count: > 0 } ? "; the other copy was not deleted" : ""));
+                ShowErrors(outcome.Errors.Concat(otherSide ?? new List<string>()).ToList());
             }
+            else if (otherSide is { Count: > 0 })
+            {
+                Announce(NameRules.SayCount("Deleted", outcome.Done) + ", but the other copy was not deleted. " +
+                         string.Join("; ", otherSide), isError: true);
+                ShowErrors(otherSide);
+            }
+            else if (otherSide != null) AnnounceOperation("delete.both", "Deleted on both sides");
             else
             {
                 // One is just the verb (NameRules.SayCount).

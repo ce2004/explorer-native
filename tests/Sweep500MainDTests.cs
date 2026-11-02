@@ -120,10 +120,14 @@ namespace ExplorerNative
             if (src == null) { Check("MainForm.cs found", false); return; }
             var ends = Body(src, "DeleteOtherSyncEnds(List<");
             int driveSide = ends.IndexOf("if (driveSide)", StringComparison.Ordinal);
-            int asked = ends.IndexOf("FileNow(pair.DriveFolderId", StringComparison.Ordinal);
+            int asked = ends.IndexOf("DriveFolderStillThere(", StringComparison.Ordinal);
             int recycled = ends.IndexOf("ShellDelete.Recycle(pair.LocalFolder", StringComparison.Ordinal);
             Check("the PC end of a pair is recycled only after Drive is asked whether its folder went",
                 driveSide >= 0 && asked > driveSide && recycled > asked);
+            var still = Body(src, "Task<string?> DriveFolderStillThere(");
+            Check("Drive is asked about the pair's own folder, and only gone or trashed lets the PC end go",
+                still.Contains("FileNow(pair.DriveFolderId", StringComparison.Ordinal) &&
+                still.Contains("== null", StringComparison.Ordinal));
         }
 
         /// <summary>
