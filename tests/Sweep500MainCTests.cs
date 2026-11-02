@@ -26,7 +26,24 @@ namespace ExplorerNative
 
             EscapeDuringQuietRerunLeavesResults(main);
             SpaceMidWordNeverReachesTheControl(main);
+            DriveMenuHidesArchiveCommands(main);
             await Task.CompletedTask;
+        }
+
+        // Bug 3: on the Drive letter Compress, Extract and Extract here can
+        // only refuse, so the menu must not read them out.
+        private static void DriveMenuHidesArchiveCommands(string main)
+        {
+            var menu = Body(main, "private void ShowOurContextMenu(");
+            int at = menu.IndexOf("bool looksLikeArchive", StringComparison.Ordinal);
+            int end = at < 0 ? -1 : menu.IndexOf(';', at);
+            string looks = at < 0 || end < 0 ? "" : menu.Substring(at, end - at);
+            Check("Extract is decided with the Drive letter in mind",
+                looks.Contains("Drive.Owns", StringComparison.Ordinal) || looks.Contains("onDrive", StringComparison.Ordinal), looks);
+            Check("on the Drive letter Compress is hidden after ShowArchiveHidden shows it",
+                menu.Contains("onDrive = Drive != null && Drive.Owns(Active.CurrentPath)", StringComparison.Ordinal) &&
+                menu.IndexOf("if (onDrive) _compressItem.Visible = false", StringComparison.Ordinal) >
+                menu.IndexOf("ShowArchiveHidden();", StringComparison.Ordinal));
         }
 
         // Bug 2: Ctrl+Space mid-word toggled silently through the native

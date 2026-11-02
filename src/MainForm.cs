@@ -1715,7 +1715,8 @@ namespace ExplorerNative
             // the way past every other entry, and an Extract that can only ever
             // answer "that is not an archive" is a word heard on every single
             // opening of the menu to be useful on almost none of them. Compress
-            // stays, because anything selected can be compressed.
+            // stays, because anything selected can be compressed, except on the
+            // Drive letter, where no archive can be written (ShowOurContextMenu).
             _compressItem = ArchiveHidden(Item("&Compress…", Keys.None, CompressSelection));
             _contextMenu.Items.Add(_compressItem);
 
@@ -6521,13 +6522,19 @@ namespace ExplorerNative
             var focused = FocusedPath();
             // Apple Music counts as an archive here: read-only, and nothing in it is on disk.
             bool inArchive = Active.Archive != null || AppleMusic.Is(Active.CurrentPath);
-            bool looksLikeArchive = focused != null && !inArchive &&
+            // On the Drive letter an archive can be neither extracted in place
+            // nor written, so Extract and Compress could only refuse there.
+            bool onDrive = Drive != null && Drive.Owns(Active.CurrentPath);
+            bool looksLikeArchive = focused != null && !inArchive && !onDrive &&
+                                    !(Drive != null && Drive.Owns(focused)) &&
                                     !IsDirectoryInView(focused) &&
                                     ArchiveFormats.FromName(focused) is { CanExtract: true };
 
             // Inside an archive, which is read-only: what would change it, and
             // what needs a real file on disk, can only refuse there.
             ShowArchiveHidden();
+            // After ShowArchiveHidden, which shows Compress again on every open.
+            if (onDrive) _compressItem.Visible = false;
 
             // On an Apple Music song, Enter plays it, and the menu says so.
             bool appleSong = focused != null && AppleMusic.ItemAt(focused) is { IsSong: true };
