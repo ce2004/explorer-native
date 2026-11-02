@@ -977,13 +977,10 @@ namespace ExplorerNative
                 // Google's sign-in page in the browser unasked. Unmounted first,
                 // so the live drive cannot write a refreshed token back after
                 // the file is deleted.
-                DisconnectDrive?.Invoke();
+                // Switched off and saved now too, so Cancel or Escape cannot undo
+                // it. No to "files are still on their way" leaves everything as it was.
+                if (DisconnectDrive?.Invoke(this) == false) return;
                 bool gone = GoogleDrive.ForgetSignIn();
-
-                // Switched off and saved now, as Disconnect does, so Cancel or
-                // Escape cannot undo it: left on, the next start found no sign-in
-                // and opened Google's sign-in page in the browser unasked.
-                DisconnectDrive?.Invoke();
 
                 // The box, not the field: OK applies from the box, so setting
                 // the field alone was undone by pressing OK — signing out and

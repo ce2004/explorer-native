@@ -198,7 +198,7 @@ namespace ExplorerNative
                 string told = "";
                 SettingsForm.Confirm = (_, _, _) => true;
                 SettingsForm.Inform = (_, text, _) => told = text;
-                SettingsForm.DisconnectDrive = () => order.Add(File.Exists(token) ? "disconnect, token still there" : "disconnect, token gone");
+                SettingsForm.DisconnectDrive = _ => { order.Add(File.Exists(token) ? "disconnect, token still there" : "disconnect, token gone"); return true; };
 
                 bool found = false;
                 var error = OnSta(() =>
