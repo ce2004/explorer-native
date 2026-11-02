@@ -27,7 +27,37 @@ namespace ExplorerNative
             DrivesListFollowsDrivesComingAndGoing();
             TagEditorAsksAboutThePlayingSongFirst();
             MenuAccessKeysAreUnique();
+            StartupLoadsTheFrontTabFirst();
             await Task.CompletedTask;
+        }
+
+        // Bug 3: startup loaded the hidden second tab first (both lists off screen
+        // meanwhile), read its row aloud, and loaded it even with one tab.
+        private static void StartupLoadsTheFrontTabFirst()
+        {
+            var main = Source("MainForm.cs");
+            var init = Body(main, "private async Task InitialiseTabsAsync(");
+            int shown = init.IndexOf("ShowActivePane();", StringComparison.Ordinal);
+            int firstNav = init.IndexOf("NavigateAsync(", StringComparison.Ordinal);
+            Check("startup shows the front tab before loading anything", shown >= 0 && firstNav > shown);
+            int back = init.IndexOf("LoadTabAsync(", StringComparison.Ordinal);
+            Check("the tab behind is loaded after the front one", back > firstNav && firstNav >= 0);
+            int twoTabs = init.LastIndexOf("TwoTabs", back < 0 ? init.Length - 1 : back, StringComparison.Ordinal);
+            Check("the tab behind is loaded only with two tabs", back >= 0 && twoTabs >= 0 && twoTabs > firstNav);
+
+            var load = Body(main, "private async Task LoadTabAsync(");
+            Check("the tab behind loads quietly into its own pane",
+                load.Contains("quiet: true", StringComparison.Ordinal) && load.Contains("onPane:", StringComparison.Ordinal));
+
+            var capture = Body(main, "private void CaptureState()");
+            int empty = capture.IndexOf("IsNullOrEmpty(", StringComparison.Ordinal);
+            int last = capture.IndexOf("LastFolder", StringComparison.Ordinal);
+            Check("a tab not loaded yet keeps its saved folder", empty >= 0 && last > empty);
+
+            Check("switching to a tab never loaded loads it rather than re-reading nothing",
+                Body(main, "private void SetActiveTab(").Contains("LoadTabAsync(", StringComparison.Ordinal));
+            Check("turning two tabs on loads the second",
+                Body(main, "public void ApplyNewSettings(").Contains("LoadTabAsync(", StringComparison.Ordinal));
         }
 
         // Bug 8: two visible items sharing an access key make the letter cycle

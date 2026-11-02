@@ -485,47 +485,39 @@ namespace ExplorerNative
 
         private async Task InitialiseTabsAsync(string?[] tab1Candidates, string?[] tab2Candidates)
         {
-            // Tab switching is locked out until both panes are loaded: this
-            // routine moves _activeIndex around to fill each pane, and a Tab
-            // press landing in the middle of that would be overwritten a moment
-            // later, leaving the user on a tab they did not choose.
+            _tabCandidates = new[] { tab1Candidates, tab2Candidates };
+
+            // Whichever tab was in front last time comes back in front, unless
+            // a folder was named on the command line, which is a direct request
+            // to look at something and goes to tab one. The front tab is loaded
+            // first and alone: loading the hidden one first kept both lists off
+            // screen until it was in, read its row aloud over NVDA's own window
+            // announcement, and probed a share nobody could see with one tab.
+            int front = _settings.TwoTabs && _settings.ActiveTab == 1 &&
+                        string.IsNullOrEmpty(_settings.InitialFolderOverride) ? 1 : 0;
+
+            // Tab switching is locked out until the front tab is loaded, so a
+            // Tab press cannot land before the window has settled.
             _initialising = true;
             try
             {
                 // Off the constructor and behind a timeout, so a share that has
                 // gone to sleep costs a moment on a worker rather than a window
                 // that never appears.
-                var tab1 = await FirstExistingFolderAsync(tab1Candidates);
+                _tabLoadStarted[front] = true;
+                var folder = await FirstExistingFolderAsync(_tabCandidates[front]);
                 if (IsDisposed) return;
-                var tab2 = await FirstExistingFolderAsync(tab2Candidates);
-                if (IsDisposed) return;
+
+                _activeIndex = front;
+                ShowActivePane();
+                _pathLabel.Text = PathLabelFor(Active);
+                UpdateTitle();
 
                 // The remembered row is chosen while the list is built, not moved
                 // to afterwards, so startup settles on one row instead of
                 // announcing the first one on the way past.
-                _activeIndex = 1;
-                await NavigateAsync(tab2, preferPath: NullIfBlank(_settings.FocusedPathTab2));
+                await NavigateAsync(folder, preferPath: NullIfBlank(RememberedRowOf(front)), onPane: _panes[front]);
                 if (IsDisposed) return;
-
-                _activeIndex = 0;
-                ShowActivePane();
-                await NavigateAsync(tab1, preferPath: NullIfBlank(_settings.FocusedPathTab1));
-                if (IsDisposed) return;
-
-                // Whichever tab was in front last time comes back in front —
-                // unless a folder was named on the command line, which is a
-                // direct request to look at something and belongs in front of
-                // anything remembered. The folder goes to tab one, so restoring
-                // tab two over the top of it meant double-clicking a folder
-                // opened a window showing a different folder entirely.
-                if (_settings.ActiveTab == 1 && _settings.TwoTabs && string.IsNullOrEmpty(_settings.InitialFolderOverride))
-                {
-                    _activeIndex = 1;
-                    ShowActivePane();
-                    _pathLabel.Text = PathLabelFor(Active);
-                    UpdateTitle();
-                    UpdateStatus();
-                }
 
                 // Used. A window built later in this session — closing to nothing
                 // rather than to the tray, then the window shortcut — reopened on
@@ -544,10 +536,43 @@ namespace ExplorerNative
                 _waitingOutside = null;
                 ShowFolderFromOutside(later);
             }
+
+            // The tab behind, quietly, and only when there are two tabs.
+            if (_settings.TwoTabs && !IsDisposed) await LoadTabAsync(1 - front);
         }
 
         /// <summary>A folder handed over during startup, held until it has finished.</summary>
         private string? _waitingOutside;
+
+        /// <summary>The folders each tab tries at startup, kept for a tab loaded later.</summary>
+        private string?[][] _tabCandidates = { Array.Empty<string?>(), Array.Empty<string?>() };
+
+        /// <summary>Whether each tab's first load has begun, so it runs once.</summary>
+        private readonly bool[] _tabLoadStarted = new bool[2];
+
+        private string RememberedRowOf(int index) =>
+            index == 0 ? _settings.FocusedPathTab1 : _settings.FocusedPathTab2;
+
+        /// <summary>
+        /// A tab's first load, when it was not loaded at startup: the tab behind
+        /// (quiet; FocusListAndRow and the empty-folder line speak only for the
+        /// front tab, so it says nothing unless switched to), one-tab mode turned
+        /// off later, or a switch to a tab never loaded.
+        /// </summary>
+        private async Task LoadTabAsync(int index)
+        {
+            if (IsDisposed || _tabLoadStarted[index]) return;
+            _tabLoadStarted[index] = true;
+            try
+            {
+                var folder = await FirstExistingFolderAsync(_tabCandidates[index]);
+                // Gone somewhere meanwhile (a folder handed over): left there.
+                if (IsDisposed || !string.IsNullOrEmpty(_panes[index].CurrentPath)) return;
+                await NavigateAsync(folder, preferPath: NullIfBlank(RememberedRowOf(index)),
+                    onPane: _panes[index], quiet: true);
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("tab load: " + ex.Message); }
+        }
 
         /// <summary>Captures where we are, so a restart can land back on it.</summary>
         private void CaptureState()
@@ -557,13 +582,19 @@ namespace ExplorerNative
             // Reads each pane directly. Temporarily reassigning _activeIndex to
             // reuse FocusedPath() would make every selection handler briefly
             // believe the wrong pane was active.
-            _settings.FocusedPathTab1 = RealFocusOf(_panes[0]) ?? "";
-            _settings.FocusedPathTab2 = RealFocusOf(_panes[1]) ?? "";
-
-            if (_settings.RememberLastFolder)
+            //
+            // Only a tab that has loaded: one still loading (a close during
+            // startup) or never loaded (one-tab mode) keeps what was saved, so
+            // its place is still there next time instead of an empty one.
+            if (!string.IsNullOrEmpty(_panes[0].CurrentPath))
             {
-                _settings.LastFolder = RealFolderOf(_panes[0]);
-                _settings.LastFolderTab2 = RealFolderOf(_panes[1]);
+                _settings.FocusedPathTab1 = RealFocusOf(_panes[0]) ?? "";
+                if (_settings.RememberLastFolder) _settings.LastFolder = RealFolderOf(_panes[0]);
+            }
+            if (!string.IsNullOrEmpty(_panes[1].CurrentPath))
+            {
+                _settings.FocusedPathTab2 = RealFocusOf(_panes[1]) ?? "";
+                if (_settings.RememberLastFolder) _settings.LastFolderTab2 = RealFolderOf(_panes[1]);
             }
         }
 
@@ -834,6 +865,10 @@ namespace ExplorerNative
             // "Preferences saved".
             foreach (var pane in _panes) { pane.NeedsRefresh = true; pane.ReloadQuietly = true; }
             ScheduleWatchCheck();
+
+            // Two tabs turned on after a start with one: the second is loaded
+            // now, behind, as startup would have.
+            if (settings.TwoTabs) _ = LoadTabAsync(1);
         }
 
         /// <summary>
@@ -2177,6 +2212,14 @@ namespace ExplorerNative
             // to somewhere else; only the one you stop on is worth the work.
             ScheduleStatusUpdate();
             ScheduleTabAnnouncement();
+
+            // A tab never loaded (two tabs turned on after a one-tab start) is
+            // loaded now, rather than re-read from an empty path.
+            if (string.IsNullOrEmpty(Active.CurrentPath))
+            {
+                _ = LoadTabAsync(_activeIndex);
+                return;
+            }
 
             // A tab that was not watched while it was behind (the window coming
             // back from the tray watches only the front one) is watched now.
