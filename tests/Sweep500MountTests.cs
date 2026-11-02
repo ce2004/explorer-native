@@ -63,6 +63,16 @@ namespace ExplorerNative
                     drive.AddFolder("Doomed");
                 });
                 Run("the letter follows Drive's state as it is now", LetterFollowsTheStateNow);
+                Run("a listing keeps to the folder it lists", ListingKeepsToItsFolder, drive =>
+                {
+                    var music = drive.Find(FakeDrive.Root, "Music")!;
+                    var live = drive.AddFolder("Live", music);
+                    foreach (var name in new[] { "a.flac", "b.flac", "c.flac" })
+                        drive.AddFile(name, DriveMountTests.Bytes(100, name[0]), When, live);
+                    var gig = drive.AddFolder("Gig", music);
+                    drive.AddFile("d.flac", DriveMountTests.Bytes(100, 4), When, gig);
+                    drive.AddFile("e.flac", DriveMountTests.Bytes(100, 5), When, gig);
+                });
             }
             finally
             {
@@ -362,6 +372,78 @@ namespace ExplorerNative
                     DriveMountTests.Eventually(() => mount.LetterShown && Directory.Exists(rig.Letter + "\\"), 10000), rig.LogText());
             }
             finally { DriveMount.Probe.WhileOffline = TimeSpan.FromHours(1); }
+        }
+
+        // ---- 5. a folder renamed or removed while it is being listed ----
+
+        private static void ListingKeepsToItsFolder(Rig rig)
+        {
+            var live = rig.Drive.Find(rig.Music, "Live")!;
+            var a = rig.Drive.Find(live, "a.flac")!;
+            var gig = rig.Drive.Find(rig.Music, "Gig")!;
+            const BindingFlags Private = BindingFlags.NonPublic | BindingFlags.Instance;
+            var ids = (System.Collections.Concurrent.ConcurrentDictionary<string, string>)
+                typeof(DriveMount).GetField("_ids", Private)!.GetValue(rig.Mount)!;
+            var listings = (System.Collections.Concurrent.ConcurrentDictionary<string, DrivePlaced[]>)
+                typeof(DriveMount).GetField("_listings", Private)!.GetValue(rig.Mount)!;
+
+            Equal("Music lists through the letter", "6", Directory.GetFileSystemEntries(rig.P("Music")).Length.ToString());
+
+            // A folder's listing held at the fake Drive until let go; the hook only waits.
+            var gate = new ManualResetEventSlim(false);
+            string holdFolder = live;
+            int held = 0;
+            rig.Drive.OnList = async (folder, ct) =>
+            {
+                if (folder != holdFolder || gate.IsSet) return;
+                Interlocked.Increment(ref held);
+                await Task.Run(() => gate.Wait(TimeSpan.FromSeconds(20), ct), ct);
+            };
+            try
+            {
+                var listing = Task.Run(() => rig.Mount.Populate(rig.P("Music", "Live")));
+                Check("a listing of Live is under way", DriveMountTests.Eventually(() => held > 0, 10000));
+                bool renamed = Within(10000, () => Directory.Move(rig.P("Music", "Live"), rig.P("Music", "Live 2019")),
+                    out var renameError);
+                Check("Live is renamed on the letter while it is being listed", renamed && renameError == null,
+                    renameError?.Message);
+                gate.Set();
+                Check("the listing ends", listing.Ended(30000));
+
+                Check("no file is left bound under the folder's old name",
+                    !ids.Keys.Any(k => k.StartsWith("music\\live\\", StringComparison.Ordinal)),
+                    string.Join(", ", ids.Keys.Where(k => k.StartsWith("music\\live", StringComparison.Ordinal))));
+                bool made = Within(10000, () => Directory.CreateDirectory(rig.P("Music", "Live")), out var makeError);
+                Check("a new folder can be made with the old name", made && makeError == null, makeError?.Message);
+                Equal("the new folder is empty on the letter", "0",
+                    Directory.GetFileSystemEntries(rig.P("Music", "Live")).Length.ToString());
+                Check("and in the file manager", rig.Mount.TryListing(rig.P("Music", "Live"), out var shown) && shown.Count == 0,
+                    string.Join(", ", shown.Select(s => s.Name)));
+                Within(10000, () => File.Delete(rig.P("Music", "Live", "a.flac")), out _);
+                Check("deleting a.flac in the new folder trashes nothing in the renamed one", !rig.Drive.Get(a)!.Trashed);
+                Equal("the renamed folder lists, with all its files", "3",
+                    Directory.GetFileSystemEntries(rig.P("Music", "Live 2019")).Length.ToString());
+
+                // The file manager's way: taken off the letter while it is listed.
+                Check("Gig is in Music's listing", rig.Mount.TryListing(rig.P("Music"), out var music) &&
+                    music.Any(m => m.Name == "Gig"));
+                gate.Reset();
+                held = 0;
+                holdFolder = gig;
+                var gigListing = Task.Run(() => rig.Mount.Populate(rig.P("Music", "Gig")));
+                Check("a listing of Gig is under way", DriveMountTests.Eventually(() => held > 0, 10000));
+                rig.Mount.RemoveOne(rig.P("Music", "Gig"));
+                gate.Set();
+                Check("that listing ends", gigListing.Ended(30000));
+                Check("nothing is left under a folder taken off the letter while it was listed",
+                    !ids.Keys.Any(k => k.StartsWith("music\\gig\\", StringComparison.Ordinal)) && !listings.ContainsKey("music\\gig"),
+                    string.Join(", ", ids.Keys.Where(k => k.StartsWith("music\\gig", StringComparison.Ordinal))));
+            }
+            finally
+            {
+                gate.Set();
+                rig.Drive.OnList = null;
+            }
         }
     }
 }

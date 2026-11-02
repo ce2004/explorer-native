@@ -331,10 +331,16 @@ namespace ExplorerNative
 
                     if (populated)
                     {
+                        // Made a moment ago, so empty: whatever an older folder of
+                        // this name left under the key is not its contents.
                         var child = ChildKey(relative, name);
-                        _populated[child] = true;
-                        _listings.TryAdd(child, Array.Empty<DrivePlaced>());
-                        _listedAt[child] = Environment.TickCount64;
+                        lock (_treeGate)
+                        {
+                            ForgetUnder(child);
+                            _populated[child] = true;
+                            _listings[child] = Array.Empty<DrivePlaced>();
+                            _listedAt[child] = Environment.TickCount64;
+                        }
                     }
                 }
 
@@ -349,6 +355,27 @@ namespace ExplorerNative
                 _log($"  could not place {entry.Name}: {ex.Message}");
                 return null;
             }
+        }
+
+        /// <summary>
+        /// Under _treeGate: every map entry below the folder at <paramref name="key"/>
+        /// (not the folder itself), for a folder that has only just been made.
+        /// Files saved here are left to their own handling.
+        /// </summary>
+        private void ForgetUnder(string key)
+        {
+            var below = key + "\\";
+            bool Under(string k) => k.StartsWith(below, StringComparison.Ordinal);
+            foreach (var k in _ids.Keys) if (Under(k)) _ids.TryRemove(k, out _);
+            foreach (var k in _folders.Keys) if (Under(k)) _folders.TryRemove(k, out _);
+            foreach (var k in _driveIds.Keys) if (Under(k)) _driveIds.TryRemove(k, out _);
+            foreach (var k in _listings.Keys) if (Under(k)) _listings.TryRemove(k, out _);
+            foreach (var k in _listedAt.Keys) if (Under(k)) _listedAt.TryRemove(k, out _);
+            foreach (var k in _populated.Keys) if (Under(k)) _populated.TryRemove(k, out _);
+            foreach (var k in _answeredOffline.Keys) if (Under(k)) _answeredOffline.TryRemove(k, out _);
+            foreach (var (id, where) in _whereIs.ToArray())
+                if (where.Folder == key || Under(where.Folder))
+                    _whereIs.TryRemove(new KeyValuePair<string, (string, string)>(id, where));
         }
 
         /// <summary>Every name the folder at <paramref name="relative"/> shows now, files kept only here included.</summary>
@@ -585,7 +612,17 @@ namespace ExplorerNative
             });
             string oldName = row?.Name ?? fromLeaf;
 
-            if (toKey != fromKey) RekeyTree(fromKey, toKey);
+            if (toKey != fromKey)
+            {
+                RekeyTree(fromKey, toKey);
+                // A listing still running in or under it marked its folder
+                // populated when it began, and that mark moved with the rest:
+                // the folder would count as listed with nothing written. The
+                // listing itself is dropped (StillListing), so it is listed again.
+                foreach (var busy in _populating.Keys)
+                    if (busy == fromKey || busy.StartsWith(fromKey + "\\", StringComparison.Ordinal))
+                        ForgetKey(toKey + busy[fromKey.Length..]);
+            }
             if (_ids.TryGetValue(toKey, out var id)) _whereIs[id] = (toParent, name);
             MovePending(fromKey, toKey, name);
 
@@ -1445,7 +1482,7 @@ namespace ExplorerNative
             // window showed nothing until the last of them had been listed; now
             // the first thousand rows are on screen while the rest are still
             // coming.
-            var session = new PlacementSession(this, relative);
+            var session = new PlacementSession(this, relative) { FolderId = folderId };
             int placedCount = 0;
 
             void Place(List<DriveEntry> page)
@@ -1464,6 +1501,13 @@ namespace ExplorerNative
 
             // The whole listing, now that it is whole, replaces what was there.
             CommitListing(relative, session);
+            if (session.Stale)
+            {
+                // Renamed, moved or removed meanwhile: nothing of it was kept,
+                // and the folder is listed again wherever it is now.
+                _log($"  populate '{relative}': the folder moved while it was listed; not kept");
+                return false;
+            }
 
             // Listed. An empty folder is a listed folder too.
             populated = true;
@@ -1645,6 +1689,12 @@ namespace ExplorerNative
             /// </summary>
             public readonly HashSet<DrivePlaced> Before = new(ReferenceEqualityComparer.Instance);
 
+            /// <summary>The Drive id of the folder being listed: what its key must still name for the listing to be kept.</summary>
+            public string? FolderId;
+
+            /// <summary>The folder was renamed, moved or removed while it was listed: nothing more of this listing is written.</summary>
+            public bool Stale;
+
             public PlacementSession(DriveMount mount, string relative)
             {
                 // A file saved here and not yet on Drive has its name: nothing the
@@ -1674,6 +1724,35 @@ namespace ExplorerNative
         /// its row added to the session.
         /// </summary>
         private void BuildEntries(string relative, List<DriveEntry> entries, PlacementSession session,
+            List<DrivePlaced> placedPage)
+        {
+            // Under _treeGate, so a rename or removal of the folder (which re-keys
+            // or drops its maps under the same lock) comes wholly before or after
+            // a page, never in the middle of one.
+            lock (_treeGate)
+            {
+                if (!StillListing(relative, session)) return;
+                BuildEntriesHeld(relative, entries, session, placedPage);
+            }
+        }
+
+        /// <summary>
+        /// Under _treeGate: whether the folder a listing was started for is
+        /// still at its key. A listing kept the key it started with, so a
+        /// folder renamed on the letter while it was listed had its files bound
+        /// under the old name; a new folder made there then showed the renamed
+        /// folder's files, and deleting one trashed the real file.
+        /// </summary>
+        private bool StillListing(string relative, PlacementSession session)
+        {
+            if (session.Stale) return false;
+            if (relative.Length == 0 || session.FolderId == null) return true;
+            if (_folders.TryGetValue(relative, out var id) && id == session.FolderId) return true;
+            session.Stale = true;
+            return false;
+        }
+
+        private void BuildEntriesHeld(string relative, List<DriveEntry> entries, PlacementSession session,
             List<DrivePlaced> placedPage)
         {
             var used = session.Used;
@@ -1814,6 +1893,19 @@ namespace ExplorerNative
         /// </summary>
         private void CommitListing(string relative, PlacementSession session)
         {
+            DrivePlaced[]? previous = null;
+            lock (_treeGate)
+            {
+                if (!StillListing(relative, session)) return;
+                previous = CommitListingHeld(relative, session);
+            }
+            if (previous != null && _listings.TryGetValue(relative, out var after))
+                NoteListingChanges(relative, previous, after);
+        }
+
+        /// <summary>CommitListing under _treeGate; returns the listing it replaced.</summary>
+        private DrivePlaced[]? CommitListingHeld(string relative, PlacementSession session)
+        {
             var placed = session.Placed.ToArray();
             DrivePlaced[]? previous = null;
             _listings.AddOrUpdate(relative, Overlay(relative, placed), (_, now) =>
@@ -1847,9 +1939,7 @@ namespace ExplorerNative
             _listedAt[relative] = Environment.TickCount64;
             _answeredOffline.TryRemove(relative, out _);
             ForgetGone(relative, session);
-
-            if (previous != null && _listings.TryGetValue(relative, out var after))
-                NoteListingChanges(relative, previous, after);
+            return previous;
         }
 
         /// <summary>
