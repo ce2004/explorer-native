@@ -112,7 +112,14 @@ namespace ExplorerNative
             CancellationToken token, bool estimate = false)
         {
             using var file = OpenFile(archivePath);
+            return Extract(file, archivePath, format, rules, threads, reporter, errors, token, estimate);
+        }
 
+        /// <summary>The same, from an archive already open (tests count what is read).</summary>
+        internal static int Extract(Stream file, string archivePath, ArchiveFormat format,
+            ExtractionRules rules, int threads, ArchiveEngine.Reporter reporter, List<string> errors,
+            CancellationToken token, bool estimate)
+        {
             if (format.SingleFile || format.Id == "tar.gz")
             {
                 // Members inflated on every core where they are ParallelGZip's
@@ -1246,27 +1253,34 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// A read-only pass-through that counts what has been read from the
-        /// archive file, for progress measured through the compressed bytes.
-        /// The count is read from the reporting thread, so it is interlocked.
+        /// A read-only pass-through that keeps how far through the archive file
+        /// it has got, for progress measured through the file. It seeks, so
+        /// TarReader jumps over the data of entries a selection skips: unseekable,
+        /// opening one small file in a 40GB tar read all 40GB. The place is read
+        /// from the reporting thread, so it is kept here, interlocked, and the
+        /// file's own Position is touched only on the reading thread.
         /// </summary>
         private sealed class ReadCounter : Stream
         {
             private readonly Stream _inner;
-            private long _read;
+            private long _at;
 
-            public ReadCounter(Stream inner) => _inner = inner;
+            public ReadCounter(Stream inner)
+            {
+                _inner = inner;
+                if (inner.CanSeek) _at = inner.Position;
+            }
 
-            public long Consumed => Interlocked.Read(ref _read);
+            public long Consumed => Interlocked.Read(ref _at);
 
             public override bool CanRead => true;
-            public override bool CanSeek => false;
+            public override bool CanSeek => _inner.CanSeek;
             public override bool CanWrite => false;
             public override long Length => _inner.Length;
             public override long Position
             {
                 get => _inner.Position;
-                set => throw new NotSupportedException();
+                set { _inner.Position = value; Interlocked.Exchange(ref _at, value); }
             }
 
             public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
@@ -1274,12 +1288,18 @@ namespace ExplorerNative
             public override int Read(Span<byte> buffer)
             {
                 int got = _inner.Read(buffer);
-                if (got > 0) Interlocked.Add(ref _read, got);
+                if (got > 0) Interlocked.Add(ref _at, got);
                 return got;
             }
 
             public override void Flush() { }
-            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+            public override long Seek(long offset, SeekOrigin origin)
+            {
+                long now = _inner.Seek(offset, origin);
+                Interlocked.Exchange(ref _at, now);
+                return now;
+            }
             public override void SetLength(long value) => throw new NotSupportedException();
             public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 

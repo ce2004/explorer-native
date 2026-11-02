@@ -29,7 +29,82 @@ namespace ExplorerNative
             IncrementalTarFoldersAreFolders();
             ReadFailureIsNotDamage("tar");
             ReadFailureIsNotDamage("tar.gz");
+            OneMemberOfATarSkipsTheRest();
             await Task.CompletedTask;
+        }
+
+        /// <summary>Passes everything through and counts the bytes read.</summary>
+        private sealed class CountingStream : Stream
+        {
+            private readonly Stream _inner;
+            public long BytesRead;
+            public CountingStream(Stream inner) => _inner = inner;
+            public override bool CanRead => true;
+            public override bool CanSeek => _inner.CanSeek;
+            public override bool CanWrite => false;
+            public override long Length => _inner.Length;
+            public override long Position { get => _inner.Position; set => _inner.Position = value; }
+            public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+            public override int Read(Span<byte> buffer)
+            {
+                int got = _inner.Read(buffer);
+                Interlocked.Add(ref BytesRead, got);
+                return got;
+            }
+            public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
+            public override void Flush() { }
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        }
+
+        // Bug 4: Enter on a small file in a big .tar read the whole archive,
+        // because the stream under TarReader said it could not seek.
+        private static void OneMemberOfATarSkipsTheRest()
+        {
+            var dir = NewTemp("seek");
+            try
+            {
+                var path = Path.Combine(dir, "backup.tar");
+                var readme = new byte[2048];
+                new Random(4).NextBytes(readme);
+                using (var file = File.Create(path))
+                using (var writer = new TarWriter(file, TarEntryFormat.Pax))
+                {
+                    writer.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, "readme.txt") { DataStream = new MemoryStream(readme) });
+                    writer.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, "big.bin") { DataStream = new MemoryStream(new byte[64 * 1024 * 1024]) });
+                    writer.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, "after.txt") { DataStream = new MemoryStream(readme) });
+                }
+
+                var dest = Path.Combine(dir, "out");
+                Directory.CreateDirectory(dest);
+                var errors = new List<string>();
+                long read;
+                using (var counting = new CountingStream(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite)))
+                {
+                    TarEngine.Extract(counting, path, Format("tar"),
+                        ExtractionRules.Selecting(dest, ArchiveBrowser.SelectionMap(new[] { "readme.txt" })), 2,
+                        new ArchiveEngine.Reporter(null), errors, CancellationToken.None, estimate: true);
+                    read = counting.BytesRead;
+                }
+
+                Equal("archives2 seek: one member comes out without complaint", "", string.Join(" | ", errors));
+                var got = Path.Combine(dest, "readme.txt");
+                Check("archives2 seek: the chosen file arrives whole", File.Exists(got) && File.ReadAllBytes(got).AsSpan().SequenceEqual(readme));
+                Check("archives2 seek: files not chosen stay in the archive", !File.Exists(Path.Combine(dest, "big.bin")));
+                Check("archives2 seek: the big file not chosen is jumped over, not read", read < 4 * 1024 * 1024, $"{read:N0} bytes read");
+
+                // Everything still comes out when everything is asked for.
+                var all = Path.Combine(dir, "all");
+                Directory.CreateDirectory(all);
+                var errors2 = new List<string>();
+                TarEngine.Extract(path, Format("tar"), ExtractionRules.Selecting(all, n => n), 2,
+                    new ArchiveEngine.Reporter(null), errors2, CancellationToken.None, estimate: true);
+                Check("archives2 seek: a whole extraction still gives every file",
+                    errors2.Count == 0 && new FileInfo(Path.Combine(all, "big.bin")).Length == 64L * 1024 * 1024 &&
+                    File.ReadAllBytes(Path.Combine(all, "after.txt")).AsSpan().SequenceEqual(readme),
+                    string.Join(" | ", errors2));
+            }
+            finally { try { Directory.Delete(dir, true); } catch { } }
         }
 
         /// <summary>Eight 300KB files, a 12MB one (past the inline limit, so it goes through a pipe), then four more.</summary>
