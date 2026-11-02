@@ -32,6 +32,7 @@ namespace ExplorerNative
             await PasswordSevenZipTests();
             await SevenZipLinkTests();
             await RepeatedNamesTests();
+            await SevenZipBadNameTests();
         }
 
         /// <summary>Runs the bundled 7za with these arguments in a folder, for making fixtures.</summary>
@@ -504,6 +505,60 @@ namespace ExplorerNative
                     PasteConflictPolicy.AutoRename, null, 1, null, CancellationToken.None);
                 Check("repeated names: an archive with none says nothing", plain.Errors.Count == 0 && plain.Items == 2,
                     Said(plain));
+            }
+            finally
+            {
+                try { Directory.Delete(dir, recursive: true); } catch { }
+            }
+        }
+
+        // ---------- 8: names 7-Zip renames on its own ----------
+
+        /// <summary>
+        /// 7-Zip writes a name Windows cannot hold under one it makes up: CON as
+        /// _CON, "trail." as trail_, "a:b" as a_b. Withheld looked for bsdtar's
+        /// spellings, so those went in under 7-Zip's names without a word,
+        /// against the rule that a bad name is refused by the name it had.
+        /// </summary>
+        private static async Task SevenZipBadNameTests()
+        {
+            Equal("7-Zip names: CON is spelled as 7-Zip writes it", "_CON", BsdTar.CleanLike7Zip("CON"));
+            Equal("7-Zip names: aux.txt is spelled as 7-Zip writes it", "_aux.txt", BsdTar.CleanLike7Zip("aux.txt"));
+            Equal("7-Zip names: a trailing dot is spelled as 7-Zip writes it", "trail_", BsdTar.CleanLike7Zip("trail."));
+            Equal("7-Zip names: a trailing space is spelled as 7-Zip writes it", "name_", BsdTar.CleanLike7Zip("name "));
+            Equal("7-Zip names: a colon is spelled as 7-Zip writes it", "résumé_v2.txt", BsdTar.CleanLike7Zip("résumé:v2.txt"));
+            Equal("7-Zip names: a reserved name in a folder is spelled as 7-Zip writes it", "dir/_CON.txt",
+                BsdTar.CleanLike7Zip("dir/CON.txt"));
+
+            if (BsdTar.SevenZipExecutable == null) return;
+            var dir = NewDir("bad7");
+            try
+            {
+                WriteTar(Path.Combine(dir, "bad.tar"),
+                    ("ok.txt", "ok", null), ("CON", "c", null), ("aux.txt", "a", null), ("nul.flac", "n", null),
+                    ("trail.", "t", null), ("name ", "s", null), ("résumé:v2.txt", "r", null),
+                    ("dir/CON.txt", "d", null), ("bad./x.txt", "x", null), ("last.txt", "last", null));
+                SevenZip(dir, "a", "-txz", "bad.tar.xz", "bad.tar");
+                SevenZip(dir, "a", "-tbzip2", "bad.tar.bz2", "bad.tar");
+
+                foreach (var archive in new[] { "bad.tar.xz", "bad.tar.bz2" })
+                {
+                    var into = Path.Combine(dir, "out-" + archive);
+                    var result = await ArchiveEngine.ExtractAsync(Path.Combine(dir, archive), into,
+                        PasteConflictPolicy.AutoRename, null, 1, null, CancellationToken.None);
+                    var said = Said(result);
+                    Check($"7-Zip names: the good files of a {archive} come out",
+                        File.Exists(Path.Combine(into, "ok.txt")) && File.Exists(Path.Combine(into, "last.txt")) &&
+                        !Directory.EnumerateDirectories(into, ".extracting-*").Any(), said);
+                    var renamed = new[] { "_CON", "_aux.txt", "_nul.flac", "trail_", "name_", "résumé_v2.txt", "dir/_CON.txt", "bad_/x.txt" }
+                        .Where(n => File.Exists(Path.Combine(into, n))).ToList();
+                    Check($"7-Zip names: nothing from a {archive} goes in under a name 7-Zip made up",
+                        renamed.Count == 0, string.Join(", ", renamed));
+                    var unsaid = new[] { "CON", "aux.txt", "nul.flac", "trail.", "name ", "résumé:v2.txt", "dir/CON.txt", "bad./x.txt" }
+                        .Where(n => !said.Contains($"\"{n}\"")).ToList();
+                    Check($"7-Zip names: each bad name in a {archive} is refused by the name it had",
+                        unsaid.Count == 0, "unsaid: " + string.Join(", ", unsaid) + " / " + said);
+                }
             }
             finally
             {

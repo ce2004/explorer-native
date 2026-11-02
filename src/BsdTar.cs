@@ -1049,7 +1049,8 @@ namespace ExplorerNative
             IReadOnlyCollection<string> staged,
             string destination,
             string? listAgain,
-            CancellationToken token)
+            CancellationToken token,
+            bool sevenZip = false)
         {
             var withheld = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             var present = new HashSet<string>(staged, StringComparer.OrdinalIgnoreCase);
@@ -1058,8 +1059,20 @@ namespace ExplorerNative
             {
                 if (failure != null) continue;
                 var name = raw.TrimEnd('/');
-                if (name.Length == 0 || name.Any(c => c >= 128)) continue;
+                // 7-Zip's names are exact UTF-8, so none is passed over, and
+                // it renames in its own way: CON as _CON, "trail." as trail_.
+                if (name.Length == 0 || (!sevenZip && name.Any(c => c >= 128))) continue;
                 if (ArchiveEngine.SafeTarget(destination, WithoutDotSegments(name), out var reason) != null || reason == null) continue;
+
+                if (sevenZip)
+                {
+                    foreach (var spelled in SevenZipSpellings(name))
+                    {
+                        var exact = ExtractionRules.Normalise(spelled);
+                        if (present.Contains(exact)) withheld.TryAdd(exact, reason);
+                    }
+                    continue;
+                }
 
                 if (name.Contains('?'))
                 {
@@ -1166,6 +1179,36 @@ namespace ExplorerNative
             var chars = segment.Select(c => c < 32 || ":*?\"<>|".IndexOf(c) >= 0 ? '_' : c).ToArray();
             return new string(chars).TrimEnd('.', ' ');
         }));
+
+        /// <summary>
+        /// What 7-Zip (25.01) does on Windows to a name it cannot store, in each
+        /// segment: the forbidden characters become underscores, each trailing
+        /// dot or space becomes one ("trail." is "trail_"), and a device name,
+        /// with or without an extension, gets one in front ("aux.txt" is
+        /// "_aux.txt").
+        /// </summary>
+        internal static string CleanLike7Zip(string name) => CleanLike7Zip(name, devices: true);
+
+        private static string CleanLike7Zip(string name, bool devices) =>
+            string.Join('/', name.Replace('\\', '/').Split('/').Select(segment =>
+            {
+                var chars = segment.Select(c => c < 32 || ":*?\"<>|".IndexOf(c) >= 0 ? '_' : c).ToArray();
+                for (int i = chars.Length - 1; i >= 0 && chars[i] is '.' or ' '; i--) chars[i] = '_';
+                var clean = new string(chars);
+                int dot = segment.IndexOf('.');
+                var stem = (dot < 0 ? segment : segment[..dot]).ToUpperInvariant();
+                bool device = stem is "CON" or "PRN" or "AUX" or "NUL" ||
+                              (stem.Length == 4 && (stem.StartsWith("COM") || stem.StartsWith("LPT")) && stem[3] is >= '1' and <= '9');
+                return devices && device ? "_" + clean : clean;
+            }));
+
+        /// <summary>
+        /// Every spelling a refused name may have in 7-Zip's staging: as 7-Zip
+        /// renames it, the same without the device-name underscore, and as it
+        /// is (a name the rules refuse that Windows takes as it stands).
+        /// </summary>
+        private static IEnumerable<string> SevenZipSpellings(string name) =>
+            new[] { CleanLike7Zip(name, devices: true), CleanLike7Zip(name, devices: false), name };
 
         /// <summary>A name without the drive letters and leading slashes bsdtar removes.</summary>
         private static string StripRoot(string name)

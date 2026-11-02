@@ -352,7 +352,7 @@ namespace ExplorerNative
                     {
                         // Its summary's "Files: 5", read here rather than from
                         // the kept lines, which a big archive's may not reach.
-                        var files = SevenZipFilesLine.Match(line);
+                        var files = SevenZipFilesLine.Match(line.TrimEnd());
                         if (files.Success && int.TryParse(files.Groups[1].Value, out var count))
                             Volatile.Write(ref filesSaid, count);
                         if (!line.StartsWith("- ", StringComparison.Ordinal)) return;
@@ -485,7 +485,7 @@ namespace ExplorerNative
                     {
                         List<(string Name, string? Failure)> names;
                         lock (printed) names = new List<(string, string?)>(printed);
-                        return Withheld(names, staged, destination, null, token);
+                        return Withheld(names, staged, destination, null, token, sevenZip: true);
                     }, zone);
 
                 errors.AddRange(notes);
@@ -721,7 +721,8 @@ namespace ExplorerNative
                 var current = new StringBuilder();
                 void Flush()
                 {
-                    var text = current.ToString().Trim();
+                    var whole = current.ToString();
+                    var text = whole.Trim();
                     current.Clear();
                     if (text.Length == 0) return;
                     var m = SevenZipProgress.Match(text);
@@ -737,7 +738,9 @@ namespace ExplorerNative
                         return;
                     }
                     lock (lines) KeepLine(lines, text);
-                    try { onLine?.Invoke(text); } catch { }
+                    // The end kept: "- name " is an entry whose name ends in a
+                    // space, which 7-Zip writes as "name_".
+                    try { onLine?.Invoke(whole.TrimStart()); } catch { }
                 }
 
                 try
