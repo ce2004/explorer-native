@@ -94,11 +94,14 @@ namespace ExplorerNative
             // A WAV over 4GB whose 32-bit size wrapped: Windows plays it only
             // as far as the wrapped size (a 5GB recording stopped after one),
             // so it goes to the managed reader, which takes the file's length.
-            if (stream == null && OverFourGigabytes(path) && WavDecoder.IsWav(path, null))
+            // Through a download too: every track on a share or the Drive letter
+            // has one, and a 5GB recording there still stopped at the wrapped
+            // size. The size then comes from the download, never the path.
+            if (OverFourGigabytes(path, stream) && WavDecoder.IsWav(path, stream))
             {
                 var big = new WavDecoder();
-                if (big.Open(path, null) && big.LengthFromFile) { why = big.Diagnostic; return big; }
-                big.Dispose();
+                if (big.Open(path, stream) && big.LengthFromFile) { why = big.Diagnostic; return big; }
+                big.Dispose();   // leaves the stream alone, so Media Foundation can still read it
             }
 
             var media = new AudioDecoder();
@@ -221,9 +224,17 @@ namespace ExplorerNative
                    head[2] == (byte)'g' && head[3] == (byte)'S';
         }
 
-        private static bool OverFourGigabytes(string path)
+        private static bool OverFourGigabytes(string path, System.Runtime.InteropServices.ComTypes.IStream? stream)
         {
-            try { return new FileInfo(NameRules.ExactPath(path)).Length > uint.MaxValue; }
+            try
+            {
+                if (stream != null)
+                {
+                    stream.Stat(out var stat, 1);   // STATFLAG_NONAME
+                    return stat.cbSize > uint.MaxValue;
+                }
+                return new FileInfo(NameRules.ExactPath(path)).Length > uint.MaxValue;
+            }
             catch { return false; }
         }
 
