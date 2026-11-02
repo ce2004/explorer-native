@@ -18,12 +18,20 @@ namespace ExplorerNative
         private readonly IRangeSource _source;
         private readonly CancellationTokenSource _closing = new();
         private long _position;
+        private int _failed;
 
         public RangeStream(IRangeSource source) => _source = source;
+
+        /// <summary>
+        /// Whether the last read stopped short of the file's end because the bytes did not come (Google stopped
+        /// answering), not because the file ended. A decoder sees both as the end; the response must not.
+        /// </summary>
+        public bool Failed => Volatile.Read(ref _failed) != 0;
 
         public void Read(byte[] buffer, int count, IntPtr bytesReadOut)
         {
             int total = 0;
+            bool failed = false;
             try
             {
                 while (total < count)
@@ -31,11 +39,16 @@ namespace ExplorerNative
                     long at = Interlocked.Read(ref _position) + total;
                     if (at >= _source.Length) break;
                     int got = _source.ReadAsync(at, buffer.AsMemory(total, count - total), _closing.Token).GetAwaiter().GetResult();
-                    if (got <= 0) break;
+                    if (got <= 0) { failed = !_closing.IsCancellationRequested; break; }
                     total += got;
                 }
             }
-            catch { }
+            catch (OperationCanceledException) when (_closing.IsCancellationRequested) { }
+            catch { failed = true; }
+            // Cleared only by a read that brought bytes: a decoder looking at the end of the file after a
+            // failure reads nothing there, and that is not the failure going away.
+            if (failed) Volatile.Write(ref _failed, 1);
+            else if (total > 0) Volatile.Write(ref _failed, 0);
             Interlocked.Add(ref _position, total);
             if (bytesReadOut != IntPtr.Zero) Marshal.WriteInt32(bytesReadOut, total);
         }
@@ -67,11 +80,14 @@ namespace ExplorerNative
         }
     }
 
-    /// <summary>What <c>/api/audio</c> serves for one file: 24-bit PCM WAV at the source's own rate.</summary>
-    public sealed record AudioPlan(int Rate, int Channels, long Frames)
+    /// <summary>
+    /// What <c>/api/audio</c> serves for one file: PCM WAV, 24-bit at the source's own rate unless that would
+    /// not fit a WAV's 4 GB (<see cref="ConnectAudio.PlanFor"/>).
+    /// </summary>
+    public sealed record AudioPlan(int Rate, int Channels, long Frames, int Bits = 24)
     {
         public const int HeaderBytes = 44;
-        public int BlockAlign => Channels * 3;
+        public int BlockAlign => Channels * (Bits / 8);
         public long DataBytes => Frames * BlockAlign;
         public long TotalBytes => HeaderBytes + DataBytes;
     }
@@ -136,8 +152,20 @@ namespace ExplorerNative
                 long frames = decoder.Duration > 0
                     ? (long)Math.Round(decoder.Duration * rate)
                     : EstimateFrames(fileBytes, rate);
-                frames = Math.Clamp(frames, 0, MostDataBytes / (channels * 3));
-                return new ConnectAudio(decoder, stream, new AudioPlan(rate, channels, frames));
+                var plan = PlanFor(rate, channels, Math.Max(0, frames));
+                if (plan.Rate != rate)
+                {
+                    // Only a very long track: the decoder resamples it down so the whole of it fits.
+                    bool moved = false;
+                    try { moved = decoder.Reopen(plan.Rate, decoder.Channels) && decoder.SampleRate == plan.Rate; } catch { }
+                    if (!moved)
+                    {
+                        int at = decoder.SampleRate > 0 ? decoder.SampleRate : rate;
+                        long kept = (long)Math.Ceiling(frames * (double)at / rate);
+                        plan = new AudioPlan(at, 1, Math.Clamp(kept, 0, MostDataBytes / 2), 16);
+                    }
+                }
+                return new ConnectAudio(decoder, stream, plan);
             }
             catch (Exception e)
             {
@@ -146,6 +174,28 @@ namespace ExplorerNative
                 stream?.Dispose();
                 return null;
             }
+        }
+
+        /// <summary>
+        /// The format a track of <paramref name="frames"/> is served in, so that all of it fits a WAV's 32-bit
+        /// size: 24-bit at its own rate and channels when it fits (anything under about four hours), then 16-bit,
+        /// then 16-bit mono, then mono at a lower rate. Cut only past all of those (over a day at 8 kHz).
+        /// </summary>
+        internal static AudioPlan PlanFor(int rate, int channels, long frames)
+        {
+            if (frames * channels * 3 <= MostDataBytes) return new AudioPlan(rate, channels, frames, 24);
+            if (frames * channels * 2 <= MostDataBytes) return new AudioPlan(rate, channels, frames, 16);
+            if (frames * 2 <= MostDataBytes) return new AudioPlan(rate, 1, frames, 16);
+            int lowest = rate;
+            foreach (var lower in new[] { 24000, 16000, 12000, 8000 })
+            {
+                if (lower >= rate) continue;
+                lowest = lower;
+                long f = (long)Math.Ceiling(frames * (double)lower / rate);
+                if (f * 2 <= MostDataBytes) return new AudioPlan(lower, 1, f, 16);
+            }
+            long cut = (long)Math.Ceiling(frames * (double)lowest / rate);
+            return new AudioPlan(lowest, 1, Math.Min(cut, MostDataBytes / 2), 16);
         }
 
         /// <summary>
@@ -158,7 +208,7 @@ namespace ExplorerNative
             return (long)Math.Ceiling(seconds * rate);
         }
 
-        /// <summary>The canonical 44-byte header for 24-bit PCM.</summary>
+        /// <summary>The canonical 44-byte header for PCM at the plan's bit depth.</summary>
         public static byte[] Header(AudioPlan plan)
         {
             var h = new byte[AudioPlan.HeaderBytes];
@@ -173,7 +223,7 @@ namespace ExplorerNative
             BitConverter.TryWriteBytes(s[24..], (uint)plan.Rate);
             BitConverter.TryWriteBytes(s[28..], (uint)(plan.Rate * plan.BlockAlign));
             BitConverter.TryWriteBytes(s[32..], (ushort)plan.BlockAlign);
-            BitConverter.TryWriteBytes(s[34..], (ushort)24);
+            BitConverter.TryWriteBytes(s[34..], (ushort)plan.Bits);
             "data"u8.CopyTo(s[36..]);
             BitConverter.TryWriteBytes(s[40..], (uint)plan.DataBytes);
             return h;
@@ -217,6 +267,10 @@ namespace ExplorerNative
                 if (want <= 0) break;
 
                 int got = ended ? 0 : _decoder.Read(decoded, want);
+                // Short because the bytes stopped coming, not because the track ended: fail, so the connection
+                // closes short and the phone retries from here, rather than playing silence to the end.
+                if (!ended && got < want && _stream?.Failed == true)
+                    throw new IOException("the track stopped arriving from Google");
                 if (got < want) ended = true;
                 got = Math.Max(0, got);
                 Pack(decoded, got, bytes);
@@ -233,10 +287,14 @@ namespace ExplorerNative
             output.Flush();
         }
 
-        /// <summary>Float frames to 24-bit little-endian, downmixed to stereo when the decoder gave more.</summary>
+        /// <summary>
+        /// Float frames to 24- or 16-bit little-endian, downmixed when the decoder gave more channels than the
+        /// plan has (to stereo by side, or to mono from all of them).
+        /// </summary>
         private void Pack(float[] decoded, int frames, byte[] into)
         {
             int inCh = Math.Max(1, _decoderChannels), outCh = Plan.Channels;
+            bool sixteen = Plan.Bits == 16;
             int o = 0;
             for (int f = 0; f < frames; f++)
             {
@@ -250,8 +308,15 @@ namespace ExplorerNative
                         // Every channel of this side's parity, averaged: left takes 0, 2, 4…, right 1, 3, 5….
                         float sum = 0;
                         int n = 0;
-                        for (int k = c; k < inCh; k += 2) { sum += decoded[b + k]; n++; }
+                        for (int k = c; k < inCh; k += outCh) { sum += decoded[b + k]; n++; }
                         v = n > 0 ? sum / n : 0;
+                    }
+                    if (sixteen)
+                    {
+                        int t = (int)Math.Round(Math.Clamp(v, -1f, 1f) * 32767.0);
+                        into[o++] = (byte)t;
+                        into[o++] = (byte)(t >> 8);
+                        continue;
                     }
                     int s = (int)Math.Round(Math.Clamp(v, -1f, 1f) * 8388607.0);
                     into[o++] = (byte)s;
