@@ -226,7 +226,7 @@ namespace ExplorerNative
             Live("drive.mounting", "Connecting to Drive", DriveConnection, Bar, "Connecting to Google Drive"),
             Live("drive.mounted", "Drive is ready", DriveConnection, Pop, "Google Drive is on {0}", "G:"),
             Live("drive.unmounted", "Drive disconnected", DriveConnection, Bar, "Google Drive disconnected"),
-            Live("drive.offline", "Drive went offline", DriveConnection, Loud, "Google Drive is offline. {0} will not open folders or play tracks until the connection comes back.", "G:"),
+            Live("drive.offline", "Drive went offline", DriveConnection, Loud, "Google Drive is offline, so {0} is hidden until the connection comes back.", "G:"),
             Live("drive.online", "Drive came back", DriveConnection, Pop, "Google Drive is back online."),
             Live("drive.signin.needed", "Sign-in expired", DriveConnection, Loud, "Google Drive sign-in has expired. Open Preferences, Google Drive, to sign in again."),
             Live("drive.signin.opened", "Waiting for you in the browser", DriveConnection, Bar, "Waiting for you to allow access in the browser"),
@@ -236,7 +236,8 @@ namespace ExplorerNative
             Live("drive.credentials.missing", "No Google client ID and secret", DriveConnection, Loud, "No Google client ID and secret yet. Enter them in Preferences, Google Drive"),
             Live("drive.letter.taken", "Preferred letter unavailable", DriveConnection, Bar, "{0} was taken, so Google Drive is using {1}", "G:", "H:"),
             Live("drive.letter.none", "No drive letter free", DriveConnection, Loud, "No drive letter is free for Google Drive"),
-            Live("drive.root.stuck", "Old Google Drive folder could not be removed", DriveConnection, Bar, "An old Google Drive folder could not be removed, so {0} is used instead", "GoogleDrive-2"),
+            Live("drive.winfsp.missing", "WinFsp needed", DriveConnection, Loud, "Google Drive needs WinFsp, a free driver. Explorer Native can install it for you"),
+            Live("drive.winfsp.installing", "Installing WinFsp", DriveConnection, Say, "Installing WinFsp"),
             Live("drive.quota", "Drive storage", DriveConnection, Bar, "{0} used of {1}", "656 GB", "5 TB"),
             Live("drive.quota.low", "Drive nearly full", DriveConnection, Loud, "Google Drive is nearly full: {0} left", "2.1 GB"),
             Live("drive.ratelimited", "Google is slowing things down", DriveConnection, Bar, "Google asked Explorer Native to slow down"),
@@ -283,6 +284,13 @@ namespace ExplorerNative
             Live("drive.upload.cancelled", "Upload cancelled", DriveOperations, Say, "Upload of {0} cancelled", "album.flac"),
             Live("drive.download.start", "Fetching a file", DriveOperations, Off, "Fetching {0}", "song.flac"),
             Live("drive.download.done", "File fetched", DriveOperations, Off, "{0} ready", "song.flac"),
+            // Files other programs save on the letter (4.3.0). Saving is quick and
+            // the upload follows by itself, so the start is only said for a big
+            // file and the end once for a whole batch.
+            Live("drive.saving", "Saving a big file to Drive", DriveOperations, Bar, "Saving {0} to Google Drive", "video.mp4"),
+            Live("drive.saved", "Saved to Drive", DriveOperations, Bar, "{0}", "Saved 12 files to Google Drive"),
+            Live("drive.save.waiting", "Still trying to save to Drive", DriveOperations, Bar, "Still trying to save {0} to Google Drive", "notes.docx"),
+            Live("drive.save.failed", "Could not save to Drive", DriveOperations, Loud, "{0}", "Could not save notes.docx to Google Drive: there is no room. A copy is in Documents"),
             Live("drive.trash", "Moved to Drive trash", DriveOperations, Say, "{0} moved to the Google Drive trash", "song.flac"),
             Live("drive.trash.many", "Several moved to the Drive trash", DriveOperations, Say, "{0} items moved to the Google Drive trash", 12),
             Live("drive.trash.failed", "Could not trash", DriveOperations, Loud, "Could not delete {0}: {1}", "song.flac", "permission denied"),

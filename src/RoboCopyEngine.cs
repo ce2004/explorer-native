@@ -230,14 +230,6 @@ namespace ExplorerNative
         private const int CommandLineBudget = 24_000;
 
         /// <summary>
-        /// Called with robocopy's process id before a cancelled copy ends it,
-        /// and after. The Drive provider fails that process's reads in between;
-        /// see <see cref="DriveMount.StandDownReads"/>.
-        /// </summary>
-        public static Action<int>? BeforeKill;
-        public static Action<int>? AfterKill;
-
-        /// <summary>
         /// Copies one file out of the Drive letter straight from Google (source,
         /// destination, bytes arrived, token), null when it worked, otherwise why
         /// not. A copy out of Drive hands it whatever robocopy gave up on (4.2.7):
@@ -2319,16 +2311,6 @@ namespace ExplorerNative
                     }
                     catch (OperationCanceledException)
                     {
-                        // Not while it is reading a Drive placeholder: a process
-                        // ended in the middle of one never finishes exiting, and only
-                        // a restart of Windows clears it. Its reads are failed first,
-                        // on a worker — this may be the window's thread.
-                        int id = 0;
-                        try { id = process.Id; } catch { }
-                        var standDown = BeforeKill;
-                        if (standDown != null && id != 0)
-                            try { await Task.Run(() => standDown(id)); } catch { }
-
                         try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
 
                         // Wait for it to actually be gone before returning. Kill only
@@ -2338,7 +2320,6 @@ namespace ExplorerNative
                         // exactly where it was — the thing the cleanup exists to
                         // prevent, defeated by a race with a dying process.
                         try { process.WaitForExit(5000); } catch { }
-                        if (id != 0) try { AfterKill?.Invoke(id); } catch { }
 
                         lock (errors)
                             return new JobOutcome(false, new List<string>(errors), BytesWritten(process), null,

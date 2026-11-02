@@ -36,8 +36,6 @@ namespace ExplorerNative
             FetchWatchTests();
             SourceShapeTests();
             CopyWithinDriveTests();
-            SyncRootConnectTests();
-            ReplacedContentsTests();
             LetterTests();
             SharedDrivesTests();
         }
@@ -70,7 +68,10 @@ namespace ExplorerNative
             Equal("an address that is not Google's is left alone",
                 "http://127.0.0.1:5000/", DriveClient.AllDrives("http://127.0.0.1:5000/"));
 
-            var mount = Source("DriveMount.cs");
+            // The mount is three files since 4.3.0: the maps, the volume, the write-back.
+            var mount = Source("DriveMount.cs") is { } mountMaps
+                ? mountMaps + (Source("DriveMount.Volume.cs") ?? "") + (Source("DriveMount.Writes.cs") ?? "")
+                : null;
             Check("the top of the letter lists the shared drives as a folder",
                 mount != null && mount.Contains("if (accountRoot) entries.InsertRange(0, ours);", StringComparison.Ordinal) &&
                 mount.Contains("new List<DriveEntry> { sharedDrives", StringComparison.Ordinal));
@@ -84,60 +85,6 @@ namespace ExplorerNative
             catch (InvalidOperationException ex) { refused = ex.Message.Contains("Shared drives"); }
             catch { }
             Check("nothing can be made directly inside the list of shared drives", refused);
-        }
-
-        /// <summary>
-        /// Windows accepts the registration and the connect flags as declared.
-        ///
-        /// The flags were wrong once — REQUIRE_FULL_FILE_PATH was declared with
-        /// the value of REQUIRE_PROCESS_INFO — and nothing noticed, because both
-        /// are accepted. This at least proves the ones declared now are: a
-        /// provider is stood up over a scratch folder, no network, and taken down.
-        /// </summary>
-        private static void SyncRootConnectTests()
-        {
-            var root = Path.Combine(Path.GetTempPath(), "en-syncroot-" + Guid.NewGuid().ToString("N")[..8]);
-            var log = new List<string>();
-            try
-            {
-                Directory.CreateDirectory(root);
-                File.WriteAllText(Path.Combine(root, "leftover.txt"), "x");
-
-                var auth = new GoogleAuth("test", "test", Path.Combine(root + "-token.dat"));
-                var client = new DriveClient(auth);
-                bool cleared = DriveMount.TryReclaim(client, root, 64L * 1024 * 1024, line => { lock (log) log.Add(line); });
-
-                Check("a sync root registers and connects with the declared flags",
-                    !log.Any(l => l.Contains("could not connect", StringComparison.OrdinalIgnoreCase)),
-                    string.Join(" | ", log));
-                Check("and the provider clears its folder and goes away", cleared);
-            }
-            finally
-            {
-                try { Directory.Delete(root, true); } catch { }
-            }
-        }
-
-        /// <summary>
-        /// A name listed again as a different file, or the same file with new
-        /// contents, must leave the placeholder describing what Drive has now.
-        /// "Already exists" was taken as placed, so a copy out of the letter
-        /// delivered new bytes cut off at the old length. A scratch sync root,
-        /// no network.
-        /// </summary>
-        private static void ReplacedContentsTests()
-        {
-            var root = Path.Combine(Path.GetTempPath(), "en-replaced-" + Guid.NewGuid().ToString("N")[..8]);
-            try
-            {
-                var auth = new GoogleAuth("test", "test", root + "-token.dat");
-                var problem = DriveMount.ReplacedContentsCheck(new DriveClient(auth), root, _ => { });
-                Check("a placeholder already on disk is updated to what Drive now says", problem == null, problem ?? "");
-            }
-            finally
-            {
-                try { Directory.Delete(root, true); } catch { }
-            }
         }
 
         /// <summary>A letter that is in use is never handed to Drive.</summary>
@@ -422,7 +369,10 @@ namespace ExplorerNative
             // and a play gate held across the Dispose.
             var streaming = Source("StreamingSource.cs");
             var cache = Source("DriveFileCache.cs");
-            var mount = Source("DriveMount.cs");
+            // The mount is three files since 4.3.0: the maps, the volume, the write-back.
+            var mount = Source("DriveMount.cs") is { } mountMaps
+                ? mountMaps + (Source("DriveMount.Volume.cs") ?? "") + (Source("DriveMount.Writes.cs") ?? "")
+                : null;
 
             if (streaming != null)
             {
@@ -434,10 +384,12 @@ namespace ExplorerNative
 
             if (mount != null)
             {
-                Check("a placeholder callback's listing has a deadline",
-                    mount.Contains("var entries = ListFolder(relative, folderId, deadline.Token);", StringComparison.Ordinal));
-                Check("and so does a data callback, whose keep-alive otherwise holds Windows off for ever",
-                    mount.Contains(".Read(at, (int)want, deadline.Token)", StringComparison.Ordinal));
+                Check("a listing somebody is waiting on has a deadline",
+                    mount.Contains("ListFolder(relative, folderId, deadline.Token, Place, interactive);", StringComparison.Ordinal) &&
+                    mount.Contains("using var deadline = new CancellationTokenSource(listFor);", StringComparison.Ordinal));
+                Check("and so does every piece of a read the volume answers",
+                    mount.Contains("cache.Read(at, want, deadline.Token)", StringComparison.Ordinal) &&
+                    mount.Contains("deadline.CancelAfter(DataDeadline);", StringComparison.Ordinal));
             }
 
             if (cache != null)
@@ -470,9 +422,9 @@ namespace ExplorerNative
 
             if (mount != null)
             {
-                Check("and the provider does not disconnect while it is answering a callback",
+                Check("and the volume is not taken down while it is answering a request",
                     mount.Contains("WaitForCallbacks(TimeSpan.FromSeconds(5));", StringComparison.Ordinal) &&
-                    mount.Contains("Interlocked.Increment(ref _callbacksInFlight);", StringComparison.Ordinal));
+                    mount.Contains("Interlocked.Increment(ref mount._callbacksInFlight);", StringComparison.Ordinal));
 
                 // A count that is taken and not given back is worse than no count
                 // at all: the guard then waits out its whole limit and
@@ -480,22 +432,24 @@ namespace ExplorerNative
                 // read from a number left behind. It shipped that way for an
                 // afternoon — the decrement had landed in the *helper* the
                 // callback calls, which two of its exit paths never reach.
+                // Since 4.3.0 the count is a guard struct taken with `using`, so
+                // every way out of a request gives it back.
+                var guard = Between(mount, "private readonly struct InFlight", "/// <summary>What a key is");
+                Check("the in-flight count is given back by the guard that took it",
+                    guard != null &&
+                    guard.Contains("Interlocked.Increment(ref mount._callbacksInFlight);", StringComparison.Ordinal) &&
+                    guard.Contains("public void Dispose() => Interlocked.Decrement(ref _mount._callbacksInFlight);", StringComparison.Ordinal),
+                    guard == null ? "the guard could not be found" : "increment without a matching decrement");
                 foreach (var (what, from, to) in new[]
                 {
-                    ("the data callback", "private void OnFetchData(", "private void OnCancelFetch("),
-                    ("the placeholder callback", "private void OnFetchPlaceholders(", "private void TransferPlaceholders("),
+                    ("a read", "public override int Read(", "public override int Write("),
+                    ("a directory listing", "public override int ReadDirectory(", "public override void DispatcherStopped("),
                 })
                 {
                     var body = Between(mount, from, to);
-                    bool balanced =
-                        body != null &&
-                        body.Contains("Interlocked.Increment(ref _callbacksInFlight);", StringComparison.Ordinal) &&
-                        body.Contains("finally", StringComparison.Ordinal) &&
-                        body.LastIndexOf("Interlocked.Decrement(ref _callbacksInFlight);", StringComparison.Ordinal) >
-                        body.LastIndexOf("finally", StringComparison.Ordinal);
-
-                    Check($"{what} gives that count back in its own finally", balanced,
-                        body == null ? "the method could not be found" : "increment without a finally that undoes it");
+                    Check($"{what} holds that guard for as long as it is answered",
+                        body != null && body.Contains("using var busy = new InFlight(_m);", StringComparison.Ordinal),
+                        body == null ? "the method could not be found" : "no guard");
                 }
             }
 
@@ -583,7 +537,7 @@ namespace ExplorerNative
                 // a fetch callback would fail the read that callback is
                 // answering — the copy that stops dead for no visible reason that
                 // this file already carries scars about.
-                var sweep = Between(mount, "private void SweepIdle()", "// ---- serving bytes");
+                var sweep = Between(mount, "private void SweepIdle()", "private void Say(");
                 Check("and never out from under a reader",
                     sweep != null &&
                     sweep.Contains("if (Volatile.Read(ref _callbacksInFlight) > 0) return;",

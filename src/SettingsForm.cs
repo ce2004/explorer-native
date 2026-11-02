@@ -766,14 +766,18 @@ namespace ExplorerNative
             // access, and the sentence stayed — telling somebody their files were
             // safe on a page whose Delete key now reaches the account.
             AddInfo(panel,
-                "This can change your Drive. Copying a file to the drive uploads it, moving one " +
-                "moves it in Drive, and deleting sends it to the Google Drive trash — recoverable " +
-                "from drive.google.com, but gone from here. Reading and playing change nothing.");
+                "This can change your Drive. Google Drive is a real drive: anything any program saves, " +
+                "renames, moves or deletes on it happens in your Drive too. Saved files go up a few " +
+                "seconds after they are closed, deleting sends them to the Google Drive trash " +
+                "(recoverable from drive.google.com), and reading and playing change nothing.");
 
             AddInfo(panel,
-                "Folders fill in as they are opened, costing one listing each — about a second the " +
-                "first time, nothing afterwards. This works for any program, not just this one, so " +
-                "the drive behaves normally in File Explorer and in a command prompt too.");
+                "Folders fill in as they are opened, costing one listing each, about a second the " +
+                "first time and nothing afterwards. When Google cannot be reached, the drive letter " +
+                "goes away, and it comes back by itself when the connection does.");
+
+            // WinFsp's licence asks for this wherever it is used.
+            AddInfo(panel, "The drive is made with " + WinFspSetup.Credit);
 
             return panel;
         }

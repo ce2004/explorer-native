@@ -4,7 +4,6 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using static ExplorerNative.CfApi;
 
 namespace ExplorerNative
 {
@@ -12,25 +11,21 @@ namespace ExplorerNative
     /// Google Drive as a drive letter, for the rest of the application to use
     /// without knowing it is there.
     ///
-    /// Everything below this is a cloud provider built on the Windows Cloud Files
-    /// API — usermode, no kernel driver, no rclone and no Google desktop app. The
-    /// files it puts on that letter are real files with real paths, which is the
-    /// whole point: enumeration, tags, robocopy, the shell context menu and the
-    /// media engine all keep working unchanged.
+    /// Below this is a real file system on WinFsp (4.3.0; see DriveMount): a
+    /// drive every program reads and writes, whose changes all go to Google.
+    /// Enumeration, tags, robocopy, the shell context menu and the media engine
+    /// keep working unchanged, and so do other programs' saves, moves and
+    /// renames — which a Cloud Files sync root never sent anywhere.
     ///
-    /// Measured against the NAS, on a 22MB FLAC: 1208ms from Enter to sound
-    /// (the NAS is ~1400ms), and twenty held skips in 232ms with a median of 0.
-    /// It is not a compromise for being in the cloud.
-    ///
-    /// Folders fill in as they are opened, by any program — Windows raises the
-    /// fetch-placeholders callback and one Drive listing answers it. See
-    /// <see cref="Populate"/>, which pays that cost up front on navigation.
+    /// Folders fill in as they are opened, by any program: one Drive listing
+    /// each. See <see cref="Populate"/>, which pays that cost up front on
+    /// navigation.
     /// </summary>
     /// <summary>
     /// A file in Drive, read straight from Google by byte range — what the
     /// player downloads a track through, rather than through the letter. The
     /// letter would answer the same reads from this process's own provider,
-    /// holding a second copy in its own cache, and a read of a placeholder left
+    /// holding a second copy in its own cache, and a read of an entry on the letter left
     /// pending when a process ends leaves it unable to finish exiting.
     /// </summary>
     internal sealed class DriveRangeSource : IRangeSource
@@ -164,9 +159,9 @@ namespace ExplorerNative
         /// sentence is built here because this is where the values are.
         ///
         /// Two things about the thread it arrives on. Several of these are raised
-        /// from inside a Cloud Files callback, which runs on a filter-driver
-        /// worker and is holding up whoever is listing a folder or reading a
-        /// track — so a handler must hand the message on and return, never block,
+        /// from inside a request the drive is answering for Windows, which is
+        /// holding up whoever is listing a folder or reading a track — so a
+        /// handler must hand the message on and return, never block,
         /// never speak inline. And the raise itself is wrapped, because a handler
         /// that throws in there would fail the read that happened to be underway.
         ///
@@ -229,17 +224,9 @@ namespace ExplorerNative
         /// <summary>
         /// Drive's own storage quota, in bytes, or zero when it is not known yet.
         ///
-        /// Kept because nothing else on the machine can tell you. The letter is
-        /// `subst` onto a directory, and a subst drive is not a volume — every
-        /// free-space question Windows is asked about it is answered by the
-        /// volume that actually holds the directory. So a 5TB Drive on a 500GB
-        /// machine reports 500GB, with the host disk's label and free space, to
-        /// File Explorer and to us alike. There is no fixing that without a real
-        /// filesystem driver, which is the thing this design exists to avoid, so
-        /// the numbers are carried separately and shown in our own drive list.
-        ///
         /// Read from the same About response that proves the token at mount, so
-        /// they cost nothing.
+        /// they cost nothing, and handed to the mount, which reports them to
+        /// Windows as the drive's size and free space and keeps them up to date.
         /// </summary>
         public long QuotaUsed { get; private set; }
 
@@ -359,66 +346,44 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// A directory we can be sure of.
-        ///
-        /// Normally "GoogleDrive", which a clean exit leaves empty. A run that
-        /// was killed leaves placeholders behind, and while no provider answers
-        /// for them they cannot be deleted by anybody — not by rmdir, not by
-        /// stripping the reparse point; every route says access denied.
-        ///
-        /// That used to be the end of the argument, and the directory was
-        /// stepped over for the life of the installation. It is not the end:
-        /// those placeholders *can* be deleted by a provider that is connected,
-        /// which is exactly what <see cref="DriveMount.TryReclaim"/> stands one
-        /// up to do. So the first choice is reclaimed rather than abandoned, and
-        /// only a directory that survives that is stepped over — which keeps the
-        /// numbered siblings for the case they were meant for instead of making
-        /// them permanent after one unclean exit.
+        /// The volume's own name for a signed-in account, "\\GoogleDrive\conner":
+        /// the server is always GoogleDrive and the share is the account's name
+        /// before the @, cut down to what a share name may hold. Explorer shows
+        /// it as "Google Drive" anyway (<see cref="LabelTheDrive"/>).
         /// </summary>
-        private static string PickRoot(DriveClient drive, long budget)
+        internal static string VolumeName(string account)
         {
-            var baseDir = SafeDirectory();
-
-            for (int i = 0; i < 20; i++)
-            {
-                var candidate = Path.Combine(baseDir, i == 0 ? "GoogleDrive" : $"GoogleDrive-{i + 1}");
-
-                if (!Directory.Exists(candidate)) return candidate;
-
-                // Unregister first: a directory still claimed by a previous
-                // registration reports itself as busy rather than as empty.
-                try { CfUnregisterSyncRoot(candidate); } catch { }
-
-                try
-                {
-                    if (!Directory.EnumerateFileSystemEntries(candidate).Any()) return candidate;
-                }
-                catch
-                {
-                    continue;
-                }
-
-                // Non-empty, so stand a provider up over it and let it clear its
-                // own wreckage. This is the step that was missing.
-                if (DriveMount.TryReclaim(drive, candidate, budget, Note))
-                {
-                    Note($"reclaimed {Path.GetFileName(candidate)}");
-                    return candidate;
-                }
-
-                Note($"{Path.GetFileName(candidate)} still holds entries that cannot be removed; trying the next");
-            }
-
-            // Twenty stuck directories is not a situation to paper over.
-            return Path.Combine(baseDir, "GoogleDrive-" + Guid.NewGuid().ToString("N")[..8]);
+            var user = account.Split('@')[0];
+            var share = new string(user.Where(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_' or '.').ToArray());
+            if (share.Length == 0) share = "drive";
+            if (share.Length > 60) share = share[..60];
+            return @"\\GoogleDrive\" + share;
         }
 
         /// <summary>
-        /// Diagnostics from the mount itself, to the same file as the status.
-        /// The mount has plenty to say about stale placeholders and refused
-        /// deletes and nowhere to say it.
+        /// Where test builds of 4.3.0 held files saved on the letter before they
+        /// went up. Nothing is held on disk now (DriveMount.Writes.cs); the
+        /// folder is removed at start when it is empty.
         /// </summary>
+        internal static string OldHoldingFolder => Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "ExplorerNative", "Google Drive uploads");
 
+        /// <summary>
+        /// What File Explorer calls the drive. A network drive is shown by its
+        /// share and server ("conner (\\GoogleDrive) (G:)") unless Explorer's own
+        /// key for it says otherwise, which is what this sets.
+        /// </summary>
+        private static void LabelTheDrive(string root)
+        {
+            try
+            {
+                var name = "##" + root.TrimStart('\\').Replace('\\', '#');
+                using var key = Microsoft.Win32.Registry.CurrentUser.CreateSubKey(
+                    @"Software\Microsoft\Windows\CurrentVersion\Explorer\MountPoints2\" + name);
+                key?.SetValue("_LabelFromReg", "Google Drive");
+            }
+            catch { }
+        }
         /// <summary>The same trace, for the upload and other callers outside this class.</summary>
         internal static void Trace(string line) => Note(line);
 
@@ -471,7 +436,7 @@ namespace ExplorerNative
                 // Already up. Reconnecting is what OK on the Drive page means when
                 // the sign-in has expired, and it used to mean mounting again from
                 // scratch — whose first step, choosing a root, found the live
-                // mount's own directory, unregistered its sync root and stood a
+                // mount's own directory, unregistered its drive and stood a
                 // second provider up over it to clear it out. The mount stays; the
                 // sign-in is renewed underneath it.
                 if (Mounted)
@@ -480,7 +445,7 @@ namespace ExplorerNative
                     var (renewed, otherAccount) = await RenewSignIn(linked.Token).ConfigureAwait(false);
                     if (!otherAccount) return renewed;
 
-                    // Signed in again as somebody else. Every placeholder, the
+                    // Signed in again as somebody else. Every entry on the letter, the
                     // path-to-id map and the search graph belong to the old
                     // account, and its ids sent with the new token fail
                     // everywhere, so the letter is mounted again from scratch.
@@ -519,7 +484,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Asks for consent again through the client the live mount is already
-        /// using, so every placeholder and every cache stays where it is.
+        /// using, so every entry on the letter and every cache stays where it is.
         /// OtherAccount is true when the person chose a different Google
         /// account: the mount then belongs to nobody signed in, and the caller
         /// mounts again from scratch.
@@ -578,6 +543,19 @@ namespace ExplorerNative
         {
             _units = settings.SizeUnits;
             FailedOnNetwork = false;
+
+            // The drive is a WinFsp volume (4.3.0), so WinFsp has to be there
+            // before anything else is worth doing. The tray offers to install it.
+            NeedsWinFsp = !WinFsp.TryLoad(out var winFspProblem);
+            if (NeedsWinFsp)
+            {
+                Status = "Google Drive needs WinFsp, a free driver that lets it show as a real drive. " +
+                         "Explorer Native can install it for you.";
+                Note("WinFsp: " + winFspProblem);
+                Say("drive.winfsp.missing", "Google Drive needs WinFsp, a free driver. Explorer Native can install it for you");
+                return false;
+            }
+
             if (!quietly) Say("drive.mounting", "Connecting to Google Drive");
 
             // The client ID and secret entered in Preferences. Nothing is compiled in.
@@ -623,7 +601,7 @@ namespace ExplorerNative
                     try { ConnectionChanged?.Invoke(now); } catch { }
                 };
 
-                // Proves the token before anything is registered. A sync root left
+                // Proves the token before anything is registered. A drive left
                 // behind by a sign-in that then failed is worse than no mount.
                 // The one request allowed to open a browser: a deliberate
                 // connect. Nothing the mount does afterwards may.
@@ -642,10 +620,8 @@ namespace ExplorerNative
                 QuotaUsed = used;
                 QuotaLimit = limit;
 
-                // In the log as raw bytes as well as words. "500 GB" on a drive
-                // letter is the host disk showing through a subst, and the way to
-                // tell that from Google genuinely reporting 500 GB is to have
-                // Google's own figure written down somewhere.
+                // In the log as raw bytes as well as words: Google's own figure,
+                // which is what the drive reports to Windows as its size.
                 Note($"quota: {used} used of {limit} bytes");
 
                 if (limit > 0)
@@ -659,21 +635,10 @@ namespace ExplorerNative
                             $"Google Drive is nearly full: {SizeFormatter.Format(free, _units)} left");
                 }
 
-                // Worked out before the root is chosen, because reclaiming a
-                // stuck one stands a real provider up over it and that provider
-                // wants the same budget as the mount which follows.
                 long budget = CacheMegabytes * 1024L * 1024;
-
-                var root = PickRoot(drive, budget);
-                Note($"mounting at {root}");
-
-                // PickRoot steps over a directory left stuck by a run that was
-                // killed and that it could not reclaim, and the only trace is the
-                // name it settled on. Anything other than "GoogleDrive" means it
-                // had to.
-                if (!string.Equals(Path.GetFileName(root), "GoogleDrive", StringComparison.Ordinal))
-                    Say("drive.root.stuck",
-                        $"An old Google Drive folder could not be removed, so {Path.GetFileName(root)} is used instead");
+                var root = VolumeName(user);
+                Note($"mounting {root}");
+                LabelTheDrive(root);
 
                 ShowTrash = settings.ShowDriveTrash;
                 var mount = new DriveMount(drive, root, budget, Note)
@@ -681,16 +646,15 @@ namespace ExplorerNative
                     Notify = Forward,
                     IdleRelease = TimeSpan.FromSeconds(CacheIdleSeconds),
                     ShowTrash = () => ShowTrash,
+                    QuotaUsed = used,
+                    QuotaLimit = limit,
                 };
 
-                // Start registers a sync root, populates it and then takes a
-                // drive letter, and any of those can throw — no free letter is
-                // the likeliest, and it happens last, after the registration is
-                // already made. The catch below calls Unmount, which disposes
-                // _mount; on a first mount that is still null, so this one would
-                // never be disposed and its sync root and letter would outlive
-                // the process. That is precisely the wreckage SweepOrphans exists
-                // to clear up after a kill, produced here by an ordinary failure.
+                // Start lists the root, creates the volume and then takes a
+                // letter, and any of those can throw — no free letter is the
+                // likeliest, and it happens last. The catch below calls Unmount,
+                // which disposes _mount; on a first mount that is still null, so
+                // this one is disposed here or its volume would outlive the mount.
                 try
                 {
                     mount.Start("root", assignLetter: true,
@@ -704,7 +668,6 @@ namespace ExplorerNative
                     try { mount.Dispose(); } catch { }
                     throw;
                 }
-
                 // Decided under the lock that Unmount takes after cancelling, so
                 // one of the two always sees the other: either this sees the
                 // cancellation and takes its own mount down, or Unmount finds the
@@ -720,7 +683,7 @@ namespace ExplorerNative
                         _mount = mount;
 
                         // From here on a dead token fails fast instead of opening
-                        // a browser out of a filter-driver callback.
+                        // a browser out of a request the drive is answering.
                         auth.AllowConsent = false;
                         _auth = auth;
                         _client = drive;
@@ -766,6 +729,18 @@ namespace ExplorerNative
         /// worth trying again on its own, which opens no browser.
         /// </summary>
         public bool FailedOnNetwork { get; private set; }
+
+        /// <summary>The last connect stopped because WinFsp is not installed (or would not load).</summary>
+        public bool NeedsWinFsp { get; private set; }
+
+        /// <summary>Whether the letter is there now: false while it is hidden because Google cannot be reached.</summary>
+        public bool LetterShown { get { lock (_gate) return _mount?.LetterShown ?? false; } }
+
+        /// <summary>Files saved on the letter by other programs that are still on their way to Google.</summary>
+        public int UploadsPending { get { lock (_gate) return _mount?.UploadsPending ?? 0; } }
+
+        /// <summary>The names of those files, for the question before quitting.</summary>
+        public IReadOnlyList<string> UploadNames { get { lock (_gate) return _mount?.UploadNames ?? Array.Empty<string>(); } }
 
         /// <summary>
         /// Moves a mounted Drive to the letter Preferences now names, without
@@ -848,19 +823,11 @@ namespace ExplorerNative
         /// Fills in a folder before it is listed, and says whether it did
         /// anything.
         ///
-        /// Belt and braces rather than the mechanism. Windows does raise the
-        /// fetch-placeholders callback for a cloud directory — measured at about
-        /// 1.3 seconds for a folder nobody had opened, from an unrelated process
-        /// — so the tree populates for File Explorer and a command prompt as
-        /// well as for this application. That was not obvious: it appeared not to
-        /// work for a long time during development, because the harness was
-        /// walking the tree within milliseconds of the placeholders being created
-        /// and calling this first, which marks the directory populated and stops
-        /// the callback ever being needed.
-        ///
-        /// Kept because navigation knows a folder is about to be listed and can
-        /// pay the listing up front, and because it costs nothing when the
-        /// callback got there first.
+        /// Belt and braces rather than the mechanism: the drive lists a folder
+        /// itself the first time any program opens it. Kept because navigation
+        /// knows a folder is about to be listed and can pay the listing up front,
+        /// a page at a time, and because it costs nothing when the drive got
+        /// there first.
         ///
         /// Safe to call for any path. Anything that is not on the mounted letter
         /// returns false without touching the network.
@@ -911,128 +878,18 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Sweeps up after a copy that was killed rather than closed.
-        ///
-        /// Both a sync root registration and a drive letter outlive the process
-        /// that made them — proved by killing a test run and finding the letter
-        /// still mounted afterwards. Left alone, the next launch finds a folder
-        /// full of placeholders with nobody to hydrate them, which reads as a
-        /// drive full of files that will not open.
-        ///
-        /// Unconditional, like <c>ReleaseOverreachingFolderClass</c>: somebody who
-        /// simply turned the feature off would otherwise keep the wreckage.
+        /// Clears up what Explorer Native 4.2 and earlier could leave behind
+        /// after a crash: a Cloud Files sync root and a subst letter onto it
+        /// (see <see cref="LegacyCloudFiles"/>). Runs on every start, whether or
+        /// not Drive is switched on, so somebody who turned it off is not left
+        /// with the wreckage.
         /// </summary>
-        /// <remarks>
-        /// The settings are no longer read. They named the preferred drive
-        /// letter, and that was the bug: the letter to sweep is whichever one an
-        /// earlier run actually took, which is only the preferred one when
-        /// nothing went wrong. Kept in the signature because callers pass it and
-        /// a future sweep may well want it.
-        /// </remarks>
         public static void SweepOrphans(Settings settings)
         {
             _ = settings;
-
-            // Every sync root we might have left, not just the canonical name.
-            // PickRoot steps aside to GoogleDrive-2, -3 and so on when the one
-            // before it is stuck, so sweeping only "GoogleDrive" cleans up the
-            // one case that had already failed to be cleaned up.
-            try
-            {
-                foreach (var root in OurRoots())
-                {
-                    // Unregister only. Nothing here can delete a placeholder —
-                    // that needs a connected provider, and there is none at this
-                    // point — so emptying the tree is left to DriveMount.Start,
-                    // which does it once it is serving.
-                    try { CfUnregisterSyncRoot(root); } catch { }
-                }
-            }
-            catch { }
-
-            SweepOrphanedLetters();
+            try { LegacyCloudFiles.Sweep(Note); } catch { }
+            try { if (Directory.Exists(OldHoldingFolder) && !Directory.EnumerateFileSystemEntries(OldHoldingFolder).Any()) Directory.Delete(OldHoldingFolder); } catch { }
         }
-
-        /// <summary>Every sync-root directory this application may have created.</summary>
-        private static IEnumerable<string> OurRoots()
-        {
-            string[] names;
-            try
-            {
-                names = Directory.GetDirectories(SafeDirectory(), "GoogleDrive*");
-            }
-            catch { yield break; }
-
-            foreach (var name in names) yield return name;
-        }
-
-        /// <summary>
-        /// Removes every drive letter left pointing at one of our sync roots.
-        ///
-        /// This used to try exactly one combination — the *preferred* letter and
-        /// the *canonical* root name — and both halves of that are wrong in
-        /// precisely the situations that produce an orphan. `DriveLetter.Assign`
-        /// moves to the next free letter when the preferred one is taken, which
-        /// it is whenever a previous run left it behind; `PickRoot` moves to
-        /// `GoogleDrive-2` when the directory is stuck, which it is for the same
-        /// reason. So a killed process left a letter that the next launch could
-        /// not see, that launch took a different letter, and being killed in turn
-        /// left another. Each one shows up in Explorer and in this application as
-        /// a fixed disk with the *host* volume's label, size and free space —
-        /// several identical "Local Disk" entries that have nothing to do with
-        /// Google Drive and cannot be told apart from the real mount.
-        ///
-        /// Asking each letter what it points at is both simpler and safer than
-        /// guessing which one it might be: a letter is removed only when its
-        /// target really is a directory of ours.
-        /// </summary>
-        private static void SweepOrphanedLetters()
-        {
-            string ours;
-            try { ours = Path.GetFullPath(SafeDirectory()).TrimEnd('\\'); }
-            catch { return; }
-
-            var buffer = new char[1024];
-
-            for (char c = 'A'; c <= 'Z'; c++)
-            {
-                string letter = c + ":";
-                string target;
-
-                try
-                {
-                    uint length = QueryDosDeviceW(letter, buffer, (uint)buffer.Length);
-                    if (length == 0) continue;
-
-                    // The result is a set of NUL-separated strings; the first is
-                    // the current definition.
-                    target = new string(buffer, 0, (int)length).Split('\0')[0];
-                }
-                catch { continue; }
-
-                // "\??\C:\Users\...\ExplorerNative\GoogleDrive-2". A real volume
-                // answers with a device path instead and never matches.
-                const string rawPrefix = @"\??\";
-                if (!target.StartsWith(rawPrefix, StringComparison.Ordinal)) continue;
-
-                var directory = target[rawPrefix.Length..].TrimEnd('\\');
-                if (!directory.StartsWith(ours + "\\", StringComparison.OrdinalIgnoreCase)) continue;
-
-                var name = Path.GetFileName(directory);
-                if (!name.StartsWith("GoogleDrive", StringComparison.OrdinalIgnoreCase)) continue;
-
-                try
-                {
-                    DefineDosDeviceW(
-                        DosDeviceFlags.REMOVE_DEFINITION |
-                        DosDeviceFlags.RAW_TARGET_PATH |
-                        DosDeviceFlags.EXACT_MATCH_ON_REMOVE,
-                        letter, target);
-                }
-                catch { }
-            }
-        }
-
         /// <summary>Whether this path lives on the mounted drive.</summary>
         /// <summary>
         /// Watches what the mount downloads for <paramref name="paths"/> — how a
@@ -1211,7 +1068,7 @@ namespace ExplorerNative
             if (!Owns(mount, folderPath)) return null;
 
             // The root of the letter is the account root, which has no
-            // placeholder and therefore no id in the map.
+            // entry on the letter and therefore no id in the map.
             var rootId = mount.IdFor(folderPath) ?? (IsMountRoot(mount, folderPath) ? "root" : null);
             if (rootId == null) return null;
 
@@ -1487,7 +1344,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// How big a folder on the letter is, from Drive's own listing of the
-        /// whole account rather than a walk of its placeholders — which would be
+        /// whole account rather than a walk of its entries on the letter — which would be
         /// one Drive listing per folder and populate the tree as a side effect.
         /// The first answer builds the index; the rest are lookups, refreshed
         /// through the changes feed. Null when it cannot be told.
@@ -1614,7 +1471,7 @@ namespace ExplorerNative
         /// already fetched — no filesystem walk and no network.
         ///
         /// This is the difference between a Drive folder opening instantly and
-        /// taking half a minute. Enumerating placeholders costs about fifteen
+        /// taking half a minute. Enumerating entries on the letter costs about fifteen
         /// milliseconds each and never caches: a folder of 2118 tracks measured
         /// **33 seconds**, on every visit, against 310ms for a local folder of
         /// twice the size. Every one of those facts — the name, the size, the
@@ -1665,12 +1522,12 @@ namespace ExplorerNative
         /// <summary>
         /// Drops what is remembered about a folder, so the next visit asks Drive
         /// again. This is what Refresh has to mean on a drive whose contents are
-        /// somewhere else — re-walking the placeholders would re-read a listing
+        /// somewhere else — re-walking the entries on the letter would re-read a listing
         /// that is just as stale, thirty seconds more slowly.
         /// </summary>
         /// <summary>
         /// A track on the letter as something to read from Google directly, or
-        /// null when it is not one. Its size comes from the placeholder, which
+        /// null when it is not one. Its size comes from the entry on the letter, which
         /// reads no data.
         /// </summary>
         public IRangeSource? OpenRange(string path)
@@ -1682,30 +1539,25 @@ namespace ExplorerNative
 
             try
             {
-                var info = new FileInfo(path);
-                if (!info.Exists) return null;
+                long length;
+                if (mount.Describe(path) is { } known)
+                {
+                    if (known.Folder) return null;
+                    length = known.Size;
+                }
+                else
+                {
+                    var info = new FileInfo(path);
+                    if (!info.Exists) return null;
+                    length = info.Length;
+                }
                 var id = IdOrRelist(mount, path, CancellationToken.None).GetAwaiter().GetResult();
-                return id == null ? null : new DriveRangeSource(client, id, info.Length);
+                return id == null ? null : new DriveRangeSource(client, id, length);
             }
             catch
             {
                 return null;
             }
-        }
-
-        /// <summary>See <see cref="DriveMount.StandDownReads"/>.</summary>
-        public void StandDownReads(int processId)
-        {
-            DriveMount? mount;
-            lock (_gate) mount = _mount;
-            try { mount?.StandDownReads(processId, TimeSpan.FromSeconds(10)); } catch { }
-        }
-
-        public void ForgetReader(int processId)
-        {
-            DriveMount? mount;
-            lock (_gate) mount = _mount;
-            try { mount?.ForgetReader(processId); } catch { }
         }
 
         public void Forget(string path)
@@ -1728,7 +1580,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Sends something on the drive to the Drive trash and takes its
-        /// placeholder away.
+        /// entry on the letter away.
         ///
         /// Trash, not delete. The recycle bin exists because people change their
         /// minds, and a file manager that destroys irrecoverably from one
@@ -1777,7 +1629,7 @@ namespace ExplorerNative
         /// heard of it.
         ///
         /// The ids are built as a folder is populated, so a folder populated by
-        /// an earlier run has placeholders on disk with nothing here to match
+        /// an earlier run has entries on the letter on disk with nothing here to match
         /// them to. The file is plainly there — somebody has it selected — so
         /// asking Drive for the parent again is the answer rather than reporting
         /// that it is not part of the mounted drive, which is both untrue and
@@ -1786,7 +1638,7 @@ namespace ExplorerNative
         /// Written out three times before this existed, in TrashPath, in the
         /// rename and here.
         ///
-        /// The listing is a network round trip of up to the placeholder deadline,
+        /// The listing is a network round trip of up to the entry on the letter deadline,
         /// and the callers are commands started from the window: run inline it was
         /// that long with the window not answering, because an async method runs
         /// on its caller's thread until its first await. It goes to a worker, and
@@ -2050,7 +1902,7 @@ namespace ExplorerNative
             // The map may not know this path, which is recoverable rather than
             // fatal: the ids are built when a folder is populated, and a folder
             // that was populated by an earlier run, or whose listing was dropped by
-            // a refresh, has placeholders on disk with nothing here to match them
+            // a refresh, has entries on the letter on disk with nothing here to match them
             // to. Asking Drive for the parent again rebuilds exactly the entries
             // needed — and "it is not part of the mounted Drive" is both untrue and
             // impossible to act on.
@@ -2080,17 +1932,17 @@ namespace ExplorerNative
 
             long trashMs = clock.ElapsedMilliseconds - idMs;
 
-            // Only after Drive has agreed. Removing the placeholder first would
+            // Only after Drive has agreed. Removing the entry on the letter first would
             // hide a file that is still there if the trash call then failed.
             mount.RemoveOne(path);
-            Note($"trash {name}: id {idMs}ms, Drive {trashMs}ms, placeholder {clock.ElapsedMilliseconds - idMs - trashMs}ms");
+            Note($"trash {name}: id {idMs}ms, Drive {trashMs}ms, letter {clock.ElapsedMilliseconds - idMs - trashMs}ms");
             Say("drive.trash", $"{name} moved to the Google Drive trash");
             return true;
         }
 
         /// <summary>
         /// Makes a folder inside a folder on the drive, and gives back the local
-        /// path of the placeholder for it.
+        /// path of the entry on the letter for it.
         ///
         /// This is the half of "upload a folder" that was missing, and the reason
         /// folders used to be refused: sending a tree means creating every
@@ -2138,7 +1990,7 @@ namespace ExplorerNative
                 return null;
             }
 
-            // Already there. The placeholder is on disk and the id is in the map,
+            // Already there. The entry on the letter is on disk and the id is in the map,
             // so there is nothing to create and nothing to place — only a path to
             // hand back.
             var existing = mount.ChildFolderId(parentFullPath, name);
@@ -2178,7 +2030,7 @@ namespace ExplorerNative
                 new DriveEntry(id, name, DriveClient.FolderMimeType, 0, DateTime.UtcNow),
                 populated: true);
             Note($"folder {name}: waited for parent listing {listMs}ms, Drive {createMs}ms, " +
-                 $"placeholder {clock.ElapsedMilliseconds - listMs - createMs}ms");
+                 $"letter {clock.ElapsedMilliseconds - listMs - createMs}ms");
 
             if (placed == null) return null;
 
@@ -2190,10 +2042,10 @@ namespace ExplorerNative
         /// Makes an empty file in a folder on the drive.
         ///
         /// "New file" on the drive letter used to be `File.Create` on a path
-        /// inside the sync root: a real local file that Drive had never heard of,
+        /// inside the drive: a real local file that Drive had never heard of,
         /// which the pane could not show — it is built from the Drive listing, and
         /// the file is not in it — and which the next mount deleted, because
-        /// clearing the sync root is how a leftover placeholder tree is dealt
+        /// clearing the drive is how a leftover tree is dealt
         /// with. So the file was announced as created, was invisible immediately,
         /// and was gone for good by the next launch, along with anything anybody
         /// had typed into it.
@@ -2234,7 +2086,7 @@ namespace ExplorerNative
 
             if (string.IsNullOrEmpty(id)) return null;
 
-            // The file exists in Drive whether or not its placeholder could be
+            // The file exists in Drive whether or not its entry on the letter could be
             // made. Null here said "could not create", and the next F7 made a
             // second one.
             return mount.PlaceOne(folderPath,
@@ -2245,14 +2097,14 @@ namespace ExplorerNative
         /// <summary>
         /// Renames something on the drive, in the account and on the letter.
         ///
-        /// F2 used to be a plain <c>File.Move</c>, which renames the *placeholder*
+        /// F2 used to be a plain <c>File.Move</c>, which renames the *entry on the letter*
         /// and tells Drive nothing. The account keeps the old name, so the next
-        /// listing puts the old name back — and the renamed placeholder is left on
+        /// listing puts the old name back — and the renamed entry on the letter is left on
         /// disk under a name no listing mentions, invisible to the pane and in the
         /// way of the file it was made from. "Renamed to X" was announced every
         /// time, and nothing was.
         ///
-        /// Drive first and the placeholder afterwards. A rename cannot lose
+        /// Drive first and the entry on the letter afterwards. A rename cannot lose
         /// anything either way round, and this order means a failure half way
         /// leaves the letter disagreeing with the account for one refresh rather
         /// than the account disagreeing with itself.
@@ -2297,23 +2149,27 @@ namespace ExplorerNative
                 return null;
             }
 
-            // Read before anything is removed: afterwards the placeholder is gone
+            // Read before anything is removed: afterwards the entry on the letter is gone
             // and with it the only local record of how big the file was.
             bool isFolder;
             long size = 0;
             var modified = DateTime.UtcNow;
             try
             {
-                isFolder = Directory.Exists(path);
-                if (!isFolder)
+                // A rename does not change a file's modified time in Drive, and
+                // an entry on the letter put back with "now" read as changed
+                // contents at the next listing.
+                if (mount.Describe(path) is { } known)
+                    (isFolder, size, modified) = (known.Folder, known.Size, known.ModifiedUtc);
+                else
                 {
-                    var info = new FileInfo(path);
-                    size = info.Length;
-
-                    // A rename does not change a file's modified time in Drive,
-                    // and a placeholder put back with "now" read as changed
-                    // contents at the next listing.
-                    modified = info.LastWriteTimeUtc;
+                    isFolder = Directory.Exists(path);
+                    if (!isFolder)
+                    {
+                        var info = new FileInfo(path);
+                        size = info.Length;
+                        modified = info.LastWriteTimeUtc;
+                    }
                 }
             }
             catch { isFolder = false; }
@@ -2323,7 +2179,7 @@ namespace ExplorerNative
 
             // Moved in place first: a populated folder keeps everything under it
             // and needs no new listing. Only when that is refused, RemoveOne takes
-            // the placeholder and its subtree away and PlaceOne puts it back under
+            // the entry on the letter and its subtree away and PlaceOne puts it back under
             // the new name with the same id.
             var placed = mount.MoveLocal(path, folder, newName);
             if (placed == null)
@@ -2449,7 +2305,7 @@ namespace ExplorerNative
             long sendMs = clock.ElapsedMilliseconds;
             var entry = new DriveEntry(id, name, "application/octet-stream", size, DriveClient.UploadStamp(localPath));
             var placed = mount.PlaceOne(destinationFolder, entry);
-            Note($"upload {name}: Drive {sendMs}ms, placeholder {clock.ElapsedMilliseconds - sendMs}ms");
+            Note($"upload {name}: Drive {sendMs}ms, letter {clock.ElapsedMilliseconds - sendMs}ms");
 
             // Only now is the old copy expendable: the new one is in Drive, with
             // an id, and nothing that happens next can take it away.
@@ -2457,7 +2313,7 @@ namespace ExplorerNative
                 placed = await Replace(
                     mount, client, destinationFolder, wanted, placed, entry, replacing, token).ConfigureAwait(false);
 
-            // The bytes are in Drive either way. A placeholder that could not be
+            // The bytes are in Drive either way. An entry on the letter that could not be
             // made is a local display problem, not a failed upload, and reporting
             // it as one would have the caller upload it again.
             return placed ?? wanted;
@@ -2467,13 +2323,13 @@ namespace ExplorerNative
         /// Trashes the copy that was there before, and gives its name to the one
         /// that has just arrived.
         ///
-        /// The renaming half is not cosmetic. While the old placeholder still held
+        /// The renaming half is not cosmetic. While the old entry on the letter still held
         /// the name, the new one had to be placed as "song (2).flac" — that is
         /// exactly what <c>PlaceOne</c> is for, and it is what keeps the path map
         /// honest about which id is which. Left there, "replace" would produce a
         /// folder holding one file with a number after its name and nothing to say
         /// why. Both names are dropped and the entry placed again, which is local
-        /// work only: <c>RemoveOne</c> deletes a placeholder and forgets an id, and
+        /// work only: <c>RemoveOne</c> deletes an entry on the letter and forgets an id, and
         /// nothing it does can reach the account.
         /// </summary>
         private async Task<string?> Replace(
@@ -2587,7 +2443,7 @@ namespace ExplorerNative
                     ? "you do not have permission to move it; copy it instead"
                     : $"you do not have permission to move it out of {(rights.DriveId == null ? "My Drive" : "its shared drive")}; copy it instead");
 
-            // Read before the move, because afterwards the placeholder is gone
+            // Read before the move, because afterwards the entry on the letter is gone
             // and with it the only local record of how big the file was.
             // With no new name Drive keeps its own, and that is the name the
             // moved row carries: the name on disk is the cleaned-up one
@@ -2600,12 +2456,18 @@ namespace ExplorerNative
             var modified = DateTime.UtcNow;
             try
             {
-                isFolder = Directory.Exists(fromPath);
-                if (!isFolder)
+                // A move keeps the date, as a rename does.
+                if (mount.Describe(fromPath) is { } known)
+                    (isFolder, size, modified) = (known.Folder, known.Size, known.ModifiedUtc);
+                else
                 {
-                    var info = new FileInfo(fromPath);
-                    size = info.Length;
-                    modified = info.LastWriteTimeUtc;   // a move keeps it, as a rename does
+                    isFolder = Directory.Exists(fromPath);
+                    if (!isFolder)
+                    {
+                        var info = new FileInfo(fromPath);
+                        size = info.Length;
+                        modified = info.LastWriteTimeUtc;
+                    }
                 }
             }
             catch { }
@@ -2628,7 +2490,7 @@ namespace ExplorerNative
                     modified));
             }
 
-            // Nothing on the drive moved by itself, and the placeholder
+            // Nothing on the drive moved by itself, and the entry on the letter
             // disappearing from the folder is all there would otherwise be to
             // show for it.
             Say("drive.moved", $"Moved {name} to {Path.GetFileName(toFolder)}");
@@ -2643,13 +2505,13 @@ namespace ExplorerNative
         /// folder is not, because Drive will not copy one: it is a new folder and
         /// then the same question about everything inside it, which is why this
         /// lives here rather than in the client. The listing it walks is Drive's
-        /// own rather than the placeholders, so a folder nobody has opened on
+        /// own rather than the entries on the letter, so a folder nobody has opened on
         /// this machine copies exactly as well as one that is on screen.
         ///
         /// <paramref name="name"/> is what to call it at the destination, already
         /// made unique by the caller, or null to keep Drive's own name — two
         /// files with one name in one folder is
-        /// legal in Drive and impossible on a drive letter, where the placeholder
+        /// legal in Drive and impossible on a drive letter, where the entry on the letter
         /// for the second would have nowhere to go.
         ///
         /// Returns the number of files and folders that arrived, so a folder copy
@@ -2678,7 +2540,7 @@ namespace ExplorerNative
             var fromDrive = mount.DriveIdFor(fromPath);
 
             bool isFolder;
-            try { isFolder = Directory.Exists(fromPath); }
+            try { isFolder = mount.Describe(fromPath)?.Folder ?? Directory.Exists(fromPath); }
             catch { isFolder = false; }
 
             // Both asked at once: each is a round trip, and neither needs the other.
@@ -2829,12 +2691,13 @@ namespace ExplorerNative
             {
                 token.ThrowIfCancellationRequested();
                 var name = Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
+                var known = mount.Describe(path);
                 bool folder;
-                try { folder = Directory.Exists(path); } catch { folder = false; }
+                try { folder = known?.Folder ?? Directory.Exists(path); } catch { folder = false; }
                 if (!folder)
                 {
                     files++;
-                    try { bytes += new FileInfo(path).Length; } catch { }
+                    try { bytes += known?.Size ?? new FileInfo(path).Length; } catch { }
                     continue;
                 }
                 var id = await IdOrRelist(mount, path, token).ConfigureAwait(false);
@@ -2867,7 +2730,7 @@ namespace ExplorerNative
         /// Below the top of the copy there is no local path to work from — the
         /// folders being made have never existed on this machine — so the
         /// recursion carries the Drive id it is copying into and the local path
-        /// only as far as the placeholders have actually been placed.
+        /// only as far as the entries on the letter have actually been placed.
         /// </summary>
         private static async Task<int> CopyFolderById(DriveClient client, DriveMount mount,
             string fromId, string name, string intoId, string? intoPath, HashSet<string> made,
@@ -3034,7 +2897,7 @@ namespace ExplorerNative
         public void Dispose()
         {
             // For good: a mount that finishes after this would leave a letter and a
-            // sync root behind a process that is on its way out.
+            // drive behind a process that is on its way out.
             _disposed = true;
             try { _lifetime.Cancel(); } catch { }
             TearDown();

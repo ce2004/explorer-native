@@ -17,7 +17,10 @@ Preferences, or installing an update, puts a copy in
 %LOCALAPPDATA%\Programs\ExplorerNative, and that copy is the one that runs from
 then on.
 
-Nothing else needs installing: everything it needs is inside the one file.
+Nothing else needs installing: everything it needs is inside the one file,
+except WinFsp for Google Drive, which it offers to install when you connect.
+
+Explorer Native is free and open source under the MIT licence (LICENSE.txt).
 
 
 Finding files
@@ -52,6 +55,20 @@ OAuth client of type Desktop app. Then in Explorer Native open Preferences
 (Ctrl+P), Google Drive, and paste its client ID and client secret into the two
 fields. When you press OK they are checked with Google; if Google accepts
 them they are saved encrypted and the browser opens for you to sign in.
+
+Google Drive is a real drive, G: unless you choose another letter. Every
+program can open, save, rename, move and delete files on it, and everything it
+does happens in your Google Drive too. Nothing is kept on your PC's disk: a
+big file goes up while it is being written, and a small one a few seconds after
+it is closed, so a program's temporary files never reach Google. Deleting sends
+things to the Google Drive trash. When Google cannot be reached, the drive
+letter goes away, and it comes back by itself when the connection does.
+
+The drive is made with WinFsp - Windows File System Proxy, Copyright (C) Bill
+Zissimopoulos, https://github.com/winfsp/winfsp. If WinFsp is not on your PC
+yet, Explorer Native offers to install it, from the WinFsp project, the first
+time you connect Google Drive. Windows asks for permission once. If you say
+no, Google Drive is turned off until you connect it again in Preferences.
 
 In a folder you sync both ways, press Shift+F10 on a folder inside it and
 choose Keep on Drive only. Once every file in it is checked to be in Google
@@ -110,7 +127,7 @@ checks automatically.
 
 Building
 
-Needs the .NET 8 SDK.
+Needs the .NET 10 SDK.
 
 dotnet publish ExplorerNative.csproj -c Release -r win-x64 -o out\x64
 dotnet publish ExplorerNative.csproj -c Release -r win-arm64 -o out\arm64

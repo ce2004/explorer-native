@@ -8,9 +8,8 @@ using System.Threading.Tasks;
 namespace ExplorerNative
 {
     /// <summary>
-    /// The mount's two housekeeping timers (the idle sweep and the hand-back of
-    /// fully-populated marks) only tick while there is work for them, and the
-    /// work they do still happens on time.
+    /// The mount's housekeeping timer (the idle sweep) only ticks while there
+    /// is work for it, and the work it does still happens on time.
     /// </summary>
     internal static class DriveMountTimerTests
     {
@@ -105,7 +104,7 @@ namespace ExplorerNative
             try
             {
                 mount = new DriveMount(client, root, 64L * 1024 * 1024, _ => { });
-                Check("a new mount has no timer ticking", !mount.SweepArmed && !mount.ReopenArmed);
+                Check("a new mount has no timer ticking", !mount.SweepArmed);
 
                 // On Drive before the root is listed, so the root's listing knows it.
                 var folder = drive.AddFolder("Tracks");
@@ -114,22 +113,11 @@ namespace ExplorerNative
                 mount.Start(FakeDrive.Root, assignLetter: false);
                 mount.Populate(root);
                 Thread.Sleep(300);
-                Check("a mount that has listed only its root still has no timer ticking",
-                    !mount.SweepArmed && !mount.ReopenArmed,
-                    $"sweep {mount.SweepArmed}, reopen {mount.ReopenArmed}, marked {mount.MarkedFullCount}");
-                Check("the root is never put up to be handed back", mount.MarkedFullCount == 0,
-                    $"marked {mount.MarkedFullCount}");
+                Check("a mount that has listed only its root still has no timer ticking", !mount.SweepArmed);
 
-                // ---- the hand-back of fully-populated marks ----
                 var folderPath = Path.Combine(root, "Tracks");
                 mount.Populate(folderPath);
-                Check("marking a folder fully populated arms the hand-back",
-                    mount.MarkedFullCount >= 1 && mount.ReopenArmed,
-                    $"marked {mount.MarkedFullCount}, reopen {mount.ReopenArmed}");
-                Check("the timer hands it back after FreshFor and then stands down",
-                    Eventually(() => mount.MarkedFullCount == 0 && !mount.ReopenArmed),
-                    $"marked {mount.MarkedFullCount}, reopen {mount.ReopenArmed}");
-
+                Check("listing a folder starts no timer either", !mount.SweepArmed);
                 // ---- the idle sweep ----
                 Check("no cache, no sweep", !mount.SweepArmed);
                 int warmed = mount.Warm(new[] { Path.Combine(folderPath, "one.flac") });

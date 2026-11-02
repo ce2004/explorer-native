@@ -60,6 +60,8 @@ namespace ExplorerNative
             public string Parent = "";
             public DateTime? Modified;
             public long Total;
+            /// <summary>Opened with no length: Google keeps such a session in whole 256 KiB units.</summary>
+            public bool Streamed;
             public MemoryStream Got = new();
             public Item? Done;
 
@@ -99,6 +101,9 @@ namespace ExplorerNative
 
         // What happened, for the tests to count.
         public int Uploads, MediaReads, Trashes, Renames, Creates, SessionsBegun, Requests, FaultsServed;
+
+        /// <summary>Sessions opened without a length: uploads sent while they were being written.</summary>
+        public int StreamSessions;
         public readonly List<long> MediaOffsets = new();
         public readonly List<long> PutOffsets = new();
         public readonly List<string> Kinds = new();
@@ -271,6 +276,12 @@ namespace ExplorerNative
             }
         }
 
+        /// <summary>How many live items in a folder have this name: more than one is a duplicate.</summary>
+        public int Count(string folder, string name)
+        {
+            lock (_gate) return ChildrenOf(folder).Count(i => !i.Trashed && i.Name == name);
+        }
+
         /// <summary>Every live file under a folder, by relative path. Docs are left out.</summary>
         public Dictionary<string, byte[]> Tree(string folder)
         {
@@ -308,6 +319,9 @@ namespace ExplorerNative
                 return found;
             }
         }
+
+        /// <summary>Drive's own alias for My Drive, "root", as the folder it names.</summary>
+        private static string RealParent(string parent) => parent == "root" ? Root : parent;
 
         public void AddFault(Fault fault) { lock (_gate) _faults.Add(fault); }
 
@@ -530,7 +544,8 @@ namespace ExplorerNative
                 {
                     var meta = JsonDocument.Parse(body).RootElement;
                     long total = request.Headers.TryGetValues("X-Upload-Content-Length", out var lengths)
-                        ? long.Parse(lengths.First()) : 0;
+                        ? long.Parse(lengths.First()) : -1;
+                    if (total < 0) Interlocked.Increment(ref StreamSessions);
                     var target = TargetOf(request);
                     var updating = target == null ? null : Get(target);
                     if (target != null && updating == null) return Error(404, "notFound", "File not found: " + target);
@@ -541,9 +556,10 @@ namespace ExplorerNative
                         _sessions[id] = new Session
                         {
                             Name = meta.TryGetProperty("name", out var n) ? n.GetString() ?? "" : updating?.Name ?? "",
-                            Parent = meta.TryGetProperty("parents", out var p) ? p[0].GetString() ?? "" : updating?.Parent ?? "",
+                            Parent = meta.TryGetProperty("parents", out var p) ? RealParent(p[0].GetString() ?? "") : updating?.Parent ?? "",
                             Modified = meta.TryGetProperty("modifiedTime", out var m) ? ParseTime(m.GetString()) : null,
                             Total = total,
+                            Streamed = total < 0,
                             Target = target,
                         };
                     }
@@ -623,8 +639,7 @@ namespace ExplorerNative
                 }
                 if (request.Method == HttpMethod.Put)
                 {
-                    var range = request.Content?.Headers.ContentRange;
-                    bool asking = range != null && !range.HasRange;
+                    bool asking = RawRange(request)?.StartsWith("bytes */", StringComparison.Ordinal) == true;
                     return (asking ? "query" : "put", query["upload_id"] ?? "", body);
                 }
             }
@@ -791,25 +806,56 @@ namespace ExplorerNative
             if (session == null) return Error(404, "notFound", "No such upload session");
 
             if (session.Done != null) return Json(200, Describe(session.Done));
-            if (asking) return Incomplete(session);
 
-            var range = request.Content!.Headers.ContentRange!;
-            long from = range.From ?? 0;
+            // "bytes a-b/total", "bytes a-b/*", "bytes */total" or "bytes */*".
+            var raw = RawRange(request) ?? "";
+            var spec = raw.StartsWith("bytes ", StringComparison.Ordinal) ? raw[6..] : raw;
+            int slash = spec.IndexOf('/');
+            var totalText = slash < 0 ? "*" : spec[(slash + 1)..];
+            if (totalText != "*" && long.TryParse(totalText, out long named))
+            {
+                // Like Google: a total below what it already holds is refused,
+                // and the session is no use after that.
+                if (named < session.Got.Length)
+                    return Error(400, "badRequest", $"Invalid total {named}: {session.Got.Length} bytes were already uploaded.");
+                session.Total = named;
+            }
+
+            if (asking)
+            {
+                // Asked with the total, holding all of it: that is the end.
+                if (session.Total >= 0 && session.Got.Length >= session.Total) return Finish(session);
+                return Incomplete(session);
+            }
+
+            long from = long.TryParse(spec[..spec.IndexOf('-')], out long f) ? f : 0;
+            long length = request.Content!.Headers.ContentLength ?? 0;
+            // Every piece but the last a multiple of 256 KiB, as Google requires.
+            if (totalText == "*" && length % (256 * 1024) != 0)
+                return Error(400, "badRequest", "Invalid request. The number of bytes uploaded is required to be a multiple of 262144 bytes except for the last request.");
+            long skip;
             lock (_gate)
             {
                 PutOffsets.Add(from);
                 if (from > session.Got.Length) return Incomplete(session);
-                session.Got.SetLength(from);
-                session.Got.Position = from;
+                // Like Google: bytes it already holds are not taken again. A
+                // client that sends different bytes there has lost them.
+                skip = session.Got.Length - from;
+                session.Got.Position = session.Got.Length;
             }
 
-            await using (var stream = await request.Content.ReadAsStreamAsync(ct))
+            try
             {
+                await using var stream = await request.Content.ReadAsStreamAsync(ct);
                 var buffer = new byte[64 * 1024];
                 int n;
                 while ((n = await stream.ReadAsync(buffer, ct)) > 0)
                 {
-                    lock (_gate) session.Got.Write(buffer, 0, n);
+                    int ignored = (int)Math.Min(n, skip);
+                    skip -= ignored;
+                    if (n > ignored) lock (_gate) session.Got.Write(buffer, ignored, n - ignored);
+                    if (session.Total >= 0 && session.Got.Length > session.Total)
+                        return Error(400, "badRequest", "More bytes were sent than the total named.");
                     if (OnPutBytes != null) await OnPutBytes(session.Got.Length, ct);
                     ct.ThrowIfCancellationRequested();
                     if (CutPutsAfterBytes >= 0 && session.Got.Length >= CutPutsAfterBytes)
@@ -819,9 +865,21 @@ namespace ExplorerNative
                     }
                 }
             }
+            catch when (session.Streamed)
+            {
+                // Google keeps a stream in whole 256 KiB units: the odd end of a broken piece is lost.
+                lock (_gate) session.Got.SetLength(session.Got.Length / (256 * 1024) * (256 * 1024));
+                throw;
+            }
 
-            if (session.Got.Length < session.Total) return Incomplete(session);
+            if (session.Total < 0 || session.Got.Length < session.Total) return Incomplete(session);
+            return Finish(session);
+        }
 
+        /// <summary>A session holding everything it was promised, made into the file.</summary>
+        private HttpResponseMessage Finish(Session session)
+        {
+            if (session.Got.Length > session.Total) session.Got.SetLength(session.Total);
             if (session.Target != null)
             {
                 Item? existing;
@@ -854,6 +912,11 @@ namespace ExplorerNative
             return Json(200, Describe(item));
         }
 
+        private static string? RawRange(HttpRequestMessage request) =>
+            request.Content != null && request.Content.Headers.TryGetValues("Content-Range", out var values)
+                ? values.FirstOrDefault()
+                : null;
+
         private static HttpResponseMessage Incomplete(Session session)
         {
             var answer = new HttpResponseMessage((HttpStatusCode)308) { Content = new StringContent("") };
@@ -885,7 +948,7 @@ namespace ExplorerNative
                     Renames++;
                 }
                 if (json.TryGetProperty("modifiedTime", out var m)) item.Modified = ParseTime(m.GetString()) ?? item.Modified;
-                if (query["addParents"] is { Length: > 0 } to) { item.Parent = to; _byParent = null; Moves++; }
+                if (query["addParents"] is { Length: > 0 } to) { item.Parent = RealParent(to); _byParent = null; Moves++; }
                 _changed.Add(item.Id);
                 return Json(200, Describe(item));
             }
@@ -897,7 +960,7 @@ namespace ExplorerNative
             var item = new Item
             {
                 Name = meta.TryGetProperty("name", out var n) ? n.GetString() ?? "" : name ?? "",
-                Parent = meta.TryGetProperty("parents", out var p) ? p[0].GetString() ?? Root : Root,
+                Parent = meta.TryGetProperty("parents", out var p) ? RealParent(p[0].GetString() ?? Root) : Root,
                 MimeType = meta.TryGetProperty("mimeType", out var m) ? m.GetString() ?? "" : mime ?? "application/octet-stream",
                 Data = data,
                 Modified = meta.TryGetProperty("modifiedTime", out var t) ? ParseTime(t.GetString()) ?? DateTime.UtcNow

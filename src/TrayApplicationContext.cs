@@ -223,9 +223,6 @@ namespace ExplorerNative
 
             StartConnect();
 
-            // A cancelled copy out of Drive ends robocopy; not mid-read.
-            RoboCopyEngine.BeforeKill = _drive.StandDownReads;
-            RoboCopyEngine.AfterKill = _drive.ForgetReader;
             RoboCopyEngine.DownloadFromCloud = _drive.DownloadOutAsync;
 
             // On a worker, because both are directory walks, deletes and a pass
@@ -261,8 +258,7 @@ namespace ExplorerNative
             {
                 if (state == DriveState.Offline)
                     Notify("drive.offline",
-                        "Google Drive is offline. " + _drive.Letter + " will not open folders or play " +
-                        "tracks until the connection comes back.");
+                        "Google Drive is offline, so " + _drive.Letter + " is hidden until the connection comes back.");
                 else if (state == DriveState.Online)
                     Notify("drive.online", "Google Drive is back online.");
             });
@@ -553,6 +549,12 @@ namespace ExplorerNative
                         // sitting on an empty folder that is no longer empty.
                         _form?.RefreshIfShowingDrive(_drive.Letter);
                     }
+                    else if (_settings.GoogleDriveEnabled && _drive.NeedsWinFsp)
+                    {
+                        // The drive is a WinFsp volume (4.3.0). Asked, never done
+                        // behind somebody's back: it is a driver, and Windows asks too.
+                        OfferWinFsp();
+                    }
                     else if (_settings.GoogleDriveEnabled)
                     {
                         // Not when Drive was switched off while this was on its way
@@ -564,6 +566,98 @@ namespace ExplorerNative
             });
         }
 
+        private bool _offeringWinFsp;
+
+        /// <summary>
+        /// Asks whether to install WinFsp, the free driver Google Drive needs to
+        /// be a real drive, and installs it with Windows' permission prompt.
+        /// No (or an install that fails) turns Google Drive off and says so, with
+        /// how to turn it back on (Conner, 4.3.0): connecting again from
+        /// Preferences asks again. One question at a time.
+        /// </summary>
+        private void OfferWinFsp()
+        {
+            if (_offeringWinFsp || _quitting) return;
+            _offeringWinFsp = true;
+            try
+            {
+                var body = "Google Drive needs WinFsp, a free driver that lets Explorer Native show Google Drive " +
+                           "as a real drive that every program can open, save to and change." +
+                           Environment.NewLine + Environment.NewLine +
+                           "Install it now? It comes from the WinFsp project's own website, and Windows will ask " +
+                           "for permission." +
+                           Environment.NewLine + Environment.NewLine + WinFspSetup.Credit;
+                var answer = ShowDriveMessage(body, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (answer != DialogResult.Yes)
+                {
+                    TurnOffDriveWithoutWinFsp(null);
+                    return;
+                }
+
+                Notify("drive.winfsp.installing", "Installing WinFsp");
+                _ = System.Threading.Tasks.Task.Run(async () =>
+                {
+                    var problem = await WinFspSetup.InstallAsync(GoogleDrive.Trace, CancellationToken.None);
+                    PostUi(() =>
+                    {
+                        if (problem != null) TurnOffDriveWithoutWinFsp(problem);
+                        else if (_settings.GoogleDriveEnabled && !_quitting) MountGoogleDrive();
+                    });
+                });
+            }
+            finally { _offeringWinFsp = false; }
+        }
+
+        /// <summary>
+        /// Google Drive switched off because WinFsp is not there: saved, so it is
+        /// not asked about at every start, and said in an error the person has
+        /// to dismiss, with the way back.
+        /// </summary>
+        private void TurnOffDriveWithoutWinFsp(string? problem)
+        {
+            _settings.GoogleDriveEnabled = false;
+            try { _settings.Save(); } catch { }
+            _drive.Unmount();
+
+            var body = (problem == null
+                           ? "Google Drive is turned off, because it needs WinFsp to work."
+                           : $"WinFsp did not install: {problem}. Google Drive is turned off, because it needs WinFsp to work.") +
+                       Environment.NewLine + Environment.NewLine +
+                       "Your synced folders are paused until it is back on. You can turn it back on in Preferences, " +
+                       "Google Drive: press Connect Google Drive, and Explorer Native offers to install WinFsp again.";
+            // A dialog to dismiss rather than a notification: it changed a setting,
+            // and NVDA reads the dialog, so saying it as well would say it twice.
+            GoogleDrive.Trace("Google Drive turned off: " + (problem ?? "WinFsp was not installed"));
+            ShowDriveMessage(body, MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+
+        /// <summary>
+        /// Files other programs saved on the Drive letter that are still only in
+        /// memory (4.3.0 keeps nothing on the disk). Quitting sends them first,
+        /// for up to a minute, but a slow connection or a file still being
+        /// written can leave one behind, so somebody quitting is told first.
+        /// </summary>
+        private bool ConfirmUnsavedDrive()
+        {
+            var names = _drive.UploadNames;
+            if (names.Count == 0) return true;
+            var what = names.Count == 1
+                ? $"{names[0]} is still on its way to Google Drive."
+                : $"{names.Count} files are still on their way to Google Drive, including {string.Join(", ", names.Take(3))}.";
+            var question = what + " Explorer Native finishes sending them before it closes, which can take up to a minute, " +
+                           "but anything still being written by another program will not be saved. Quit anyway?";
+            if (ShowDriveMessage(question, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) return true;
+            if (_form is { IsDisposed: false, Visible: true } window) window.RestoreListFocusExternally();
+            return false;
+        }
+
+        private DialogResult ShowDriveMessage(string body, MessageBoxButtons buttons, MessageBoxIcon icon)
+        {
+            var owner = _form is { IsDisposed: false, Visible: true } ? _form : null;
+            return owner != null
+                ? MessageBox.Show(owner, body, "Explorer Native", buttons, icon)
+                : MessageBox.Show(body, "Explorer Native", buttons, icon);
+        }
         /// <param name="reload">
         /// The file was changed from outside — a command-line flag — rather
         /// than by somebody pressing OK in Preferences. Nothing is announced,
@@ -2534,6 +2628,7 @@ namespace ExplorerNative
             // at, and then reporting that the file is in use.
             if (ask && _form is { IsDisposed: false } window &&
                 !window.ConfirmAbandonTransfers("Quit")) return;
+            if (ask && !ConfirmUnsavedDrive()) return;
 
             // First, while the tray icon and the window are both still there to
             // say it with. Anything below this point has already taken away one

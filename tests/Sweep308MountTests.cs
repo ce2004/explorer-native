@@ -46,6 +46,10 @@ namespace ExplorerNative
             var ids = (ConcurrentDictionary<string, string>)typeof(DriveMount)
                 .GetField("_ids", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(mount)!;
             ids["one.flac"] = fileId;
+            // Warm reads the size from the folder's listing, not from disk.
+            var listings = (ConcurrentDictionary<string, DrivePlaced[]>)typeof(DriveMount)
+                .GetField("_listings", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(mount)!;
+            listings[""] = new[] { new DrivePlaced("one.flac", false, 64 * 1024, When, "one.flac") };
             return mount;
         }
 

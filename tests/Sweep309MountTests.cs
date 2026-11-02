@@ -79,7 +79,6 @@ namespace ExplorerNative
                 var folders = Field<ConcurrentDictionary<string, string>>(mount, "_folders");
                 var driveIds = Field<ConcurrentDictionary<string, string>>(mount, "_driveIds");
                 var listedAt = Field<ConcurrentDictionary<string, long>>(mount, "_listedAt");
-                var markedFull = Field<ConcurrentDictionary<string, long>>(mount, "_markedFull");
                 var offline = Field<ConcurrentDictionary<string, bool>>(mount, "_answeredOffline");
                 var whereIs = Field<ConcurrentDictionary<string, (string Folder, string Name)>>(mount, "_whereIs");
                 var listings = Field<ConcurrentDictionary<string, DrivePlaced[]>>(mount, "_listings");
@@ -90,7 +89,6 @@ namespace ExplorerNative
                     folders[key] = "id-" + key;
                     driveIds[key] = "drive-1";
                     listedAt[key] = Environment.TickCount64;
-                    markedFull[key] = Environment.TickCount64;
                     offline[key] = true;
                 }
                 whereIs["id-music"] = ("", "Music");
@@ -110,7 +108,6 @@ namespace ExplorerNative
 
                 Check("removing a folder drops its stamps of when it was listed", removed && Gone(listedAt),
                     string.Join(",", listedAt.Keys));
-                Check("and its marks for the hand-back timer", Gone(markedFull), string.Join(",", markedFull.Keys));
                 Check("and its offline answers", Gone(offline), string.Join(",", offline.Keys));
                 Check("and its shared-drive ids", Gone(driveIds), string.Join(",", driveIds.Keys));
                 Check("and where everything in it was placed",
@@ -146,54 +143,50 @@ namespace ExplorerNative
 
         // ---- a failed read is not a warm -----------------------------------
 
-        private static void FailedReadDoesNotWarm()
+        private static unsafe void FailedReadDoesNotWarm()
         {
             var root = Scratch("w");
-            var identity = Marshal.StringToHGlobalUni("file-1");
             try
             {
                 var mount = Unregistered(root);
-
-                // Asked for a range wholly past the end of what the cache holds:
-                // failed by name before anything is read.
-                var info = new CfApi.CF_CALLBACK_INFO
-                {
-                    StructSize = (uint)Marshal.SizeOf<CfApi.CF_CALLBACK_INFO>(),
-                    FileIdentity = identity,
-                    FileIdentityLength = 14,
-                    FileSize = 64 * 1024,
-                };
-                var parameters = new CfApi.CF_CALLBACK_PARAMETERS_FETCH_DATA
-                {
-                    ParamSize = (uint)Marshal.SizeOf<CfApi.CF_CALLBACK_PARAMETERS_FETCH_DATA>(),
-                    RequiredFileOffset = 1024 * 1024,
-                    RequiredLength = 4096,
-                };
-                typeof(DriveMount).GetMethod("OnFetchData", Private)!.Invoke(mount, new object[] { info, parameters });
-
                 var caches = Field<ConcurrentDictionary<string, DriveFileCache>>(mount, "_caches");
+                var buffer = new byte[4096];
+
+                // Wholly past the end: the end of the file, said before anything
+                // is opened or read.
+                var past = new DriveMount.Opened { Key = "past.flac", Id = "file-0", Size = 64 * 1024 };
+                int status;
+                fixed (byte* b = buffer) status = mount.ReadFromDrive(past, (IntPtr)b, 1024 * 1024, 4096, out _);
+                Check("a read wholly past the end says so and opens no download",
+                    status == WinFsp.EndOfFile && !caches.ContainsKey("file-0"), $"0x{status:X8}");
+
+                // A file Drive does not have: the read fails, and its cache is
+                // left still — a failure must not start the whole file downloading.
+                var missing = new DriveMount.Opened { Key = "gone.flac", Id = "file-1", Size = 64 * 1024 };
+                fixed (byte* b = buffer) status = mount.ReadFromDrive(missing, (IntPtr)b, 0, 4096, out _);
                 bool opened = caches.TryGetValue("file-1", out var cache);
-                Check("a read that fails before reading anything starts no whole-file download",
-                    opened && !cache!.Pumping, opened ? "pumping" : "no cache was opened");
+                Check("a read that fails starts no whole-file download",
+                    status != WinFsp.Success && (!opened || !cache!.Pumping),
+                    $"0x{status:X8}, {(opened ? (cache!.Pumping ? "pumping" : "still") : "no cache")}");
 
                 // Control: warming, which is a lease let go unread on purpose, does.
-                var path = Path.Combine(root, "warm.flac");
-                File.WriteAllBytes(path, new byte[64 * 1024]);
+                Field<ConcurrentDictionary<string, DrivePlaced[]>>(mount, "_listings")[""] = new[]
+                {
+                    new DrivePlaced("warm.flac", false, 64 * 1024, When, "warm.flac"),
+                };
                 Field<ConcurrentDictionary<string, string>>(mount, "_ids")["warm.flac"] = "file-2";
-                mount.Warm(new[] { path });
+                mount.Warm(new[] { Path.Combine(root, "warm.flac") });
                 Check("while warming a file still starts its download (control)",
                     caches.TryGetValue("file-2", out var warmed) && warmed.Pumping);
                 mount.Dispose();
             }
             finally
             {
-                Marshal.FreeHGlobal(identity);
                 try { Directory.Delete(root, true); } catch { }
             }
         }
 
         // ---- Drive's name, not the one on disk -------------------------------
-
         private static void DriveNameAtIsDrivesName()
         {
             var root = Scratch("n");

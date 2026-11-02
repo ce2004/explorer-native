@@ -167,6 +167,28 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            // Just the WinFsp bindings, over a file system in memory (4.3.0).
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "winfsp")
+            {
+                await WinFspTests.RunAll(Check);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
+            // Google Drive as a real drive, and everything about the mount (4.3.0).
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "drivevolume")
+            {
+                await WinFspTests.RunAll(Check);
+                await DriveMountTests.RunAll(Check, Equal);
+                await DriveMountTimerTests.RunAll(Check, Equal);
+                await Sweep308MountTests.RunAll(Check, Equal);
+                await Sweep309MountTests.RunAll(Check, Equal);
+                await DriveTransferTests.RunAll(Check, Equal);
+                await DriveTrashTests.RunAll(Check, Equal);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             // Just Windows key shortcuts and folder registration (4.2.8).
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "winkeys")
             {
@@ -1562,9 +1584,8 @@ namespace ExplorerNative
 
         /// <summary>
         /// Changing the Drive letter in Preferences moves the mounted drive at
-        /// once. Done for real on a scratch folder with two free letters, the
-        /// same way DriveMount.MoveLetter does it: the new letter first, then
-        /// the old one removed.
+        /// once. Done for real with a mount over the fake Drive on two free
+        /// letters, the way the tray does it.
         /// </summary>
         private static void DriveLetterMoveTests()
         {
@@ -1572,20 +1593,20 @@ namespace ExplorerNative
             for (char c = 'Z'; c >= 'M' && free.Count < 2; c--)
                 if (!DriveLetter.InUse(c)) free.Add(c);
             if (free.Count < 2) { Check("two free letters to test moving with", false); return; }
+            if (!WinFsp.Installed) { Check("WinFsp is installed, to move a real drive", false); return; }
 
-            var dir = NewTempDir();
-            DriveLetter? first = null, second = null;
+            var drive = new FakeDrive();
+            drive.AddFile("marker.txt", System.Text.Encoding.UTF8.GetBytes("here"), DateTime.UtcNow, FakeDrive.Root);
+            var client = new DriveClient(drive, 0.0005);
+            var mount = new DriveMount(client, @"\\GoogleDrive\lettertest" + Environment.ProcessId, 16L * 1024 * 1024, _ => { });
             try
             {
-                File.WriteAllText(Path.Combine(dir, "marker.txt"), "here");
-                first = DriveLetter.Assign(dir, free[0]);
-                Equal("the drive starts on the first letter", free[0] + ":", first.Letter);
+                mount.Start(FakeDrive.Root, assignLetter: true, preferred: free[0]);
+                Equal("the drive starts on the first letter", free[0] + ":", mount.Letter ?? "(none)");
 
-                second = DriveLetter.Assign(dir, free[1]);
-                first.Dispose();
-
-                Equal("and moves to the one asked for", free[1] + ":", second.Letter);
-                Check("the files are there on the new letter", File.Exists(second.Letter + "\\marker.txt"));
+                mount.MoveLetter(free[1]);
+                Equal("and moves to the one asked for", free[1] + ":", mount.Letter ?? "(none)");
+                Check("the files are there on the new letter", File.Exists(mount.Letter + "\\marker.txt"));
                 Check("and the old letter is free again", !DriveLetter.InUse(free[0]));
 
                 var source = SourceFile("TrayApplicationContext.cs") ?? "";
@@ -1594,10 +1615,9 @@ namespace ExplorerNative
             }
             finally
             {
-                try { second?.Dispose(); } catch { }
-                try { first?.Dispose(); } catch { }
-                try { Directory.Delete(dir, true); } catch { }
+                try { mount.Dispose(); } catch { }
             }
+            Check("taken down, the letter is free", !DriveLetter.InUse(free[1]));
         }
 
         /// <summary>
@@ -4651,13 +4671,10 @@ namespace ExplorerNative
         {
             Console.WriteLine("Google Drive provider:");
 
-            // The one that has already earned its keep. CF_SYNC_REGISTRATION was
-            // written as 64 bytes and is 72 — the GUID lands at offset 56 after
-            // two four-byte pads — and this caught it before a single call was
-            // made. A wrong offset here is a pointer read out of the wrong eight
-            // bytes, which fails somewhere else entirely.
-            Equal("every Cloud Files structure matches the 64-bit header",
-                "ok", CfApi.CheckLayout() ?? "ok");
+            // A wrong size in a structure handed to WinFsp is a wrong offset,
+            // which fails somewhere else entirely; checked before anything is called.
+            Equal("every WinFsp structure matches winfsp.h",
+                "ok", WinFsp.CheckLayout() ?? "ok");
 
             // Drive allows characters in a name that NTFS refuses. A name that
             // cannot be written is a file that silently never appears.

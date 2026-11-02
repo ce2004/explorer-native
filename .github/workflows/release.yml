@@ -72,6 +72,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh release create '${{ github.ref_name }}' dist/ExplorerNative-arm64.exe dist/ExplorerNative-x64.exe dist/ExplorerNative-arm64.exe.gz dist/ExplorerNative-x64.exe.gz --title "Explorer Native ${{ steps.ver.outputs.version }}" --notes-file notes.txt
 
+      # Google Drive is a WinFsp volume (4.3.0), and its tests mount one.
+      - name: Install WinFsp for the drive tests
+        continue-on-error: true
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi -OutFile winfsp.msi
+          Start-Process msiexec.exe -ArgumentList '/i winfsp.msi /qn /norestart' -Wait
+
       # After the release, so updates are out without waiting for it.
       # Runs natively on x64. Informational: some sections need audio hardware
       # or a desktop session the runner does not have.

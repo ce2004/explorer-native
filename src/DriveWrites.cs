@@ -896,6 +896,28 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// Sets a file's modified time and nothing else: what a program setting
+        /// a date on a file on the drive letter means, without sending the
+        /// file's contents again. The same PATCH however often it is sent.
+        /// </summary>
+        internal async Task SetModifiedTime(string fileId, DateTime utc, CancellationToken token)
+        {
+            var json = JsonSerializer.Serialize(new Dictionary<string, object> { ["modifiedTime"] = RfcTime(utc) });
+            using var response = await SendWithRetry(async () =>
+            {
+                var request = await Request(HttpMethod.Patch, $"{Files}/{fileId}?fields=id", token);
+                request.Content = new StringContent(json, Encoding.UTF8, "application/json");
+                return request;
+            }, HttpCompletionOption.ResponseContentRead, token);
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync(token);
+                throw new DriveStatusException((int)response.StatusCode, body,
+                    $"setting the date failed {(int)response.StatusCode}: " + Explain((int)response.StatusCode, body));
+            }
+        }
+
+        /// <summary>
         /// Uploads a local file and gives back the new file id.
         ///
         /// **Nothing is buffered.** The file is opened and handed to the request
@@ -1091,7 +1113,8 @@ namespace ExplorerNative
 
         private async Task<DriveUploaded> UploadWhole(
             string localPath, string name, string parentId, long total,
-            Action<UploadProgress>? progress, CancellationToken token, string? replaceId = null)
+            Action<UploadProgress>? progress, CancellationToken token, string? replaceId = null,
+            Func<Stream>? openSource = null, DateTime? stamp = null, string? givenTag = null)
         {
             // Sent again when Google says "not now", which it does — this is one
             // request per file and a folder of small files is a great many of
@@ -1116,7 +1139,7 @@ namespace ExplorerNative
             // timeout, a reset, a 5xx. Sending again then makes a second file
             // of the same name, so Drive is asked first, by the tag every
             // attempt carries. See SendWithRetry.
-            var tag = NewOperationTag();
+            var tag = givenTag ?? NewOperationTag();
             bool maybeDone = false;
 
             // A refused token: Send has forgotten it but cannot resend a
@@ -1160,13 +1183,16 @@ namespace ExplorerNative
                 // HttpRequestMessage that has been sent once — reusing either is
                 // a retry that fails for a reason that has nothing to do with
                 // the failure it is retrying.
-                using var source = OpenRead(localPath);
+                // From memory when the caller has the bytes (a file another
+                // program saved on the drive letter), otherwise from disk.
+                using var source = openSource != null ? openSource() : OpenRead(localPath);
 
                 // Worked out before the try: a folder nothing can be put in is
                 // a refusal, not a moment, and is not worth six attempts.
+                var when = stamp ?? UploadStamp(localPath);
                 var metadataJson = replaceId == null
-                    ? MetadataJson(name, parentId, tag, UploadStamp(localPath))
-                    : UpdateMetadataJson(UploadStamp(localPath));
+                    ? MetadataJson(name, parentId, tag, when)
+                    : UpdateMetadataJson(when);
 
                 int status;
                 string text;
@@ -1631,7 +1657,7 @@ namespace ExplorerNative
         /// when its upload began, or null while it still is (or cannot be asked).
         /// The handle is shared for writing, so its length is the file's now.
         /// </summary>
-        private ChangedWhileSendingException? Resized(FileStream source, long total)
+        private ChangedWhileSendingException? Resized(Stream source, long total)
         {
             long now;
             try { now = source.Length; }
@@ -1694,8 +1720,11 @@ namespace ExplorerNative
                         : await Request(HttpMethod.Patch,
                             $"{UploadEndpoint}/{Uri.EscapeDataString(replaceId)}?uploadType=resumable&fields={UploadedFields}", token);
                     request.Content = new StringContent(metadata, Encoding.UTF8, "application/json");
-                    request.Headers.Add("X-Upload-Content-Length",
-                        size.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    // A negative size is a stream whose length is not known
+                    // until its last piece (DriveStreams.cs): no length is promised.
+                    if (size >= 0)
+                        request.Headers.Add("X-Upload-Content-Length",
+                            size.ToString(System.Globalization.CultureInfo.InvariantCulture));
                     return request;
                 },
                 HttpCompletionOption.ResponseContentRead, token);

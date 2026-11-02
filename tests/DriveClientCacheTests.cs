@@ -365,7 +365,12 @@ namespace ExplorerNative
             }
 
             var resolved = new Dictionary<string, string?>(StringComparer.Ordinal);
-            await DriveSearch.PopulateAhead("G:", chains, Populate, ChildPathForId, resolved, 4, CancellationToken.None);
+            // Enough pool threads to run four at once even late in a busy suite:
+            // starved, the pool started them one at a time and this read as "1 at once".
+            ThreadPool.GetMinThreads(out int workers, out int ports);
+            ThreadPool.SetMinThreads(Math.Max(workers, 32), ports);
+            try { await DriveSearch.PopulateAhead("G:", chains, Populate, ChildPathForId, resolved, 4, CancellationToken.None); }
+            finally { ThreadPool.SetMinThreads(workers, ports); }
 
             check("Drive search: every folder on the way to a hit is listed once",
                 listed.Count == 7 && listed.Distinct(StringComparer.OrdinalIgnoreCase).Count() == 7,
