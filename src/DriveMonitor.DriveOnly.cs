@@ -254,7 +254,9 @@ namespace ExplorerNative
         /// <summary>
         /// Runs a pass of one pair now and waits, at most <paramref name="max"/>,
         /// for it to finish. False when it did not (paused, stopped, too long),
-        /// with the pair's problem when the pass hit one that lasts. Only a
+        /// with the pair's problem when the pass hit one that lasts. True when
+        /// it went through, with the problem it ended on (files refused, Drive
+        /// full), if any. Only a
         /// pass that began after the ask counts: one already running may have
         /// looked at the folder before the files came.
         /// </summary>
@@ -274,7 +276,14 @@ namespace ExplorerNative
                     if (_running == pairId || !_ranFrom.TryGetValue(pairId, out var ran) || ran <= asked) continue;
                     // A pass sets _lastChecked only when it went through, before
                     // _running is cleared.
-                    if (_lastChecked.TryGetValue(pairId, out var at) && at >= ran) return (true, null);
+                    // It went through, but may have ended on a problem it noted
+                    // without stopping (files Google refused, Drive full): handed
+                    // back, for the caller to give if files are still missing.
+                    if (_lastChecked.TryGetValue(pairId, out var at) && at >= ran)
+                    {
+                        var left = _status.TryGetValue(pairId, out var done) ? done.Problem : null;
+                        return (true, left == null || left.StartsWith("offline", StringComparison.Ordinal) ? null : left);
+                    }
                     var problem = _status.TryGetValue(pairId, out var status) ? status.Problem : null;
                     // No problem left: it was stopped (paused, edited or removed).
                     if (problem == null) return (false, null);
@@ -335,6 +344,7 @@ namespace ExplorerNative
             // gets one pass of the pair to go up, then it is looked at again.
             var rules = SyncRules.For(pair);
             FolderCheck check;
+            string? lastPassSaid = null;   // the problem the pass went through with, if any
             for (int round = 0; ; round++)
             {
                 var folderId = await DriveFolderAtAsync(client, pair.DriveFolderId, relative, token).ConfigureAwait(false);
@@ -361,16 +371,28 @@ namespace ExplorerNative
                 string? passProblem = null;
                 if (round == 0 && !pair.Paused)
                     (synced, passProblem) = await SyncPairNowAsync(pairId, DriveOnlySyncWait, token).ConfigureAwait(false);
-                if (passProblem != null)
+                if (!synced && passProblem != null)
                     return new(false, $"{DisplayName(pair)} could not sync just now ({passProblem}), so {name} was left as it is. Nothing was removed");
+                // A pass that went through but ended on a problem (a file Google
+                // refused, Drive full) is only the reason if the look after it
+                // still finds files missing: it may be about another folder.
+                if (synced) lastPassSaid = passProblem;
                 if (!synced)
                 {
+                    // Said instead of "try again", which would never help.
+                    var why = lastPassSaid != null && !pair.Paused
+                        ? $" {DisplayName(pair)} could not send {(check.NotOnDrive.Count == 1 ? "it" : "them")}: {lastPassSaid}. Nothing was removed"
+                        : null;
                     if (check.NotOnDrive.Count == 0)
-                        return new(false, $"{name} is not in Google Drive yet. Nothing was removed. Try again once it has synced");
+                        return new(false, why != null
+                            ? $"{name} is not in Google Drive yet.{why}"
+                            : $"{name} is not in Google Drive yet. Nothing was removed. Try again once it has synced");
                     var count = NameRules.Counted(check.NotOnDrive.Count, "file");
+                    var notYet = $"{count} in {name} {(check.NotOnDrive.Count == 1 ? "is" : "are")} not in Google Drive yet ({SomeOf(check.NotOnDrive)})";
                     return new(false, pair.Paused
-                        ? $"{count} in {name} {(check.NotOnDrive.Count == 1 ? "is" : "are")} not in Google Drive yet ({SomeOf(check.NotOnDrive)}), and {DisplayName(pair)} is paused. Nothing was removed"
-                        : $"{count} in {name} {(check.NotOnDrive.Count == 1 ? "is" : "are")} not in Google Drive yet ({SomeOf(check.NotOnDrive)}). Nothing was removed. Try again once it has synced");
+                        ? $"{notYet}, and {DisplayName(pair)} is paused. Nothing was removed"
+                        : why != null ? notYet + "." + why
+                        : $"{notYet}. Nothing was removed. Try again once it has synced");
                 }
             }
 
