@@ -195,7 +195,7 @@ namespace ExplorerNative
                         if (extra <= 0) throw new InvalidDataException("the archive ends before the file does");
                         RoboCopyEngine.Trace($"gz: {name} extracted; {extra} bytes after the end were ignored");
                     }
-                });
+                }, zone: rules.Zone);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex) when (ex is InvalidDataException or EndOfStreamException)
@@ -720,8 +720,8 @@ namespace ExplorerNative
                     {
                         try
                         {
-                            if (pending.Pipe is { } pipe) WritePiped(pending.Target, pipe, pending.Modified);
-                            else WriteFile(pending.Target, pending.Data, pending.Length, pending.Modified);
+                            if (pending.Pipe is { } pipe) WritePiped(pending.Target, pipe, pending.Modified, rules.Zone);
+                            else WriteFile(pending.Target, pending.Data, pending.Length, pending.Modified, rules.Zone);
                             Interlocked.Increment(ref done);
                             lock (extracted) extracted[ArchiveName(pending.Name)] = pending.Target;
                         }
@@ -804,7 +804,8 @@ namespace ExplorerNative
                             try
                             {
                                 ArchiveEngine.WriteCommitted(target,
-                                    output => WriteSparse(output, stored, sparse, entry.Length, reporter, token));
+                                    output => WriteSparse(output, stored, sparse, entry.Length, reporter, token),
+                                    zone: rules.Zone);
                                 try { File.SetLastWriteTime(target, entry.ModificationTime.LocalDateTime); }
                                 catch { }
                                 Interlocked.Increment(ref done);
@@ -983,7 +984,7 @@ namespace ExplorerNative
                     {
                         using var from = new FileStream(source, FileMode.Open, FileAccess.Read, FileShare.Read);
                         from.CopyTo(output, 1 << 20);
-                    });
+                    }, zone: rules.Zone);
                     try { File.SetLastWriteTime(target, File.GetLastWriteTime(source)); } catch { }
                     done++;
                 }
@@ -1086,7 +1087,7 @@ namespace ExplorerNative
         private const int PipePiece = 4 * 1024 * 1024;
         private const int PipeDepth = 4;
 
-        private static void WritePiped(string target, Pipe pipe, DateTime? modified)
+        private static void WritePiped(string target, Pipe pipe, DateTime? modified, byte[]? zone)
         {
             ArchiveEngine.WriteCommitted(target, output =>
             {
@@ -1099,7 +1100,7 @@ namespace ExplorerNative
                 // Short, damaged or cancelled: the reader has said what is to
                 // be said, and the half written here is not given the name.
                 if (!pipe.Whole) throw new Pipe.Abandoned();
-            }, bufferSize: 0, modified: modified, expectedLength: pipe.Expected);
+            }, bufferSize: 0, modified: modified, expectedLength: pipe.Expected, zone: zone);
         }
 
         private static string Describe(TarEntryType type) => type switch
@@ -1126,13 +1127,13 @@ namespace ExplorerNative
             return filled;
         }
 
-        private static void WriteFile(string target, byte[] data, int length, DateTime? modified)
+        private static void WriteFile(string target, byte[] data, int length, DateTime? modified, byte[]? zone)
         {
             // One write of the whole file, so no buffer of the stream's own,
             // and the date set through the handle rather than by opening the
             // file again afterwards.
             ArchiveEngine.WriteCommitted(target, output => output.Write(data, 0, length),
-                bufferSize: 0, modified: modified, expectedLength: length);
+                bufferSize: 0, modified: modified, expectedLength: length, zone: zone);
         }
 
         /// <summary>

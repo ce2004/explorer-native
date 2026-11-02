@@ -292,7 +292,8 @@ namespace ExplorerNative
             List<string> errors,
             CancellationToken token,
             Action? stoppedShort,
-            bool compressedTar = false)
+            bool compressedTar = false,
+            byte[]? zone = null)
         {
             var exe = SevenZipExecutable!;
             Directory.CreateDirectory(destination);
@@ -406,7 +407,7 @@ namespace ExplorerNative
                         List<(string Name, string? Failure)> names;
                         lock (printed) names = new List<(string, string?)>(printed);
                         return Withheld(names, staged, destination, null, token);
-                    });
+                    }, zone);
 
                 foreach (var name in distrusted)
                     if (!locked) errors.Add($"{name}: the archive is damaged at this point");

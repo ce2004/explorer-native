@@ -750,6 +750,7 @@ namespace ExplorerNative
             destinationDir = NameRules.ExactPath(destinationDir);
 
             var format = Openable(archivePath);
+            var zone = ZoneOf(archivePath);
 
             var reporter = new Reporter(progress);
             var errors = new List<string>();
@@ -769,7 +770,7 @@ namespace ExplorerNative
                 try
                 {
                     var (moved, collisions) = BsdTar.Extract(
-                        archivePath, destinationDir, policy, ask, reporter, errors, token);
+                        archivePath, destinationDir, policy, ask, reporter, errors, token, zone: zone);
 
                     // Nothing came out (tar crashed on the first name): the new
                     // folder made for it is not left behind empty.
@@ -832,6 +833,7 @@ namespace ExplorerNative
 
             if (rules == null)
                 return new ArchiveResult(0, 0, true, errors, 0, 0);
+            rules.Zone = zone;
 
             Directory.CreateDirectory(destinationDir);
 
@@ -902,8 +904,13 @@ namespace ExplorerNative
         /// than grown a megabyte at a time, and a disk without room for it
         /// says so before anything is written rather than part way through.
         /// </param>
+        /// <param name="zone">
+        /// The archive's Mark of the Web (<see cref="ZoneOf"/>), written onto
+        /// the file before it is given its name, so the real name never
+        /// appears without it. A rename keeps a file's streams.
+        /// </param>
         internal static void WriteCommitted(string target, Action<FileStream> write, int bufferSize = 1 << 20,
-            DateTime? modified = null, long expectedLength = 0)
+            DateTime? modified = null, long expectedLength = 0, byte[]? zone = null)
         {
             var folder = Path.GetDirectoryName(target);
 
@@ -961,6 +968,7 @@ namespace ExplorerNative
                         catch { }
                     }
                 }
+                Mark(temporary, zone);
 
                 // Replace means replace, a read-only file included; the move is
                 // refused for one otherwise, after "Replaced" has been decided.
@@ -984,6 +992,49 @@ namespace ExplorerNative
                 try { File.Delete(temporary); } catch { }
                 throw;
             }
+        }
+
+        /// <summary>
+        /// The Mark of the Web of an archive that came from the internet or a
+        /// restricted site (a Zone.Identifier stream saying ZoneId 3 or 4), as
+        /// its bytes, to be put unchanged on every file taken out of it, address
+        /// lines and all. Null for anything else, or when it cannot be read.
+        ///
+        /// Without it a macro document from a downloaded zip opened outside
+        /// Office's Protected View and an .exe ran with no SmartScreen check:
+        /// the hole of 7-Zip's CVE-2025-0411. File Explorer and 7-Zip pass the
+        /// mark on, and so do ordinary copies here (FileOperations.CopyStreams).
+        /// </summary>
+        internal static byte[]? ZoneOf(string archivePath)
+        {
+            try
+            {
+                using var stream = new FileStream(NameRules.ExactPath(archivePath) + ":Zone.Identifier",
+                    FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 1);
+                if (stream.Length is 0 or > 65536) return null;
+                var bytes = new byte[stream.Length];
+                stream.ReadExactly(bytes);
+                using var reader = new StreamReader(new MemoryStream(bytes), System.Text.Encoding.UTF8, true);
+                for (var line = reader.ReadLine(); line != null; line = reader.ReadLine())
+                {
+                    var parts = line.Split('=', 2);
+                    if (parts.Length == 2 && parts[0].Trim().Equals("ZoneId", StringComparison.OrdinalIgnoreCase))
+                        return int.TryParse(parts[1].Trim(), out var id) && id >= 3 ? bytes : null;
+                }
+                return null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Puts <paramref name="zone"/> on a file as its Zone.Identifier stream.
+        /// Best effort, like CopyStreams: FAT, exFAT, many network shares and
+        /// the Drive letter hold no streams, and that never fails an extraction.
+        /// </summary>
+        internal static void Mark(string path, byte[]? zone)
+        {
+            if (zone == null) return;
+            try { File.WriteAllBytes(path + ":Zone.Identifier", zone); } catch { }
         }
 
         /// <summary>Files this big or bigger have their space asked for before they are written.</summary>

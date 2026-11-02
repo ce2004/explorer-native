@@ -1396,7 +1396,7 @@ namespace ExplorerNative
                             bufferSize: 0,
                             // Through the handle, after a flush, so closing it
                             // does not overwrite it.
-                            modified: When(entry), expectedLength: entry.Length);
+                            modified: When(entry), expectedLength: entry.Length, zone: rules.Zone);
 
                             Interlocked.Increment(ref done);
                             Volatile.Write(ref settled[at], 1);

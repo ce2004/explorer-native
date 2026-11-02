@@ -823,8 +823,10 @@ namespace ExplorerNative
             ArchiveEngine.Reporter reporter,
             List<string> errors,
             CancellationToken token,
-            Action? stoppedShort = null)
+            Action? stoppedShort = null,
+            byte[]? zone = null)
         {
+            // zone: the archive's Mark of the Web, put on every file moved in.
             // stoppedShort: called when bsdtar did not get to the end of the
             // archive (a stall, a crash, an exit that was not "delayed"). The
             // errors alone cannot say that: a link not made or a repeated name
@@ -832,7 +834,7 @@ namespace ExplorerNative
             var identified = ArchiveFormats.Identify(archivePath);
             if (UnpacksWithSevenZip(identified))
                 return ExtractWithSevenZip(archivePath, destination, policy, ask, reporter, errors, token, stoppedShort,
-                    compressedTar: identified!.Id != "7z");
+                    compressedTar: identified!.Id != "7z", zone: zone);
             RequireAvailable();
 
             Directory.CreateDirectory(destination);
@@ -962,7 +964,7 @@ namespace ExplorerNative
 
                 var (done, conflicts, stagedFiles) = Rehome(staging, destination, policy, ask, reporter, errors, token,
                     distrusted.Count > 0 || unfinished ? distrusted : null, unfinished,
-                    staged => Withheld(lines, staged, destination, stripped ? archiveArg : null, token));
+                    staged => Withheld(lines, staged, destination, stripped ? archiveArg : null, token), zone);
 
                 // Two entries with one name — or two that differ only in capitals,
                 // which are one name here — are one file in the staging folder.
@@ -1252,7 +1254,8 @@ namespace ExplorerNative
             CancellationToken token,
             IReadOnlyCollection<string>? stoppedAt,
             bool unfinished,
-            Func<IReadOnlyCollection<string>, Dictionary<string, string>> withhold)
+            Func<IReadOnlyCollection<string>, Dictionary<string, string>> withhold,
+            byte[]? zone = null)
         {
             var entries = new List<ArchiveEntryInfo>();
             var folders = new List<ArchiveEntryInfo>();
@@ -1433,6 +1436,10 @@ namespace ExplorerNative
                     }
 
                     reporter.Starting(entry.Name);
+
+                    // Marked in staging, so it never appears under its real
+                    // name without the archive's Mark of the Web.
+                    ArchiveEngine.Mark(from, zone);
 
                     // Read-only cleared only when the move is refused for it:
                     // asked first, a target that was not there threw and was
