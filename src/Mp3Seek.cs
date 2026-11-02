@@ -70,7 +70,7 @@ namespace ExplorerNative
         private readonly ManualResetEventSlim _walkDone = new(false);
 
         /// <summary>Tests only: walks started while this is set wait for it first.</summary>
-        internal static ManualResetEventSlim? HoldWalkForTests;
+        internal static ManualResetEventSlim? HoldWalkForTests { get; set; }
 
         private Mp3Seek(ByteSource bytes, long first, Header format, bool tagFrame, int skipped)
             : base(bytes)

@@ -372,6 +372,22 @@ namespace ExplorerNative
             _ => 0,
         };
 
+        /// <summary>
+        /// Whether the path is on a CD or DVD drive, where nothing can be written
+        /// beside it, so a conversion or an edit's save could only fail. Asks the
+        /// drive's type alone, which does not touch the disc. Never true for a share.
+        /// </summary>
+        internal static bool IsOnDisc(string path, Func<string, DriveType>? typeOf = null)
+        {
+            try
+            {
+                var root = Path.GetPathRoot(path);
+                if (string.IsNullOrEmpty(root) || root.StartsWith(@"\\", StringComparison.Ordinal)) return false;
+                return (typeOf ?? (r => new DriveInfo(r).DriveType))(root) == DriveType.CDRom;
+            }
+            catch { return false; }
+        }
+
         /// <summary>A hidden-looking temporary name in the target's folder, keeping the target's extension.</summary>
         internal static string TempPathBeside(string target)
         {

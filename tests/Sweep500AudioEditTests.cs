@@ -27,7 +27,34 @@ namespace ExplorerNative
             EditorWaitsForTheMp3FrameWalk();
             EditedDecoderReadsTheLastPartToTheRealEnd();
             ConverterAsksTheLengthAgainAtTheEnd();
+            DiscAudioIsNotConvertedOrEditedInPlace();
             await Task.CompletedTask;
+        }
+
+        // ---------- 3: CD tracks and discs ----------
+
+        /// <summary>
+        /// Convert audio and Edit audio write beside the source, and nothing can
+        /// be written on a CD or DVD, so every file failed with "access was
+        /// refused". CD tracks cannot even be copied off (the .cda is a stub),
+        /// so the commands are hidden for them by name, and audio on any disc is
+        /// refused with a sentence, as audio on Google Drive is.
+        /// </summary>
+        private static void DiscAudioIsNotConvertedOrEditedInPlace()
+        {
+            Check("a file on a CD drive is on a disc", AudioConverter.IsOnDisc(@"X:\Track01.cda", _ => DriveType.CDRom));
+            Check("a file on a fixed drive is not", !AudioConverter.IsOnDisc(@"C:\Music\a.mp3", _ => DriveType.Fixed));
+            Check("a share is not, and its type is not asked",
+                !AudioConverter.IsOnDisc(@"\\server\music\a.mp3", _ => throw new InvalidOperationException()));
+
+            var main = SourceText("MainForm.cs");
+            var gate = Between(main, "bool focusedAudio", "ShowDriveLinkItems");
+            Check("the menu hides Edit audio and Convert audio on CD tracks, by name",
+                gate.Contains("IsCdaName") && gate.Contains("_editAudioItem.Visible") && gate.Contains("_convertAudioItem.Visible"));
+            Check("Convert audio refuses audio on a disc",
+                Between(main, "void ConvertAudio()", "AudioConvertForm.Ask").Contains("AudioConverter.IsOnDisc"));
+            Check("Edit audio refuses audio on a disc",
+                Between(main, "void EditAudio()", "new AudioEditorForm").Contains("AudioConverter.IsOnDisc"));
         }
 
         // ---------- helpers ----------
@@ -60,6 +87,24 @@ namespace ExplorerNative
                 have += got;
             }
             return all.ToArray();
+        }
+
+        private static string SourceText(string name)
+        {
+            var at = new DirectoryInfo(AppContext.BaseDirectory);
+            while (at != null && !Directory.Exists(Path.Combine(at.FullName, "src"))) at = at.Parent;
+            if (at == null) return "";
+            var path = Path.Combine(at.FullName, "src", name);
+            try { return File.Exists(path) ? File.ReadAllText(path) : ""; }
+            catch { return ""; }
+        }
+
+        private static string Between(string text, string from, string to)
+        {
+            int start = text.IndexOf(from, StringComparison.Ordinal);
+            if (start < 0) return "";
+            int end = text.IndexOf(to, start + from.Length, StringComparison.Ordinal);
+            return end < 0 ? text[start..] : text[start..end];
         }
 
         /// <summary>Lets a held MP3 frame walk go a moment after the caller has started waiting for it.</summary>
