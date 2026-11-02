@@ -27,6 +27,8 @@ namespace ExplorerNative
             await SystemToolsByFullPath();
             DefaultAppChangesAreSeen();
             RiskyTypesGoThroughTheShell();
+            await StraightFromGoogleShowsProgress();
+            StatusSentencesSurviveTheDriveCorrection();
         }
 
         private static string? FindSrc()
@@ -127,6 +129,105 @@ namespace ExplorerNative
                 FileLauncher.ClockForTests = null;
                 FileLauncher.ForgetAll();
             }
+        }
+
+        private sealed class Seen<T> : IProgress<T>
+        {
+            private readonly System.Collections.Generic.List<(long At, T Value)> _items = new();
+            private readonly System.Diagnostics.Stopwatch _clock;
+            public Seen(System.Diagnostics.Stopwatch clock) => _clock = clock;
+            public void Report(T value) { lock (_items) _items.Add((_clock.ElapsedMilliseconds, value)); }
+            public System.Collections.Generic.List<(long At, T Value)> Snapshot() { lock (_items) return _items.ToList(); }
+        }
+
+        /// <summary>
+        /// A copy out of Drive whose file robocopy gave up on is fetched straight
+        /// from Google; the window keeps moving and says so all the way through.
+        /// </summary>
+        private static async Task StraightFromGoogleShowsProgress()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "en500-google-" + Guid.NewGuid().ToString("N"));
+            var src = Path.Combine(root, "src");
+            var dst = Path.Combine(root, "dst");
+            Directory.CreateDirectory(src);
+            Directory.CreateDirectory(dst);
+            var locked = Path.Combine(src, "locked.txt");
+            File.WriteAllBytes(locked, new byte[100_000]);
+            var saved = RoboCopyEngine.DownloadFromCloud;
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            long fakeStart = -1, fakeEnd = -1;
+            FileStream? held = null;
+            try
+            {
+                held = new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None);
+                RoboCopyEngine.DownloadFromCloud = async (source, landing, moved, token) =>
+                {
+                    fakeStart = clock.ElapsedMilliseconds;
+                    using (var f = new FileStream(landing, FileMode.Create, FileAccess.Write))
+                    {
+                        for (int i = 1; i <= 10; i++)
+                        {
+                            await Task.Delay(200, token);
+                            f.Write(new byte[10_000]);
+                            moved?.Invoke(i * 10_000L);
+                        }
+                    }
+                    fakeEnd = clock.ElapsedMilliseconds;
+                    return null;
+                };
+                var progress = new Seen<TransferProgress>(clock);
+                var result = await RoboCopyEngine.RunAsync(new[] { locked }, dst, move: false, 1,
+                    PasteConflictPolicy.AutoRename, progress, CancellationToken.None, cloudSource: true);
+
+                var during = progress.Snapshot().Where(x => x.At > fakeStart && x.At <= fakeEnd).Select(x => x.Value).ToList();
+                Check("straight from Google: the fallback ran and the file arrived",
+                    fakeStart >= 0 && File.Exists(Path.Combine(dst, "locked.txt")) && result.Failed == 0,
+                    $"start {fakeStart}, failed {result.Failed}: {string.Join("; ", result.Errors)}");
+                Check("straight from Google: the window hears about it all the way through, not once",
+                    during.Count >= 4, $"{during.Count} reports in {fakeEnd - fakeStart} ms");
+                Check("straight from Google: the bytes and the clock move while it downloads",
+                    during.Count >= 2 && during[^1].BytesDone > during[0].BytesDone && during[^1].Elapsed > during[0].Elapsed,
+                    string.Join(", ", during.Select(p => $"{p.BytesDone}@{p.Elapsed.TotalSeconds:0.0}")));
+                Check("straight from Google: the bytes never go backwards while it downloads",
+                    during.Zip(during.Skip(1)).All(z => z.Second.BytesDone >= z.First.BytesDone));
+                Check("straight from Google: the window says it is downloading straight from Google, and marks it",
+                    during.Count > 0 && during.All(p => p.CurrentItem.StartsWith("Downloading locked.txt straight from Google Drive", StringComparison.Ordinal)
+                                                        && p.ItemIsStatus && p.FromGoogle),
+                    string.Join(" / ", during.Select(p => p.CurrentItem).Distinct()));
+            }
+            finally
+            {
+                RoboCopyEngine.DownloadFromCloud = saved;
+                held?.Dispose();
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// The Drive correction (what the mount served) never hides a sentence
+        /// the engine wrote, and never overrides the straight-from-Google count.
+        /// </summary>
+        private static void StatusSentencesSurviveTheDriveCorrection()
+        {
+            var elapsed = TimeSpan.FromSeconds(4);
+            var waiting = RoboCopyEngine.WithDownloads(
+                new TransferProgress(5_000_000, 10_000_000, 0, 6, "Waiting for b.ogg (retry 1 of 2)", 0, elapsed, ItemIsStatus: true),
+                4_000_000, "b.ogg", 0);
+            Equal("a Waiting for sentence is kept over the mount's file name",
+                "Waiting for b.ogg (retry 1 of 2)", waiting.CurrentItem);
+
+            var plain = RoboCopyEngine.WithDownloads(
+                new TransferProgress(5_000_000, 10_000_000, 0, 6, "a.ogg", 0, elapsed), 4_000_000, "b.ogg", 0);
+            Equal("a plain file name still gives way to the file being downloaded", "b.ogg", plain.CurrentItem);
+
+            var google = RoboCopyEngine.WithDownloads(
+                new TransferProgress(3_000_000, 10_000_000, 0, 6, "Downloading b.ogg straight from Google Drive", 0, elapsed,
+                    ItemIsStatus: true, FromGoogle: true),
+                9_000_000, "b.ogg", 9_000_000);
+            Equal("straight from Google, the engine's own count wins over the mount's stale one",
+                "3000000", google.BytesDone.ToString());
+            Equal("straight from Google, the sentence is kept",
+                "Downloading b.ogg straight from Google Drive", google.CurrentItem);
         }
 
         /// <summary>
