@@ -175,13 +175,21 @@ namespace ExplorerNative
         /// network?"). Open files keep their handles; nothing new opens through a
         /// letter that is not there, so nothing hangs waiting on Google.
         /// </summary>
-        private void LetterFollows(DriveState state)
+        private void LetterFollows()
         {
             if (_disposed) return;
             ThreadPool.QueueUserWorkItem(_ =>
             {
+                // The state as it is now, not as the event that woke this said:
+                // two requests changing it at once can deliver their events in
+                // the other order, and these items can run in any order. Acting
+                // on the event's word hid the letter for good while Drive was
+                // online. Every change queues one of these after it happens, so
+                // the last to run sees the last state.
+                DriveState state;
                 lock (_letterGate)
                 {
+                    state = _drive.Health.State;
                     var host = _host;
                     var letter = _letterName;
                     if (_disposed || host == null || letter == null) return;
@@ -249,7 +257,8 @@ namespace ExplorerNative
             public void Pace()
             {
                 if (!_started || _mount._disposed) return;
-                var wait = _mount._drive.Health.IsOffline ? WhileOffline : Every;
+                bool hidden = !_mount.LetterShown && _mount._letterName != null;
+                var wait = _mount._drive.Health.IsOffline || hidden ? WhileOffline : Every;
                 try { _timer.Change(wait, Timeout.InfiniteTimeSpan); } catch { }
             }
 
@@ -288,6 +297,12 @@ namespace ExplorerNative
                 }
                 catch { /* counted by the client's health; the next ask asks again */ }
                 finally { Volatile.Write(ref _busy, 0); }
+
+                // Online with the letter still hidden (it could not be put back,
+                // or nothing told it to): it is put back here.
+                if (!_mount._disposed && _mount._drive.Health.State == DriveState.Online &&
+                    !_mount.LetterShown && _mount._letterName != null)
+                    _mount.LetterFollows();
             }
 
             public void Dispose()

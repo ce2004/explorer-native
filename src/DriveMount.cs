@@ -1509,10 +1509,14 @@ namespace ExplorerNative
                     _populated.TryRemove(key, out _);
         }
 
+        /// <summary>
+        /// A change of Drive's state. Only a wake-up: what is done follows the
+        /// state as it is now, since events can arrive in the other order.
+        /// </summary>
         private void OnHealthChanged(DriveState state)
         {
-            if (state == DriveState.Online && !_answeredOffline.IsEmpty) DropOfflineAnswers();
-            LetterFollows(state);
+            if (_drive.Health.State == DriveState.Online && !_answeredOffline.IsEmpty) DropOfflineAnswers();
+            LetterFollows();
         }
 
         /// <summary>Whether a folder's listing is recent enough to be served without asking Drive again.</summary>

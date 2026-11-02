@@ -62,6 +62,7 @@ namespace ExplorerNative
                     drive.AddFolder("Race");
                     drive.AddFolder("Doomed");
                 });
+                Run("the letter follows Drive's state as it is now", LetterFollowsTheStateNow);
             }
             finally
             {
@@ -315,6 +316,52 @@ namespace ExplorerNative
                 gate.Set();
                 rig.Drive.BeforeAnswer = null;
             }
+        }
+
+        // ---- 3. the letter follows the state as it is now, not an event's word ----
+
+        private static void LetterFollowsTheStateNow(Rig rig)
+        {
+            var mount = rig.Mount;
+            void Deliver(DriveState state) =>
+                typeof(DriveMount).GetMethod("OnHealthChanged", BindingFlags.NonPublic | BindingFlags.Instance)!
+                    .Invoke(mount, new object[] { state });
+
+            _ = Directory.GetFileSystemEntries(rig.Letter + "\\");
+            rig.Client.Health.Succeeded();
+            Check("Drive is online with the letter shown to start with",
+                DriveMountTests.Eventually(() => rig.Client.Health.State == DriveState.Online, 5000) && mount.LetterShown);
+
+            // An Offline event arriving after the Online one that followed it.
+            Deliver(DriveState.Offline);
+            Thread.Sleep(1500);
+            Check("an Offline event that arrives after Drive came back does not hide the letter",
+                mount.LetterShown && Directory.Exists(rig.Letter + "\\"));
+
+            // The mirror: an Online event arriving after Drive went offline again.
+            var network = new HttpRequestException("no route to host");
+            for (int i = 0; i < DriveHealth.FailuresBeforeOffline; i++) rig.Client.Health.Failed(network);
+            Check("offline, the letter goes away", DriveMountTests.Eventually(() => !mount.LetterShown, 5000));
+            Deliver(DriveState.Online);
+            Thread.Sleep(1500);
+            Check("an Online event that arrives after Drive went offline again does not bring the letter back",
+                !mount.LetterShown);
+            rig.Client.Health.Succeeded();
+            Check("and it comes back when Drive really does", DriveMountTests.Eventually(() => mount.LetterShown, 5000));
+
+            // Hidden while online, with nothing left to say so: the probe puts it back.
+            var probe = typeof(DriveMount).GetField("_probe", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(mount)!;
+            var host = (WinFsp.Host)typeof(DriveMount).GetField("_host", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(mount)!;
+            DriveMount.Probe.WhileOffline = TimeSpan.FromMilliseconds(500);
+            try
+            {
+                host.Unmount();
+                Check("the letter is hidden while Drive is online", !mount.LetterShown && rig.Client.Health.State == DriveState.Online);
+                probe.GetType().GetMethod("Pace")!.Invoke(probe, null);
+                Check("a letter hidden while Drive is online comes back by itself",
+                    DriveMountTests.Eventually(() => mount.LetterShown && Directory.Exists(rig.Letter + "\\"), 10000), rig.LogText());
+            }
+            finally { DriveMount.Probe.WhileOffline = TimeSpan.FromHours(1); }
         }
     }
 }
