@@ -1876,8 +1876,8 @@ namespace ExplorerNative
 
             try
             {
-                var children = await client.ListChildren(id, token, driveId: mount.DriveIdFor(path))
-                    .ConfigureAwait(false);
+                var children = await client.ListChildren(id, token, max: 1, driveId: mount.DriveIdFor(path),
+                    partial: true).ConfigureAwait(false);
                 return children.Count == 0;
             }
             catch { return false; }
@@ -1920,7 +1920,9 @@ namespace ExplorerNative
                     // copy read as missing.
                     if (!Directory.Exists(NameRules.ExactPath(copy))) return false;
 
-                    var children = await client.ListChildren(folderId, token, driveId: driveId)
+                    // The whole folder: a child past the first 100,000 that never
+                    // arrived must make this false, or the move trashes it.
+                    var children = await client.ListChildren(folderId, token, max: int.MaxValue, driveId: driveId)
                         .ConfigureAwait(false);
                     foreach (var child in children)
                     {
@@ -1961,7 +1963,7 @@ namespace ExplorerNative
 
             try
             {
-                var children = await client.ListChildren(id, token, driveId: mount.DriveIdFor(path))
+                var children = await client.ListChildren(id, token, max: int.MaxValue, driveId: mount.DriveIdFor(path))
                     .ConfigureAwait(false);
                 return children.Any(c => c.IsGoogleDocument);
             }
@@ -2766,7 +2768,7 @@ namespace ExplorerNative
             // and never copied. Copying a folder into itself, or into a folder
             // inside it, otherwise finds its own copy among the things to copy —
             // and copies that, into itself, until Drive or the quota gives out.
-            var children = await client.ListChildren(id, token, driveId: fromDrive).ConfigureAwait(false);
+            var children = await client.ListChildren(id, token, max: int.MaxValue, driveId: fromDrive).ConfigureAwait(false);
             var made = new HashSet<string>(StringComparer.Ordinal);
 
             // Drive's own name when none was chosen: the letter's is cleaned up.
@@ -2896,7 +2898,7 @@ namespace ExplorerNative
                 foreach (var item in batch) looking?.Invoke(item.Name);
 
                 var listings = await Task.WhenAll(batch.Select(item =>
-                    client.ListChildren(item.Id, token, driveId: item.Drive))).ConfigureAwait(false);
+                    client.ListChildren(item.Id, token, max: int.MaxValue, driveId: item.Drive))).ConfigureAwait(false);
 
                 for (int i = 0; i < batch.Count; i++)
                     foreach (var child in listings[i])
@@ -2920,7 +2922,7 @@ namespace ExplorerNative
             string fromId, string name, string intoId, string? intoPath, HashSet<string> made,
             string? fromDrive, CancellationToken token, DriveCopyReport? report, object gate)
         {
-            var children = await client.ListChildren(fromId, token, driveId: fromDrive).ConfigureAwait(false);
+            var children = await client.ListChildren(fromId, token, max: int.MaxValue, driveId: fromDrive).ConfigureAwait(false);
 
             var folderId = await client.CreateFolder(name, intoId, token).ConfigureAwait(false);
             if (string.IsNullOrEmpty(folderId)) return 0;

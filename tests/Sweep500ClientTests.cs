@@ -32,6 +32,7 @@ namespace ExplorerNative
             await Guard("sign-in only when asked", SignInOnlyWhenAsked);
             await Guard("other account", OtherAccountKeepsOldSavesOnPc);
             await Guard("search part of a word", SearchFindsPartOfAWord);
+            await Guard("cut listing", CutListingIsNotWhole);
         }
 
         private static async Task Guard(string name, Func<Task> test)
@@ -413,6 +414,34 @@ namespace ExplorerNative
             var back = DriveSizeIndex.Decode(DriveSizeIndex.Encode(null, "root", "7", items), null).Items;
             Check("a saved size index keeps names and dates",
                 back.Count == 1 && back[0].Name == "Song (Remix).flac" && back[0].ModifiedTicks == When.Ticks);
+        }
+
+        // ---- 10. A listing cut at its limit is never taken for the whole folder ----
+
+        private static async Task CutListingIsNotWhole()
+        {
+            var fake = new FakeDrive();
+            var client = new DriveClient(fake, 0.0005);
+            var folder = fake.AddFolder("Big");
+            for (int i = 0; i < 12; i++) fake.AddFile($"f{i:00}.bin", new byte[] { 1 }, When, folder);
+
+            Exception? thrown = null;
+            try { await client.ListChildren(folder, CancellationToken.None, max: 10); }
+            catch (Exception ex) { thrown = ex; }
+            Check("a folder holding more than the limit fails rather than coming back short",
+                thrown is DriveClient.ListingCutException, thrown?.GetType().Name ?? "returned");
+            var part = await client.ListChildren(folder, CancellationToken.None, max: 10, partial: true);
+            Check("a caller that asks for part of it gets part of it", part.Count == 10, part.Count.ToString());
+            var exact = await client.ListChildren(folder, CancellationToken.None, max: 12);
+            Check("a folder holding exactly the limit lists whole", exact.Count == 12, exact.Count.ToString());
+
+            // Everything that copies, measures or checks a whole folder asks for all of it.
+            var drive = SourceText("GoogleDrive.cs");
+            var calls = System.Text.RegularExpressions.Regex.Matches(drive, @"ListChildren\([^;]*;")
+                .Select(m => m.Value).ToList();
+            var capped = calls.Where(c => !c.Contains("max:", StringComparison.Ordinal)).ToList();
+            Check("every folder listing in GoogleDrive says how much of the folder it needs",
+                calls.Count >= 6 && capped.Count == 0, string.Join(" | ", capped));
         }
 
         // ---- 4. Waiting for the internet is said once per outage ----
