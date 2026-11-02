@@ -26,6 +26,7 @@ namespace ExplorerNative
 
             Console.WriteLine("Sweep 5.0.0, Preferences and the tray's audio:");
             HotkeyPageChecksTheBoxesAsTicked();
+            SignOutTurnsDriveOffAtOnce();
             await Task.CompletedTask;
         }
 
@@ -166,6 +167,62 @@ namespace ExplorerNative
             finally
             {
                 SettingsForm.Warn = oldWarn;
+                Settings.OverrideAppDataDir = null;
+                Cleanup(dir);
+            }
+        }
+
+        /// <summary>
+        /// Sign out of Google deleted the token but left Drive on in the dialog's
+        /// copy only, so Cancel kept Drive on with no sign-in, and the next start
+        /// opened Google's sign-in page in the browser unasked. It now switches
+        /// the live drive off and unmounts it at once, before the token goes.
+        /// </summary>
+        private static void SignOutTurnsDriveOffAtOnce()
+        {
+            var dir = NewSettingsDir();
+            var oldConfirm = SettingsForm.Confirm;
+            var oldInform = SettingsForm.Inform;
+            var oldDisconnect = SettingsForm.DisconnectDrive;
+            try
+            {
+                var token = GoogleDrive.SavedTokenPath;
+                Directory.CreateDirectory(Path.GetDirectoryName(token)!);
+                File.WriteAllText(token, "dummy");
+
+                var order = new List<string>();
+                string told = "";
+                SettingsForm.Confirm = (_, _, _) => true;
+                SettingsForm.Inform = (_, text, _) => told = text;
+                SettingsForm.DisconnectDrive = () => order.Add(File.Exists(token) ? "disconnect, token still there" : "disconnect, token gone");
+
+                bool found = false;
+                var error = OnSta(() =>
+                {
+                    using var window = new SettingsForm(new Settings { SpeakEnabled = false, GoogleDriveEnabled = true }, null);
+                    window.BuildAllPages();
+                    var button = FindAll<Button>(window).FirstOrDefault(b => b.Text.Replace("&", "") == "Sign out of Google");
+                    found = button != null && button.Enabled;
+                    // OnClick, not PerformClick: the window is never shown, and
+                    // PerformClick does nothing on a control that cannot be selected.
+                    if (button != null)
+                        typeof(Control).GetMethod("OnClick", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                            .Invoke(button, new object[] { EventArgs.Empty });
+                    // Closed without OK: Cancel.
+                });
+                Equal("sign out: Preferences builds", "", error);
+                Check("sign out: the button is there and enabled with a saved sign-in", found);
+                Equal("sign out: the live drive is switched off and unmounted before the token goes",
+                    "disconnect, token still there", string.Join("; ", order));
+                Check("sign out: the token is deleted", !File.Exists(token));
+                Check("sign out: the message says Drive is off now, not at the next start",
+                    !told.Contains("next time", StringComparison.OrdinalIgnoreCase) && told.Contains("off", StringComparison.Ordinal), told);
+            }
+            finally
+            {
+                SettingsForm.Confirm = oldConfirm;
+                SettingsForm.Inform = oldInform;
+                SettingsForm.DisconnectDrive = oldDisconnect;
                 Settings.OverrideAppDataDir = null;
                 Cleanup(dir);
             }

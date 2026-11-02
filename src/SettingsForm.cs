@@ -47,6 +47,15 @@ namespace ExplorerNative
         internal static Action<IWin32Window, string, string> Warn { get; set; } =
             (owner, text, title) => MessageBox.Show(owner, text, title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
 
+        /// <summary>A yes-or-no question (Yes is true). Replaced by the suite, which cannot answer a message box.</summary>
+        internal static Func<IWin32Window, string, string, bool> Confirm { get; set; } =
+            (owner, text, title) => MessageBox.Show(owner, text, title,
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+
+        /// <summary>A plain result message. Replaced by the suite.</summary>
+        internal static Action<IWin32Window, string, string> Inform { get; set; } =
+            (owner, text, title) => MessageBox.Show(owner, text, title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+
         private readonly List<Func<System.Threading.Tasks.Task<bool>>> _beforeOkChecks = new();
 
         /// <summary>
@@ -931,14 +940,19 @@ namespace ExplorerNative
             {
                 // Asked, because it is not obvious from the button that the
                 // drive goes away with the sign-in.
-                if (MessageBox.Show(this,
+                if (!Confirm(this,
                         "Forget the saved Google sign-in on this computer?\r\n\r\n"
                         + "Nothing in your Drive is changed or deleted. The drive letter goes away "
                         + "until you connect again.",
-                        "Sign out of Google",
-                        MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                        "Sign out of Google"))
                     return;
 
+                // Off now, saved and unmounted, as Disconnect does. Left to OK,
+                // Cancel kept Drive on with no sign-in, so the next start opened
+                // Google's sign-in page in the browser unasked. Unmounted first,
+                // so the live drive cannot write a refreshed token back after
+                // the file is deleted.
+                DisconnectDrive?.Invoke();
                 bool gone = GoogleDrive.ForgetSignIn();
 
                 // The box, not the field: OK applies from the box, so setting
@@ -951,12 +965,12 @@ namespace ExplorerNative
                 signOut.Enabled = false;
                 Show(DriveAccountState.NotConnected);
 
-                MessageBox.Show(this,
+                Inform(this,
                     gone
-                        ? "Signed out. The drive letter is removed the next time the application starts, "
-                          + "or immediately if Google Drive was switched off just now."
+                        ? "Signed out. Google Drive is off and its drive letter is gone. "
+                          + "Connect again from here when you want it back."
                         : "There was no saved sign-in to remove.",
-                    "Sign out of Google", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    "Sign out of Google");
             };
 
             // Runs before OK (and Connect) close the dialog. Unchanged or empty
