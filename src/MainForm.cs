@@ -167,6 +167,13 @@ namespace ExplorerNative
             public bool Searching;
 
             /// <summary>
+            /// The term of the walk in flight when it is a quiet re-run of the
+            /// results on screen (after an operation in them), else null. Set by
+            /// every walk as it starts.
+            /// </summary>
+            public string? QuietSearchTerm;
+
+            /// <summary>
             /// A listing is on its way in. The folder watcher leaves its mark
             /// standing rather than cancel it and start again — on a slow share with
             /// a download growing in it, that was a reload that never finished.
@@ -245,6 +252,16 @@ namespace ExplorerNative
             /// </summary>
             public string? WatchFailedPath;
             public long WatchFailedAt;
+
+            /// <summary>
+            /// The watcher stopped after an error other than a lost burst (a share
+            /// that blipped): .NET has stopped it, or its next read failed, so it
+            /// counts as no watcher. Set from the watcher's thread, cleared when
+            /// the watcher is let go; and when it died, so a share that fails
+            /// every new watcher at once is not rebuilt in a loop.
+            /// </summary>
+            public volatile bool WatchDead;
+            public long WatchDiedAt;
 
             /// <summary>
             /// Bumped whenever the pane's watcher is let go, so a watcher still
@@ -2818,10 +2835,26 @@ namespace ExplorerNative
             // refresh, and a window between them where changes are missed.
             // What is pending is the navigation's business: it forgets only what
             // its listing will have seen.
-            if ((pane.Watcher != null &&
-                 string.Equals(NameRules.PlainPath(pane.Watcher.Path), path, StringComparison.OrdinalIgnoreCase)) ||
+            // Only a live watcher is kept, though: one stopped by an error (a
+            // share that blipped) watches nothing, and kept it ended live
+            // updates for good, F5 included.
+            bool alive = pane.Watcher is { EnableRaisingEvents: true } && !pane.WatchDead;
+            bool samePath = pane.Watcher != null &&
+                            string.Equals(NameRules.PlainPath(pane.Watcher.Path), path, StringComparison.OrdinalIgnoreCase);
+            if ((alive && samePath) ||
                 string.Equals(pane.ArmingPath, path, StringComparison.OrdinalIgnoreCase))
                 return;
+
+            // Died moments ago on this same folder: not rebuilt from the reload
+            // its own error asked for, or a share that fails every new watcher
+            // at once reloads the folder every half second (4.2.6). The
+            // availability poll tries again once the minute's wait is over.
+            if (samePath && Environment.TickCount64 - Interlocked.Read(ref pane.WatchDiedAt) < WatchDiedRetryMs)
+            {
+                pane.WatchFailedPath = path;
+                pane.WatchFailedAt = Environment.TickCount64;
+                return;
+            }
 
             DisarmWatcher(pane);
 
@@ -2922,7 +2955,17 @@ namespace ExplorerNative
 
                 // An error is usually a lost burst or a share that went away.
                 // Both mean the list can no longer be trusted, so re-read it.
-                watcher.Error += Reload;
+                // Anything but a lost burst has also stopped the watcher, which
+                // then has to be built again (ArmWatcher, NeedsWatcher).
+                watcher.Error += (s, e) =>
+                {
+                    if (Current() && e.GetException() is not InternalBufferOverflowException)
+                    {
+                        Interlocked.Exchange(ref pane.WatchDiedAt, Environment.TickCount64);
+                        pane.WatchDead = true;
+                    }
+                    Reload(s, e);
+                };
 
                 watcher.EnableRaisingEvents = true;
 
@@ -2981,9 +3024,15 @@ namespace ExplorerNative
                 sizes.Deleted += (_, e) => Seen(e.FullPath);
                 sizes.Changed += (_, e) => Seen(e.FullPath);
                 sizes.Renamed += (_, e) => { Seen(e.OldFullPath); Seen(e.FullPath); };
-                sizes.Error += (_, _) =>
+                sizes.Error += (_, e) =>
                 {
                     if (!current()) return;
+                    // Stopped, not just a lost burst: the pair is built again.
+                    if (e.GetException() is not InternalBufferOverflowException)
+                    {
+                        Interlocked.Exchange(ref pane.WatchDiedAt, Environment.TickCount64);
+                        pane.WatchDead = true;
+                    }
                     _folderSizes.Forget(path);
                     if (_settings.FolderSizes == FolderSizeMode.Automatic) pane.SizeAllDirty = true;
                 };
@@ -3118,6 +3167,7 @@ namespace ExplorerNative
             // A watcher still being built for this pane is not wanted any more.
             pane.WatchGeneration++;
             pane.ArmingPath = null;
+            pane.WatchDead = false;
 
             var watcher = pane.Watcher;
             pane.Watcher = null;
@@ -3412,6 +3462,7 @@ namespace ExplorerNative
                             _releasedRoots[removal.Root] = Environment.TickCount64;
                             pane.WatchGeneration++;
                             pane.ArmingPath = null;
+                            pane.WatchDead = false;
                             var watcher = pane.Watcher;
                             pane.Watcher = null;
                             if (watcher != null)
@@ -3503,11 +3554,13 @@ namespace ExplorerNative
         private static bool NeedsWatcher(Pane pane) =>
             pane.Removal == null && pane.Archive == null && !AppleMusic.Is(pane.CurrentPath) &&
             !string.IsNullOrEmpty(pane.CurrentPath) && pane.CurrentPath != DrivesPath &&
-            pane.Watcher == null && pane.ArmingPath == null && !string.IsNullOrEmpty(pane.LastLoadedPath) &&
+            (pane.Watcher == null || pane.WatchDead || !pane.Watcher.EnableRaisingEvents) &&
+            pane.ArmingPath == null && !string.IsNullOrEmpty(pane.LastLoadedPath) &&
             !(string.Equals(pane.WatchFailedPath, pane.CurrentPath, StringComparison.OrdinalIgnoreCase) &&
               Environment.TickCount64 - pane.WatchFailedAt < WatchRetryAfterMs);
 
         private const long WatchRetryAfterMs = 60_000;
+        private const long WatchDiedRetryMs = 5_000;
 
         /// <summary>
         /// Minimised, the availability poll stops — a probe of a share every four
@@ -3704,6 +3757,15 @@ namespace ExplorerNative
             // answer is always "gone", which pulled the pane back to the drives a
             // few seconds after opening any Apple Music list.
             if (AppleMusic.Is(path)) return;
+
+            // Drive offline hides its letter until it is back online (4.3.0).
+            // Probed meanwhile it reads as gone, and the pane fell back to the
+            // drives with an error for what is only a pause; it stays put.
+            if (Drive is { } drive && drive.Owns(path) && !drive.LetterShown)
+            {
+                _consecutiveProbeFailures = 0;
+                return;
+            }
             int navigation = pane.NavigationId;
             bool Overtaken() => IsDisposed || pane.NavigationId != navigation || pane.CurrentPath != path ||
                                 pane.Probing != 0 || pane.Loading || pane.Searching;
@@ -3714,6 +3776,22 @@ namespace ExplorerNative
                 if (await DirectoryExistsAsync(path))
                 {
                     _consecutiveProbeFailures = 0;
+
+                    // There, but unwatched: its watcher died (a share that
+                    // blipped) and nothing else would build another, so changes
+                    // never showed again until you left the folder. Watched
+                    // again, and read once for what was missed meanwhile.
+                    if (!Overtaken() && Visible && NeedsWatcher(pane))
+                    {
+                        bool died = pane.Watcher != null;
+                        ArmWatcher(pane, path);
+                        if (died)
+                        {
+                            pane.NeedsRefresh = true;
+                            pane.ReloadQuietly = true;
+                            ScheduleWatchCheck();
+                        }
+                    }
                     return;
                 }
                 if (Overtaken()) return;
@@ -4340,6 +4418,7 @@ namespace ExplorerNative
                 // focus and selection are already right, and setting them again
                 // is read out again.
                 bool marksStay = unchanged > LastMarkedIndex(_pane);
+                var markPath = marksStay ? null : SelectionMarkPathOf(_pane);
                 _form.ReplaceEntriesInPlace(_pane, entries, unchanged);
 
                 if (focusedPath != null && _pane.IndexByPath.TryGetValue(focusedPath, out var now))
@@ -4348,6 +4427,8 @@ namespace ExplorerNative
                     _pane.TypeAhead.Release(Environment.TickCount64);
                     if (!marksStay && (now != CurrentIndex(_pane) || selected.Count > 1))
                         _form.Reselect(_pane, now, selected);
+                    // Where a Shift range starts stays on its file too.
+                    if (!marksStay) RestoreSelectionMark(_pane, markPath);
                 }
                 else if (!_landed && TypedRow(entries) is var typed && typed >= 0)
                 {
@@ -4515,6 +4596,7 @@ namespace ExplorerNative
         {
             pane.StaleRows = false;
             var list = pane.List;
+            var markPath = SelectionMarkPathOf(pane);
             int oldFocus = FocusedIndex(list);
             var oldSelected = new HashSet<int>();
             if (list.IsHandleCreated) foreach (int i in list.SelectedIndices) oldSelected.Add(i);
@@ -4550,9 +4632,50 @@ namespace ExplorerNative
                     SendMessage(list.Handle, LVM_SETITEMSTATE, new IntPtr(focus), ref set);
                     try { list.EnsureVisible(focus); } catch (ArgumentOutOfRangeException) { }
                 }
+
+                // And where a Shift range starts, even if the cursor stayed put.
+                RestoreSelectionMark(pane, markPath);
             }
             finally { _suppressStatus--; }
             if (pane == Active) ScheduleStatusUpdate();
+        }
+
+        private const int LVM_GETSELECTIONMARK = 0x1000 + 66;
+        private const int LVM_SETSELECTIONMARK = 0x1000 + 67;
+
+        /// <summary>
+        /// The file a Shift range starts from (the control's selection mark), read
+        /// before the rows are swapped. The mark is only a row number: a quiet
+        /// reload that moved rows left it on another file, and the next
+        /// Shift+arrow picked out a file nobody chose, or dropped the first one.
+        /// </summary>
+        private static string? SelectionMarkPathOf(Pane pane)
+        {
+            var list = pane.List;
+            if (!list.IsHandleCreated) return null;
+            int mark = (int)SendMessage(list.Handle, LVM_GETSELECTIONMARK, IntPtr.Zero, IntPtr.Zero);
+            return mark >= 0 && mark < pane.Entries.Count ? pane.Entries[mark].Path : null;
+        }
+
+        /// <summary>
+        /// Puts the selection mark back on its file's new row. Its file gone, the
+        /// start of the selection (or the cursor) takes it. Changes no item
+        /// state, so nothing is read out.
+        /// </summary>
+        private static void RestoreSelectionMark(Pane pane, string? markPath)
+        {
+            var list = pane.List;
+            if (markPath == null || !list.IsHandleCreated) return;
+            int target;
+            if (pane.IndexByPath.TryGetValue(markPath, out var row) && row < pane.Entries.Count)
+                target = row;
+            else
+            {
+                int focus = FocusedIndex(list);
+                int first = (int)SendMessage(list.Handle, LVM_GETNEXTITEM, new IntPtr(-1), new IntPtr(LVNI_SELECTED));
+                target = first >= 0 && focus >= first ? first : focus;
+            }
+            if (target >= 0) SendMessage(list.Handle, LVM_SETSELECTIONMARK, IntPtr.Zero, new IntPtr(target));
         }
 
         private void Reselect(Pane pane, int focus, List<string> selected)
@@ -5492,6 +5615,7 @@ namespace ExplorerNative
             var focusedPath = FocusedPathOf(pane);
             var selected = SelectedPathsOf(pane);
             int before = CurrentIndex(pane);
+            var markPath = SelectionMarkPathOf(pane);
             ReplaceEntriesInPlace(pane, AppleEntries(ordered));
             if (focusedPath != null && pane.IndexByPath.TryGetValue(focusedPath, out var now))
             {
@@ -5504,6 +5628,7 @@ namespace ExplorerNative
                 // off the end of a shorter list with no row focused.
                 Reselect(pane, Math.Min(before, ordered.Count - 1), selected);
             }
+            RestoreSelectionMark(pane, markPath);
         }
 
         /// <summary>The order chosen for an Apple Music folder, or its own when none has been.</summary>
@@ -6092,6 +6217,8 @@ namespace ExplorerNative
 
             SearchResult result;
             pane.Searching = true;
+            // Set by every walk, so it is never left over from an older one.
+            pane.QuietSearchTerm = quiet ? term : null;
             try
             {
                 var drive = Drive;
@@ -6330,7 +6457,23 @@ namespace ExplorerNative
                 if (pane.SearchTerm == null || !IsUnder(folder, pane.CurrentPath)) return false;
             }
 
-            if (pane.Searching) { pane.NeedsRefresh = true; return false; }
+            if (pane.Searching)
+            {
+                // A quiet re-run of the results on screen, after an earlier
+                // operation in them: a second one starts it again (BeginPaneWork
+                // cancels the old walk). Otherwise its rows were read before this
+                // change, and nothing ran the search again, so a deleted result
+                // stayed listed. Not a new search still gathering (restarting it
+                // would put the old term back), nor the watcher's quiet refresh.
+                if (!quiet && pane.SearchTerm is { } shown &&
+                    string.Equals(pane.QuietSearchTerm, shown, StringComparison.Ordinal))
+                {
+                    _ = RerunSearchAsync(shown, selectAfter ?? FocusedPath());
+                    return false;
+                }
+                pane.NeedsRefresh = true;
+                return false;
+            }
 
             if (pane.SearchTerm is { } term)
             {
