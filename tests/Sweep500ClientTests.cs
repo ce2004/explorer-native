@@ -26,6 +26,7 @@ namespace ExplorerNative
 
             Console.WriteLine("Sweep 5.0.0, the Google Drive client:");
             await Guard("disconnect", DisconnectDoesNotWaitForUploads);
+            await Guard("token offline", TokenRefreshFailuresCountAsOffline);
         }
 
         private static async Task Guard(string name, Func<Task> test)
@@ -130,6 +131,59 @@ namespace ExplorerNative
                     wait > 0 && start > wait);
             }
             finally { DriveMount.DrainFor = drainWas; }
+        }
+
+        // ---- 2. A token refresh that cannot reach Google counts toward offline ----
+
+        private static Func<CancellationToken, Task<string>> TokenFailingFirst(int failures)
+        {
+            int calls = 0;
+            return _ =>
+            {
+                if (Interlocked.Increment(ref calls) <= failures)
+                    throw new System.Net.Http.HttpRequestException("No such host is known",
+                        new System.Net.Sockets.SocketException(11001));
+                return Task.FromResult("fake-drive-token");
+            };
+        }
+
+        private static async Task TokenRefreshFailuresCountAsOffline()
+        {
+            var fake = new FakeDrive();
+            var down = new DriveClient(fake, TokenFailingFirst(int.MaxValue), 0.0005);
+            for (int i = 0; i < 3; i++)
+                try { await down.Whoami(CancellationToken.None); } catch { }
+            Check("three token refreshes that cannot reach Google make Drive read as offline",
+                down.Health.IsOffline, down.Health.State.ToString());
+
+            var busy = new DriveClient(fake, _ => throw new GoogleAuth.SignInBusyException(), 0.0005);
+            for (int i = 0; i < 3; i++)
+                try { await busy.Whoami(CancellationToken.None); } catch { }
+            Check("but waiting behind somebody signing in is not the network", !busy.Health.IsOffline,
+                busy.Health.State.ToString());
+
+            // A wake with no network: the folder create and the small upload wait
+            // for it instead of asking whether something never sent had landed.
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+            var folders = new DriveClient(fake, TokenFailingFirst(6), 0.0005);
+            int creates = fake.Creates;
+            string? made = null, error = null;
+            try { made = await folders.CreateFolder("Woken", "root", cts.Token); }
+            catch (Exception ex) { error = ex.GetType().Name + ": " + ex.Message; }
+            Check("a folder made while the token cannot be refreshed waits for the network and is made once",
+                made != null && fake.Creates == creates + 1 && fake.Count(FakeDrive.Root, "Woken") == 1,
+                error ?? $"{fake.Creates - creates} creates");
+            Check("and Drive is back online afterwards", folders.Health.State == DriveState.Online,
+                folders.Health.State.ToString());
+
+            var uploads = new DriveClient(fake, TokenFailingFirst(6), 0.0005);
+            var bytes = new byte[] { 1, 2, 3 };
+            error = null;
+            DriveClient.DriveUploaded? up = null;
+            try { up = await uploads.UploadFromMemory(bytes, 3, "woken.txt", "root", When, null, cts.Token); }
+            catch (Exception ex) { error = ex.GetType().Name + ": " + ex.Message; }
+            Check("a small file sent while the token cannot be refreshed waits and lands once",
+                up != null && fake.Count(FakeDrive.Root, "woken.txt") == 1, error);
         }
     }
 }

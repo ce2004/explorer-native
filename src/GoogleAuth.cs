@@ -106,6 +106,15 @@ namespace ExplorerNative
         private bool MayConsent => AllowConsent || ConsentHere.Value;
 
         /// <summary>
+        /// A request gave up waiting behind a refresh or somebody signing in.
+        /// Not the network: somebody slow in the browser must not make Drive read as offline.
+        /// </summary>
+        internal sealed class SignInBusyException : TimeoutException
+        {
+            public SignInBusyException() : base("Google's sign-in did not answer in time") { }
+        }
+
+        /// <summary>
         /// Raised when a request needed a sign-in it could not have: whatever
         /// asked — a search, an upload, a track — rather than only a folder
         /// listing, which was the one place that noticed.
@@ -408,7 +417,7 @@ namespace ExplorerNative
             // saying so used to announce while the person was in the browser.
             if (!await _tokenGate.WaitAsync(
                     MayConsent ? Timeout.Infinite : GateWaitMilliseconds, token))
-                throw new TimeoutException("Google's sign-in did not answer in time");
+                throw new SignInBusyException();
 
             try
             {

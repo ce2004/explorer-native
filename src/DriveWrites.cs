@@ -1196,6 +1196,7 @@ namespace ExplorerNative
 
                 int status;
                 string text;
+                bool sent = false;
                 try
                 {
                     // Inside the try. Asking for the request is asking for a
@@ -1218,6 +1219,9 @@ namespace ExplorerNative
                     var multipart = new MultipartContent("related") { metadata, body };
                     request.Content = multipart;
 
+                    // Only from here can the file have been made; a token fetch
+                    // that failed above sent nothing.
+                    sent = true;
                     using var response = await SendWatched(request, counter, token);
                     status = (int)response.StatusCode;
                     text = await response.Content.ReadAsStringAsync(token);
@@ -1260,7 +1264,7 @@ namespace ExplorerNative
                         throw changed;
                     }
 
-                    maybeDone = true;
+                    if (sent) maybeDone = true;
 
                     // The network went away. Waited out rather than charged to
                     // this file's six attempts — otherwise a five-minute outage
