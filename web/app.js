@@ -1004,8 +1004,9 @@ const SPEEDS = [0.5, 0.75, 0.8, 0.9, 1, 1.1, 1.2, 1.25, 1.3, 1.5, 1.75, 2, 2.5, 
 
 function speedText(s) { return s === 1 ? 'Normal' : `${s} times`; }
 
-function srcFor(path) {
-  return state.native.has(extOf(path)) ? mediaUrl('/api/file', path) : mediaUrl('/api/audio', path);
+// A track this browser could not play as it is (viaPc) goes through the PC's decoder instead.
+function srcFor(track) {
+  return !track.viaPc && state.native.has(extOf(track.path)) ? mediaUrl('/api/file', track.path) : mediaUrl('/api/audio', track.path);
 }
 
 function playQueue(queue, index) {
@@ -1028,7 +1029,7 @@ function loadTrack(index, autoplay, startAt) {
   player.index = index;
   const track = player.queue[index];
   const a = audio();
-  a.src = srcFor(track.path);
+  a.src = srcFor(track);
   a.playbackRate = prefs.speed;
   a.defaultPlaybackRate = prefs.speed;
   a.preservesPitch = true;
@@ -1261,14 +1262,47 @@ function setupAudio() {
     if (player.repeat === 'one') { a.currentTime = 0; a.play().catch(() => announce('Press Play to start.')); return; }
     step(1);
   });
-  let retry = 0;
-  a.addEventListener('error', () => {
+  let retry = 0, skipped = 0;
+  // A track that will not play is skipped, and the queue goes on; a queue where none will play stops.
+  const skip = (message) => {
+    retry = 0;
+    if (++skipped >= Math.min(10, player.queue.length)) { skipped = 0; announce('None of the tracks in this queue would play.', true); return; }
+    announce(message, true);
+    step(1);
+  };
+  a.addEventListener('error', async () => {
     const t = current();
     if (!t) return;
-    // Usually the connection dropped: try again from where it was, a few times.
+    // Aborted: the page itself moved the player on.
+    if (a.error && a.error.code === 1) return;
+    const src = a.src, path = t.path, at0 = a.currentTime;
+    // To the audio element a missing file, a file it can't decode and a dropped line all look alike,
+    // so ask the PC what it says about this one.
+    let res = null;
+    try {
+      res = await timedFetch(src, { headers: { Range: 'bytes=0-0', ...(state.code ? { 'X-Connect-Code': state.code } : {}) } }, 10000);
+    } catch { res = null; }
+    const still = current();
+    if (!still || still.path !== path) return;
+    if (res && !((res.status === 502 || res.status === 503) && !(res.headers.get('content-type') || '').includes('json'))) {
+      if (res.status === 401 && !state.trusted) {
+        showCodeScreen('That pairing code is not right any more. Enter the one shown on the PC.');
+        return;
+      }
+      if (res.ok) {
+        if (res.body) res.body.cancel().catch(() => { });
+        // The PC sent it and this browser can't play it: once through the PC's decoder, then skip it.
+        if (src.includes('/api/file') && !t.viaPc) { t.viaPc = true; loadTrack(player.index, true, at0); return; }
+        skip(`${t.name} can't be played here, so it was skipped.`);
+        return;
+      }
+      const data = await res.json().catch(() => null);
+      skip(`Could not play ${t.name}. ${(data && data.error) || `The PC answered ${res.status}.`} It was skipped.`);
+      return;
+    }
+    // No answer: the connection dropped. Try again from where it was, a few times.
     if (retry++ < 5) {
-      const at = a.currentTime;
-      const path = t.path;
+      const at = at0;
       setTimeout(async () => {
         await waitForNetwork(3000);
         // Only if this track is still the one playing: skipped meanwhile, the
@@ -1280,11 +1314,11 @@ function setupAudio() {
       retry = 0;
       // Picked up again from here as soon as the connection is back.
       player.failed = true;
-      player.failedAt = a.currentTime;
+      player.failedAt = at0;
       announce(`Could not play ${t.name}. It carries on when the connection is back.`, true);
     }
   });
-  a.addEventListener('playing', () => { retry = 0; });
+  a.addEventListener('playing', () => { retry = 0; skipped = 0; });
 }
 
 function setSleep(value) {

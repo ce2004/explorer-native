@@ -29,6 +29,7 @@ namespace ExplorerNative
             MoveHereKeepsFocusTests(js);
             UploadServerErrorEndsTests(js);
             StopAllStopsTheBatchTests(js);
+            UnplayableTrackIsSkippedTests(js);
             await Task.CompletedTask;
         }
 
@@ -93,6 +94,24 @@ namespace ExplorerNative
             var stop = After(js, "$('tr-stop').addEventListener");
             stop = stop.Length > 400 ? stop[..400] : stop;
             Check("Stop all marks the multi-file uploads stopped", Regex.IsMatch(stop, @"\.stopped = true"), stop);
+        }
+
+        // Bug 5: a track the PC refused or the browser could not decode was retried for half a minute, blamed on the
+        // connection, and stopped the whole queue.
+        private static void UnplayableTrackIsSkippedTests(string js)
+        {
+            var from = After(js, "a.addEventListener('error'");
+            int end = from.IndexOf("a.addEventListener('playing'", StringComparison.Ordinal);
+            var handler = end < 0 ? from : from[..end];
+            // The skip helper is defined just above the handler, in the same setup.
+            int start = js.IndexOf("a.addEventListener('error'", StringComparison.Ordinal);
+            var setup = start < 0 ? "" : js[Math.Max(0, start - 600)..start] + handler;
+            Check("a player error reads the audio element's error", handler.Contains("a.error"), handler);
+            Check("a player error asks the PC what it says about the track", Regex.IsMatch(handler, @"\b(timedFetch|fetch)\(src"), handler);
+            Check("a track that won't play is skipped and the queue goes on", setup.Contains("step(1)") && handler.Contains("skip("), setup);
+            Check("a queue where nothing plays stops rather than loops", Regex.IsMatch(setup, @"\+\+\w+\s*>=?"), setup);
+            var src = Function(js, "srcFor");
+            Check("a track this browser can't play goes through the PC's decoder", src.Contains("viaPc") && src.Contains("/api/audio"), src);
         }
     }
 }
