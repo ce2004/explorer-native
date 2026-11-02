@@ -31,6 +31,7 @@ namespace ExplorerNative
             await Guard("offline said once", OfflineWaitSaidOncePerOutage);
             await Guard("sign-in only when asked", SignInOnlyWhenAsked);
             await Guard("other account", OtherAccountKeepsOldSavesOnPc);
+            await Guard("search part of a word", SearchFindsPartOfAWord);
         }
 
         private static async Task Guard(string name, Func<Task> test)
@@ -376,6 +377,42 @@ namespace ExplorerNative
             Check("a renewed sign-in goes through a scratch sign-in, not the live client",
                 renew.Contains("new DriveClient(scratch)", StringComparison.Ordinal) &&
                 !renew.Contains("_client", StringComparison.Ordinal));
+        }
+
+        // ---- 9. A Drive search finds part of a word, as a PC folder's does ----
+
+        private static async Task SearchFindsPartOfAWord()
+        {
+            using var rig = new Rig();
+            rig.Fake.NameSearchLikeGoogle = true;
+            var music = rig.Fake.AddFolder("Music");
+            rig.Fake.AddFile("Song (Remix).flac", new byte[] { 1 }, When, music);
+            rig.Fake.AddFile("HelloWorld.txt", new byte[] { 2 }, When, FakeDrive.Root);
+            rig.Fake.AddFile("Beatles.flac", new byte[] { 3 }, When, music);
+            rig.Mount.Forget(rig.Root);
+            rig.Listed(rig.Root);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+
+            async Task<string> Search(string term)
+            {
+                var result = await rig.Drive.SearchAsync(rig.Root, term, 100, cts.Token);
+                return result == null ? "(no search)" : string.Join(",", result.Hits.Select(h => h.Name).OrderBy(n => n));
+            }
+
+            Equal("before the size index is built, Google's own search still finds the start of a word",
+                "Song (Remix).flac", await Search("rem"));
+
+            var size = await rig.Drive.FolderSizeAsync(rig.Root, cts.Token);
+            Check("the size index is built for the drive", size != null);
+            Equal("\"mix\" finds Song (Remix).flac", "Song (Remix).flac", await Search("mix"));
+            Equal("\"World\" finds HelloWorld.txt", "HelloWorld.txt", await Search("World"));
+            Equal("\"tles\" finds Beatles.flac", "Beatles.flac", await Search("tles"));
+
+            // The saved index carries the names, so a search after a restart is as good.
+            var items = new[] { new DriveSizeItem("a", "root", 5, false, true, "Song (Remix).flac", When.Ticks) };
+            var back = DriveSizeIndex.Decode(DriveSizeIndex.Encode(null, "root", "7", items), null).Items;
+            Check("a saved size index keeps names and dates",
+                back.Count == 1 && back[0].Name == "Song (Remix).flac" && back[0].ModifiedTicks == When.Ticks);
         }
 
         // ---- 4. Waiting for the internet is said once per outage ----

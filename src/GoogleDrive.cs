@@ -1237,7 +1237,14 @@ namespace ExplorerNative
             // *synchronous* Drive listing at about 1.3 seconds each. A search
             // across five folders would have been six seconds of frozen window,
             // which is the one rule this codebase does not bend.
-            var found = await client.FindByName(query.DriveHints, token, most, driveId).ConfigureAwait(false);
+            // From the size index when it holds the whole drive: Google's own
+            // name search matches only the start of a word ("mix" never finds
+            // "Remix", "World" never finds "HelloWorld"), while the same search
+            // in a folder on the PC matches any part of a name.
+            var indexed = await FoundInIndex(client, query, driveId, token).ConfigureAwait(false);
+            var found = indexed == null
+                ? await client.FindByName(query.DriveHints, token, most, driveId).ConfigureAwait(false)
+                : indexed.Count > most ? indexed.GetRange(0, most) : indexed;
             var folders = await FolderGraph(client, driveId, token).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
 
@@ -1429,6 +1436,54 @@ namespace ExplorerNative
 
         /// <summary>The size indexes, per drive ("" for My Drive). See <see cref="DriveSizeIndex"/>.</summary>
         private Dictionary<string, DriveSizeIndex>? _sizes;
+
+        /// <summary>
+        /// Everything in the drive's size index whose name holds any of the
+        /// query's words anywhere in it, as a search's candidates; null when no
+        /// index holds the whole drive yet, and Google is asked instead.
+        /// </summary>
+        private async Task<List<DriveFound>?> FoundInIndex(DriveClient client, SearchQuery query, string? driveId,
+            CancellationToken token)
+        {
+            DriveSizeIndex? index = null;
+            CancellationToken lifetime;
+            lock (_gate)
+            {
+                _sizes?.TryGetValue(driveId ?? "", out index);
+                lifetime = _lifetime.Token;
+            }
+            if (index == null || !index.Built) return null;
+
+            // Changes made a moment ago (a file just saved), as a size waits for them.
+            var refresh = index.Refresh(client, lifetime);
+            try { await refresh.WaitAsync(DriveSizeIndex.AnswerWithin, token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (Exception) { }
+            if (!refresh.IsCompleted)
+                _ = refresh.ContinueWith(t => Note($"folder sizes: {t.Exception?.GetBaseException().Message}"),
+                    CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+
+            var items = index.Snapshot();
+            if (items == null) return null;
+            var hints = query.DriveHints.Select(SearchQuery.FoldName).Where(h => h.Length > 0).ToArray();
+            var found = new List<DriveFound>();
+            foreach (var item in items)
+            {
+                token.ThrowIfCancellationRequested();
+                if (item.Name.Length == 0) continue;
+                if (hints.Length > 0)
+                {
+                    var name = SearchQuery.FoldName(item.Name);
+                    if (!Array.Exists(hints, h => name.Contains(h, StringComparison.Ordinal))) continue;
+                }
+                // Google's documents and shortcuts are not on the letter: marked as documents, they are left out.
+                var mime = item.IsFolder ? DriveClient.FolderMimeType
+                    : item.Counted ? "application/octet-stream" : "application/vnd.google-apps.document";
+                found.Add(new DriveFound(item.Id, item.Name, mime, item.IsFolder ? -1 : item.Size,
+                    new DateTime(item.ModifiedTicks, DateTimeKind.Utc), item.Parent));
+            }
+            return found;
+        }
 
         /// <summary>Who the mount is signed in as, from Whoami. Keys the saved size indexes.</summary>
         private string? _account;

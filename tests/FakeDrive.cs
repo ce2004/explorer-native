@@ -245,6 +245,13 @@ namespace ExplorerNative
         /// <summary>How long a new file's answer takes after it is stored (cut off meanwhile, it is lost).</summary>
         public int AnswerDelayMs;
 
+        /// <summary>
+        /// When set, searches of the whole account are answered (every folder, or
+        /// names), and "name contains" matches as Google's does: only the start of
+        /// a word in the name ("Remix" is found by "rem", not by "mix").
+        /// </summary>
+        public bool NameSearchLikeGoogle;
+
         /// <summary>When set, the changes feed answers with this status (an expired token is 400 or 410).</summary>
         public int ChangesFail;
 
@@ -423,6 +430,10 @@ namespace ExplorerNative
                     });
 
                 case "list" when (query["q"] ?? "").StartsWith("trashed = false", StringComparison.Ordinal):
+                    return ListEverything(query);
+
+                // A search of the whole account (a name, or every folder), only when asked for.
+                case "list" when NameSearchLikeGoogle && !(query["q"] ?? "").Contains(" in parents", StringComparison.Ordinal):
                     return ListEverything(query);
 
                 case "list" when (query["q"] ?? "") == "trashed = true":
@@ -690,11 +701,18 @@ namespace ExplorerNative
 
             List<Dictionary<string, object>> page;
             int count;
+            var words = NameSearchLikeGoogle
+                ? Regex.Matches(q, @"name contains '((?:[^'\\]|\\.)*)'").Select(m => Regex.Unescape(m.Groups[1].Value)).ToList()
+                : new List<string>();
             lock (_gate)
             {
                 var rows = _items.Values
                     .Where(i => !i.Trashed && i.Id != Root)
                     .Where(i => (after == null || i.Modified >= after) && (before == null || i.Modified < before))
+                    .Where(i => words.Count == 0 || words.Any(w => Regex.Split(i.Name, @"[^\p{L}\p{N}]+")
+                        .Any(t => t.StartsWith(w, StringComparison.OrdinalIgnoreCase))))
+                    .Where(i => !NameSearchLikeGoogle || i.IsFolder ||
+                                !q.Contains($"mimeType = '{DriveClient.FolderMimeType}'", StringComparison.Ordinal))
                     .OrderBy(i => i.Id, StringComparer.Ordinal)
                     .ToList();
                 count = rows.Count;

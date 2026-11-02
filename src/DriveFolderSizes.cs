@@ -8,8 +8,13 @@ using System.Threading.Tasks;
 
 namespace ExplorerNative
 {
-    /// <summary>One item as the size index needs it: where it is, and how big.</summary>
-    internal readonly record struct DriveSizeItem(string Id, string? Parent, long Size, bool IsFolder, bool Counted);
+    /// <summary>
+    /// One item as the size index needs it: where it is, and how big. Its name
+    /// and date too, so a search on the letter can match part of a word, which
+    /// Google's own name search cannot (it matches only the start of a word).
+    /// </summary>
+    internal readonly record struct DriveSizeItem(string Id, string? Parent, long Size, bool IsFolder, bool Counted,
+        string Name = "", long ModifiedTicks = 0);
 
     /// <summary>One entry from Drive's changes feed. Null Item means it went away.</summary>
     internal readonly record struct DriveSizeChange(string Id, DriveSizeItem? Item);
@@ -18,7 +23,7 @@ namespace ExplorerNative
     {
         private const string Changes = "https://www.googleapis.com/drive/v3/changes";
 
-        private const string SizeFields = "id,parents,size,mimeType";
+        private const string SizeFields = "id,name,parents,size,mimeType,modifiedTime";
 
         /// <summary>How many listings run at once while the index is built.</summary>
         internal const int SizeLanes = 8;
@@ -138,7 +143,10 @@ namespace ExplorerNative
             // What the letter shows is what is counted: Google's own documents and
             // shortcuts are not placed there, so they are not in its sizes either.
             bool counted = folder || !mime.StartsWith("application/vnd.google-apps.", StringComparison.Ordinal);
-            return new DriveSizeItem(id, parent, size, folder, counted);
+            string name = file.TryGetProperty("name", out var nm) ? nm.GetString() ?? "" : "";
+            long modified = file.TryGetProperty("modifiedTime", out var mt) && mt.TryGetDateTime(out var when)
+                ? when.ToUniversalTime().Ticks : 0;
+            return new DriveSizeItem(id, parent, size, folder, counted, name, modified);
         }
 
         /// <summary>Where the changes feed starts for My Drive (null) or a shared drive.</summary>
@@ -411,7 +419,8 @@ namespace ExplorerNative
             }
         }
 
-        private const int FormatVersion = 1;
+        // 2 (5.0.0): names and dates, for search. A version-1 file is rebuilt.
+        private const int FormatVersion = 2;
         private static readonly byte[] FormatMagic = { (byte)'E', (byte)'N', (byte)'S', (byte)'Z' };
 
         /// <summary>
@@ -444,6 +453,8 @@ namespace ExplorerNative
                     else { w.Write7BitEncodedInt(1); w.Write(item.Parent); }
                     w.Write7BitEncodedInt64(item.Size);
                     w.Write((byte)((item.IsFolder ? 1 : 0) | (item.Counted ? 2 : 0)));
+                    w.Write(item.Name ?? "");
+                    w.Write7BitEncodedInt64(item.ModifiedTicks);
                 }
             }
             return output.ToArray();
@@ -480,13 +491,21 @@ namespace ExplorerNative
                 };
                 long size = r.Read7BitEncodedInt64();
                 byte flags = r.ReadByte();
-                items.Add(new DriveSizeItem(ids[i], parent, size, (flags & 1) != 0, (flags & 2) != 0));
+                var name = r.ReadString();
+                long modified = r.Read7BitEncodedInt64();
+                items.Add(new DriveSizeItem(ids[i], parent, size, (flags & 1) != 0, (flags & 2) != 0, name, modified));
             }
             return (rootId.Length == 0 ? null : rootId, changes, items);
         }
 
         /// <summary>Whether the whole drive has been listed once, so a size can be answered from memory.</summary>
         public bool Built { get { lock (_gate) return _built; } }
+
+        /// <summary>Every item held, for a search; null until the whole drive has been listed once.</summary>
+        public IReadOnlyList<DriveSizeItem>? Snapshot()
+        {
+            lock (_gate) return _built ? _items.Values.ToArray() : null;
+        }
 
         /// <summary>
         /// How long a question waits for the changes feed once the index is built.
