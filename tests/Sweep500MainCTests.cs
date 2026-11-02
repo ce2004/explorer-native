@@ -4,9 +4,9 @@ using System.Threading.Tasks;
 namespace ExplorerNative
 {
     /// <summary>
-    /// The 4.3.1 sweep of the audio player.
+    /// The 5.0.0 sweep of the window: keyboard and actions.
     /// </summary>
-    internal static class Sweep431PlayerTests
+    internal static class Sweep500MainCTests
     {
         private static Action<string, bool, string?> _check = null!;
         private static Action<string, string, string> _equal = null!;
@@ -19,7 +19,7 @@ namespace ExplorerNative
             _check = check;
             _equal = equal;
 
-            Console.WriteLine("Sweep 4.3.1, the audio player:");
+            Console.WriteLine("Sweep 5.0.0, the window: keyboard and actions:");
             await Task.CompletedTask;
         }
     }

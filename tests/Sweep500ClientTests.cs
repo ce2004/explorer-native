@@ -4,9 +4,9 @@ using System.Threading.Tasks;
 namespace ExplorerNative
 {
     /// <summary>
-    /// The 4.3.1 sweep of the decoders.
+    /// The 5.0.0 sweep of the Google Drive client.
     /// </summary>
-    internal static class Sweep431DecoderTests
+    internal static class Sweep500ClientTests
     {
         private static Action<string, bool, string?> _check = null!;
         private static Action<string, string, string> _equal = null!;
@@ -19,7 +19,7 @@ namespace ExplorerNative
             _check = check;
             _equal = equal;
 
-            Console.WriteLine("Sweep 4.3.1, the decoders:");
+            Console.WriteLine("Sweep 5.0.0, the Google Drive client:");
             await Task.CompletedTask;
         }
     }

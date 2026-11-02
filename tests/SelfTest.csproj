@@ -76,22 +76,22 @@
     <Compile Include="..\src\WinFsp.cs" />
     <Compile Include="..\src\WinFspSetup.cs" />
     <Compile Include="WinFspTests.cs" />
-    <Compile Include="Sweep431MountTests.cs" />
-    <Compile Include="Sweep431ClientTests.cs" />
-    <Compile Include="Sweep431SyncTests.cs" />
-    <Compile Include="Sweep431WebTests.cs" />
-    <Compile Include="Sweep431FilesTests.cs" />
-    <Compile Include="Sweep431ArchiveTests.cs" />
-    <Compile Include="Sweep431PlayerTests.cs" />
-    <Compile Include="Sweep431DecoderTests.cs" />
-    <Compile Include="Sweep431AudioEditTests.cs" />
-    <Compile Include="Sweep431AppleMusicTests.cs" />
-    <Compile Include="Sweep431AppTests.cs" />
-    <Compile Include="Sweep431KeysTests.cs" />
-    <Compile Include="Sweep431MainATests.cs" />
-    <Compile Include="Sweep431MainBTests.cs" />
-    <Compile Include="Sweep431MainCTests.cs" />
-    <Compile Include="Sweep431MainDTests.cs" />
+    <Compile Include="Sweep500MountTests.cs" />
+    <Compile Include="Sweep500ClientTests.cs" />
+    <Compile Include="Sweep500SyncTests.cs" />
+    <Compile Include="Sweep500WebTests.cs" />
+    <Compile Include="Sweep500FilesTests.cs" />
+    <Compile Include="Sweep500ArchiveTests.cs" />
+    <Compile Include="Sweep500PlayerTests.cs" />
+    <Compile Include="Sweep500DecoderTests.cs" />
+    <Compile Include="Sweep500AudioEditTests.cs" />
+    <Compile Include="Sweep500AppleMusicTests.cs" />
+    <Compile Include="Sweep500AppTests.cs" />
+    <Compile Include="Sweep500KeysTests.cs" />
+    <Compile Include="Sweep500MainATests.cs" />
+    <Compile Include="Sweep500MainBTests.cs" />
+    <Compile Include="Sweep500MainCTests.cs" />
+    <Compile Include="Sweep500MainDTests.cs" />
     <Compile Include="..\src\GoogleAuth.cs" /><Compile Include="..\src\GoogleNet.cs" /><Compile Include="..\src\BadNet.cs" /><Compile Include="..\src\WinKeyHook.cs" /><Compile Include="..\src\ProtectedFile.cs" />
     <Compile Include="..\src\AppleMusicClient.cs" /><Compile Include="..\src\AppleMusic.cs" />
     <Compile Include="..\src\DriveClient.cs" /><Compile Include="..\src\DriveFolderSizes.cs" /><Compile Include="..\src\DriveWrites.cs" /><Compile Include="..\src\DriveTrash.cs" /><Compile Include="..\src\DriveHealth.cs" />

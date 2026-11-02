@@ -4,9 +4,9 @@ using System.Threading.Tasks;
 namespace ExplorerNative
 {
     /// <summary>
-    /// The 4.3.1 sweep of copying, moving and deleting.
+    /// The 5.0.0 sweep of the web app.
     /// </summary>
-    internal static class Sweep431FilesTests
+    internal static class Sweep500WebTests
     {
         private static Action<string, bool, string?> _check = null!;
         private static Action<string, string, string> _equal = null!;
@@ -19,7 +19,7 @@ namespace ExplorerNative
             _check = check;
             _equal = equal;
 
-            Console.WriteLine("Sweep 4.3.1, copying, moving and deleting:");
+            Console.WriteLine("Sweep 5.0.0, the web app:");
             await Task.CompletedTask;
         }
     }

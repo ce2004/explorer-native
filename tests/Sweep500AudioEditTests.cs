@@ -4,9 +4,9 @@ using System.Threading.Tasks;
 namespace ExplorerNative
 {
     /// <summary>
-    /// The 4.3.1 sweep of the web app.
+    /// The 5.0.0 sweep of converting, editing and tags.
     /// </summary>
-    internal static class Sweep431WebTests
+    internal static class Sweep500AudioEditTests
     {
         private static Action<string, bool, string?> _check = null!;
         private static Action<string, string, string> _equal = null!;
@@ -19,7 +19,7 @@ namespace ExplorerNative
             _check = check;
             _equal = equal;
 
-            Console.WriteLine("Sweep 4.3.1, the web app:");
+            Console.WriteLine("Sweep 5.0.0, converting, editing and tags:");
             await Task.CompletedTask;
         }
     }

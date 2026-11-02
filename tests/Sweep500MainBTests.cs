@@ -4,9 +4,9 @@ using System.Threading.Tasks;
 namespace ExplorerNative
 {
     /// <summary>
-    /// The 4.3.1 sweep of Apple Music.
+    /// The 5.0.0 sweep of the window: watching, archives as folders and search.
     /// </summary>
-    internal static class Sweep431AppleMusicTests
+    internal static class Sweep500MainBTests
     {
         private static Action<string, bool, string?> _check = null!;
         private static Action<string, string, string> _equal = null!;
@@ -19,7 +19,7 @@ namespace ExplorerNative
             _check = check;
             _equal = equal;
 
-            Console.WriteLine("Sweep 4.3.1, Apple Music:");
+            Console.WriteLine("Sweep 5.0.0, the window: watching, archives as folders and search:");
             await Task.CompletedTask;
         }
     }

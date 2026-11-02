@@ -4,9 +4,9 @@ using System.Threading.Tasks;
 namespace ExplorerNative
 {
     /// <summary>
-    /// The 4.3.1 sweep of the window: UI, list, tabs and navigation.
+    /// The 5.0.0 sweep of the folder sync.
     /// </summary>
-    internal static class Sweep431MainATests
+    internal static class Sweep500SyncTests
     {
         private static Action<string, bool, string?> _check = null!;
         private static Action<string, string, string> _equal = null!;
@@ -19,7 +19,7 @@ namespace ExplorerNative
             _check = check;
             _equal = equal;
 
-            Console.WriteLine("Sweep 4.3.1, the window: UI, list, tabs and navigation:");
+            Console.WriteLine("Sweep 5.0.0, the folder sync:");
             await Task.CompletedTask;
         }
     }
