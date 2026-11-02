@@ -1094,11 +1094,15 @@ namespace ExplorerNative
                 await using (var file = new FileStream(partial, FileMode.CreateNew, FileAccess.Write, FileShare.None,
                                  1 << 16, FileOptions.Asynchronous))
                 {
+                    // Reported as bytes so far in this attempt, so a retried
+                    // attempt is not counted on top of the one before.
+                    long got = 0;
                     if (remote.Size > 0)
                         await client.DownloadTo(id, 0, remote.Size, file, block =>
                         {
                             md5?.AppendData(block.Span);
-                            moved?.Invoke(block.Length);
+                            got += block.Length;
+                            moved?.Invoke(got);
                         }, token).ConfigureAwait(false);
                 }
 

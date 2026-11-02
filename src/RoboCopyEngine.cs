@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
@@ -20,7 +21,9 @@ namespace ExplorerNative
         double BytesPerSecond,
         TimeSpan Elapsed,
         bool ItemsKnown = false,
-        long PerItemWork = 0)
+        long PerItemWork = 0,
+        bool ItemIsStatus = false,
+        bool FromGoogle = false)
     {
         public bool TotalKnown => BytesTotal > 0 || (PerItemWork > 0 && ItemsTotal > 0);
 
@@ -167,6 +170,15 @@ namespace ExplorerNative
     public static class RoboCopyEngine
     {
         /// <summary>
+        /// System32's robocopy, by full path. A bare "robocopy.exe" is looked
+        /// for beside our own exe and in the current folder before System32,
+        /// so a robocopy.exe sitting in Downloads next to a portable copy
+        /// would run in its place on the first paste.
+        /// </summary>
+        internal static string RobocopyExecutable { get; } =
+            Path.Combine(Environment.SystemDirectory, "robocopy.exe");
+
+        /// <summary>
         /// A robocopy report, corrected by what the Drive mount has actually handed
         /// over, for a copy out of the Drive letter.
         ///
@@ -191,6 +203,19 @@ namespace ExplorerNative
             TransferProgress reported, long served, string? downloading, long alreadyShown,
             RecentRate? rate = null)
         {
+            // Fetched straight from Google, around the mount: the mount's count
+            // is stale and holds the failed file's partial reads, so the
+            // engine's own count is the true one, even when it is lower.
+            if (reported.FromGoogle)
+            {
+                double s = reported.Elapsed.TotalSeconds;
+                return reported with
+                {
+                    BytesPerSecond = rate != null ? rate.Observe(reported.BytesDone, reported.Elapsed)
+                        : s > 0.25 ? reported.BytesDone / s : reported.BytesPerSecond,
+                };
+            }
+
             long bytes = Math.Max(Math.Max(reported.BytesDone, served), alreadyShown);
             if (reported.TotalKnown) bytes = Math.Min(bytes, reported.BytesTotal);
 
@@ -202,7 +227,8 @@ namespace ExplorerNative
             return reported with
             {
                 BytesDone = bytes,
-                CurrentItem = string.IsNullOrEmpty(downloading) ? reported.CurrentItem : downloading,
+                // A sentence ("Waiting for...") says more than a file name.
+                CurrentItem = reported.ItemIsStatus || string.IsNullOrEmpty(downloading) ? reported.CurrentItem : downloading,
                 BytesPerSecond = speed,
             };
         }
@@ -810,6 +836,9 @@ namespace ExplorerNative
             long bytesTotal = 0;
             int itemsTotal = 0;
             var sizeByName = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
+            // The same, never taken from as robocopy names files: robocopy names
+            // a file it then fails, and the fallback needs that file's size.
+            var plannedSize = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
 
             // Only what the jobs will copy. Walking every clean source counted a
             // refused folder — copied into itself, or a whole drive — into the
@@ -835,7 +864,7 @@ namespace ExplorerNative
                             {
                                 Interlocked.Add(ref bytesTotal, len);
                                 Interlocked.Increment(ref itemsTotal);
-                                lock (sizeByName) sizeByName[Path.GetFileName(f)] = len;
+                                lock (sizeByName) { sizeByName[Path.GetFileName(f)] = len; plannedSize[Path.GetFileName(f)] = len; }
                             }
                         }
                         else if (File.Exists(NameRules.ExactPath(source)))
@@ -843,7 +872,7 @@ namespace ExplorerNative
                             var len = new FileInfo(NameRules.ExactPath(source)).Length;
                             Interlocked.Add(ref bytesTotal, len);
                             Interlocked.Increment(ref itemsTotal);
-                            lock (sizeByName) sizeByName[Path.GetFileName(source)] = len;
+                            lock (sizeByName) { sizeByName[Path.GetFileName(source)] = len; plannedSize[Path.GetFileName(source)] = len; }
                         }
                     }
                     catch { }
@@ -871,6 +900,14 @@ namespace ExplorerNative
             // progress figure that goes backwards is its own bug.
             long shown = 0;
 
+            // Whether `current` holds a sentence rather than a file name.
+            int currentIsStatus = 0;
+
+            // Files robocopy gave up on, fetched straight from Google: what had
+            // surely landed before, plus what the fallback has brought down.
+            int fellBack = 0;
+            long fallbackBase = 0, fallbackDone = 0, fallbackFile = 0;
+
             // How many bytes have really landed.
             //
             // Not what robocopy has said so far, which is the whole point. Its
@@ -894,6 +931,14 @@ namespace ExplorerNative
             // lines are still correct.
             long BytesLanded()
             {
+                if (Volatile.Read(ref fellBack) == 1)
+                {
+                    long all = Interlocked.Read(ref bytesTotal);
+                    long got = Interlocked.Read(ref fallbackBase) + Interlocked.Read(ref fallbackDone) +
+                               Interlocked.Read(ref fallbackFile);
+                    return all > 0 ? Math.Min(all, got) : got;
+                }
+
                 long matched = Interlocked.Read(ref bytesDone);
 
                 // Until the walk has finished there is no total to measure
@@ -970,7 +1015,9 @@ namespace ExplorerNative
                     managedBaseItems + renamedItems + Volatile.Read(ref itemsTotal),
                     Volatile.Read(ref current),
                     speed,
-                    managedClock.Elapsed + started.Elapsed));
+                    managedClock.Elapsed + started.Elapsed,
+                    ItemIsStatus: Volatile.Read(ref currentIsStatus) == 1,
+                    FromGoogle: Volatile.Read(ref fellBack) == 1));
             }
 
             // Where each planned file lands, so that a file appearing in the
@@ -1095,6 +1142,7 @@ namespace ExplorerNative
                 created[landing] = 0;
                 Volatile.Write(ref copying, Path.GetFileName(landing));
                 Volatile.Write(ref current, Path.GetFileName(landing));
+                Volatile.Write(ref currentIsStatus, 0);
                 Interlocked.Increment(ref filesStarted);
                 ReportSoon();
             }, () => Interlocked.Exchange(ref landingsLost, 1));
@@ -1413,6 +1461,7 @@ namespace ExplorerNative
                     if (name == null) return;
                     Volatile.Write(ref copying, name);
                     current = name;
+                    Volatile.Write(ref currentIsStatus, 0);
                     Interlocked.Add(ref bytesDone, size);
                     Interlocked.Increment(ref itemsDone);
                     ReportSoon();
@@ -1424,6 +1473,7 @@ namespace ExplorerNative
                     lock (sizeByName) plan = sizeByName.Keys.ToArray();
                     var waitingFor = RetryName(file, plan, Volatile.Read(ref copying));
                     Volatile.Write(ref current, $"Waiting for {waitingFor} (retry {attempt} of {retries})");
+                    Volatile.Write(ref currentIsStatus, 1);
                     Report();
                 },
                 p => Volatile.Write(ref liveJob, p), token);
@@ -1491,7 +1541,6 @@ namespace ExplorerNative
             }
 
             try { await planning; } catch { }
-            ticker.Change(Timeout.Infinite, Timeout.Infinite);
 
             // Before the final report, or a late event lands a name on top of it.
             landings?.Dispose();
@@ -1514,17 +1563,38 @@ namespace ExplorerNative
             if (cloudSource && failedSources.Count > 0 && DownloadFromCloud is { } fromGoogle &&
                 !token.IsCancellationRequested)
             {
+                // Robocopy's own count includes what it wrote of the files it
+                // then gave up on, so take those out: the window may go back a
+                // little, then counts each file as it comes down.
+                long failedPlanned = 0;
+                lock (sizeByName)
+                    foreach (var failedSource in failedSources)
+                        if (plannedSize.TryGetValue(Path.GetFileName(failedSource), out var len)) failedPlanned += len;
+                // Capped at the total less the failed files: robocopy's write
+                // count also holds its own log and output, so it can claim them.
+                long landedBefore = Math.Min(
+                    Math.Max(Interlocked.Read(ref bytesDone), Interlocked.Read(ref finishedJobBytes) - failedPlanned),
+                    Interlocked.Read(ref bytesTotal) - failedPlanned);
+                Interlocked.Exchange(ref fallbackBase, Math.Max(0, landedBefore));
+                Volatile.Write(ref fellBack, 1);
+
                 foreach (var source in failedSources.ToList())
                 {
                     if (token.IsCancellationRequested) break;
                     if (LandingFor(source) is not { } landing) continue;
 
                     Volatile.Write(ref current, $"Downloading {Path.GetFileName(source)} straight from Google Drive");
+                    Volatile.Write(ref currentIsStatus, 1);
+                    Interlocked.Exchange(ref fallbackFile, 0);
                     Report();
                     string? why;
-                    try { why = await fromGoogle(source, landing, null, token); }
+                    // Bytes so far in this attempt (a running total, so a retry
+                    // inside the download starts again from nothing).
+                    try { why = await fromGoogle(source, landing, n => { Interlocked.Exchange(ref fallbackFile, n); ReportSoon(); }, token); }
                     catch (OperationCanceledException) { break; }
                     catch (Exception ex) { why = ex.Message; }
+                    long thisFile = Interlocked.Exchange(ref fallbackFile, 0);
+                    if (why == null) Interlocked.Add(ref fallbackDone, thisFile);
 
                     if (why != null)
                     {
@@ -1542,6 +1612,10 @@ namespace ExplorerNative
                 if (failedSources.Count == 0)
                     errors.RemoveAll(e => e.StartsWith("robocopy reported failures copying", StringComparison.Ordinal));
             }
+
+            // Kept going through the fallback above, so a long download out of
+            // Google still moves the clock and the speed.
+            ticker.Change(Timeout.Infinite, Timeout.Infinite);
 
             if (token.IsCancellationRequested)
             {
@@ -1567,7 +1641,9 @@ namespace ExplorerNative
                     managedBaseBytes + done, managedBaseBytes + Interlocked.Read(ref bytesTotal),
                     managedBaseItems + renamedItems + Volatile.Read(ref itemsDone),
                     managedBaseItems + renamedItems + Volatile.Read(ref itemsTotal),
-                    Volatile.Read(ref current), done / seconds, managedClock.Elapsed + started.Elapsed));
+                    Volatile.Read(ref current), done / seconds, managedClock.Elapsed + started.Elapsed,
+                    ItemIsStatus: Volatile.Read(ref currentIsStatus) == 1,
+                    FromGoogle: Volatile.Read(ref fellBack) == 1));
             }
 
             return new TransferResult(copied, failed, false, errors, Collisions(), alreadyThere);
@@ -2212,7 +2288,7 @@ namespace ExplorerNative
             args.Add("/UNILOG:" + Quote(logPath));
             args.Add("/TEE");
 
-            var psi = new ProcessStartInfo("robocopy.exe")
+            var psi = new ProcessStartInfo(RobocopyExecutable)
             {
                 Arguments = string.Join(" ", args),
                 RedirectStandardOutput = true,
@@ -2534,12 +2610,62 @@ namespace ExplorerNative
         /// rename is tried, and the rename itself never copies (see
         /// <see cref="TryRename"/>), so a wrong yes costs one refused call and a
         /// wrong no costs a copy.
+        ///
+        /// Windows names no volume for a share or a mapped letter, so two places
+        /// on one share are matched by the share itself (<see cref="ShareOf"/>),
+        /// first, so a share path never waits on the volume question going
+        /// over the network. The server renames inside a share; if the share
+        /// spans its volumes, the rename is refused and the copy goes ahead.
         /// </summary>
         public static bool SameVolume(string a, string b)
         {
+            var sa = ShareOf(a);
+            var sb = ShareOf(b);
+            if (sa != null || sb != null)
+                return sa != null && string.Equals(sa, sb, StringComparison.OrdinalIgnoreCase);
             var va = VolumeOf(a);
             return va != null && string.Equals(va, VolumeOf(b), StringComparison.OrdinalIgnoreCase);
         }
+
+        /// <summary>
+        /// "\\server\share" for a path on a share, or on a letter mapped to
+        /// one; otherwise null. The Google Drive volume (server GoogleDrive) is
+        /// never a share here: moves there go through the Drive API.
+        /// </summary>
+        internal static string? ShareOf(string path)
+        {
+            try
+            {
+                var plain = NameRules.PlainPath(path);
+                string? share = null;
+                if (plain.StartsWith(@"\\", StringComparison.Ordinal))
+                {
+                    if (plain.StartsWith(@"\\.\", StringComparison.Ordinal)) return null;
+                    var parts = plain[2..].Split('\\');
+                    if (parts.Length < 2 || parts[0].Length == 0 || parts[1].Length == 0) return null;
+                    share = @"\\" + parts[0] + @"\" + parts[1];
+                }
+                else if (plain.Length >= 2 && plain[1] == ':' && char.IsAsciiLetter(plain[0]) &&
+                         GetDriveTypeW(plain[..2] + "\\") == DriveRemote)
+                {
+                    var buffer = new StringBuilder(512);
+                    int length = buffer.Capacity;
+                    if (WNetGetConnectionW(plain[..2], buffer, ref length) != 0) return null;
+                    share = buffer.ToString().TrimEnd('\\');
+                    if (!share.StartsWith(@"\\", StringComparison.Ordinal)) return null;
+                    var parts = share[2..].Split('\\');
+                    if (parts.Length < 2 || parts[0].Length == 0 || parts[1].Length == 0) return null;
+                    share = @"\\" + parts[0] + @"\" + parts[1];
+                }
+                if (share == null) return null;
+                if (share.StartsWith(@"\\GoogleDrive\", StringComparison.OrdinalIgnoreCase)) return null;
+                return share;
+            }
+            catch { return null; }
+        }
+
+        [DllImport("mpr.dll", CharSet = CharSet.Unicode)]
+        private static extern int WNetGetConnectionW(string localName, StringBuilder remoteName, ref int length);
 
         /// <summary>A share, or a drive letter mapped to one.</summary>
         internal static bool IsRemote(string path)

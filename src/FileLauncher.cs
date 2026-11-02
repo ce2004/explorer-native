@@ -35,9 +35,76 @@ namespace ExplorerNative
 
         private sealed record Launch(string Exe, string ArgsTemplate);
 
-        /// <summary>Resolved once per extension; a repeat open costs nothing.</summary>
-        private static readonly ConcurrentDictionary<string, Launch?> Cache =
+        private sealed record Entry(Launch? Launch, long ResolvedAt);
+
+        /// <summary>
+        /// Resolved once per extension and kept for <see cref="FreshFor"/>, so a
+        /// repeat open costs nothing but a default app changed while the app
+        /// sits in the tray for days is picked up within half a minute.
+        /// </summary>
+        private static readonly ConcurrentDictionary<string, Entry> Cache =
             new(StringComparer.OrdinalIgnoreCase);
+
+        private const long FreshFor = 30_000;
+
+        /// <summary>Test hooks: a resolver and a clock to use instead of Windows'.</summary>
+        internal static Func<string, (string Exe, string Args)?>? ResolverForTests;
+        internal static Func<long>? ClockForTests;
+
+        /// <summary>Forgets every resolved handler (tests start clean with it).</summary>
+        public static void ForgetAll() => Cache.Clear();
+
+        /// <summary>
+        /// Types Windows treats as able to run code. These always go through the
+        /// shell, so its Attachment Manager can show "Open File - Security
+        /// Warning" for a downloaded script or installer; started directly they
+        /// ran with no question at all. Decided by the name alone.
+        /// </summary>
+        private static readonly System.Collections.Generic.HashSet<string> ShellChecksFirst =
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                ".ade", ".adp", ".app", ".application", ".appref-ms", ".bas", ".bat", ".chm", ".cmd", ".com",
+                ".cpl", ".crt", ".der", ".exe", ".gadget", ".hlp", ".hta", ".inf", ".ins", ".isp", ".its",
+                ".js", ".jse", ".ksh", ".lnk", ".mde", ".msc", ".msh", ".msh1", ".msh2", ".mshxml",
+                ".msh1xml", ".msh2xml", ".msi", ".msp", ".mst", ".pcd", ".pif", ".plg", ".prf", ".ps1",
+                ".ps1xml", ".ps2", ".ps2xml", ".psc1", ".psc2", ".reg", ".scf", ".scr", ".sct",
+                ".settingcontent-ms", ".shb", ".shs", ".url", ".vb", ".vbe", ".vbs", ".ws", ".wsc",
+                ".wsf", ".wsh",
+            };
+
+        /// <summary>True for a type that must be opened through the shell's security check.</summary>
+        public static bool MustGoThroughShell(string extension) =>
+            !string.IsNullOrEmpty(extension) && ShellChecksFirst.Contains(extension);
+
+        private static long Now() => ClockForTests?.Invoke() ?? Environment.TickCount64;
+
+        /// <summary>
+        /// The cached handler if it is fresh, otherwise resolved again. The Open
+        /// With picker is never kept: once the person picks an app with Always,
+        /// the very next open should go to that app.
+        /// </summary>
+        private static Launch? Lookup(string extension)
+        {
+            if (MustGoThroughShell(extension)) return null;
+            var now = Now();
+            if (Cache.TryGetValue(extension, out var entry) && now - entry.ResolvedAt < FreshFor)
+                return entry.Launch;
+
+            Launch? launch;
+            var hook = ResolverForTests;
+            if (hook != null)
+            {
+                var r = hook(extension);
+                launch = r == null ? null : new Launch(r.Value.Exe, r.Value.Args);
+            }
+            else launch = Resolve(extension);
+
+            if (launch == null || !string.Equals(Path.GetFileName(launch.Exe), "OpenWith.exe", StringComparison.OrdinalIgnoreCase))
+                Cache[extension] = new Entry(launch, now);
+            else
+                Cache.TryRemove(extension, out _);
+            return launch;
+        }
 
         /// <summary>
         /// Resolves an extension ahead of time so the first Enter is as quick as
@@ -46,7 +113,7 @@ namespace ExplorerNative
         public static void Prewarm(string extension)
         {
             if (string.IsNullOrEmpty(extension)) return;
-            Cache.GetOrAdd(extension, Resolve);
+            Lookup(extension);
         }
 
         /// <summary>
@@ -54,7 +121,7 @@ namespace ExplorerNative
         /// the shell fallback would be used. Exposed for diagnostics and tests.
         /// </summary>
         public static string? ResolveHandlerPath(string extension) =>
-            string.IsNullOrEmpty(extension) ? null : Cache.GetOrAdd(extension, Resolve)?.Exe;
+            string.IsNullOrEmpty(extension) ? null : Lookup(extension)?.Exe;
 
         /// <summary>
         /// The exact command line this extension would be launched with, or null
@@ -64,7 +131,7 @@ namespace ExplorerNative
         public static string? DescribeCommandLine(string extension, string path)
         {
             if (string.IsNullOrEmpty(extension)) return null;
-            var launch = Cache.GetOrAdd(extension, Resolve);
+            var launch = Lookup(extension);
             return launch == null ? null : $"{Quote(launch.Exe)} {ArgumentsFor(launch, path)}";
         }
 
@@ -77,7 +144,7 @@ namespace ExplorerNative
         public static void Open(string path)
         {
             var ext = Path.GetExtension(path);
-            var launch = string.IsNullOrEmpty(ext) ? null : Cache.GetOrAdd(ext, Resolve);
+            var launch = string.IsNullOrEmpty(ext) ? null : Lookup(ext);
 
             if (launch != null)
             {
@@ -101,8 +168,14 @@ namespace ExplorerNative
                 }
             }
 
-            // Fallback: whatever the shell decides, however slow.
-            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true })?.Dispose();
+            // Fallback: whatever the shell decides, however slow. ErrorDialog
+            // lets the shell show its own prompts (the security warning for a
+            // downloaded script), which .NET otherwise asks it to hide.
+            Process.Start(new ProcessStartInfo(path)
+            {
+                UseShellExecute = true,
+                ErrorDialog = MustGoThroughShell(ext),
+            })?.Dispose();
         }
 
         private static Launch? Resolve(string extension)
