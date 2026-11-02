@@ -39,6 +39,7 @@ namespace ExplorerNative
                 await EditedWhileQueuedTests(sandbox);
                 await SharedLookOutOfStepTests(sandbox);
                 await EditDuringDailyLimitTests(sandbox);
+                await RenamedOnDriveTests(sandbox);
             }
             finally
             {
@@ -399,6 +400,52 @@ namespace ExplorerNative
                 rig.Monitor.StatusOf(rig.Pair.Id).Problem);
             if (!ended) rig.Monitor.Dispose();
             try { await pass; } catch (OperationCanceledException) { }
+        }
+
+        // ---------------- 5. a folder renamed on Drive ----------------
+
+        /// <summary>
+        /// A folder renamed on Drive is renamed on the PC too. But the PC walk
+        /// had already listed the old name, and the empty-folder step then made
+        /// the whole old tree in Drive again, empty, beside the renamed one, for
+        /// good. Also when the PC folder could not be renamed whole and its files
+        /// were moved one by one, leaving the old folders empty on the PC.
+        /// </summary>
+        private static async Task RenamedOnDriveTests(string sandbox)
+        {
+            async Task<Rig> Synced(bool newFileUnder)
+            {
+                var rig = new Rig(sandbox);
+                rig.Write(rig.Pair, "Music/album 000/a.txt", "a song", T0);
+                rig.Write(rig.Pair, "Music/album 001/b.txt", "another", T0);
+                await rig.Pass();
+                await rig.Pass();
+                var music = rig.Drive.Find(rig.Pair.DriveFolderId, "Music")!;
+                rig.Drive.Get(music)!.Name = "Library";
+                rig.Drive.Changed(music);
+                if (newFileUnder) rig.Write(rig.Pair, "Music/new.txt", "new on the PC", T0);
+                return rig;
+            }
+
+            using (var rig = await Synced(newFileUnder: false))
+            {
+                int creates = rig.Drive.Creates;
+                var problem = await rig.Pass();
+                Equal("renamed on Drive: the PC folder is renamed too", "Library/album 000/a.txt,Library/album 001/b.txt", Names(rig.PcFiles(rig.Pair)));
+                Check("renamed on Drive: and no empty copy of the old folder is made in Drive",
+                    rig.Drive.Find(rig.Pair.DriveFolderId, "Music") == null && rig.Drive.Creates == creates,
+                    $"{problem}; {rig.Drive.Creates - creates} folders made; Music there: {rig.Drive.Find(rig.Pair.DriveFolderId, "Music") != null}");
+            }
+
+            using (var rig = await Synced(newFileUnder: true))
+            {
+                var problem = await rig.Pass();
+                Check("renamed on Drive, moved file by file: the old folders left empty on the PC are not made in Drive again",
+                    rig.Drive.Find(rig.Pair.DriveFolderId, "Music/album 000") == null &&
+                    rig.Drive.Find(rig.Pair.DriveFolderId, "Music/album 001") == null &&
+                    rig.Drive.Find(rig.Pair.DriveFolderId, "Library/album 000/a.txt") != null,
+                    $"{problem}; Drive holds {Names(rig.DriveTree(rig.Pair).Keys)}; PC holds {Names(rig.PcFiles(rig.Pair))}");
+            }
         }
     }
 }

@@ -2615,10 +2615,26 @@ namespace ExplorerNative
             SyncSkips skips, PassTally tally, CancellationToken token)
         {
             if (rules.Mode == SyncMode.DownloadOnly || !rules.IncludeSubfolders) return;
+
+            // The walk was before the moves. A folder renamed or moved on Drive
+            // has been renamed on the PC since (so it is no longer there), or its
+            // files moved one by one (so Drive still has the folder this pair
+            // had there, under its new path): made again, the old tree stood
+            // empty in Drive beside the renamed one, for good.
+            var nowOnDrive = new HashSet<string>(folders.Values, StringComparer.Ordinal);
+            bool MovedOnDrive(string folder) =>
+                state.Remembered != null && state.Remembered.TryGetValue(folder, out var was) && nowOnDrive.Contains(was);
+            bool StillOnPc(string folder)
+            {
+                try { return Directory.Exists(LocalPathFor(pair.LocalFolder, folder)); }
+                catch { return false; }
+            }
+
             var wanted = new HashSet<string>(SyncNameComparer.Instance);
             foreach (var pcFolder in pcFolders)
                 if (pcFolder.Length > 0 && !folders.ContainsKey(pcFolder) && !IsLeftOutFolder(pcFolder, rules, skips) &&
-                    !(rules.Mode == SyncMode.TwoWay && rules.CopyDeletes && driveFoldersBefore.Contains(pcFolder)))
+                    !(rules.Mode == SyncMode.TwoWay && rules.CopyDeletes && driveFoldersBefore.Contains(pcFolder)) &&
+                    !MovedOnDrive(pcFolder) && StillOnPc(pcFolder))
                     for (var at = pcFolder; at.Length > 0 && !folders.ContainsKey(at) && wanted.Add(at); at = SyncMoves.Parent(at)) { }
             foreach (var level in wanted.GroupBy(f => f.Count(c => c == '/')).OrderBy(g => g.Key))
             {
