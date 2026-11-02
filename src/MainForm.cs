@@ -247,6 +247,16 @@ namespace ExplorerNative
             public long WatchFailedAt;
 
             /// <summary>
+            /// The watcher stopped after an error other than a lost burst (a share
+            /// that blipped): .NET has stopped it, or its next read failed, so it
+            /// counts as no watcher. Set from the watcher's thread, cleared when
+            /// the watcher is let go; and when it died, so a share that fails
+            /// every new watcher at once is not rebuilt in a loop.
+            /// </summary>
+            public volatile bool WatchDead;
+            public long WatchDiedAt;
+
+            /// <summary>
             /// Bumped whenever the pane's watcher is let go, so a watcher still
             /// being built for the folder before is thrown away when it arrives,
             /// and its early events are not counted against this one.
@@ -2655,10 +2665,26 @@ namespace ExplorerNative
             // refresh, and a window between them where changes are missed.
             // What is pending is the navigation's business: it forgets only what
             // its listing will have seen.
-            if ((pane.Watcher != null &&
-                 string.Equals(NameRules.PlainPath(pane.Watcher.Path), path, StringComparison.OrdinalIgnoreCase)) ||
+            // Only a live watcher is kept, though: one stopped by an error (a
+            // share that blipped) watches nothing, and kept it ended live
+            // updates for good, F5 included.
+            bool alive = pane.Watcher is { EnableRaisingEvents: true } && !pane.WatchDead;
+            bool samePath = pane.Watcher != null &&
+                            string.Equals(NameRules.PlainPath(pane.Watcher.Path), path, StringComparison.OrdinalIgnoreCase);
+            if ((alive && samePath) ||
                 string.Equals(pane.ArmingPath, path, StringComparison.OrdinalIgnoreCase))
                 return;
+
+            // Died moments ago on this same folder: not rebuilt from the reload
+            // its own error asked for, or a share that fails every new watcher
+            // at once reloads the folder every half second (4.2.6). The
+            // availability poll tries again once the minute's wait is over.
+            if (samePath && Environment.TickCount64 - Interlocked.Read(ref pane.WatchDiedAt) < WatchDiedRetryMs)
+            {
+                pane.WatchFailedPath = path;
+                pane.WatchFailedAt = Environment.TickCount64;
+                return;
+            }
 
             DisarmWatcher(pane);
 
@@ -2759,7 +2785,17 @@ namespace ExplorerNative
 
                 // An error is usually a lost burst or a share that went away.
                 // Both mean the list can no longer be trusted, so re-read it.
-                watcher.Error += Reload;
+                // Anything but a lost burst has also stopped the watcher, which
+                // then has to be built again (ArmWatcher, NeedsWatcher).
+                watcher.Error += (s, e) =>
+                {
+                    if (Current() && e.GetException() is not InternalBufferOverflowException)
+                    {
+                        Interlocked.Exchange(ref pane.WatchDiedAt, Environment.TickCount64);
+                        pane.WatchDead = true;
+                    }
+                    Reload(s, e);
+                };
 
                 watcher.EnableRaisingEvents = true;
 
@@ -2818,9 +2854,15 @@ namespace ExplorerNative
                 sizes.Deleted += (_, e) => Seen(e.FullPath);
                 sizes.Changed += (_, e) => Seen(e.FullPath);
                 sizes.Renamed += (_, e) => { Seen(e.OldFullPath); Seen(e.FullPath); };
-                sizes.Error += (_, _) =>
+                sizes.Error += (_, e) =>
                 {
                     if (!current()) return;
+                    // Stopped, not just a lost burst: the pair is built again.
+                    if (e.GetException() is not InternalBufferOverflowException)
+                    {
+                        Interlocked.Exchange(ref pane.WatchDiedAt, Environment.TickCount64);
+                        pane.WatchDead = true;
+                    }
                     _folderSizes.Forget(path);
                     if (_settings.FolderSizes == FolderSizeMode.Automatic) pane.SizeAllDirty = true;
                 };
@@ -2955,6 +2997,7 @@ namespace ExplorerNative
             // A watcher still being built for this pane is not wanted any more.
             pane.WatchGeneration++;
             pane.ArmingPath = null;
+            pane.WatchDead = false;
 
             var watcher = pane.Watcher;
             pane.Watcher = null;
@@ -3249,6 +3292,7 @@ namespace ExplorerNative
                             _releasedRoots[removal.Root] = Environment.TickCount64;
                             pane.WatchGeneration++;
                             pane.ArmingPath = null;
+                            pane.WatchDead = false;
                             var watcher = pane.Watcher;
                             pane.Watcher = null;
                             if (watcher != null)
@@ -3336,11 +3380,13 @@ namespace ExplorerNative
         private static bool NeedsWatcher(Pane pane) =>
             pane.Removal == null && pane.Archive == null && !AppleMusic.Is(pane.CurrentPath) &&
             !string.IsNullOrEmpty(pane.CurrentPath) && pane.CurrentPath != DrivesPath &&
-            pane.Watcher == null && pane.ArmingPath == null && !string.IsNullOrEmpty(pane.LastLoadedPath) &&
+            (pane.Watcher == null || pane.WatchDead || !pane.Watcher.EnableRaisingEvents) &&
+            pane.ArmingPath == null && !string.IsNullOrEmpty(pane.LastLoadedPath) &&
             !(string.Equals(pane.WatchFailedPath, pane.CurrentPath, StringComparison.OrdinalIgnoreCase) &&
               Environment.TickCount64 - pane.WatchFailedAt < WatchRetryAfterMs);
 
         private const long WatchRetryAfterMs = 60_000;
+        private const long WatchDiedRetryMs = 5_000;
 
         /// <summary>
         /// Minimised, the availability poll stops — a probe of a share every four
@@ -3547,6 +3593,22 @@ namespace ExplorerNative
                 if (await DirectoryExistsAsync(path))
                 {
                     _consecutiveProbeFailures = 0;
+
+                    // There, but unwatched: its watcher died (a share that
+                    // blipped) and nothing else would build another, so changes
+                    // never showed again until you left the folder. Watched
+                    // again, and read once for what was missed meanwhile.
+                    if (!Overtaken() && Visible && NeedsWatcher(pane))
+                    {
+                        bool died = pane.Watcher != null;
+                        ArmWatcher(pane, path);
+                        if (died)
+                        {
+                            pane.NeedsRefresh = true;
+                            pane.ReloadQuietly = true;
+                            ScheduleWatchCheck();
+                        }
+                    }
                     return;
                 }
                 if (Overtaken()) return;
