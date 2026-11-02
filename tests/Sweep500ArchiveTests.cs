@@ -27,6 +27,7 @@ namespace ExplorerNative
 
             Console.WriteLine("Sweep 5.0.0, archives:");
             await MarkOfTheWebTests();
+            await SevenZipLineCapTests();
         }
 
         private static string NewDir(string what)
@@ -156,6 +157,75 @@ namespace ExplorerNative
             finally
             {
                 try { Directory.Delete(dir, recursive: true); } catch { }
+            }
+        }
+
+        // ---------- 3: 7-Zip's line cap ----------
+
+        /// <summary>
+        /// With -bb1 7-Zip prints a "- name" line per file, and only the first
+        /// 20,000 lines were kept. The ERROR line naming the damaged file of a
+        /// big cut tar.xz came after them and was lost, so under Replace the
+        /// half-written file went over the good one. The cap is lowered to 20
+        /// here, so 50 files stand for 20,000.
+        /// </summary>
+        private static async Task SevenZipLineCapTests()
+        {
+            var full = new List<string>();
+            for (int i = 0; i < 30; i++) BsdTar.KeepLine(full, "- file" + i);
+            int cap = BsdTar.SevenZipLineCap;
+            BsdTar.SevenZipLineCap = 20;
+            try
+            {
+                var lines = new List<string>();
+                for (int i = 0; i < 30; i++) BsdTar.KeepLine(lines, "- file" + i);
+                for (int i = 0; i < 30; i++) BsdTar.KeepLine(lines, "Size: " + i);
+                BsdTar.KeepLine(lines, "ERROR: Data Error : zz_big.bin");
+                Check("7-Zip cap: an ERROR line is kept after the cap is full",
+                    lines.Contains("ERROR: Data Error : zz_big.bin"), string.Join(", ", lines.Take(5)));
+                Check("7-Zip cap: entry lines do not use it up", !lines.Any(l => l.StartsWith("- ")) && full.Count == 0,
+                    lines.Count.ToString());
+
+                if (BsdTar.SevenZipExecutable == null) return;
+                var dir = NewDir("cap");
+                try
+                {
+                    var src = Path.Combine(dir, "src");
+                    Directory.CreateDirectory(src);
+                    for (int i = 0; i < 50; i++) File.WriteAllText(Path.Combine(src, $"f{i:00}.txt"), "ten bytes!");
+                    var random = new Random(11);
+                    var cut = new byte[600_000];
+                    random.NextBytes(cut);
+                    File.WriteAllBytes(Path.Combine(src, "zz_big.bin"), cut);
+
+                    var archive = Path.Combine(dir, "big.tar.xz");
+                    var made = await ArchiveEngine.CompressAsync(new[] { src }, archive, ArchiveFormats.TarXz,
+                        ArchiveLevel.Fastest, 2, null, CancellationToken.None);
+                    var bytes = File.ReadAllBytes(archive);
+                    File.WriteAllBytes(archive, bytes[..(int)(bytes.Length * 0.8)]);
+
+                    var into = Path.Combine(dir, "into");
+                    Directory.CreateDirectory(Path.Combine(into, "src"));
+                    var good = new byte[600_000];
+                    Array.Fill(good, (byte)7);
+                    File.WriteAllBytes(Path.Combine(into, "src", "zz_big.bin"), good);
+
+                    var result = await ArchiveEngine.ExtractAsync(archive, into, PasteConflictPolicy.Overwrite, null, 2,
+                        null, CancellationToken.None);
+                    var now = File.ReadAllBytes(Path.Combine(into, "src", "zz_big.bin"));
+                    Check("7-Zip cap: a cut tar.xz with many files leaves the good file under Replace",
+                        made.Failed == 0 && now.AsSpan().SequenceEqual(good), $"{now.Length} bytes; " + Said(result));
+                    Check("7-Zip cap: the damaged file is named",
+                        result.Errors.Any(e => e.Contains("zz_big.bin: the archive is damaged at this point")), Said(result));
+                }
+                finally
+                {
+                    try { Directory.Delete(dir, recursive: true); } catch { }
+                }
+            }
+            finally
+            {
+                BsdTar.SevenZipLineCap = cap;
             }
         }
     }

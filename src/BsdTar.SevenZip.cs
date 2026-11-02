@@ -395,6 +395,17 @@ namespace ExplorerNative
                 // Exit 2 with nothing named: it could not go on (a damaged header,
                 // a truncated file), so what came out is not trusted to be whole.
                 bool unfinished = stalled || (exit >= 2 && distrusted.Count == 0);
+
+                // Damage that names no file it wrote (the decompressing half
+                // names the inner tar; a .7z can name nothing): the file it was
+                // writing when it stopped is the one cut short, as bsdtar's last
+                // line is.
+                if (damaged && exit >= 2)
+                    lock (printed)
+                        if (printed.Count > 0 && !distrusted.Any(d => printed.Any(p =>
+                                string.Equals(ExtractionRules.Normalise(p.Name), d, StringComparison.OrdinalIgnoreCase))))
+                            distrusted.Add(ExtractionRules.Normalise(printed[^1].Name));
+
                 if (locked)
                     errors.Add("This archive is protected with a password, which Explorer Native can't open yet");
                 else if (exit >= 2 && !damaged && !stalled)
@@ -573,6 +584,24 @@ namespace ExplorerNative
             StandardOutputEncoding = new UTF8Encoding(false),
         };
 
+        /// <summary>How many of 7-Zip's lines are kept. Lowered by the tests.</summary>
+        internal static int SevenZipLineCap = 20_000;
+
+        /// <summary>
+        /// Keeps one of 7-Zip's lines for reading afterwards. "- name" lines
+        /// are not kept (each reaches onLine as it comes), and its complaints
+        /// get room of their own: with -bb1 a tree of 20,000 files filled the
+        /// list before the "ERROR: Data Error : big.bin" naming the damaged
+        /// file, so the half of it that was written went over the good one.
+        /// </summary>
+        internal static void KeepLine(List<string> lines, string text)
+        {
+            if (text.StartsWith("- ", StringComparison.Ordinal)) return;
+            bool complaint = text.StartsWith("ERROR", StringComparison.Ordinal) ||
+                             text.StartsWith("WARNING", StringComparison.Ordinal);
+            if (lines.Count < (complaint ? 4 * SevenZipLineCap : SevenZipLineCap)) lines.Add(text);
+        }
+
         private static readonly Regex SevenZipProgress =
             new(@"^\s*(\d{1,3})%(?:\s+(\d+))?(?:\s+[+\-U=]\s+(.*))?$", RegexOptions.Compiled);
 
@@ -627,7 +656,7 @@ namespace ExplorerNative
                         catch { }
                         return;
                     }
-                    lock (lines) if (lines.Count < 20_000) lines.Add(text);
+                    lock (lines) KeepLine(lines, text);
                     try { onLine?.Invoke(text); } catch { }
                 }
 
