@@ -111,7 +111,7 @@ namespace ExplorerNative
             Check("a move out of Drive checks the copy at its exact path",
                 finish.Contains("new FileInfo(NameRules.ExactPath(arrivedAt))", StringComparison.Ordinal), Excerpt(finish));
 
-            var ends = Body(src, "Task DeleteOtherSyncEnds(");
+            var ends = Body(src, " DeleteOtherSyncEnds(List<");
             Check("the other end of a sync pair is asked about by its exact path",
                 ends.Contains("NameRules.ExactPath(pair.LocalFolder)", StringComparison.Ordinal) &&
                 !ends.Contains("Directory.Exists(pair.LocalFolder)", StringComparison.Ordinal), Excerpt(ends));
