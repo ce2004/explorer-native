@@ -67,7 +67,10 @@ namespace ExplorerNative
             menu.Items.Add("&Open", null, (_, _) => ShowWindow());
             // Not over another dialog: the tray menu still works while one is up,
             // and a second on top of the first saved over what the first applied.
-            menu.Items.Add("&Preferences", null, (_, _) =>
+            // Every access key in this menu is its own: a letter two items share
+            // only moves between them, and P is play or pause, the way to the
+            // player when a hotkey is swallowed. Preferences is R, Web app is B.
+            menu.Items.Add("P&references", null, (_, _) =>
             {
                 if (_audioDialogOpen) { Notify("error.generic", "Close the audio dialog first"); return; }
                 if (_form?.PreferencesOpen == true) return;
@@ -108,7 +111,7 @@ namespace ExplorerNative
 
             // The web app's link, Copy link, status and pairing code all live on
             // Preferences' Web app page; this is the short way there.
-            menu.Items.Add("&Web app…", null, (_, _) =>
+            menu.Items.Add("We&b app…", null, (_, _) =>
             {
                 if (_audioDialogOpen) { Notify("error.generic", "Close the audio dialog first"); return; }
                 if (_form?.PreferencesOpen == true) return;

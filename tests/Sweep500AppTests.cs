@@ -27,6 +27,7 @@ namespace ExplorerNative
             DisconnectAsksAndNeverBlocksTheWindow();
             SessionEndQuitsAndSaysWhy();
             LaunchesOutwaitAQuitThatIsDraining();
+            TrayMenuAccessKeysAreUnique();
             await Task.CompletedTask;
         }
 
@@ -301,6 +302,35 @@ namespace ExplorerNative
             var restart = Body(Source("MainForm.cs"), "private void RestartApp(");
             Check("launch waits: Ctrl+R asks about unsent Drive files before it starts the new copy",
                 At(restart, "ConfirmUnsavedDrive(") >= 0 && At(restart, "Process.Start(") > At(restart, "ConfirmUnsavedDrive("));
+        }
+
+        // ---- 8: the tray menu's P and W were each shared by two items ----
+
+        private static void TrayMenuAccessKeysAreUnique()
+        {
+            var tray = Source("TrayApplicationContext.cs");
+            int start = At(tray, "var menu = new ContextMenuStrip();"), end = At(tray, "\"E&xit\"");
+            var menu = start >= 0 && end > start ? tray.Substring(start, end - start + 8) : "";
+            var labels = System.Text.RegularExpressions.Regex.Matches(menu, "\"([^\"\\r\\n]*&[^\"\\r\\n]*)\"")
+                .Select(m => m.Groups[1].Value).Where(l => !l.Contains("&&")).Distinct().ToList();
+            Check("tray keys: the menu's labels were found", labels.Count >= 8, string.Join(" | ", labels));
+
+            // Pause all and Resume all are one item, which says one or the other.
+            var keys = new Dictionary<char, string>();
+            var clashes = new List<string>();
+            foreach (var label in labels)
+            {
+                int amp = label.IndexOf('&');
+                if (amp < 0 || amp + 1 >= label.Length) { clashes.Add(label + " has no key"); continue; }
+                char key = char.ToUpperInvariant(label[amp + 1]);
+                bool sameItem = label.EndsWith("all syncing", StringComparison.Ordinal);
+                if (keys.TryGetValue(key, out var other) && !(sameItem && other.EndsWith("all syncing", StringComparison.Ordinal)))
+                    clashes.Add($"{key}: {other} and {label}");
+                keys[key] = label;
+            }
+            Check("tray keys: no two tray menu items share an access key", clashes.Count == 0, string.Join("; ", clashes));
+            Check("tray keys: P is play or pause", keys.TryGetValue('P', out var p) && p.StartsWith("Play", StringComparison.Ordinal), p);
+            Check("tray keys: W is what is playing", keys.TryGetValue('W', out var w) && w.Contains("playing", StringComparison.Ordinal), w);
         }
 
         private static IEnumerable<T> All<T>(System.Windows.Forms.Control root) where T : System.Windows.Forms.Control
