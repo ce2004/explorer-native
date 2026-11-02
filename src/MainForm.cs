@@ -6300,10 +6300,20 @@ namespace ExplorerNative
                     }));
                     break;
 
+                // Ctrl+Space is never part of a name, so it toggles even
+                // mid-word, and choosing a row ends the word.
                 case Keys.Space when !e.Alt && !e.Shift &&
-                                     pane.TypeAhead.Current(Environment.TickCount64).Length == 0:
+                                     (e.Control || pane.TypeAhead.Current(Environment.TickCount64).Length == 0):
+                    pane.TypeAhead.Reset();
                     if (ToggleFocusedRow(pane) && e.Control) _selectedWithCtrl = true;
                     e.Handled = e.SuppressKeyPress = true;
+                    break;
+
+                // Mid-word, a plain Space is part of the name: kept from the
+                // control (which would select that row alone and drop the
+                // rest), but not suppressed, so KeyPress still adds it.
+                case Keys.Space when !e.Alt && !e.Shift:
+                    e.Handled = true;
                     break;
             }
 
@@ -6387,7 +6397,9 @@ namespace ExplorerNative
             // typed and to the selection otherwise, and a buffer that never
             // expires until the next keystroke answers "still typing" for ever —
             // so a pause after any letter left Space unable to select again.
-            if (e.KeyChar == ' ' && pane.TypeAhead.Current(Environment.TickCount64).Length == 0) return;
+            // A space typed with Ctrl held is Ctrl+Space, a selection key.
+            if (e.KeyChar == ' ' && ((ModifierKeys & Keys.Control) != 0 ||
+                                     pane.TypeAhead.Current(Environment.TickCount64).Length == 0)) return;
 
             // Ours now. Left unhandled, the control would run its own search over
             // the same keystroke and move the cursor a second time.

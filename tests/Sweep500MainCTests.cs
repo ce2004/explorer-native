@@ -25,7 +25,31 @@ namespace ExplorerNative
             if (main == null) { Check("MainForm.cs can be read", false); return; }
 
             EscapeDuringQuietRerunLeavesResults(main);
+            SpaceMidWordNeverReachesTheControl(main);
             await Task.CompletedTask;
+        }
+
+        // Bug 2: Ctrl+Space mid-word toggled silently through the native
+        // control and added a space to the word; a plain Space mid-word let
+        // the control select that row alone.
+        private static void SpaceMidWordNeverReachesTheControl(string main)
+        {
+            var keys = Body(main, "private void List_KeyDown(");
+            int first = keys.IndexOf("case Keys.Space when", StringComparison.Ordinal);
+            int firstEnd = first < 0 ? -1 : keys.IndexOf("break;", first, StringComparison.Ordinal);
+            string toggle = first < 0 || firstEnd < 0 ? "" : keys.Substring(first, firstEnd - first);
+            Check("Ctrl+Space toggles the row even while a name is being typed",
+                toggle.Contains("e.Control ||", StringComparison.Ordinal) && toggle.Contains("ToggleFocusedRow", StringComparison.Ordinal), toggle);
+            Check("choosing a row with Space ends the typed word",
+                toggle.Contains("TypeAhead.Reset()", StringComparison.Ordinal));
+            int second = first < 0 ? -1 : keys.IndexOf("case Keys.Space when", firstEnd, StringComparison.Ordinal);
+            int secondEnd = second < 0 ? -1 : keys.IndexOf("break;", second, StringComparison.Ordinal);
+            string midWord = second < 0 || secondEnd < 0 ? "" : keys.Substring(second, secondEnd - second);
+            Check("a plain Space mid-word is kept from the control but still reaches the word",
+                midWord.Contains("e.Handled = true", StringComparison.Ordinal) && !midWord.Contains("SuppressKeyPress", StringComparison.Ordinal), midWord);
+            var press = Body(main, "private void List_KeyPress(");
+            Check("a space typed with Ctrl held never extends the word",
+                press.Contains("ModifierKeys & Keys.Control", StringComparison.Ordinal));
         }
 
         // Bug 1: a quiet re-run after a rename or delete in results is not a
