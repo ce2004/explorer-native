@@ -3333,6 +3333,19 @@ namespace ExplorerNative
                 int mask = System.Runtime.InteropServices.Marshal.PtrToStructure<DEV_BROADCAST_VOLUME>(data).dbcv_unitmask;
                 for (int bit = 0; bit < 26; bit++)
                     if ((mask & (1 << bit)) != 0) _releasedRoots.Remove($"{(char)('A' + bit)}:\\");
+
+                // The drive list has no watcher: a drive that came or went is a
+                // quiet re-read of it (the cursor stays on its drive). A tab
+                // behind reads it when switched to, a hidden window when shown.
+                bool frontShowsDrives = false;
+                foreach (var pane in _panes)
+                {
+                    if (pane?.CurrentPath != DrivesPath) continue;
+                    pane.NeedsRefresh = true;
+                    pane.ReloadQuietly = true;
+                    if (pane == Active) frontShowsDrives = true;
+                }
+                if (frontShowsDrives) ScheduleWatchCheck();
             }
         }
 
