@@ -27,6 +27,7 @@ namespace ExplorerNative
 
             SlowDeleteRefreshesTests(js);
             MoveHereKeepsFocusTests(js);
+            UploadServerErrorEndsTests(js);
             await Task.CompletedTask;
         }
 
@@ -65,6 +66,18 @@ namespace ExplorerNative
             var after = After(Function(js, "paste"), "state.clip = null");
             Check("after Move here, focus is put on something still shown",
                 after.Contains(".focus()") && (after.Contains("btn-select") || after.Contains("files-title")), after);
+        }
+
+        // Bug 3: a chunk the PC kept refusing with a 500 (its disk full) was retried for ever as "waiting for the PC".
+        private static void UploadServerErrorEndsTests(string js)
+        {
+            var chunk = After(Function(js, "upload"), "/api/upload/chunk");
+            int wait = chunk.IndexOf("waitForNetwork(", StringComparison.Ordinal);
+            var handling = wait < 0 ? "" : chunk[..wait];
+            Check("a chunk refused by the PC ends the upload after a few tries",
+                Regex.IsMatch(handling, @"\w+\s*>=?\s*\d") && handling.Contains("throw err"), handling);
+            Check("only no answer at all is waited out without a limit", !Regex.IsMatch(handling, @"status\s*<\s*500\)\s*throw err"), handling);
+            Check("an upload that cannot go on is called off on the PC", handling.Contains("/api/upload/cancel"), handling);
         }
     }
 }

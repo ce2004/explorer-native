@@ -903,13 +903,14 @@ async function upload(file, folder) {
     id = s.id;
     // Stopped while the PC was making it: Stop had no id to call off, so the PC kept it for a day.
     if (stopped) { api('/api/upload/cancel', { method: 'POST', body: { id } }).catch(() => { }); return; }
-    let offset = 0, failures = 0, busy = 0;
+    let offset = 0, failures = 0, serverFailures = 0, busy = 0;
     while (offset < file.size && !stopped) {
       try {
         const r = await api(`/api/upload/chunk?id=${encodeURIComponent(id)}&offset=${offset}`,
           { method: 'PUT', body: file.slice(offset, Math.min(file.size, offset + CHUNK)), raw: true, timeout: 120000, signal: ctrl.signal });
         offset = r.received;
         failures = 0;
+        serverFailures = 0;
         busy = 0;
         t.state = 'running';
       } catch (err) {
@@ -921,7 +922,15 @@ async function upload(file, folder) {
           if (offset === was) await delay(BUSY[Math.min(busy++, BUSY.length - 1)]);
           continue;
         }
-        if (err.status && err.status !== 0 && err.status < 500) throw err;
+        // Status 0 is no answer (api() also gives it to a 502 or 503 from Tailscale with nothing behind it).
+        // Any other status is the PC itself saying why: a few of those in a row and the upload ends with its sentence.
+        if (err.status !== 0) {
+          if (err.status < 500 || ++serverFailures >= 3) {
+            // The upload cannot go on, so the PC need not keep the partial (a full disk stays full otherwise).
+            api('/api/upload/cancel', { method: 'POST', body: { id } }).catch(() => { });
+            throw err;
+          }
+        }
         // The PC or the network went away: wait and ask how much it has, then carry on.
         t.state = 'waiting';
         renderTransfers();
