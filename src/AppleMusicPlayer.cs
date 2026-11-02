@@ -64,6 +64,8 @@ namespace ExplorerNative
         private static int _unmutedPercent = -1;
         private static int _generation;
         private static double _seekTarget = -1;
+        /// <summary>When our own Play/Pause was last pressed (TickCount64): page reports just before it may predate it.</summary>
+        private static long _toggledAt;
         private static long _seekAt;
         private static int _seekQueued;
 
@@ -227,10 +229,14 @@ namespace ExplorerNative
                     // Read now, not when Start began: a pause or a Play next chosen
                     // while the player was still starting has to go with the song.
                     int volume; string device; string? queued; bool hold;
-                    lock (Gate) { volume = _volumePercent; device = _deviceName; queued = _queuedId; hold = !_wantPlaying; }
+                    lock (Gate) { volume = _volumePercent; device = _deviceName; }
                     await CallAsync("volume", Gain(volume)).ConfigureAwait(true);
                     await CallAsync("device", device).ConfigureAwait(true);
-                    await CallAsync("play", catalogId, mine, queued, startAt, hold).ConfigureAwait(true);
+                    // A seek pressed while the player was starting never reached the page
+                    // (CallAsync drops it), so the song starts where that seek went.
+                    double at;
+                    lock (Gate) { at = _seekTarget >= 0 ? _seekTarget : startAt; queued = _queuedId; hold = !_wantPlaying; }
+                    await CallAsync("play", catalogId, mine, queued, at, hold).ConfigureAwait(true);
                     WatchStart(mine, path, catalogId, spokenName, retried);
                 }
                 catch (AppleMusicException ex)
@@ -713,6 +719,7 @@ namespace ExplorerNative
             {
                 pausing = _wantPlaying;
                 _wantPlaying = !pausing; _playing = !pausing;
+                _toggledAt = Environment.TickCount64;
                 name = _currentName; gen = _generation;
             }
             // A pause before the first sound is a choice, not a stall.
@@ -1291,7 +1298,7 @@ namespace ExplorerNative
             var core = _controller?.CoreWebView2;
             if (core == null) return;
             var payload = JsonSerializer.Serialize(new { command, arg, gen = generation, next, at, paused });
-            Log("send " + command + " " + arg + (next != null ? " then " + next : ""));
+            Log("send " + command + " " + arg + (next != null ? " then " + next : "") + (at > 0 ? " at " + at : ""));
             try { await core.ExecuteScriptAsync("window.amCommand(" + payload + ")").ConfigureAwait(true); }
             catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException)
             {
@@ -1325,6 +1332,14 @@ namespace ExplorerNative
                             if (gen != 0 && gen != _generation) break;
                             _playing = root.TryGetProperty("playing", out var p) && p.ValueKind == JsonValueKind.True;
                             if (_playing && gen != 0) { _startedGen = gen; _skips = 0; }
+                            // A pause or resume from outside the app (Windows media controls,
+                            // a headset button) becomes the wish, so Play/Pause answers it.
+                            if (gen != 0 && root.TryGetProperty("state", out var st) && st.TryGetInt32(out var pageState))
+                            {
+                                var wish = AppleMusicPlayState.WishFromPage(pageState, _startedGen == gen,
+                                    Environment.TickCount64 - _toggledAt);
+                                if (wish != null) _wantPlaying = wish.Value;
+                            }
                             bool settling = _seekTarget >= 0 && Environment.TickCount64 - _seekAt < SeekSettleMs;
                             if (!settling && root.TryGetProperty("position", out var pos) && pos.TryGetDouble(out var ps)) _positionSeconds = ps;
                             if (root.TryGetProperty("duration", out var dur) && dur.TryGetDouble(out var ds) && ds > 0) _durationSeconds = ds;

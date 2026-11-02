@@ -345,15 +345,27 @@ namespace ExplorerNative
             var item = ItemAt(folder);
             if (item == null || item.Kind != "station") return new List<Row>();
             var more = await Client().StationTracksAsync(item, token).ConfigureAwait(false);
-            List<Row> added;
+            var added = AppendToStation(folder, more);
+            if (added.Count > 0) { Grew?.Invoke(folder); _ = RateAsync(folder); }
+            return added;
+        }
+
+        /// <summary>
+        /// Adds a station's next handful to its listing and to the order last shown,
+        /// so Previous and play-on keep walking it when no pane shows the station.
+        /// </summary>
+        internal static List<Row> AppendToStation(string folder, List<AppleMusicItem> more)
+        {
             lock (Gate)
             {
                 var have = Listings.TryGetValue(folder, out var known) ? known : new List<Row>();
-                added = RowsFor(folder, more, sort: false, numbered: false, startAt: have.Count, taken: have);
+                var added = RowsFor(folder, more, sort: false, numbered: false, startAt: have.Count, taken: have);
                 Listings[folder] = have.Concat(added).ToList();
+                // A station plays in Apple's order; a pane showing it re-sorts through Grew anyway.
+                if (Displayed.TryGetValue(folder, out var shown))
+                    Displayed[folder] = shown.Concat(added.Select(r => r.Path)).ToList();
+                return added;
             }
-            if (added.Count > 0) { Grew?.Invoke(folder); _ = RateAsync(folder); }
-            return added;
         }
 
         /// <summary>
@@ -1032,12 +1044,17 @@ namespace ExplorerNative
             if (folder == null) return null;
             lock (Gate)
             {
-                var order = Displayed.TryGetValue(folder, out var shown) ? shown
-                    : Listings.TryGetValue(folder, out var rows) ? rows.Select(r => r.Path).ToList() : null;
-                if (order == null) return null;
-                int i = order.FindIndex(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
-                for (int j = i - 1; i > 0 && j >= 0; j--)
-                    if (Items.TryGetValue(order[j], out var prev) && prev.IsSong) return order[j];
+                if (Displayed.TryGetValue(folder, out var shown))
+                {
+                    int i = shown.FindIndex(p => string.Equals(p, path, StringComparison.OrdinalIgnoreCase));
+                    for (int j = i - 1; i > 0 && j >= 0; j--)
+                        if (Items.TryGetValue(shown[j], out var prev) && prev.IsSong) return shown[j];
+                    if (i >= 0) return null;
+                }
+                if (!Listings.TryGetValue(folder, out var rows)) return null;
+                int at = rows.FindIndex(r => string.Equals(r.Path, path, StringComparison.OrdinalIgnoreCase));
+                for (int k = at - 1; at > 0 && k >= 0; k--)
+                    if (!rows[k].IsFolder) return rows[k].Path;
             }
             return null;
         }
