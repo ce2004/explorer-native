@@ -5992,7 +5992,8 @@ namespace ExplorerNative
                 // that finished minutes ago instead of leaving the results it
                 // produced; a flag put down by a superseded search is Escape
                 // doing nothing while one is still going.
-                if (ReferenceEquals(pane.EnumCts, mine)) { pane.Searching = false; pane.SearchQuietly = false; }
+                if (ReferenceEquals(pane.EnumCts, mine)) pane.Searching = false;
+                if (ReferenceEquals(pane.EnumCts, mine)) pane.SearchQuietly = false;
             }
 
             if (IsDisposed) return;
