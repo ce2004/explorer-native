@@ -78,6 +78,31 @@ namespace ExplorerNative
             }
         }
 
+        /// <summary>An utterance taken off the queue and not yet handed to NVDA.</summary>
+        private static bool _handing;
+
+        /// <summary>
+        /// Waits, at most <paramref name="most"/>, until everything queued has
+        /// been handed to NVDA, which goes on speaking it after this process has
+        /// gone. For the last words before quitting: <see cref="Shutdown"/>
+        /// clears the queue, so anything still in it then is never said.
+        /// </summary>
+        public static bool WaitUntilSpoken(TimeSpan most)
+        {
+            if (_worker == null) return true;
+            var until = DateTime.UtcNow + most;
+            lock (Gate)
+            {
+                while ((Pending.Count > 0 || _handing) && !_shuttingDown)
+                {
+                    var left = until - DateTime.UtcNow;
+                    if (left <= TimeSpan.Zero) return false;
+                    Monitor.Wait(Gate, left);
+                }
+                return true;
+            }
+        }
+
         private static void PumpForever()
         {
             while (true)
@@ -85,9 +110,11 @@ namespace ExplorerNative
                 Utterance next;
                 lock (Gate)
                 {
+                    if (_handing) { _handing = false; Monitor.PulseAll(Gate); }
                     while (Pending.Count == 0 && !_shuttingDown) Monitor.Wait(Gate);
                     if (_shuttingDown) return;
                     next = Pending.Dequeue();
+                    _handing = true;
                 }
 
                 try
@@ -280,7 +307,9 @@ namespace ExplorerNative
                 else while (Pending.Count >= MaxQueued) Pending.Dequeue();
 
                 Pending.Enqueue(new Utterance(message, interrupt));
-                Monitor.Pulse(Gate);
+                // All, not one: WaitUntilSpoken waits on the same lock, and a
+                // single pulse that woke it instead of the pump said nothing.
+                Monitor.PulseAll(Gate);
             }
         }
 

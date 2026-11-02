@@ -788,7 +788,7 @@ namespace ExplorerNative
                 Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
                 "ExplorerNative", "install.log");
 
-        private static void WriteLog(string title, string message)
+        internal static void WriteLog(string title, string message)
         {
             try
             {

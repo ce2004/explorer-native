@@ -173,7 +173,7 @@ namespace ExplorerNative
             _audio.Notify = OnPlayerNotification;
             _browsePrefetch.Notify = OnPlayerNotification;
             AudioTags.Notify = OnPlayerNotification;
-            _drive.Notification += (id, message) => PostUi(() => Notify(id, message));
+            _drive.Notification += OnDriveNotification;
 
             // Preferences' account button says Connect, Disconnect or Reconnect
             // from the drive itself, and Disconnect acts on it directly.
@@ -324,6 +324,15 @@ namespace ExplorerNative
             // lookup waits for the message loop and lands after the folder is on
             // screen. The post itself is a queued delegate and nothing else.
             PostUi(() => Notify("app.started", _settings.DisplayTitle + " is ready"));
+
+            // Files the last run's quit could not get to Google Drive, said once
+            // more now that somebody is here: after a sign-out, nobody was.
+            // Read on a worker, like everything else on the way to the window.
+            _ = System.Threading.Tasks.Task.Run(() =>
+            {
+                foreach (var message in QuitNotices.TakeFromLastRun())
+                    PostUi(() => Notify("drive.save.failed", QuitNotices.AsLastTime(message)));
+            });
         }
 
         private void ShowTrayIcon(object? sender, EventArgs e)
@@ -467,6 +476,42 @@ namespace ExplorerNative
         /// </summary>
         private void OnSpeechAvailabilityChanged(string id, string message) =>
             PostUi(() => Notify(id, message));
+
+        /// <summary>
+        /// Google Drive's messages, from whichever thread raised them. While
+        /// quitting, PostUi drops everything, and the one message that must not
+        /// be dropped comes exactly then: the drain naming the files that did
+        /// not reach Drive. Those are held for <see cref="DeliverHeldDriveMessages"/>.
+        /// </summary>
+        private void OnDriveNotification(string id, string message)
+        {
+            if (_quitting && _quitNotices.Hold(id, message)) return;
+            PostUi(() => Notify(id, message));
+        }
+
+        private readonly QuitNotices _quitNotices = new();
+
+        /// <summary>
+        /// Says what the Drive drain left behind, on the way out: logged, spoken
+        /// (given time to reach NVDA before Program's Speech.Shutdown clears the
+        /// queue), and left for the next start to say again, which after a
+        /// restart, an update or a sign-out is the first time anybody is there
+        /// to hear it. No balloon: the tray icon goes a moment later and takes
+        /// it with it.
+        /// </summary>
+        private void DeliverHeldDriveMessages()
+        {
+            var held = _quitNotices.TakeHeld();
+            if (held.Count == 0) return;
+            foreach (var message in held) Program.WriteLog("Google Drive", message);
+            QuitNotices.SaveForNextStart(held);
+            if (_settings.SpeakEnabled &&
+                Notifications.ChannelsFor("drive.save.failed", _settings) == NotificationChannel.Speech)
+            {
+                foreach (var message in held) Speech.Speak(message);
+                Speech.WaitUntilSpoken(TimeSpan.FromSeconds(3));
+            }
+        }
 
         /// <summary>
         /// Delivers a message under its catalogue id: to the status bar always,
@@ -2728,6 +2773,10 @@ namespace ExplorerNative
                 _connectClipboard?.Dispose();
                 _monitor.Dispose();
                 _drive.Dispose();
+
+                // What the drain could not send, by name, while the tray is
+                // still here; see OnDriveNotification.
+                DeliverHeldDriveMessages();
 
                 _tray.Visible = false;
                 _tray.Dispose();
