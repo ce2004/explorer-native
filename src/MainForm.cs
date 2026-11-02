@@ -4255,6 +4255,7 @@ namespace ExplorerNative
                 // focus and selection are already right, and setting them again
                 // is read out again.
                 bool marksStay = unchanged > LastMarkedIndex(_pane);
+                var markPath = marksStay ? null : SelectionMarkPathOf(_pane);
                 _form.ReplaceEntriesInPlace(_pane, entries, unchanged);
 
                 if (focusedPath != null && _pane.IndexByPath.TryGetValue(focusedPath, out var now))
@@ -4262,6 +4263,8 @@ namespace ExplorerNative
                     _landed = true;
                     if (!marksStay && (now != CurrentIndex(_pane) || selected.Count > 1))
                         _form.Reselect(_pane, now, selected);
+                    // Where a Shift range starts stays on its file too.
+                    if (!marksStay) RestoreSelectionMark(_pane, markPath);
                 }
                 else if (!_landed && TypedRow(entries) is var typed && typed >= 0)
                 {
@@ -4427,6 +4430,7 @@ namespace ExplorerNative
         {
             pane.StaleRows = false;
             var list = pane.List;
+            var markPath = SelectionMarkPathOf(pane);
             int oldFocus = FocusedIndex(list);
             var oldSelected = new HashSet<int>();
             if (list.IsHandleCreated) foreach (int i in list.SelectedIndices) oldSelected.Add(i);
@@ -4462,9 +4466,50 @@ namespace ExplorerNative
                     SendMessage(list.Handle, LVM_SETITEMSTATE, new IntPtr(focus), ref set);
                     try { list.EnsureVisible(focus); } catch (ArgumentOutOfRangeException) { }
                 }
+
+                // And where a Shift range starts, even if the cursor stayed put.
+                RestoreSelectionMark(pane, markPath);
             }
             finally { _suppressStatus--; }
             if (pane == Active) ScheduleStatusUpdate();
+        }
+
+        private const int LVM_GETSELECTIONMARK = 0x1000 + 66;
+        private const int LVM_SETSELECTIONMARK = 0x1000 + 67;
+
+        /// <summary>
+        /// The file a Shift range starts from (the control's selection mark), read
+        /// before the rows are swapped. The mark is only a row number: a quiet
+        /// reload that moved rows left it on another file, and the next
+        /// Shift+arrow picked out a file nobody chose, or dropped the first one.
+        /// </summary>
+        private static string? SelectionMarkPathOf(Pane pane)
+        {
+            var list = pane.List;
+            if (!list.IsHandleCreated) return null;
+            int mark = (int)SendMessage(list.Handle, LVM_GETSELECTIONMARK, IntPtr.Zero, IntPtr.Zero);
+            return mark >= 0 && mark < pane.Entries.Count ? pane.Entries[mark].Path : null;
+        }
+
+        /// <summary>
+        /// Puts the selection mark back on its file's new row. Its file gone, the
+        /// start of the selection (or the cursor) takes it. Changes no item
+        /// state, so nothing is read out.
+        /// </summary>
+        private static void RestoreSelectionMark(Pane pane, string? markPath)
+        {
+            var list = pane.List;
+            if (markPath == null || !list.IsHandleCreated) return;
+            int target;
+            if (pane.IndexByPath.TryGetValue(markPath, out var row) && row < pane.Entries.Count)
+                target = row;
+            else
+            {
+                int focus = FocusedIndex(list);
+                int first = (int)SendMessage(list.Handle, LVM_GETNEXTITEM, new IntPtr(-1), new IntPtr(LVNI_SELECTED));
+                target = first >= 0 && focus >= first ? first : focus;
+            }
+            if (target >= 0) SendMessage(list.Handle, LVM_SETSELECTIONMARK, IntPtr.Zero, new IntPtr(target));
         }
 
         private void Reselect(Pane pane, int focus, List<string> selected)
@@ -5404,6 +5449,7 @@ namespace ExplorerNative
             var focusedPath = FocusedPathOf(pane);
             var selected = SelectedPathsOf(pane);
             int before = CurrentIndex(pane);
+            var markPath = SelectionMarkPathOf(pane);
             ReplaceEntriesInPlace(pane, AppleEntries(ordered));
             if (focusedPath != null && pane.IndexByPath.TryGetValue(focusedPath, out var now))
             {
@@ -5416,6 +5462,7 @@ namespace ExplorerNative
                 // off the end of a shorter list with no row focused.
                 Reselect(pane, Math.Min(before, ordered.Count - 1), selected);
             }
+            RestoreSelectionMark(pane, markPath);
         }
 
         /// <summary>The order chosen for an Apple Music folder, or its own when none has been.</summary>
