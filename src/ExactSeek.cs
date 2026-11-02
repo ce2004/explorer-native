@@ -61,6 +61,9 @@ namespace ExplorerNative
             {
                 null => FileBytes.TryOpen(path),
                 StreamingSource download => new HeldBytes(download),
+                // FLAC rewrapped out of Ogg (and FLV's MP3): without this, MF's own FLAC
+                // seek landed up to 35s away and stamped it as the target.
+                ManagedIStream { Buffer: { } held } => new MemoryBytes(held),
                 _ => null,
             };
             if (bytes == null) return null;
@@ -242,5 +245,33 @@ namespace ExplorerNative
         public override int ReadHeld(long position, Span<byte> into) => _download.ReadHeld(position, into);
 
         public override int ReadAny(long position, Span<byte> into) => _download.ReadAt(position, into);
+    }
+
+    /// <summary>
+    /// A file rewrapped in memory (<see cref="Rewrap"/>). Every byte is held, and reads
+    /// use no shared position, so they never disturb Media Foundation's reads through
+    /// the same <see cref="ManagedIStream"/>. The array belongs to that stream.
+    /// </summary>
+    internal sealed class MemoryBytes : ByteSource
+    {
+        private readonly ArraySegment<byte> _bytes;
+
+        public MemoryBytes(ArraySegment<byte> bytes) => _bytes = bytes;
+
+        public override long Length => _bytes.Count;
+
+        public override bool Holds(long from, long to) => true;
+
+        public override long HeldEnd => Length;
+
+        public override int ReadHeld(long position, Span<byte> into) => ReadAny(position, into);
+
+        public override int ReadAny(long position, Span<byte> into)
+        {
+            if (position < 0 || position >= Length) return 0;
+            int n = (int)Math.Min(into.Length, Length - position);
+            _bytes.AsSpan((int)position, n).CopyTo(into);
+            return n;
+        }
     }
 }

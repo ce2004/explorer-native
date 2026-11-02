@@ -28,6 +28,7 @@ namespace ExplorerNative
             try
             {
                 await WithWatchdog("CAF Opus fixed packets", () => CafOpusFixedPacketsAreCountedFromTheFile(dir));
+                await WithWatchdog("FLAC in Ogg seeks exactly", () => OggFlacSeeksLandOnTheSample(dir));
             }
             finally
             {
@@ -41,6 +42,95 @@ namespace ExplorerNative
             if (await Task.WhenAny(run, Task.Delay(60000)) != run) { Check($"{name} finished within 60s", false); return; }
             try { await run; }
             catch (Exception ex) { Check($"{name} ran without throwing", false, ex.ToString()); }
+        }
+
+        // ---- FLAC in Ogg: the rewrapped stream gets the exact seeker ----
+
+        private static void OggPage(Stream into, byte[] packet, uint sequence, int flags)
+        {
+            var lacing = new System.Collections.Generic.List<byte>();
+            int left = packet.Length;
+            while (left >= 255) { lacing.Add(255); left -= 255; }
+            lacing.Add((byte)left);
+            into.Write("OggS"u8);
+            into.WriteByte(0);
+            into.WriteByte((byte)flags);
+            into.Write(BitConverter.GetBytes(0L));
+            into.Write(BitConverter.GetBytes(4321));
+            into.Write(BitConverter.GetBytes(sequence));
+            into.Write(BitConverter.GetBytes(0));
+            into.WriteByte((byte)lacing.Count);
+            into.Write(lacing.ToArray());
+            into.Write(packet);
+        }
+
+        private static void OggFlacSeeksLandOnTheSample(string dir)
+        {
+            const int rate = 44100, seconds = 70;
+            var flacPath = Path.Combine(dir, "inner.flac");
+            ExactSeekTests.WriteFlac(flacPath, ExactSeekTests.Signal(rate, seconds), rate);   // no seek table
+            var flac = File.ReadAllBytes(flacPath);
+
+            // The Ogg FLAC mapping: "fLaC" and STREAMINFO in the first packet, the rest after it.
+            var ogg = new MemoryStream();
+            uint sequence = 0;
+            var first = new MemoryStream();
+            first.WriteByte(0x7F); first.Write("FLAC"u8); first.WriteByte(1); first.WriteByte(0);
+            first.WriteByte(0); first.WriteByte(0);
+            first.Write(flac, 0, 42);
+            OggPage(ogg, first.ToArray(), sequence++, 2);
+            for (int at = 42; at < flac.Length; at += 4000)
+                OggPage(ogg, flac.AsSpan(at, Math.Min(4000, flac.Length - at)).ToArray(), sequence++,
+                    at + 4000 >= flac.Length ? 4 : 0);
+            var path = Path.Combine(dir, "long.oga");
+            File.WriteAllBytes(path, ogg.ToArray());
+
+            var rewrapped = Rewrap.TryRewrap(path, null, out var kind);
+            Check("FLAC in Ogg is rewrapped", rewrapped != null, kind);
+            if (rewrapped == null) return;
+            using (var com = new ManagedIStream(rewrapped))
+            {
+                var seeker = ExactSeek.For(path, com, out _);
+                Check("the rewrapped FLAC gets the exact FLAC seeker", seeker is FlacSeek, seeker?.GetType().Name ?? "none");
+                seeker?.Dispose();
+            }
+
+            // A straight decode, then a seek on another decoder: the same samples, and the clock agrees.
+            float[] whole;
+            using (var straight = TrackDecoder.Open(path, null, rate, 2, out string why))
+            {
+                Check("FLAC in Ogg opens", straight != null, why);
+                if (straight == null) return;
+                var all = new System.Collections.Generic.List<float>();
+                var buffer = new float[8192 * 2];
+                int n;
+                while ((n = straight.Read(buffer, 8192)) > 0) all.AddRange(buffer.AsSpan(0, n * 2).ToArray());
+                whole = all.ToArray();
+            }
+            foreach (double target in new[] { 37.25, 61.77 })
+            {
+                using var decoder = TrackDecoder.Open(path, null, rate, 2, out _);
+                if (decoder == null) return;
+                Check($"a seek to {target}s is taken", decoder.SeekTo(target));
+                var got = new float[rate / 2 * 2];
+                var scratch = new float[got.Length];
+                int have = 0;
+                while (have < rate / 2)
+                {
+                    int r = decoder.Read(scratch, rate / 2 - have);
+                    if (r <= 0) break;
+                    Array.Copy(scratch, 0, got, have * 2, r * 2);
+                    have += r;
+                }
+                long from = (long)Math.Round(target * rate) * 2;
+                double worst = 0;
+                for (int i = 0; i < have * 2 && from + i < whole.Length; i++) worst = Math.Max(worst, Math.Abs(whole[from + i] - got[i]));
+                Check($"after a seek to {target}s it plays what a straight decode plays there (worst difference {worst:F4})",
+                    have == rate / 2 && worst < 1e-4);
+                double expected = target + have / (double)rate;
+                Check($"and the clock at {target}s agrees ({decoder.Position:F4} against {expected:F4})",
+                    Math.Abs(decoder.Position - expected) < 2.0 / rate);
+            }
         }
 
         // ---- CAF Opus with a fixed packet size and a damaged 'data' size ----
