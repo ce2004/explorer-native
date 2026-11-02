@@ -1764,8 +1764,14 @@ namespace ExplorerNative
             // Play/Pause, Mute and "Playing ..." follow the one actually sounding.
             ? new(true, AppleMusicPlayer.IsPlaying, AppleMusicPlayer.VolumePercent == 0, false,
                 AppleMusicPlayer.CurrentPath, AppleMusicPlayer.CurrentName)
-            : new(_audio.HasTrack, _audio.IsPlaying, _audio.IsMuted, _audio.RepeatTrack,
-                _audio.NowPlayingPath, _audio.DisplayName);
+            // The built-in player: a track still opening counts as the one
+            // loaded, so a second Next track during a slow open steps on from
+            // it (it used to step from the track before and replay the same
+            // one), and the tag editor treats it as playing.
+            : AudioStateOf(_audio.OpeningOrPlayingPath);
+
+        private AudioSnapshot AudioStateOf(string path) =>
+            new(path.Length > 0, _audio.IsPlaying, _audio.IsMuted, _audio.RepeatTrack, path, _audio.DisplayName);
 
         /// <summary>
         /// The level is kept in the settings object the window also holds, so it
@@ -2093,8 +2099,10 @@ namespace ExplorerNative
             // and then immediately disposed by the next one.
             int mine = System.Threading.Interlocked.Increment(ref _playRequest);
 
-            // The track still opening is not wanted any more either.
-            _audio.CancelOpening();
+            // The track still opening is not wanted any more either. This one
+            // counts as opening from now, for a Next track pressed before the
+            // worker gets to it.
+            _audio.CancelOpening(path);
 
             System.Threading.ThreadPool.QueueUserWorkItem(_ =>
             {

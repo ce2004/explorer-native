@@ -370,7 +370,8 @@ namespace ExplorerNative
                 lock (_gate)
                 {
                     if (!string.IsNullOrEmpty(_displayName)) return _displayName!;
-                    return _path.Length == 0 ? "" : Path.GetFileName(_path);
+                    if (_path.Length == 0) return _startingPath.Length == 0 ? "" : Path.GetFileName(_startingPath);
+                    return Path.GetFileName(_path);
                 }
             }
         }
@@ -387,6 +388,21 @@ namespace ExplorerNative
         }
 
         public bool HasTrack => NowPlayingPath.Length > 0;
+
+        /// <summary>
+        /// The track being opened, or else the one playing: what Next and
+        /// Previous track step from, and what the tag editor treats as playing.
+        /// </summary>
+        public string OpeningOrPlayingPath { get { lock (_gate) return _startingPath.Length > 0 ? _startingPath : _path; } }
+
+        /// <summary>What the information keys say while a track is still opening, or null when none is.</summary>
+        private string? StillOpening()
+        {
+            lock (_gate) return _startingPath.Length > 0 ? "Still opening " + Path.GetFileName(_startingPath) : null;
+        }
+
+        /// <summary>Lets a test hold a start just after the track before has stopped.</summary>
+        internal Action? OpenHeldForTests;
 
         public bool IsMuted => _muted;
 
@@ -1061,6 +1077,13 @@ namespace ExplorerNative
                 generation = ++_openGeneration;
                 _startingPath = path;
                 _pauseOnStart = false;
+
+                // The track before is stopped as this one opens, so it is no
+                // longer what is playing. Left named, a second Next track during
+                // the open stepped from it again and replayed this same track,
+                // and "what is playing" said nothing was.
+                _path = "";
+                _displayName = null;
             }
 
             try
@@ -1080,17 +1103,29 @@ namespace ExplorerNative
         /// open, and then played the first until the second was ready. What is
         /// already playing is left alone — the opening start stopped it.
         /// </summary>
-        public void CancelOpening()
+        /// <param name="next">
+        /// The track about to be started in its place, if there is one: it
+        /// counts as opening from now, so a Next track pressed before its start
+        /// gets going steps on from it rather than from the track before.
+        /// </param>
+        public void CancelOpening(string next = "")
         {
             StreamingSource? opening = null;
             lock (_gate)
             {
-                if (_startingPath.Length == 0) return;
+                bool wasOpening = _startingPath.Length > 0;
+                if (!wasOpening && next.Length == 0) return;
                 _openGeneration++;
-                _startingPath = "";
+                _startingPath = next;
                 _pauseOnStart = false;
-                opening = _streaming;
-                _streaming = null;
+
+                // Only an open's download: with nothing opening, this is the
+                // playing track's, which plays on until the next one starts.
+                if (wasOpening)
+                {
+                    opening = _streaming;
+                    _streaming = null;
+                }
             }
             try { opening?.Dispose(); } catch { }
         }
@@ -1111,6 +1146,7 @@ namespace ExplorerNative
             StopStreaming();
             CancelFade();
             ForgetSeekTarget();
+            OpenHeldForTests?.Invoke();
 
             var direct = new WasapiPlayback
             {
@@ -1835,7 +1871,12 @@ namespace ExplorerNative
         /// <summary>Jumps to a fraction of the track: 0 for the start, 0.5 for halfway.</summary>
         public string SeekToFraction(double fraction)
         {
-            if (!HasTrack) return NothingLoaded();
+            if (!HasTrack)
+            {
+                lock (_gate)
+                    if (_startingPath.Length > 0) return "Still opening";
+                return NothingLoaded();
+            }
 
             try
             {
@@ -1944,13 +1985,13 @@ namespace ExplorerNative
         /// </summary>
         public string DescribeElapsed()
         {
-            if (!HasTrack) return "Nothing is playing";
+            if (!HasTrack) return StillOpening() ?? "Nothing is playing";
             return SpokenTime(PositionSeconds) + " elapsed";
         }
 
         public string DescribeRemaining()
         {
-            if (!HasTrack) return "Nothing is playing";
+            if (!HasTrack) return StillOpening() ?? "Nothing is playing";
 
             double duration = DurationSeconds;
             if (double.IsNaN(duration) || double.IsInfinity(duration) || duration <= 0)
@@ -1961,7 +2002,7 @@ namespace ExplorerNative
 
         public string DescribeTotal()
         {
-            if (!HasTrack) return "Nothing is playing";
+            if (!HasTrack) return StillOpening() ?? "Nothing is playing";
 
             double duration = DurationSeconds;
             if (double.IsNaN(duration) || double.IsInfinity(duration) || duration <= 0)
@@ -1986,7 +2027,7 @@ namespace ExplorerNative
         public string Describe()
         {
             var direct = _direct;
-            if (direct == null || !HasTrack) return "Nothing is playing";
+            if (direct == null || !HasTrack) return StillOpening() ?? "Nothing is playing";
 
             try
             {

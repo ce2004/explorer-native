@@ -31,6 +31,8 @@ namespace ExplorerNative
             {
                 await WithWatchdog("a WAV over 4GB played through a download", () => BigWavThroughDownloadTests(dir));
                 await WithWatchdog("a share or Drive that stops answering", () => NotAnsweringTests(dir));
+                await WithWatchdog("a track still opening is the one loaded", () => OpeningTrackIsTheLoadedOneTests(dir));
+                OpeningTrackWiringTests();
             }
             finally
             {
@@ -48,6 +50,91 @@ namespace ExplorerNative
             }
             if (run.Exception != null)
                 Check($"{what} ran to the end", false, run.Exception.InnerException?.ToString() ?? run.Exception.ToString());
+        }
+
+        // ---------- A track still opening ----------
+
+        /// <summary>
+        /// While a new track opened, the player still named the old one: a
+        /// second Next track stepped from it again and replayed the same track,
+        /// and "what is playing" said nothing was.
+        /// </summary>
+        private static void OpeningTrackIsTheLoadedOneTests(string dir)
+        {
+            var a = Path.Combine(dir, "a.wav");
+            var b = Path.Combine(dir, "b.wav");
+            var c = Path.Combine(dir, "c.wav");
+            Tests.WriteTone(a, 4, 0.3);
+            Tests.WriteTone(b, 4, 0.3);
+            Tests.WriteTone(c, 4, 0.3);
+
+            using var player = new AudioPlayer();
+            player.VolumePercent = 0;
+            if (player.Play(a) == null)
+            {
+                Console.WriteLine("  (no output device; the opening-track checks are skipped: " + player.Diagnostic + ")");
+                return;
+            }
+
+            using var reached = new System.Threading.ManualResetEventSlim();
+            using var release = new System.Threading.ManualResetEventSlim();
+            player.OpenHeldForTests = () =>
+            {
+                player.OpenHeldForTests = null;
+                reached.Set();
+                release.Wait(TimeSpan.FromSeconds(20));
+            };
+            var opening = Task.Run(() => player.Play(b));
+            try
+            {
+                Check("the start of the next track is reached", reached.Wait(TimeSpan.FromSeconds(10)));
+                Equal("while the next track opens, the track before is no longer named as playing", "", player.NowPlayingPath);
+                Equal("while the next track opens, it is what Next and Previous step from", b, player.OpeningOrPlayingPath);
+                Check("while the next track opens, what is playing says it is opening, not that nothing is",
+                    player.Describe().StartsWith("Still opening"), player.Describe());
+                Check("while the next track opens, the time elapsed says it is opening",
+                    player.DescribeElapsed().StartsWith("Still opening"), player.DescribeElapsed());
+                Equal("while the next track opens, a skip says it is still opening rather than a time", "Still opening", player.Seek(10));
+                Equal("while the next track opens, back to the start says it is still opening", "Still opening", player.SeekToFraction(0));
+            }
+            finally
+            {
+                release.Set();
+            }
+            Check("the next track then plays", opening.Wait(TimeSpan.FromSeconds(20)) && opening.Result != null, opening.IsCompleted ? opening.Result : "still opening");
+            Equal("and is then the one playing", b, player.NowPlayingPath);
+
+            // Enter on another track, before its worker starts it: it counts as
+            // opening at once, and the track playing is left playing meanwhile.
+            player.CancelOpening(c);
+            Equal("a track asked for counts as opening before its start begins", c, player.OpeningOrPlayingPath);
+            Equal("and the track playing still plays until then", b, player.NowPlayingPath);
+            Check("the track asked for then plays", player.Play(c) != null, player.Diagnostic);
+            Equal("and is the one playing", c, player.NowPlayingPath);
+            Equal("and nothing is left opening", c, player.OpeningOrPlayingPath);
+            player.Stop();
+        }
+
+        /// <summary>The tray side, which the suite does not compile: Next and Previous track and the tag editor see the track opening.</summary>
+        private static void OpeningTrackWiringTests()
+        {
+            var tray = Source("TrayApplicationContext.cs");
+            if (tray == null) { Check("TrayApplicationContext.cs is found for the wiring checks", false); return; }
+            int state = tray.IndexOf("AudioSnapshot AudioState", StringComparison.Ordinal);
+            int end = state < 0 ? -1 : tray.IndexOf("private AudioSnapshot AudioStateOf", state, StringComparison.Ordinal);
+            Check("the tray's audio state names the track opening, so Next track steps on from it",
+                state >= 0 && end > state && tray.Substring(state, end - state).Contains("OpeningOrPlayingPath"));
+            Check("Enter marks its track as opening as it calls off the one before",
+                System.Text.RegularExpressions.Regex.IsMatch(tray, @"_audio\.CancelOpening\(\s*path\s*\)"));
+        }
+
+        private static string? Source(string name)
+        {
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "src"))) dir = dir.Parent;
+            if (dir == null) return null;
+            var path = Path.Combine(dir.FullName, "src", name);
+            return File.Exists(path) ? File.ReadAllText(path) : null;
         }
 
         // ---------- A share or Drive that stops answering ----------
