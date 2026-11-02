@@ -99,6 +99,11 @@ namespace ExplorerNative
             _info.SelectedIndex = 0;
             Controls.Add(_info);
 
+            // The line the keyboard just left was held as it was (see Refresh_).
+            _info.SelectedIndexChanged += (_, _) => Refresh_();
+
+            s_open.Add(this);
+
             _timer = new System.Windows.Forms.Timer { Interval = 100 };
             _timer.Tick += (_, _) => Tick();
         }
@@ -130,7 +135,7 @@ namespace ExplorerNative
                 _tags = tags;
                 _history = new EditHistory(new EditList(frames, rate));
                 _cursor = 0;
-                Refresh_();
+                Refresh_(all: true);
                 Say($"Editing {Path.GetFileName(_path)}, {AudioPlayer.SpokenTime(_history.Current.Seconds)} long. Press F1 for the keys.");
             }
             catch (Exception ex)
@@ -151,17 +156,10 @@ namespace ExplorerNative
         /// <summary>The file's rate, length, bit depth, bit rate and tags. On a worker.</summary>
         private static (int Rate, long Frames, int Bits, int? Kbps, AudioTagSet? Tags, string Why) Probe(string path)
         {
-            var decoder = TrackDecoder.Open(path, null, 0, 0, out string why);
-            if (decoder == null) return (0, 0, 0, null, null, why);
-
-            int rate, bits;
-            long frames;
-            using (decoder)
-            {
-                rate = decoder.SampleRate;
-                frames = (long)Math.Round(decoder.Duration * rate);
-                bits = AudioConverter.NativeBitsOf(decoder);
-            }
+            // Waits for an MP3's frame walk, so the length is the file's own and
+            // not Media Foundation's estimate (see EditSource).
+            var (rate, frames, bits, why) = EditSource.Measure(path, EditSource.Settle);
+            if (rate <= 0) return (0, 0, 0, null, null, why);
 
             int? kbps = null;
             var named = AudioTags.ReadNamed(path, new[] { "System.Audio.EncodingBitrate" });
@@ -206,11 +204,21 @@ namespace ExplorerNative
             return "No selection";
         }
 
-        /// <summary>Rewrites the list. Only lines that changed are touched, so the one under the cursor is not re-read for nothing.</summary>
-        private void Refresh_()
+        private bool _refreshing;
+
+        /// <summary>
+        /// Rewrites the list. Only lines that changed are touched, and the line
+        /// under the keyboard is left alone until it is left: a list box changes
+        /// a line by taking it out and putting it back, which NVDA hears as
+        /// landing on it again, so every arrow was said twice ("11 seconds", then
+        /// "Position 11.000 seconds of 3 minutes 45"). The change has been
+        /// spoken, and arrowing back to the line finds it up to date.
+        /// </summary>
+        /// <param name="all">The line under the keyboard too, when nothing else will say what changed.</param>
+        private void Refresh_(bool all = false)
         {
             var edits = Edits;
-            if (edits == null || _history == null) return;
+            if (edits == null || _history == null || _refreshing) return;
 
             var lines = new[]
             {
@@ -222,6 +230,8 @@ namespace ExplorerNative
             };
 
             int keep = Math.Max(0, _info.SelectedIndex);
+            int hold = !all && _info.Focused ? _info.SelectedIndex : -1;
+            _refreshing = true;
             _info.BeginUpdate();
             try
             {
@@ -229,11 +239,15 @@ namespace ExplorerNative
                 for (int i = 0; i < lines.Length; i++)
                 {
                     if (i >= _info.Items.Count) _info.Items.Add(lines[i]);
-                    else if (!Equals(_info.Items[i], lines[i])) _info.Items[i] = lines[i];
+                    else if (i != hold && !Equals(_info.Items[i], lines[i])) _info.Items[i] = lines[i];
                 }
                 _info.SelectedIndex = Math.Min(keep, _info.Items.Count - 1);
             }
-            finally { _info.EndUpdate(); }
+            finally
+            {
+                _info.EndUpdate();
+                _refreshing = false;
+            }
         }
 
         /// <summary>Spoken (queued, interrupting the last) and kept as the list's last line.</summary>
@@ -392,7 +406,7 @@ namespace ExplorerNative
                     Gain = PlayerGain(),
                     DecoderFactory = (int rate, int channels, out string why) =>
                     {
-                        var inner = TrackDecoder.Open(_path, null, rate, channels, out why);
+                        var inner = EditSource.Open(_path, rate, channels, EditSource.PlaySettle, out why);
                         return inner == null ? null : new EditedDecoder(inner, edits);
                     },
                 };
@@ -639,7 +653,7 @@ namespace ExplorerNative
         /// <summary>The loudest sample in [from, to) of the edited audio. On a worker.</summary>
         private static float MeasurePeak(string path, EditList edits, long from, long to)
         {
-            var inner = TrackDecoder.Open(path, null, 0, 0, out string why)
+            var inner = EditSource.Open(path, 0, 0, EditSource.Settle, out string why)
                         ?? throw new IOException(why);
             using var decoder = new EditedDecoder(inner, edits);
             decoder.SeekTo(from / (double)edits.SampleRate);
@@ -723,13 +737,20 @@ namespace ExplorerNative
         /// </summary>
         private async Task BusyWhile(Func<Task> save)
         {
+            // Saving as well as busy: Normalise is busy too, and measuring is not
+            // something a quit can leave half done (see ConfirmEndingEditors).
             _busy = true;
+            _saving = true;
             try { await save(); }
             catch (Exception ex)
             {
                 if (!IsDisposed) Say("Could not save: " + AudioConverter.Reason(ex));
             }
-            finally { _busy = false; }
+            finally
+            {
+                _busy = false;
+                _saving = false;
+            }
         }
 
         private async Task SaveAsNewCore()
@@ -848,7 +869,10 @@ namespace ExplorerNative
                         $"{Path.GetFileNameWithoutExtension(_path)} (edited){choice.Extension}"), null, folder: false),
                     replace: false);
 
-                string? refused = await Task.Run(() => ShellDelete.RecycleWithoutUi(_path));
+                var path = _path;
+                var replacing = Task.Run(() => ReplaceWith(temp, path));
+                s_replacing = replacing;
+                var (refused, moveFailed) = await replacing;
                 if (refused != null)
                 {
                     var kept = await Task.Run(KeepAsEdited);
@@ -859,17 +883,10 @@ namespace ExplorerNative
                     return;
                 }
 
-                // The original is in the Recycle Bin now. If the move fails (an
+                // The original is in the Recycle Bin now. If the move failed (an
                 // antivirus or the indexer holding the new file), the edit must
                 // not be left under a hidden temp name with nothing at the
-                // original's: a few tries, then it is kept as "(edited)".
-                Exception? moveFailed = null;
-                for (int attempt = 0; attempt < 5; attempt++)
-                {
-                    try { await Task.Run(() => File.Move(NameRules.ExactPath(temp), NameRules.ExactPath(_path))); moveFailed = null; break; }
-                    catch (IOException ex) { moveFailed = ex; await Task.Delay(300); }
-                    catch (UnauthorizedAccessException ex) { moveFailed = ex; await Task.Delay(300); }
-                }
+                // original's: it is kept as "(edited)".
                 if (moveFailed != null)
                 {
                     var kept = await Task.Run(KeepAsEdited);
@@ -893,6 +910,7 @@ namespace ExplorerNative
                 _history = new EditHistory(new EditList(frames, _rate));
                 _cursor = 0;
                 _markStart = _markEnd = null;
+                Refresh_(all: true);
                 Say($"Replaced {name} with the edited audio{_notes}. The original is in the Recycle Bin");
             }
             catch (Exception ex)
@@ -936,7 +954,7 @@ namespace ExplorerNative
             {
                 var task = Task.Run(() =>
                 {
-                    var inner = TrackDecoder.Open(path, null, 0, 0, out string why)
+                    var inner = EditSource.Open(path, 0, 0, EditSource.Settle, out string why)
                                 ?? throw new AudioEncodeException("the original could not be read: " + why);
                     using var decoder = new EditedDecoder(inner, edits);
                     long last = -1000;
@@ -976,6 +994,74 @@ namespace ExplorerNative
 
         // ---------------------------------------------------------- closing
 
+        private static readonly List<AudioEditorForm> s_open = new();
+        private static Task s_replacing = Task.CompletedTask;
+        private bool _saving;
+
+        /// <summary>
+        /// Asks before Quit, Restart or Update ends the process under an open
+        /// editor. Those never close its window, so its own question about
+        /// unsaved edits was not asked and the edits were lost without a word.
+        /// Refuses while one is saving. True when it may go ahead. UI thread.
+        /// </summary>
+        internal static bool ConfirmEndingEditors(IWin32Window? owner, string verb)
+        {
+            s_open.RemoveAll(editor => editor.IsDisposed);
+            var question = EditorEnding.QuestionFor(
+                s_open.Select(editor => (Path.GetFileName(editor._path), editor._history is { Unsaved: true }, editor._saving)).ToList(),
+                verb);
+            if (question is not { } q) return true;
+
+            var first = s_open.FirstOrDefault(editor => editor._saving) ??
+                        s_open.First(editor => editor._history is { Unsaved: true });
+            if (q.Refuse)
+            {
+                MessageBox.Show(owner, q.Text, "Audio editor", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                first.Activate();
+                return false;
+            }
+
+            if (MessageBox.Show(owner, q.Text, "Audio editor", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2) == DialogResult.Yes)
+                return true;
+            first.Activate();
+            first._info.Focus();
+            return false;
+        }
+
+        /// <summary>
+        /// Waits, at most <paramref name="most"/>, for a replace of an original
+        /// that is under way, so a quit that does not ask (an installer's) does
+        /// not end it between the Recycle Bin and the move. Never needs the UI thread.
+        /// </summary>
+        internal static void WaitForReplaces(TimeSpan most)
+        {
+            try { s_replacing.Wait(most); } catch { }
+        }
+
+        /// <summary>
+        /// The original to the Recycle Bin, then the edited file into its place,
+        /// in one piece of work on a worker. With the window's thread between
+        /// the two, a quit could leave the original in the bin and the edit under
+        /// a temporary name. Why the bin refused, or why the move failed after
+        /// a few tries; both null when it was replaced.
+        /// </summary>
+        private static (string? Refused, Exception? MoveFailed) ReplaceWith(string temp, string path)
+        {
+            string? refused = ShellDelete.RecycleWithoutUi(path);
+            if (refused != null) return (refused, null);
+
+            // An antivirus or the indexer can hold the new file a moment.
+            Exception? failed = null;
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                try { File.Move(NameRules.ExactPath(temp), NameRules.ExactPath(path)); return (null, null); }
+                catch (IOException ex) { failed = ex; Thread.Sleep(300); }
+                catch (UnauthorizedAccessException ex) { failed = ex; Thread.Sleep(300); }
+            }
+            return (null, failed);
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             if (e.CloseReason == CloseReason.UserClosing)
@@ -1000,6 +1086,7 @@ namespace ExplorerNative
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
+            s_open.Remove(this);
             _timer.Stop();
             _timer.Dispose();
             StopPlayback();

@@ -133,6 +133,16 @@ namespace ExplorerNative
         public virtual double? Length => null;
 
         /// <summary>
+        /// Waits, at most <paramref name="timeout"/>, for any work in the
+        /// background that <see cref="Length"/> and <see cref="TryLocate"/>
+        /// depend on. True when it is done, or there never was any. The editor
+        /// needs this: it reads the length and seeks the moment a file opens,
+        /// long before an MP3's frame walk has got anywhere, and until then both
+        /// are Media Foundation's guesses.
+        /// </summary>
+        public virtual bool WaitForIndex(TimeSpan timeout) => true;
+
+        /// <summary>
         /// Every how many file samples the file's grid and the output's meet:
         /// 147 from 44.1kHz to 48kHz, 1 when the rates are the same.
         /// </summary>

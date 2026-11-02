@@ -640,6 +640,7 @@ namespace ExplorerNative
                 }
 
                 if (!ConfirmAbandonTransfers("Update")) return;
+                if (!AudioEditorForm.ConfirmEndingEditors(this, "Update")) return;
 
                 string exe;
                 try
@@ -657,6 +658,7 @@ namespace ExplorerNative
                 // Asked again: a paste or move started during the download
                 // would be cut off by the installer's <exit>, which never asks.
                 if (!ConfirmAbandonTransfers("Update")) return;
+                if (!AudioEditorForm.ConfirmEndingEditors(this, "Update")) return;
 
                 Announce("Installing update. Explorer Native will restart");
                 CaptureState();
@@ -707,6 +709,7 @@ namespace ExplorerNative
             // already coming up, and answering "no" there would leave two of
             // them fighting over the single-instance lock.
             if (!ConfirmAbandonTransfers("Restart")) return;
+            if (!AudioEditorForm.ConfirmEndingEditors(this, "Restart")) return;
 
             try
             {
@@ -6565,11 +6568,15 @@ namespace ExplorerNative
             // written beside a file.
             bool local = !IsDrivesView && !inArchive &&
                          !(Drive != null && Drive.Owns(Active.CurrentPath));
+            // Nor on CD tracks: the disc cannot be written, and a .cda copied
+            // off it is a stub that cannot be decoded anywhere else.
             bool focusedAudio = focused != null && !IsDirectoryInView(focused) &&
-                                AudioFiles.IsAudio(focused, _settings.AudioExtensions);
+                                AudioFiles.IsAudio(focused, _settings.AudioExtensions) &&
+                                !CdTrackStream.IsCdaName(Path.GetExtension(focused));
             _editAudioItem.Visible = local && focusedAudio;
             _convertAudioItem.Visible = local && focused != null &&
-                SelectedPaths().Any(p => IsDirectoryInView(p) || AudioFiles.IsAudio(p, _settings.AudioExtensions));
+                SelectedPaths().Any(p => IsDirectoryInView(p) ||
+                    (AudioFiles.IsAudio(p, _settings.AudioExtensions) && !CdTrackStream.IsCdaName(Path.GetExtension(p))));
 
             ShowDriveLinkItems();
             ShowDriveOnlyItems(focused, inArchive);
@@ -9178,6 +9185,18 @@ namespace ExplorerNative
                     return;
                 }
 
+                // Everything converted is written beside its source, and nothing
+                // can be written on a CD or DVD: every file failed, one by one.
+                if (await Task.Run(() => selected.Any(p => AudioConverter.IsOnDisc(p))))
+                {
+                    if (IsDisposed) return;
+                    Announce("Audio on a CD or DVD cannot be converted where it is. " +
+                             "Copy it to a local folder first.", isError: true);
+                    RestoreListFocus();
+                    return;
+                }
+                if (IsDisposed) return;
+
                 bool hasFolder = selected.Any(IsDirectoryInView);
                 var unavailable = await Task.Run(AudioConvertForm.Availability);
                 if (IsDisposed) return;
@@ -9296,7 +9315,7 @@ namespace ExplorerNative
         /// file manager stays usable behind it. Saving there never replaces the
         /// original unless that is the command chosen.
         /// </summary>
-        private void EditAudio()
+        private async void EditAudio()
         {
             if (RefuseInArchive()) return;
             try
@@ -9314,6 +9333,16 @@ namespace ExplorerNative
                         isError: true);
                     return;
                 }
+
+                // Saved beside the original, and nothing can be written on a disc.
+                if (await Task.Run(() => AudioConverter.IsOnDisc(path)))
+                {
+                    if (!IsDisposed)
+                        Announce("Audio on a CD or DVD cannot be edited where it is. Copy it to a local folder first.",
+                            isError: true);
+                    return;
+                }
+                if (IsDisposed) return;
 
                 var editor = new AudioEditorForm(path, _settings);
                 editor.Saved += saved =>

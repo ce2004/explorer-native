@@ -2650,6 +2650,9 @@ namespace ExplorerNative
             // at, and then reporting that the file is in use.
             if (ask && _form is { IsDisposed: false } window &&
                 !window.ConfirmAbandonTransfers("Quit")) return;
+            // An audio editor's unsaved edits: quitting ends the process without
+            // closing its window, so it never asked for itself.
+            if (ask && !AudioEditorForm.ConfirmEndingEditors(_form is { IsDisposed: false } owner ? owner : null, "Quit")) return;
             if (ask && !ConfirmUnsavedDrive()) return;
 
             // First, while the tray icon and the window are both still there to
@@ -2724,6 +2727,10 @@ namespace ExplorerNative
                 // player does not wait for its own download at any other moment,
                 // deliberately; here the alternative is worse than a pause.
                 StreamingSource.WaitForReads(TimeSpan.FromSeconds(5));
+
+                // An audio editor replacing an original: not ended between the
+                // Recycle Bin and the move (the installer's exit never asks).
+                AudioEditorForm.WaitForReplaces(TimeSpan.FromSeconds(10));
 
                 // The tracks and files taken out of archives this session, now
                 // that the player has let go of them. Bounded like everything
