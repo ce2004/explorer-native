@@ -28,6 +28,7 @@ namespace ExplorerNative
             SessionEndQuitsAndSaysWhy();
             LaunchesOutwaitAQuitThatIsDraining();
             TrayMenuAccessKeysAreUnique();
+            QuitDuringTheWinFspQuestionLeavesDriveOn();
             await Task.CompletedTask;
         }
 
@@ -331,6 +332,22 @@ namespace ExplorerNative
             Check("tray keys: no two tray menu items share an access key", clashes.Count == 0, string.Join("; ", clashes));
             Check("tray keys: P is play or pause", keys.TryGetValue('P', out var p) && p.StartsWith("Play", StringComparison.Ordinal), p);
             Check("tray keys: W is what is playing", keys.TryGetValue('W', out var w) && w.Contains("playing", StringComparison.Ordinal), w);
+        }
+
+        // ---- 12 (and 18): an <exit> answered inside the WinFsp question turned Drive off ----
+
+        private static void QuitDuringTheWinFspQuestionLeavesDriveOn()
+        {
+            var tray = Source("TrayApplicationContext.cs");
+            var offer = Body(tray, "private void OfferWinFsp(");
+            int asked = At(offer, "ShowDriveMessage("), turnOff = At(offer, "TurnOffDriveWithoutWinFsp(null)");
+            int guard = asked >= 0 ? offer.IndexOf("_quitting", asked, StringComparison.Ordinal) : -1;
+            Check("winfsp question: a quit during the question is not taken for No",
+                asked >= 0 && guard > asked && turnOff > guard, $"{asked} {guard} {turnOff}");
+
+            var turnOffBody = Body(tray, "private void TurnOffDriveWithoutWinFsp(");
+            Check("winfsp question: Drive is never saved as off once quitting has begun",
+                At(turnOffBody, "_quitting") >= 0 && At(turnOffBody, "_settings.Save()") > At(turnOffBody, "_quitting"));
         }
 
         private static IEnumerable<T> All<T>(System.Windows.Forms.Control root) where T : System.Windows.Forms.Control

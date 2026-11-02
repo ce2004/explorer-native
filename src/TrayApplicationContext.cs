@@ -652,6 +652,12 @@ namespace ExplorerNative
                            "for permission." +
                            Environment.NewLine + Environment.NewLine + WinFspSetup.Credit;
                 var answer = ShowDriveMessage(body, MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+                // A quit that ran inside the question's own message loop (an
+                // install's or update's <exit>, Exit in the tray, Ctrl+R) ended it
+                // without an answer. That is not No: turning Drive off now saved
+                // over Quit's last save, and the next copy started with Drive off.
+                if (_quitting) return;
                 if (answer != DialogResult.Yes)
                 {
                     TurnOffDriveWithoutWinFsp(null);
@@ -679,6 +685,8 @@ namespace ExplorerNative
         /// </summary>
         private void TurnOffDriveWithoutWinFsp(string? problem)
         {
+            // Never after Quit's last save: an update never changes a setting.
+            if (_quitting) return;
             _settings.GoogleDriveEnabled = false;
             try { _settings.Save(); } catch { }
             _drive.Unmount();
