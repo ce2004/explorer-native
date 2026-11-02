@@ -3090,9 +3090,14 @@ namespace ExplorerNative
             // ---- Drive: the feed, or a full listing ----
             var shardFolders = new HashSet<string>(header.ShardFolders, comparer);
             var recordFolders = new HashSet<string>(header.RecordFolders, comparer);
+            // Which drive's feed to read. A blip is waited out like the feed read;
+            // a drive that cannot be told means a full listing and no token: with
+            // driveId null the feed is My Drive's, and a shared-drive pair read
+            // and saved the wrong feed, missing its own changes for up to a day.
             string? driveId = null;
-            try { driveId = await client.DriveOf(pair.DriveFolderId, token).ConfigureAwait(false); }
-            catch (Exception) when (!token.IsCancellationRequested) { }
+            bool driveKnown = true;
+            try { driveId = await Patiently(pair, () => client.DriveOf(pair.DriveFolderId, token), client, token).ConfigureAwait(false); }
+            catch (Exception) when (!token.IsCancellationRequested) { driveKnown = false; }
 
             // The retry after FullListingNeededException comes here with the feed
             // still usable and every recorded folder known: First() then threw
@@ -3100,8 +3105,9 @@ namespace ExplorerNative
             // pass until the daily full listing.
             bool canFeed = CanListChangesOnly(ViewOf(header), pair, DateTime.UtcNow);
             var unknownFolder = recordFolders.FirstOrDefault(f => !header.FolderIds.ContainsKey(f));
-            bool full = forceFull || !canFeed || unknownFolder != null;
-            string why = !canFeed ? "no feed to go on"
+            bool full = forceFull || !canFeed || unknownFolder != null || !driveKnown;
+            string why = !driveKnown ? "could not tell which drive the folder is on"
+                : !canFeed ? "no feed to go on"
                 : unknownFolder != null ? "records in a folder Drive is not known to have: " + unknownFolder
                 : forceFull ? "a batch met records in a folder Drive is not known to have"
                 : "";
@@ -3146,7 +3152,7 @@ namespace ExplorerNative
             if (full)
             {
                 dirty.Clear();
-                try { nextToken = await client.ChangesStartToken(driveId, token).ConfigureAwait(false); }
+                try { nextToken = driveKnown ? await client.ChangesStartToken(driveId, token).ConfigureAwait(false) : null; }
                 catch (Exception) when (!token.IsCancellationRequested) { nextToken = null; }
             }
 
