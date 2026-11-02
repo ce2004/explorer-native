@@ -989,11 +989,7 @@ namespace ExplorerNative
                 // last. Now the first is kept and the difference is said.
                 int arrived = lines.Count(l => l.Failure == null && !l.Name.EndsWith('/'));
                 if (!unfinished && arrived > stagedFiles)
-                {
-                    int lost = arrived - stagedFiles;
-                    errors.Add($"{NameRules.Items(lost)} in the archive repeated a name already used " +
-                               "(names that differ only in capitals are one name here); the first of each was kept");
-                }
+                    errors.Add(RepeatedNamesMessage(arrived - stagedFiles));
 
                 if (damaged) errors.Add(ArchiveEngine.DamagedMessage(done));
                 if (unfinished) stoppedShort?.Invoke();
@@ -1006,6 +1002,11 @@ namespace ExplorerNative
                 RemoveStaging(staging, errors);
             }
         }
+
+        /// <summary>The one sentence both routes give for entries that repeated a name, of which the first was kept.</summary>
+        internal static string RepeatedNamesMessage(int lost) =>
+            $"{NameRules.Items(lost)} in the archive repeated a name already used " +
+            "(names that differ only in capitals are one name here); the first of each was kept";
 
         /// <summary>Whether one of bsdtar's complaints is about the archive rather than about one entry.</summary>
         private static bool LooksDamaged(string message) =>

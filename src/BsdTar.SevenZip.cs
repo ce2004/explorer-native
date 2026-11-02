@@ -329,6 +329,7 @@ namespace ExplorerNative
                 try { archiveBytes = new FileInfo(archivePath).Length; } catch { }
                 long percentNow = 0;
                 var printed = new List<(string Name, string? Failure)>();
+                int filesSaid = -1;
                 reporter.Estimate(archiveBytes, () => Math.Max(1, archiveBytes) * Interlocked.Read(ref percentNow) / 100);
 
                 bool stalled = false;
@@ -349,6 +350,11 @@ namespace ExplorerNative
                         if (name != null) reporter.Starting(name);
                     }, onLine: line =>
                     {
+                        // Its summary's "Files: 5", read here rather than from
+                        // the kept lines, which a big archive's may not reach.
+                        var files = SevenZipFilesLine.Match(line);
+                        if (files.Success && int.TryParse(files.Groups[1].Value, out var count))
+                            Volatile.Write(ref filesSaid, count);
                         if (!line.StartsWith("- ", StringComparison.Ordinal)) return;
                         lock (printed) printed.Add((line[2..].Replace('\\', '/'), null));
                         reporter.Finished(0);
@@ -473,7 +479,7 @@ namespace ExplorerNative
                 // Links left out are withdrawn like a damaged entry: their empty
                 // stand-in never goes in, over a real file or as a new one.
                 var stoppedAt = distrusted.Concat(links).ToList();
-                var (done, conflicts, _) = Rehome(staging, destination, policy, ask, reporter, errors, token,
+                var (done, conflicts, stagedFiles) = Rehome(staging, destination, policy, ask, reporter, errors, token,
                     stoppedAt.Count > 0 || unfinished ? stoppedAt : null, unfinished,
                     staged =>
                     {
@@ -485,6 +491,15 @@ namespace ExplorerNative
                 errors.AddRange(notes);
                 foreach (var link in links.Distinct(StringComparer.OrdinalIgnoreCase))
                     errors.Add($"{link}: a symbolic link was not extracted");
+
+                // -aos keeps the first of two entries with one name (or two
+                // that differ only in capitals) and skips the rest without a
+                // word, exit 0. Its "Files:" against what reached staging says
+                // how many; an entry it complained about may never have landed,
+                // so those are not counted as repeats.
+                int lost = Volatile.Read(ref filesSaid) - stagedFiles - distrusted.Count;
+                if (filesSaid >= 0 && !unfinished && !locked && !damaged && lost > 0)
+                    errors.Add(RepeatedNamesMessage(lost));
                 if (damaged) errors.Add(ArchiveEngine.DamagedMessage(done));
                 if (unfinished) stoppedShort?.Invoke();
 
@@ -646,6 +661,8 @@ namespace ExplorerNative
             RedirectStandardInput = true,
             StandardOutputEncoding = new UTF8Encoding(false),
         };
+
+        private static readonly Regex SevenZipFilesLine = new(@"^Files:\s+(\d+)$", RegexOptions.Compiled);
 
         /// <summary>How many of 7-Zip's lines are kept. Lowered by the tests.</summary>
         internal static int SevenZipLineCap = 20_000;

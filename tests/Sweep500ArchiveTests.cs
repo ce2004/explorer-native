@@ -31,6 +31,7 @@ namespace ExplorerNative
             await ChosenLinkTests();
             await PasswordSevenZipTests();
             await SevenZipLinkTests();
+            await RepeatedNamesTests();
         }
 
         /// <summary>Runs the bundled 7za with these arguments in a folder, for making fixtures.</summary>
@@ -456,6 +457,53 @@ namespace ExplorerNative
                 Check("7-Zip links: a cut tar.xz does not name its inner tar as a damaged entry",
                     !Said(cut).Contains("cut.tar:") && Said(cut).Contains("damaged") &&
                     !File.Exists(Path.Combine(dir, "cut-out", "b.bin")), Said(cut));
+            }
+            finally
+            {
+                try { Directory.Delete(dir, recursive: true); } catch { }
+            }
+        }
+
+        // ---------- 7: repeated names through 7-Zip ----------
+
+        /// <summary>
+        /// 7-Zip's -aos keeps the first of two entries with one name (or two
+        /// that differ only in capitals) and skips the rest with exit 0, and
+        /// nothing was said. The tar route says how many repeated a name.
+        /// </summary>
+        private static async Task RepeatedNamesTests()
+        {
+            if (BsdTar.SevenZipExecutable == null) return;
+            var dir = NewDir("repeat");
+            try
+            {
+                WriteTar(Path.Combine(dir, "dup.tar"),
+                    ("A.txt", "upper", null), ("a.txt", "lower", null),
+                    ("dup.txt", "first", null), ("dup.txt", "second", null),
+                    ("other.txt", "other", null));
+                SevenZip(dir, "a", "-txz", "dup.tar.xz", "dup.tar");
+                SevenZip(dir, "a", "-tbzip2", "dup.tar.bz2", "dup.tar");
+
+                foreach (var name in new[] { "dup.tar.xz", "dup.tar.bz2" })
+                {
+                    var into = Path.Combine(dir, "out-" + name);
+                    var result = await ArchiveEngine.ExtractAsync(Path.Combine(dir, name), into,
+                        PasteConflictPolicy.AutoRename, null, 1, null, CancellationToken.None);
+                    Check($"repeated names: a {name} with repeated names says how many",
+                        result.Errors.Any(e => e.Contains("2 items in the archive repeated a name")), Said(result));
+                    Check($"repeated names: the first of each is kept from a {name}",
+                        File.Exists(Path.Combine(into, "A.txt")) && File.ReadAllText(Path.Combine(into, "A.txt")) == "upper" &&
+                        File.ReadAllText(Path.Combine(into, "dup.txt")) == "first" &&
+                        File.Exists(Path.Combine(into, "other.txt")), Said(result));
+                }
+
+                // Control: no repeats, nothing said.
+                WriteTar(Path.Combine(dir, "plain.tar"), ("one.txt", "1", null), ("two.txt", "2", null));
+                SevenZip(dir, "a", "-txz", "plain.tar.xz", "plain.tar");
+                var plain = await ArchiveEngine.ExtractAsync(Path.Combine(dir, "plain.tar.xz"), Path.Combine(dir, "out-plain"),
+                    PasteConflictPolicy.AutoRename, null, 1, null, CancellationToken.None);
+                Check("repeated names: an archive with none says nothing", plain.Errors.Count == 0 && plain.Items == 2,
+                    Said(plain));
             }
             finally
             {
