@@ -26,6 +26,7 @@ namespace ExplorerNative
             Check("app.js is embedded", js.Length > 1000);
 
             SlowDeleteRefreshesTests(js);
+            MoveHereKeepsFocusTests(js);
             await Task.CompletedTask;
         }
 
@@ -56,6 +57,14 @@ namespace ExplorerNative
             Check("a delete with no answer is told apart from a refusal", Regex.IsMatch(caught, @"status\s*!==?\s*0|status\s*===?\s*0"), caught);
             Check("a delete with no answer refreshes the folder", caught.Contains("openFolder("), caught);
             Check("and leaves select mode", caught.Contains("selectMode = false"), caught);
+        }
+
+        // Bug 2: Move here hid the button that had focus, and focus fell to the page.
+        private static void MoveHereKeepsFocusTests(string js)
+        {
+            var after = After(Function(js, "paste"), "state.clip = null");
+            Check("after Move here, focus is put on something still shown",
+                after.Contains(".focus()") && (after.Contains("btn-select") || after.Contains("files-title")), after);
         }
     }
 }

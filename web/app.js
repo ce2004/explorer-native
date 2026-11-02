@@ -587,12 +587,19 @@ function hold(paths, cut) {
 async function paste() {
   if (!state.clip || state.path == null) return;
   const { paths, cut } = state.clip;
+  const btn = $('btn-paste');
   try {
     const r = await api(cut ? '/api/move' : '/api/copy', { method: 'POST',
       body: { paths, destination: state.path, conflict: prefs.conflict } });
     trackJob(r.job, `${cut ? 'Moving' : 'Copying'} ${paths.length === 1 ? leaf(paths[0]) : plural(paths.length, 'item', 'items')}`, state.path);
     if (cut) state.clip = null;
     renderFiles();
+    // Move here hides the button that was pressed: focus goes to the next one along, which is still there.
+    const a = document.activeElement;
+    if (btn.hidden && (a === btn || a === document.body || a == null)) {
+      const next = $('btn-select');
+      (next.hidden ? $('files-title') : next).focus();
+    }
     announce(`${cut ? 'Moving' : 'Copying'}. Progress is on the Transfers tab.`);
   } catch (err) { announce(err.message, true); }
 }
