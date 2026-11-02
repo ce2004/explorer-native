@@ -3596,6 +3596,15 @@ namespace ExplorerNative
             // answer is always "gone", which pulled the pane back to the drives a
             // few seconds after opening any Apple Music list.
             if (AppleMusic.Is(path)) return;
+
+            // Drive offline hides its letter until it is back online (4.3.0).
+            // Probed meanwhile it reads as gone, and the pane fell back to the
+            // drives with an error for what is only a pause; it stays put.
+            if (Drive is { } drive && drive.Owns(path) && !drive.LetterShown)
+            {
+                _consecutiveProbeFailures = 0;
+                return;
+            }
             int navigation = pane.NavigationId;
             bool Overtaken() => IsDisposed || pane.NavigationId != navigation || pane.CurrentPath != path ||
                                 pane.Probing != 0 || pane.Loading || pane.Searching;
