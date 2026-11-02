@@ -25,6 +25,7 @@ namespace ExplorerNative
             Console.WriteLine("Sweep 5.0.0, the tray, settings, install and updates:");
             QuitSaysWhatDriveDidNotSave();
             DisconnectAsksAndNeverBlocksTheWindow();
+            SessionEndQuitsAndSaysWhy();
             await Task.CompletedTask;
         }
 
@@ -199,6 +200,78 @@ namespace ExplorerNative
             var quit = Body(tray, "private void Quit(");
             Check("disconnect: Quit lets a disconnect's drain finish before tearing down",
                 At(quit, "_driveGoingDown.Wait(") >= 0 && At(quit, "_drive.Dispose();") > At(quit, "_driveGoingDown.Wait("));
+        }
+
+        // ---- 4 and 5: signing out or shutting down lost Drive files still in memory ----
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern IntPtr GetDesktopWindow();
+
+        private static void SessionEndQuitsAndSaysWhy()
+        {
+            var results = new List<(string What, string Expected, string Actual)>();
+            string error = "";
+            var thread = new System.Threading.Thread(() =>
+            {
+                try
+                {
+                    var names = new List<string> { "Report.docx" };
+                    int ended = 0;
+                    using var window = new SessionEndWindow(() => names, () => ended++);
+                    var h = window.Handle;
+                    void Note(string what, object expected, object actual) =>
+                        results.Add((what, expected.ToString()!, actual.ToString()!));
+
+                    Note("session end: the window is top-level, so Windows asks it", true,
+                        GetAncestor(h, 1) == GetDesktopWindow());
+                    Note("session end: asked, it never vetoes", 1L,
+                        (long)SendMessage(h, SessionEndWindow.WM_QUERYENDSESSION, IntPtr.Zero, IntPtr.Zero));
+                    Note("session end: Windows is told why it should wait", "Saving Report.docx to Google Drive",
+                        SessionEndWindow.BlockReasonOf(h) ?? "(none)");
+
+                    SendMessage(h, SessionEndWindow.WM_ENDSESSION, IntPtr.Zero, IntPtr.Zero);
+                    Note("session end: a cancelled shutdown quits nothing", 0, ended);
+                    Note("session end: and takes the reason back", "(none)", SessionEndWindow.BlockReasonOf(h) ?? "(none)");
+
+                    SendMessage(h, SessionEndWindow.WM_QUERYENDSESSION, IntPtr.Zero, IntPtr.Zero);
+                    SendMessage(h, SessionEndWindow.WM_ENDSESSION, (IntPtr)1, IntPtr.Zero);
+                    Note("session end: the session ending quits before WM_ENDSESSION returns", 1, ended);
+                    Note("session end: and the reason goes once it has", "(none)", SessionEndWindow.BlockReasonOf(h) ?? "(none)");
+                    SendMessage(h, SessionEndWindow.WM_ENDSESSION, (IntPtr)1, IntPtr.Zero);
+                    Note("session end: only once", 1, ended);
+
+                    names.Clear();
+                    SendMessage(h, SessionEndWindow.WM_QUERYENDSESSION, IntPtr.Zero, IntPtr.Zero);
+                    Note("session end: nothing on its way to Drive holds nothing up", "(none)",
+                        SessionEndWindow.BlockReasonOf(h) ?? "(none)");
+                    Note("session end: two files are counted", "Saving 2 files to Google Drive",
+                        SessionEndWindow.ReasonFor(new[] { "a.txt", "b.txt" }));
+                }
+                catch (Exception ex) { error = ex.GetType().Name + ": " + ex.Message; }
+            });
+            thread.SetApartmentState(System.Threading.ApartmentState.STA);
+            thread.Start();
+            thread.Join(TimeSpan.FromSeconds(30));
+            Equal("session end: the window works", "", error);
+            foreach (var (what, expected, actual) in results) Equal(what, expected, actual);
+
+            var tray = Source("TrayApplicationContext.cs");
+            Check("session end: the tray listens, and the session ending quits",
+                At(tray, "new SessionEndWindow(") >= 0 && At(tray, "Quit(sessionEnding: true)") > At(tray, "new SessionEndWindow("));
+            var ctor = Body(tray, "public TrayApplicationContext(");
+            Check("session end: listening starts before Drive mounts",
+                At(ctor, "new SessionEndWindow(") >= 0 && At(ctor, "MountGoogleDrive();") > At(ctor, "new SessionEndWindow("));
+            var quit = Body(tray, "private void Quit(");
+            Check("session end: a quit already under way is not started again",
+                At(quit, "if (_quitting) return;") >= 0 && At(quit, "if (_quitting) return;") < At(quit, "_drive.Dispose();"));
+            Check("session end: nothing is relaunched as Windows ends",
+                At(quit, "!sessionEnding && _unserved.TryDequeue(") >= 0);
         }
 
         private static IEnumerable<T> All<T>(System.Windows.Forms.Control root) where T : System.Windows.Forms.Control

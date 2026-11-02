@@ -72,6 +72,7 @@
     <Compile Include="..\src\AppInstall.cs" /><Compile Include="..\src\Updater.cs" /><Compile Include="..\src\UpdateForm.cs" /><Compile Include="..\src\ChangelogForm.cs" /><Compile Include="..\src\Changelog.cs" />
     <Compile Include="..\src\SingleInstance.cs" />
     <Compile Include="..\src\QuitNotices.cs" />
+    <Compile Include="..\src\SessionEnd.cs" />
     <Compile Include="..\src\LegacyCloudFiles.cs" />
     <Compile Include="..\src\DriveLetter.cs" />
     <Compile Include="..\src\WinFsp.cs" />

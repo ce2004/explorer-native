@@ -282,6 +282,12 @@ namespace ExplorerNative
             // only listens to the answer, and arrives on that thread.
             Speech.Notification += OnSpeechAvailabilityChanged;
 
+            // Signing out, restarting or shutting down Windows quits properly,
+            // so files still on their way to Google Drive are sent first; see
+            // SessionEndWindow. Made before Drive can mount, on this thread.
+            try { _sessionEnd = new SessionEndWindow(() => _drive.UploadNames, () => Quit(sessionEnding: true)); }
+            catch { }
+
             if (_settings.GoogleDriveEnabled) MountGoogleDrive();
             ApplyAudioSettings();
             if (_settings.AudioPlayerEnabled) WarmAudio();
@@ -2703,8 +2709,19 @@ namespace ExplorerNative
         /// <summary>Shuts down without the "hide to tray" behaviour, for Ctrl+R.</summary>
         public void QuitImmediately() => Quit();
 
-        private void Quit(bool ask = false)
+        /// <summary>Hears Windows ending the session; null if it could not be made.</summary>
+        private SessionEndWindow? _sessionEnd;
+
+        /// <param name="sessionEnding">
+        /// Windows is signing out, restarting or shutting down: asked nothing,
+        /// relaunches nothing, and finishes before WM_ENDSESSION returns.
+        /// </param>
+        private void Quit(bool ask = false, bool sessionEnding = false)
         {
+            // Once. The end of the session can arrive while a quit is already
+            // under way (inside one of its waits), and so can a second Exit.
+            if (_quitting) return;
+
             // Only where somebody chose to quit with the application in front of
             // them. A transfer running in its own window is something quitting
             // destroys, and that was unreachable while a transfer held the file
@@ -2762,7 +2779,10 @@ namespace ExplorerNative
                 _settings.AudioRepeatTrack = _audio.RepeatTrack;
 
                 _settings = WithWaitingSettings(_settings);
-                _form?.AdoptSettings(_settings);
+                // On its own: at the end of a session WinForms may already have
+                // closed the window, and a throw here skipped everything below,
+                // the Drive drain included.
+                try { _form?.AdoptSettings(_settings); } catch { }
                 _settings.Save();
 
                 _hold.Dispose();
@@ -2853,10 +2873,18 @@ namespace ExplorerNative
             // the save above, and the file as it now is.
             try { WithWaitingSettings(_settings).Save(); } catch { }
 
+            // The session window goes with an ordinary quit. At the end of a
+            // session this is running inside that window's WM_ENDSESSION, and it
+            // ends with the process; nor does Windows want a new copy started.
+            if (!sessionEnding)
+            {
+                try { _sessionEnd?.Dispose(); } catch { }
+            }
+
             // --restart: the new copy waits for this one's lock rather than
             // handing the folder to a window that is closing. A plain launch —
             // no folder — comes back as a plain start.
-            while (_unserved.TryDequeue(out var folder))
+            while (!sessionEnding && _unserved.TryDequeue(out var folder))
             {
                 try
                 {
