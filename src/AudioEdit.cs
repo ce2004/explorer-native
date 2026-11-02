@@ -297,7 +297,12 @@ namespace ExplorerNative
         {
             var segment = _edits.Segments[index];
             long start = ToDecoder(sourceFrame);
-            _segmentLeft = ToDecoder(segment.End) - start;
+
+            // The segment that runs to the end of the source is read to the end
+            // of the source, not to its length as measured: that can be Media
+            // Foundation's estimate, seconds short on a joined MP3, and whatever
+            // lay past it was never saved.
+            _segmentLeft = segment.End >= _edits.SourceFrames ? long.MaxValue : ToDecoder(segment.End) - start;
             _gain = (float)Math.Pow(10, segment.GainDb / 20);
 
             if (_innerAt == start) return true;
@@ -394,5 +399,39 @@ namespace ExplorerNative
         }
 
         public void Dispose() => _inner.Dispose();
+    }
+
+    /// <summary>
+    /// How the editor opens its source. An MP3's exact length and seeks come
+    /// from a frame walk that starts in the background when the file opens.
+    /// The editor read the length and seeked the moment it opened, so it got
+    /// Media Foundation's estimate (seconds short on a joined audiobook, and a
+    /// saved edit lost the end) and its variable-bitrate seek (seconds early,
+    /// so a cut start saved audio that was cut). Every open here waits for the
+    /// walk first, bounded; a local hour takes well under a second.
+    /// </summary>
+    internal static class EditSource
+    {
+        /// <summary>Opening, saving and measuring: the window is busy anyway.</summary>
+        public static readonly TimeSpan Settle = TimeSpan.FromSeconds(30);
+
+        /// <summary>Playing, where the wait is silence before the sound.</summary>
+        public static readonly TimeSpan PlaySettle = TimeSpan.FromSeconds(5);
+
+        public static ITrackDecoder? Open(string path, int sampleRate, int channels, TimeSpan wait, out string why)
+        {
+            var decoder = TrackDecoder.Open(path, null, sampleRate, channels, out why);
+            if (decoder != null) TrackDecoder.WaitForExactSeek(decoder, wait);
+            return decoder;
+        }
+
+        /// <summary>The file's rate, length in frames and stored bit depth; rate 0 and why when it will not open. On a worker.</summary>
+        public static (int Rate, long Frames, int Bits, string Why) Measure(string path, TimeSpan wait)
+        {
+            using var decoder = Open(path, 0, 0, wait, out string why);
+            if (decoder == null) return (0, 0, 0, why);
+            int rate = decoder.SampleRate;
+            return (rate, (long)Math.Round(decoder.Duration * rate), AudioConverter.NativeBitsOf(decoder), "");
+        }
     }
 }

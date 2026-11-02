@@ -66,6 +66,12 @@ namespace ExplorerNative
         private bool _complete;
         private int _started;
 
+        // Never disposed, so a wait that comes after Dispose cannot throw.
+        private readonly ManualResetEventSlim _walkDone = new(false);
+
+        /// <summary>Tests only: walks started while this is set wait for it first.</summary>
+        internal static ManualResetEventSlim? HoldWalkForTests;
+
         private Mp3Seek(ByteSource bytes, long first, Header format, bool tagFrame, int skipped)
             : base(bytes)
         {
@@ -141,10 +147,14 @@ namespace ExplorerNative
 
             // A thread of its own rather than the pool, because on a download it
             // spends most of its life waiting.
+            var hold = HoldWalkForTests;
             new Thread(() =>
             {
-                try { Walk(); }
+                // Set however the walk ends — finished, closed, abandoned or
+                // thrown — so nobody waits on it for ever.
+                try { hold?.Wait(); Walk(); }
                 catch { }
+                finally { _walkDone.Set(); }
             })
             {
                 IsBackground = true,
@@ -327,6 +337,8 @@ namespace ExplorerNative
                         : null;
             }
         }
+
+        public override bool WaitForIndex(TimeSpan timeout) => _walkDone.Wait(timeout);
 
         public override bool TryLocate(double seconds, int outputRate, out IStream stream, out double start)
         {

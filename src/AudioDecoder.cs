@@ -1067,6 +1067,18 @@ namespace ExplorerNative
             return true;
         }
 
+        /// <summary>
+        /// Waits, at most <paramref name="timeout"/>, until the exact length and
+        /// seeks are ready (an MP3's frame walk done). True at once when there is
+        /// nothing to wait for, and for a download, whose walk follows the
+        /// download. Never holds the gate, so the decoder can be used meanwhile.
+        /// </summary>
+        public bool WaitForExactSeek(TimeSpan timeout)
+        {
+            var seeker = System.Threading.Volatile.Read(ref _seeker);
+            return seeker == null || _external != null || seeker.WaitForIndex(timeout);
+        }
+
         private ExactSeek? FindSeeker()
         {
             if (_seeker != null || _seekerSettled) return _seeker;

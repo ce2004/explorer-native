@@ -495,6 +495,11 @@ namespace ExplorerNative
 
                 // A file that stopped decoding well short of its own length is
                 // not converted, it is cut off, and saying "converted" would hide that.
+                // The length asked again: at the start an MP3's was Media
+                // Foundation's estimate (its frame walk had only just begun),
+                // which on a VBR file with no header was minutes too long, and a
+                // whole, good conversion was thrown away as cut off.
+                duration = decoder.Duration;
                 double decodedSeconds = decodedFrames / (double)decodedRate;
                 if (duration > 2 && decodedSeconds < duration * 0.9 - 1)
                     throw new AudioEncodeException(

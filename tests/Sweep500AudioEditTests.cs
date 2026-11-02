@@ -1,4 +1,8 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace ExplorerNative
@@ -20,7 +24,217 @@ namespace ExplorerNative
             _equal = equal;
 
             Console.WriteLine("Sweep 5.0.0, converting, editing and tags:");
+            EditorWaitsForTheMp3FrameWalk();
+            EditedDecoderReadsTheLastPartToTheRealEnd();
+            ConverterAsksTheLengthAgainAtTheEnd();
             await Task.CompletedTask;
+        }
+
+        // ---------- helpers ----------
+
+        private static string NewDir()
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "en-sweep500ae-" + Guid.NewGuid().ToString("N")[..8]);
+            Directory.CreateDirectory(dir);
+            return dir;
+        }
+
+        private static void Cleanup(string dir)
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+
+        private static float[] TakeAll(ITrackDecoder decoder, long most = long.MaxValue)
+        {
+            int channels = Math.Max(1, decoder.Channels);
+            var all = new List<float>();
+            var block = new float[16384 * channels];
+            int empties = 0;
+            long have = 0;
+            while (have < most)
+            {
+                int got = decoder.Read(block, (int)Math.Min(16384, most - have));
+                if (got <= 0) { if (++empties >= 3) break; continue; }
+                empties = 0;
+                all.AddRange(new ArraySegment<float>(block, 0, got * channels));
+                have += got;
+            }
+            return all.ToArray();
+        }
+
+        /// <summary>Lets a held MP3 frame walk go a moment after the caller has started waiting for it.</summary>
+        private static void ReleaseSoon(ManualResetEventSlim hold) =>
+            Task.Run(async () => { await Task.Delay(300); hold.Set(); });
+
+        // ---------- 1 and 2: the editor's MP3 length and seeks ----------
+
+        /// <summary>
+        /// A joined VBR audiobook (the fixture twelve times, each copy with its
+        /// own tag and Xing frame). The editor read its length and seeked the
+        /// moment it opened, before the frame walk had got anywhere, so it took
+        /// Media Foundation's guesses: the length of one copy, and a seek that
+        /// lands wherever. The walk is held back here so that is certain.
+        /// </summary>
+        private static void EditorWaitsForTheMp3FrameWalk()
+        {
+            var fixture = Path.Combine(AppContext.BaseDirectory, "Fixtures", "clicks-vbr.mp3");
+            if (!File.Exists(fixture)) { Check("the VBR MP3 fixture is there", false, fixture); return; }
+
+            var dir = NewDir();
+            try
+            {
+                var joined = Path.Combine(dir, "joined.mp3");
+                var one = File.ReadAllBytes(fixture);
+                using (var output = File.Create(joined))
+                    for (int i = 0; i < 12; i++) output.Write(one);
+
+                float[] whole;
+                int rate, channels;
+                using (var straight = TrackDecoder.Open(joined, null, 0, 0, out string why))
+                {
+                    if (straight == null) { Check("the joined MP3 opens", false, why); return; }
+                    rate = straight.SampleRate;
+                    channels = Math.Max(1, straight.Channels);
+                    whole = TakeAll(straight);
+                }
+                long truth = whole.Length / channels;
+
+                // What the editor used to read: the length straight after opening.
+                var hold = new ManualResetEventSlim(false);
+                double early;
+                try
+                {
+                    Mp3Seek.HoldWalkForTests = hold;
+                    using (var quick = TrackDecoder.Open(joined, null, 0, 0, out _)) early = quick?.Duration ?? 0;
+                    Check($"the joined MP3 shows the problem: Media Foundation's guess ({early:0.###}s) is not its length ({truth / (double)rate:0.###}s)",
+                        Math.Abs(early * rate - truth) > rate);
+
+                    // The editor's open waits for the walk, held here until it has started waiting.
+                    ReleaseSoon(hold);
+                    var (measuredRate, frames, _, _) = EditSource.Measure(joined, EditSource.Settle);
+                    Check($"the editor's length of a joined MP3 is the decoded length ({frames} frames against {truth})",
+                        measuredRate == rate && Math.Abs(frames - truth) <= 2);
+                }
+                finally
+                {
+                    hold.Set();
+                    Mp3Seek.HoldWalkForTests = null;
+                }
+
+                // A cut start: the saved file starts where the cut ends, not seconds
+                // before it. Inside Media Foundation's guess and well past it.
+                foreach (var (cutTo, what) in new[] { (8L * rate, "the first 8 seconds"), (truth / 2, "the first half") })
+                {
+                    var edits = new EditList(truth, rate).Cut(0, cutTo);
+                    var hold2 = new ManualResetEventSlim(false);
+                    float[] got;
+                    try
+                    {
+                        // Held until the seek has been made, unless the open waits.
+                        Mp3Seek.HoldWalkForTests = hold2;
+                        ReleaseSoon(hold2);
+                        var inner = EditSource.Open(joined, 0, 0, EditSource.Settle, out _);
+                        if (inner == null) { Check("the joined MP3 opens for editing", false); return; }
+                        using var edited = new EditedDecoder(inner, edits);
+                        got = TakeAll(edited, rate / 2);
+                    }
+                    finally
+                    {
+                        hold2.Set();
+                        Mp3Seek.HoldWalkForTests = null;
+                    }
+                    int compare = Math.Min(got.Length, (rate / 2) * channels);
+                    double worst = got.Length == (rate / 2) * channels ? 0 : 1;
+                    for (int i = 0; i < compare; i++)
+                        worst = Math.Max(worst, Math.Abs(got[i] - whole[cutTo * channels + i]));
+                    Check($"cutting {what} of a joined VBR MP3 starts on the sample after the cut (worst difference {worst:0.######})",
+                        worst < 1e-4);
+                }
+            }
+            finally { Cleanup(dir); }
+        }
+
+        /// <summary>
+        /// The second line of defence: when the length the editor was given is
+        /// short (an estimate, or a walk that gave up), the part that runs to
+        /// the end is read to the real end rather than dropped.
+        /// </summary>
+        private static void EditedDecoderReadsTheLastPartToTheRealEnd()
+        {
+            var dir = NewDir();
+            try
+            {
+                var source = Path.Combine(dir, "tone.wav");
+                Tests.WriteTone(source, 4, 0.5);
+
+                // Told three seconds of four; the first second trimmed off.
+                var trimmed = new EditList(3 * 48000, 48000).Cut(0, 48000);
+                var inner = TrackDecoder.Open(source, null, 0, 0, out string why);
+                if (inner == null) { Check("the tone opens", false, why); return; }
+                long frames;
+                using (var decoder = new EditedDecoder(inner, trimmed)) frames = TakeAll(decoder).Length / 2;
+                Equal("a short length estimate does not lose the end of a trimmed file (frames)", (3 * 48000).ToString(), frames.ToString());
+
+                // A cut that takes the end off still takes it off.
+                var cutEnd = new EditList(3 * 48000, 48000).Cut(2 * 48000, 3 * 48000);
+                inner = TrackDecoder.Open(source, null, 0, 0, out _)!;
+                using (var decoder = new EditedDecoder(inner, cutEnd)) frames = TakeAll(decoder).Length / 2;
+                Equal("but cutting the end off still ends where the cut starts (frames)", (2 * 48000).ToString(), frames.ToString());
+            }
+            finally { Cleanup(dir); }
+        }
+
+        /// <summary>
+        /// A converted MP3 whose length Media Foundation guessed too long at the
+        /// start (128k for three seconds, then 320k for three, so the guess from
+        /// the first frames is ten and a half seconds) was thrown away as "only 6
+        /// seconds of 10 could be read", though every frame was converted.
+        /// </summary>
+        private static void ConverterAsksTheLengthAgainAtTheEnd()
+        {
+            var dir = NewDir();
+            try
+            {
+                var tone = Path.Combine(dir, "tone.wav");
+                Tests.WriteTone(tone, 3, 0.5, 44100);
+                var parts = new List<string>();
+                foreach (var id in new[] { "mp3-128", "mp3-320" })
+                {
+                    var part = Path.Combine(dir, id + ".mp3");
+                    try
+                    {
+                        using var decoder = TrackDecoder.Open(tone, null, 0, 0, out _)!;
+                        AudioConverter.Encode(decoder, AudioFormats.ById(id), part, 16, null, null, CancellationToken.None, new List<string>());
+                        parts.Add(part);
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"  (no MP3 encoder here, the converter's length check is not tested: {ex.Message})");
+                        return;
+                    }
+                }
+
+                var joined = Path.Combine(dir, "joined.mp3");
+                using (var output = File.Create(joined))
+                    foreach (var part in parts) output.Write(File.ReadAllBytes(part));
+
+                double early;
+                using (var quick = TrackDecoder.Open(joined, null, 0, 0, out _)) early = quick?.Duration ?? 0;
+                if (early < 6 / 0.9 + 1.5)
+                    Console.WriteLine($"  (Media Foundation's guess at the joined MP3 was {early:0.###}s, not too long; the check below proves little here)");
+
+                var output2 = Path.Combine(dir, "joined.wav");
+                string? failed = null;
+                try
+                {
+                    using var decoder = TrackDecoder.Open(joined, null, 0, 0, out string why)
+                                        ?? throw new IOException(why);
+                    AudioConverter.Encode(decoder, AudioFormats.ById("wav-16"), output2, 16, null, null, CancellationToken.None, new List<string>());
+                }
+                catch (Exception ex) { failed = ex.Message; }
+                Check($"converting an MP3 whose length was first guessed at {early:0.###}s is not refused as cut off", failed == null, failed);
+            }
+            finally { Cleanup(dir); }
         }
     }
 }

@@ -151,17 +151,10 @@ namespace ExplorerNative
         /// <summary>The file's rate, length, bit depth, bit rate and tags. On a worker.</summary>
         private static (int Rate, long Frames, int Bits, int? Kbps, AudioTagSet? Tags, string Why) Probe(string path)
         {
-            var decoder = TrackDecoder.Open(path, null, 0, 0, out string why);
-            if (decoder == null) return (0, 0, 0, null, null, why);
-
-            int rate, bits;
-            long frames;
-            using (decoder)
-            {
-                rate = decoder.SampleRate;
-                frames = (long)Math.Round(decoder.Duration * rate);
-                bits = AudioConverter.NativeBitsOf(decoder);
-            }
+            // Waits for an MP3's frame walk, so the length is the file's own and
+            // not Media Foundation's estimate (see EditSource).
+            var (rate, frames, bits, why) = EditSource.Measure(path, EditSource.Settle);
+            if (rate <= 0) return (0, 0, 0, null, null, why);
 
             int? kbps = null;
             var named = AudioTags.ReadNamed(path, new[] { "System.Audio.EncodingBitrate" });
@@ -392,7 +385,7 @@ namespace ExplorerNative
                     Gain = PlayerGain(),
                     DecoderFactory = (int rate, int channels, out string why) =>
                     {
-                        var inner = TrackDecoder.Open(_path, null, rate, channels, out why);
+                        var inner = EditSource.Open(_path, rate, channels, EditSource.PlaySettle, out why);
                         return inner == null ? null : new EditedDecoder(inner, edits);
                     },
                 };
@@ -639,7 +632,7 @@ namespace ExplorerNative
         /// <summary>The loudest sample in [from, to) of the edited audio. On a worker.</summary>
         private static float MeasurePeak(string path, EditList edits, long from, long to)
         {
-            var inner = TrackDecoder.Open(path, null, 0, 0, out string why)
+            var inner = EditSource.Open(path, 0, 0, EditSource.Settle, out string why)
                         ?? throw new IOException(why);
             using var decoder = new EditedDecoder(inner, edits);
             decoder.SeekTo(from / (double)edits.SampleRate);
@@ -936,7 +929,7 @@ namespace ExplorerNative
             {
                 var task = Task.Run(() =>
                 {
-                    var inner = TrackDecoder.Open(path, null, 0, 0, out string why)
+                    var inner = EditSource.Open(path, 0, 0, EditSource.Settle, out string why)
                                 ?? throw new AudioEncodeException("the original could not be read: " + why);
                     using var decoder = new EditedDecoder(inner, edits);
                     long last = -1000;

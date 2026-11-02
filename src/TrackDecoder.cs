@@ -159,6 +159,19 @@ namespace ExplorerNative
             return null;
         }
 
+        /// <summary>
+        /// Waits, at most <paramref name="timeout"/>, until the decoder's length
+        /// and seeks come from the file itself rather than Media Foundation's
+        /// estimate (see <see cref="AudioDecoder.WaitForExactSeek"/>). True when
+        /// they do, or always did.
+        /// </summary>
+        public static bool WaitForExactSeek(ITrackDecoder decoder, TimeSpan timeout) => decoder switch
+        {
+            AudioDecoder media => media.WaitForExactSeek(timeout),
+            OwningDecoder owning => WaitForExactSeek(owning.Inner, timeout),
+            _ => true,
+        };
+
         /// <summary>The file rewrapped as a container Windows opens (see Rewrap), and decoded there.</summary>
         private static ITrackDecoder? Rewrapped(string path,
             System.Runtime.InteropServices.ComTypes.IStream? stream, int sampleRate, int channels, out string why)
