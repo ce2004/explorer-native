@@ -1405,7 +1405,7 @@ namespace ExplorerNative
             var context = contextAt >= 0 && contextEnd > contextAt ? main[contextAt..contextEnd] : "";
 
             Check("Compress is on the context menu",
-                context.Contains("Item(\"&Compress…\", Keys.None, CompressSelection)", StringComparison.Ordinal));
+                context.Contains("Item(\"Co&mpress…\", Keys.None, CompressSelection)", StringComparison.Ordinal));
 
             Check("Extract is on the context menu",
                 context.Contains("ExtractFocused(intoNewFolder: true)", StringComparison.Ordinal));

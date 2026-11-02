@@ -383,7 +383,13 @@ namespace ExplorerNative
         /// </summary>
         public void RefreshIfShowingDrive(string? letter)
         {
-            if (string.IsNullOrEmpty(letter) || IsDisposed) return;
+            if (IsDisposed) return;
+            // A tab that opened elsewhere while waiting for a Drive folder goes
+            // there now, unless it has been moved since.
+            ResumeWaitingForDrive(letter);
+            // The Drives list read before the mount has no row for the letter.
+            RefreshDrivesList();
+            if (string.IsNullOrEmpty(letter)) return;
 
             foreach (var pane in _panes)
                 if (pane?.CurrentPath != null &&
@@ -398,6 +404,27 @@ namespace ExplorerNative
                     else if (pane == Active) Navigate(pane.CurrentPath);
                     else { pane.NeedsRefresh = true; pane.ReloadQuietly = true; }
                 }
+        }
+
+        /// <summary>
+        /// A drive came or went (Google Drive mounting, going offline and back,
+        /// a USB stick): a pane on the Drives list reads it again. Marked and
+        /// left to ApplyPendingRefresh, never navigated here, so it waits for a
+        /// listing in progress or another window in front, keeps the cursor on
+        /// its drive, and does not pull focus out of a menu or the address bar.
+        /// </summary>
+        public void RefreshDrivesList()
+        {
+            if (IsDisposed) return;
+            bool any = false;
+            foreach (var pane in _panes)
+            {
+                if (pane == null || pane.CurrentPath != DrivesPath) continue;
+                pane.NeedsRefresh = true;
+                if (pane.SearchTerm == null && !pane.Searching) pane.ReloadQuietly = true;
+                any = true;
+            }
+            if (any) ScheduleWatchCheck();
         }
 
         public MainForm(Settings settings)
@@ -461,47 +488,40 @@ namespace ExplorerNative
 
         private async Task InitialiseTabsAsync(string?[] tab1Candidates, string?[] tab2Candidates)
         {
-            // Tab switching is locked out until both panes are loaded: this
-            // routine moves _activeIndex around to fill each pane, and a Tab
-            // press landing in the middle of that would be overwritten a moment
-            // later, leaving the user on a tab they did not choose.
+            _tabCandidates = new[] { tab1Candidates, tab2Candidates };
+
+            // Whichever tab was in front last time comes back in front, unless
+            // a folder was named on the command line, which is a direct request
+            // to look at something and goes to tab one. The front tab is loaded
+            // first and alone: loading the hidden one first kept both lists off
+            // screen until it was in, read its row aloud over NVDA's own window
+            // announcement, and probed a share nobody could see with one tab.
+            int front = _settings.TwoTabs && _settings.ActiveTab == 1 &&
+                        string.IsNullOrEmpty(_settings.InitialFolderOverride) ? 1 : 0;
+
+            // Tab switching is locked out until the front tab is loaded, so a
+            // Tab press cannot land before the window has settled.
             _initialising = true;
             try
             {
                 // Off the constructor and behind a timeout, so a share that has
                 // gone to sleep costs a moment on a worker rather than a window
                 // that never appears.
-                var tab1 = await FirstExistingFolderAsync(tab1Candidates);
+                _tabLoadStarted[front] = true;
+                var (folder, waitFor) = await FirstExistingFolderAsync(_tabCandidates[front]);
                 if (IsDisposed) return;
-                var tab2 = await FirstExistingFolderAsync(tab2Candidates);
-                if (IsDisposed) return;
+
+                _activeIndex = front;
+                ShowActivePane();
+                _pathLabel.Text = PathLabelFor(Active);
+                UpdateTitle();
 
                 // The remembered row is chosen while the list is built, not moved
                 // to afterwards, so startup settles on one row instead of
                 // announcing the first one on the way past.
-                _activeIndex = 1;
-                await NavigateAsync(tab2, preferPath: NullIfBlank(_settings.FocusedPathTab2));
+                await NavigateAsync(folder, preferPath: NullIfBlank(RememberedRowOf(front)), onPane: _panes[front]);
                 if (IsDisposed) return;
-
-                _activeIndex = 0;
-                ShowActivePane();
-                await NavigateAsync(tab1, preferPath: NullIfBlank(_settings.FocusedPathTab1));
-                if (IsDisposed) return;
-
-                // Whichever tab was in front last time comes back in front —
-                // unless a folder was named on the command line, which is a
-                // direct request to look at something and belongs in front of
-                // anything remembered. The folder goes to tab one, so restoring
-                // tab two over the top of it meant double-clicking a folder
-                // opened a window showing a different folder entirely.
-                if (_settings.ActiveTab == 1 && _settings.TwoTabs && string.IsNullOrEmpty(_settings.InitialFolderOverride))
-                {
-                    _activeIndex = 1;
-                    ShowActivePane();
-                    _pathLabel.Text = PathLabelFor(Active);
-                    UpdateTitle();
-                    UpdateStatus();
-                }
+                NoteWaitingForDrive(front, waitFor);
 
                 // Used. A window built later in this session — closing to nothing
                 // rather than to the tray, then the window shortcut — reopened on
@@ -520,10 +540,44 @@ namespace ExplorerNative
                 _waitingOutside = null;
                 ShowFolderFromOutside(later);
             }
+
+            // The tab behind, quietly, and only when there are two tabs.
+            if (_settings.TwoTabs && !IsDisposed) await LoadTabAsync(1 - front);
         }
 
         /// <summary>A folder handed over during startup, held until it has finished.</summary>
         private string? _waitingOutside;
+
+        /// <summary>The folders each tab tries at startup, kept for a tab loaded later.</summary>
+        private string?[][] _tabCandidates = { Array.Empty<string?>(), Array.Empty<string?>() };
+
+        /// <summary>Whether each tab's first load has begun, so it runs once.</summary>
+        private readonly bool[] _tabLoadStarted = new bool[2];
+
+        private string RememberedRowOf(int index) =>
+            index == 0 ? _settings.FocusedPathTab1 : _settings.FocusedPathTab2;
+
+        /// <summary>
+        /// A tab's first load, when it was not loaded at startup: the tab behind
+        /// (quiet; FocusListAndRow and the empty-folder line speak only for the
+        /// front tab, so it says nothing unless switched to), one-tab mode turned
+        /// off later, or a switch to a tab never loaded.
+        /// </summary>
+        private async Task LoadTabAsync(int index)
+        {
+            if (IsDisposed || _tabLoadStarted[index]) return;
+            _tabLoadStarted[index] = true;
+            try
+            {
+                var (folder, waitFor) = await FirstExistingFolderAsync(_tabCandidates[index]);
+                // Gone somewhere meanwhile (a folder handed over): left there.
+                if (IsDisposed || !string.IsNullOrEmpty(_panes[index].CurrentPath)) return;
+                await NavigateAsync(folder, preferPath: NullIfBlank(RememberedRowOf(index)),
+                    onPane: _panes[index], quiet: true);
+                if (!IsDisposed) NoteWaitingForDrive(index, waitFor);
+            }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine("tab load: " + ex.Message); }
+        }
 
         /// <summary>Captures where we are, so a restart can land back on it.</summary>
         private void CaptureState()
@@ -533,13 +587,22 @@ namespace ExplorerNative
             // Reads each pane directly. Temporarily reassigning _activeIndex to
             // reuse FocusedPath() would make every selection handler briefly
             // believe the wrong pane was active.
-            _settings.FocusedPathTab1 = RealFocusOf(_panes[0]) ?? "";
-            _settings.FocusedPathTab2 = RealFocusOf(_panes[1]) ?? "";
-
-            if (_settings.RememberLastFolder)
+            //
+            // Only a tab that has loaded: one still loading (a close during
+            // startup) or never loaded (one-tab mode) keeps what was saved, so
+            // its place is still there next time instead of an empty one.
+            // A tab still waiting for its Drive folder (quit before the mount, or
+            // a mount that failed) saves that folder, not where it opened instead.
+            for (int i = 0; i < _panes.Length; i++)
             {
-                _settings.LastFolder = RealFolderOf(_panes[0]);
-                _settings.LastFolderTab2 = RealFolderOf(_panes[1]);
+                string folder, row;
+                if (StillWaitingForDrive(i) is { } waiting) { folder = waiting.Folder; row = waiting.Row ?? ""; }
+                else if (!string.IsNullOrEmpty(_panes[i].CurrentPath)) { folder = RealFolderOf(_panes[i]); row = RealFocusOf(_panes[i]) ?? ""; }
+                else continue;
+
+                if (i == 0) _settings.FocusedPathTab1 = row; else _settings.FocusedPathTab2 = row;
+                if (!_settings.RememberLastFolder) continue;
+                if (i == 0) _settings.LastFolder = folder; else _settings.LastFolderTab2 = folder;
             }
         }
 
@@ -659,6 +722,9 @@ namespace ExplorerNative
                 // would be cut off by the installer's <exit>, which never asks.
                 if (!ConfirmAbandonTransfers("Update")) return;
                 if (!AudioEditorForm.ConfirmEndingEditors(this, "Update")) return;
+                // The installer's <exit> never asks, so files still on their
+                // way to Google Drive are asked about here.
+                if (!Program.ConfirmUnsavedDrive("updates", "Update anyway?")) return;
 
                 Announce("Installing update. Explorer Native will restart");
                 CaptureState();
@@ -752,18 +818,68 @@ namespace ExplorerNative
         /// Bounded and off the calling thread, which is the whole point — see the
         /// constructor. The synchronous version of this ran inside it.
         /// </summary>
-        private static async Task<string> FirstExistingFolderAsync(params string?[] candidates)
+        private async Task<(string Open, string? WaitFor)> FirstExistingFolderAsync(params string?[] candidates)
         {
+            // Google Drive mounts a second or two after the window. A folder on
+            // its letter before then is not missing, only not there yet: it is
+            // kept to go to once the mount arrives, and not probed.
+            string? letter = _settings.GoogleDriveEnabled ? Drive?.Letter ?? _settings.GoogleDriveLetter : null;
+            bool shown = Drive?.LetterShown == true;
+            string? waitFor = null;
             foreach (var c in candidates)
             {
                 if (string.IsNullOrWhiteSpace(c)) continue;
 
                 // The drive list is always there. Probed as a folder it was not,
                 // so a window closed on the drive list came back somewhere else.
-                if (c == DrivesPath) return c;
-                if (await ProbeDirectoryAsync(c, StartupProbeMs) == FolderProbe.Present) return c!;
+                if (c == DrivesPath) return (c, waitFor);
+                if (NavigationHistory.WaitsForDrive(c, letter, shown)) { waitFor ??= c; continue; }
+                if (await ProbeDirectoryAsync(c, StartupProbeMs) == FolderProbe.Present) return (c!, waitFor);
             }
-            return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            return (Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), waitFor);
+        }
+
+        /// <summary>
+        /// Per tab: the Drive folder (and row) a tab opened somewhere else while
+        /// waiting for, and where it opened instead, so the mount can take it
+        /// there only if nobody has moved since.
+        /// </summary>
+        private readonly (string Folder, string? Row, string LandedFolder, string? LandedRow)?[] _waitingForDrive =
+            new (string, string?, string, string?)?[2];
+
+        private void NoteWaitingForDrive(int index, string? folder)
+        {
+            if (folder == null || IsDisposed) return;
+            var pane = _panes[index];
+            _waitingForDrive[index] = (folder, NullIfBlank(RememberedRowOf(index)), pane.CurrentPath, FocusedPathOf(pane));
+            // Mounted while this tab was loading: go now.
+            if (Drive is { LetterShown: true } drive) ResumeWaitingForDrive(drive.Letter);
+        }
+
+        /// <summary>The waiting slot, while the tab is still where it opened instead.</summary>
+        private (string Folder, string? Row, string LandedFolder, string? LandedRow)? StillWaitingForDrive(int index)
+        {
+            if (_waitingForDrive[index] is not { } w) return null;
+            var pane = _panes[index];
+            bool unmoved = string.Equals(pane.CurrentPath, w.LandedFolder, StringComparison.OrdinalIgnoreCase) &&
+                           string.Equals(FocusedPathOf(pane), w.LandedRow, StringComparison.OrdinalIgnoreCase);
+            return unmoved ? w : null;
+        }
+
+        private void ResumeWaitingForDrive(string? letter)
+        {
+            if (string.IsNullOrEmpty(letter) || IsDisposed) return;
+            for (int i = 0; i < _panes.Length; i++)
+            {
+                var waiting = StillWaitingForDrive(i);
+                _waitingForDrive[i] = null;
+                if (waiting is not { } w) continue;   // moved on: left where it is
+                var pane = _panes[i];
+                bool behind = pane != Active;
+                _ = NavigateAsync(NavigationHistory.RebaseOnLetter(w.Folder, letter)!,
+                    preferPath: NavigationHistory.RebaseOnLetter(w.Row, letter),
+                    onPane: pane, quiet: behind, keepFocus: behind);
+            }
         }
 
         /// <summary>
@@ -786,6 +902,7 @@ namespace ExplorerNative
                 var row = Moved(FocusedPathOf(pane), from, to);
                 _ = NavigateAsync(folder, preferPath: row, onPane: pane, quiet: true, keepFocus: pane != Active);
             }
+            RefreshDrivesList();
         }
 
         public void ApplyNewSettings(Settings settings)
@@ -807,6 +924,13 @@ namespace ExplorerNative
             // "Preferences saved".
             foreach (var pane in _panes) { pane.NeedsRefresh = true; pane.ReloadQuietly = true; }
             ScheduleWatchCheck();
+
+            // Two tabs turned on after a start with one: the second is loaded
+            // now, behind, as startup would have.
+            if (settings.TwoTabs) _ = LoadTabAsync(1);
+
+            // Drive turned off: nothing to wait for any more.
+            if (!settings.GoogleDriveEnabled) Array.Clear(_waitingForDrive);
         }
 
         /// <summary>
@@ -1021,7 +1145,7 @@ namespace ExplorerNative
                 // Not in the drives list either, where its items could only do nothing.
                 sortMenu.Visible = !IsDrivesView && (!apple || AppleMusic.SortsFor(Active.CurrentPath).Count > 0);
             };
-            var properties = Item("P&roperties (Alt+Enter)", Keys.None, ShowProperties);
+            var properties = Item("Proper&ties (Alt+Enter)", Keys.None, ShowProperties);
             file.DropDownItems.Add(properties);
             _archiveHidden.Add(properties);
             file.DropDownItems.Add(new ToolStripSeparator());
@@ -1046,7 +1170,7 @@ namespace ExplorerNative
             _archiveHidden.Add(cut);
             _archiveHidden.Add(paste);
             edit.DropDownItems.Add(new ToolStripSeparator());
-            edit.DropDownItems.Add(AppleHidden(Item("Copy &path", Keys.Alt | Keys.C, CopyPath)));
+            edit.DropDownItems.Add(AppleHidden(Item("Copy pat&h", Keys.Alt | Keys.C, CopyPath)));
             edit.DropDownItems.Add(DriveLinkItem("Copy Drive &link", Keys.Alt | Keys.L, makePublic: false));
             edit.DropDownItems.Add(DriveLinkItem("Copy p&ublic Drive link", Keys.Alt | Keys.Shift | Keys.L, makePublic: true));
             edit.DropDownItems.Add(Item("Select &all", Keys.Control | Keys.A, SelectAll));
@@ -1478,6 +1602,30 @@ namespace ExplorerNative
                 return false;
             }
 
+            // The player holds its file open, so a loaded song cannot be written.
+            // Asked now, before the editor opens: refused after Save, everything
+            // typed was thrown away.
+            var refusedBefore = new List<TagResult>();
+            var loaded = Program.AudioState is { HasTrack: true } loadedState ? loadedState.Path : null;
+            var held = TagEditing.LoadedAmong(local, loaded);
+            if (held.Length > 0)
+            {
+                var answer = MessageBox.Show(owner,
+                    $"{Path.GetFileName(held[0])} is playing. Stop it so its tags can be saved?",
+                    "Edit tags", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
+                if (answer == DialogResult.Yes) Program.RunAudioAction(AudioAction.Stop);
+                else if (local.Length == 1)
+                {
+                    Announce(TagEditing.PlayingRefusal, isError: true);
+                    return false;
+                }
+                else
+                {
+                    local = local.Where(p => !held.Contains(p, StringComparer.OrdinalIgnoreCase)).ToArray();
+                    refusedBefore.AddRange(held.Select(p => new TagResult(p, TagEditing.PlayingRefusal)));
+                }
+            }
+
             ShowStatus(local.Length == 1 ? "Reading tags" : $"Reading tags of {local.Length} files");
             var current = await Task.Run(() =>
                 local.Select(p => TagEditing.IsOggFamily(p) ? null : AudioTags.ReadFields(p)).ToList());
@@ -1511,6 +1659,7 @@ namespace ExplorerNative
             ShowStatus(local.Length == 1 ? "Saving tags" : $"Saving tags for {local.Length} files");
             // Drive files are reported, never opened.
             var results = drive.Select(p => new TagResult(p, TagEditing.DriveRefusal)).ToList();
+            results.AddRange(refusedBefore);
             results.AddRange(await Task.Run(() =>
                 TagEditing.Apply(local, changes, numberInOrder, onDrive: null, IsPlaying)));
             if (IsDisposed) return false;
@@ -1665,7 +1814,7 @@ namespace ExplorerNative
             _pasteItem = ArchiveHidden(Item("&Paste", Keys.None, PasteClipboard));
             _contextMenu.Items.Add(_cutItem);
             _contextMenu.Items.Add(_pasteItem);
-            _contextMenu.Items.Add(AppleHidden(Item("Copy &path", Keys.None, CopyPath)));
+            _contextMenu.Items.Add(AppleHidden(Item("Copy pat&h", Keys.None, CopyPath)));
             _contextMenu.Items.Add(DriveLinkItem("Copy Drive &link", Keys.None, makePublic: false));
             _contextMenu.Items.Add(DriveLinkItem("Copy p&ublic Drive link", Keys.None, makePublic: true));
 
@@ -1713,11 +1862,11 @@ namespace ExplorerNative
             // answer "that is not an archive" is a word heard on every single
             // opening of the menu to be useful on almost none of them. Compress
             // stays, because anything selected can be compressed.
-            _compressItem = ArchiveHidden(Item("&Compress…", Keys.None, CompressSelection));
+            _compressItem = ArchiveHidden(Item("Co&mpress…", Keys.None, CompressSelection));
             _contextMenu.Items.Add(_compressItem);
 
             _extractItem = Item("&Extract", Keys.None, () => ExtractFocused(intoNewFolder: true));
-            _extractHereItem = Item("Extract h&ere", Keys.None, () => ExtractFocused(intoNewFolder: false));
+            _extractHereItem = Item("E&xtract here", Keys.None, () => ExtractFocused(intoNewFolder: false));
 
             _contextMenu.Items.Add(_extractItem);
             _contextMenu.Items.Add(_extractHereItem);
@@ -1741,9 +1890,9 @@ namespace ExplorerNative
             // Windows' own Format window, on a drive row only (Conner, 3.0.14).
             _formatItem = Item("&Format…", Keys.None, FormatFocusedDrive);
             _contextMenu.Items.Add(_formatItem);
-            _contextMenu.Items.Add(ArchiveHidden(Item("P&roperties", Keys.None, ShowProperties)));
+            _contextMenu.Items.Add(ArchiveHidden(Item("Propert&ies", Keys.None, ShowProperties)));
             _contextMenu.Items.Add(new ToolStripSeparator());
-            _contextMenu.Items.Add(ArchiveHidden(Item("&More Windows options…", Keys.None, ShowShellMenuForSelection)));
+            _contextMenu.Items.Add(ArchiveHidden(Item("More &Windows options…", Keys.None, ShowShellMenuForSelection)));
         }
 
         private ToolStripMenuItem ArchiveHidden(ToolStripMenuItem item)
@@ -2127,6 +2276,14 @@ namespace ExplorerNative
             // to somewhere else; only the one you stop on is worth the work.
             ScheduleStatusUpdate();
             ScheduleTabAnnouncement();
+
+            // A tab never loaded (two tabs turned on after a one-tab start) is
+            // loaded now, rather than re-read from an empty path.
+            if (string.IsNullOrEmpty(Active.CurrentPath))
+            {
+                _ = LoadTabAsync(_activeIndex);
+                return;
+            }
 
             // A tab that was not watched while it was behind (the window coming
             // back from the tray watches only the front one) is watched now.
@@ -3295,6 +3452,10 @@ namespace ExplorerNative
                 int mask = System.Runtime.InteropServices.Marshal.PtrToStructure<DEV_BROADCAST_VOLUME>(data).dbcv_unitmask;
                 for (int bit = 0; bit < 26; bit++)
                     if ((mask & (1 << bit)) != 0) _releasedRoots.Remove($"{(char)('A' + bit)}:\\");
+                // And a Drives list on screen gains or loses its row: a USB
+                // stick, or WinFsp's own broadcast when Google Drive's letter
+                // is put back or taken away (offline, back online).
+                RefreshDrivesList();
             }
         }
 

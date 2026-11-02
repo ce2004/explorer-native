@@ -52,6 +52,27 @@ namespace ExplorerNative
     public static class NavigationHistory
     {
         /// <summary>
+        /// A remembered folder on Google Drive's letter while the letter is not
+        /// there yet. The mount comes a second or two after the window, so a
+        /// restart probed the folder, found nothing, opened home and forgot the
+        /// Drive place at the next quit. Such a folder is waited for instead of
+        /// probed.
+        /// </summary>
+        public static bool WaitsForDrive(string? path, string? driveLetter, bool letterShown)
+        {
+            if (letterShown || string.IsNullOrEmpty(path) || string.IsNullOrEmpty(driveLetter)) return false;
+            return path.Length >= 2 && path[1] == ':' &&
+                   char.ToUpperInvariant(path[0]) == char.ToUpperInvariant(driveLetter[0]);
+        }
+
+        /// <summary>The same place on the letter Drive actually got.</summary>
+        public static string? RebaseOnLetter(string? path, string? letter)
+        {
+            if (string.IsNullOrEmpty(path) || string.IsNullOrEmpty(letter) || path.Length < 2 || path[1] != ':') return path;
+            return char.ToUpperInvariant(letter[0]) + path[1..];
+        }
+
+        /// <summary>
         /// A full path, without losing a name that ends in a dot or a space:
         /// GetFullPath drops those ("Backup." became "Backup"), so stepping up
         /// out of such a folder landed on its sibling, or on the first row.

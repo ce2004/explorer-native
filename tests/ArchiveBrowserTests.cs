@@ -315,7 +315,7 @@ namespace ExplorerNative
             check("in the catalogue's words", ArchiveBrowser.ReadOnlyMessage == "Archives are read-only here", null);
 
             // Menu entries that could only refuse are hidden there, not disabled.
-            foreach (var label in new[] { "\"Cu&t\"", "\"&Paste\"", "\"&Rename\"", "\"&Delete\"", "\"&Compress…\"" })
+            foreach (var label in new[] { "\"Cu&t\"", "\"&Paste\"", "\"&Rename\"", "\"&Delete\"", "\"Co&mpress…\"" })
                 check($"the context menu's {label} is hidden inside an archive",
                     main.Contains($"ArchiveHidden(Item({label}", StringComparison.Ordinal), label);
 
