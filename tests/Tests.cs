@@ -159,6 +159,15 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            // The 4.3.1 sweep: sweep431 runs every area, sweep431mount (and so on) one.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") is string sweep431
+                && sweep431.StartsWith("sweep431", StringComparison.Ordinal))
+            {
+                await RunSweep431(sweep431.Substring("sweep431".Length));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             // Just the decoder sweep (CAF, WAV and Ogg damage, Opus in CAF).
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "decoders")
             {
@@ -553,9 +562,36 @@ namespace ExplorerNative
             await Guard("Sweep309SyncTests", () => Sweep309SyncTests.RunAll(Check, Equal));
             await Guard("Sweep309DecoderTests", () => { Sweep309DecoderTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("SyncHardeningTests", () => SyncHardeningTests.RunAll(Check, Equal));
+            await RunSweep431("");
 
             Console.WriteLine($"\n{_passed} passed, {_failed} failed");
             return _failed == 0 ? 0 : 1;
+        }
+
+        /// <summary>The 4.3.1 sweep's areas, all of them or the one named.</summary>
+        private static async Task RunSweep431(string only)
+        {
+            var areas = new (string Key, Func<Task> Run)[]
+            {
+                ("mount", () => Sweep431MountTests.RunAll(Check, Equal)),
+                ("client", () => Sweep431ClientTests.RunAll(Check, Equal)),
+                ("sync", () => Sweep431SyncTests.RunAll(Check, Equal)),
+                ("web", () => Sweep431WebTests.RunAll(Check, Equal)),
+                ("files", () => Sweep431FilesTests.RunAll(Check, Equal)),
+                ("archives", () => Sweep431ArchiveTests.RunAll(Check, Equal)),
+                ("player", () => Sweep431PlayerTests.RunAll(Check, Equal)),
+                ("decoders", () => Sweep431DecoderTests.RunAll(Check, Equal)),
+                ("audioedit", () => Sweep431AudioEditTests.RunAll(Check, Equal)),
+                ("applemusic", () => Sweep431AppleMusicTests.RunAll(Check, Equal)),
+                ("app", () => Sweep431AppTests.RunAll(Check, Equal)),
+                ("keys", () => Sweep431KeysTests.RunAll(Check, Equal)),
+                ("maina", () => Sweep431MainATests.RunAll(Check, Equal)),
+                ("mainb", () => Sweep431MainBTests.RunAll(Check, Equal)),
+                ("mainc", () => Sweep431MainCTests.RunAll(Check, Equal)),
+                ("maind", () => Sweep431MainDTests.RunAll(Check, Equal)),
+            };
+            foreach (var (key, run) in areas)
+                if (only.Length == 0 || only == key) await Guard("Sweep431-" + key, run);
         }
 
         /// <summary>
