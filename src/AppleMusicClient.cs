@@ -265,17 +265,37 @@ namespace ExplorerNative
         public async Task<List<AppleMusicItem>> StationsAsync(CancellationToken token)
         {
             await StartAsync(token).ConfigureAwait(false);
-            var all = new List<AppleMusicItem>();
-            async Task Try(string path)
+            var all = await GatherStationsAsync(new Func<Task<List<AppleMusicItem>>>[]
             {
-                try { all.AddRange(await ListAsync(path, token, most: 30).ConfigureAwait(false)); }
-                catch (AppleMusicException ex) when (!ex.SignIn) { }
-            }
-            await Try("/v1/catalog/{sf}/stations?filter[identity]=personal");
-            await Try("/v1/me/recent/radio-stations?limit=10");
-            await Try("/v1/catalog/{sf}/stations?filter[featured]=apple-music-live-radio");
+                () => ListAsync("/v1/catalog/{sf}/stations?filter[identity]=personal", token, most: 30),
+                () => ListAsync("/v1/me/recent/radio-stations?limit=10", token, most: 30),
+                () => ListAsync("/v1/catalog/{sf}/stations?filter[featured]=apple-music-live-radio", token, most: 30),
+            }).ConfigureAwait(false);
             var seen = new HashSet<string>();
             return all.Where(s => s.Kind == "station" && seen.Add(s.Id)).ToList();
+        }
+
+        /// <summary>
+        /// Asks each source in turn. One source missing (no personal station) is fine,
+        /// but when none answered at all (offline, Apple timing out) the first failure
+        /// is thrown, so the folder says why instead of "empty" and nothing empty is cached.
+        /// </summary>
+        internal static async Task<List<AppleMusicItem>> GatherStationsAsync(IReadOnlyList<Func<Task<List<AppleMusicItem>>>> sources)
+        {
+            var all = new List<AppleMusicItem>();
+            int answered = 0;
+            AppleMusicException? failed = null;
+            foreach (var source in sources)
+            {
+                try { all.AddRange(await source().ConfigureAwait(false)); answered++; }
+                catch (AppleMusicException ex) when (!ex.SignIn)
+                {
+                    if (ex.NotFound) answered++;   // Apple's "none" is an answer
+                    else failed ??= ex;
+                }
+            }
+            if (answered == 0 && failed != null) throw failed;
+            return all;
         }
 
         private static void Add(List<AppleMusicItem> items, JsonElement d)
