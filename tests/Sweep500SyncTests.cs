@@ -36,6 +36,7 @@ namespace ExplorerNative
             try
             {
                 await DeadWatcherTests(sandbox);
+                await EditedWhileQueuedTests(sandbox);
             }
             finally
             {
@@ -234,6 +235,11 @@ namespace ExplorerNative
             }
 
             // The watcher's own account, once it has failed.
+            JournalDiesTests();
+        }
+
+        private static void JournalDiesTests()
+        {
             var journal = new PcWatchJournal();
             journal.Take(out int epoch);
             journal.Walked(epoch);
@@ -244,6 +250,77 @@ namespace ExplorerNative
             journal.Walked(epoch);
             Check("watch journal: a watcher that failed for good is never trusted again, however many walks follow",
                 journal.Dead && journal.Take(out _) == null);
+        }
+
+        // ---------------- 2. a pair edited while another pair's pass runs ----------------
+
+        /// <summary>
+        /// The minute's loop listed the pairs due, then ran them one after
+        /// another from that list. A pair edited while an earlier pair's pass
+        /// ran was then synced with the copy from before the edit: Free up
+        /// space just unticked still cleared its files off the PC. Its pass now
+        /// takes the pair as settings hold it when its turn comes, and reads
+        /// the generation with it, so an edit during its own wait for an
+        /// unfinished pass counts too.
+        /// </summary>
+        private static async Task EditedWhileQueuedTests(string sandbox)
+        {
+            async Task<(bool OnPc, bool OnDrive)> Run(bool edit)
+            {
+                using var rig = new Rig(sandbox, SyncMode.UploadOnly);
+                var b = rig.AddPair("B", SyncMode.UploadOnly);
+                b.DeleteAfterUpload = true;
+                rig.Write(rig.Pair, "a.txt", "for A", T0);
+                var bFile = rig.Write(b, "b.txt", "for B", T0);
+                rig.Monitor.Reload(new[] { rig.Pair, b });
+                int edits = 0;
+                if (edit)
+                    rig.Monitor.KillPoint = what =>
+                    {
+                        if (what != "uploaded a.txt" || Interlocked.Exchange(ref edits, 1) != 0) return;
+                        var kept = b.Copy();
+                        kept.DeleteAfterUpload = false;
+                        rig.Monitor.Reload(new[] { rig.Pair, kept });
+                    };
+                await rig.Monitor.RunDueAsync(rig.Client, all: true, DateTime.UtcNow, CancellationToken.None);
+                rig.Monitor.KillPoint = null;
+                return (File.Exists(bFile), rig.DriveTree(b).ContainsKey("b.txt"));
+            }
+
+            var control = await Run(edit: false);
+            Check("queued edit: the control frees B's file once it is on Drive", !control.OnPc && control.OnDrive,
+                $"on PC {control.OnPc}, on Drive {control.OnDrive}");
+            var edited = await Run(edit: true);
+            Check("queued edit: Free up space unticked while another pair's pass ran is honoured: B's file stays on the PC",
+                edited.OnPc && edited.OnDrive, $"on PC {edited.OnPc}, on Drive {edited.OnDrive}");
+
+            // The edit lands while B's pass waits after an unfinished one.
+            var crashWait = DriveMonitor.AfterCrashWait;
+            DriveMonitor.AfterCrashWait = TimeSpan.FromSeconds(1.5);
+            try
+            {
+                using var rig = new Rig(sandbox, SyncMode.UploadOnly);
+                var b = rig.Pair;
+                b.DeleteAfterUpload = true;
+                var bFile = rig.Write(b, "b.txt", "for B", T0);
+                rig.Monitor.Reload(new[] { b });
+                Directory.CreateDirectory(DriveMonitor.StateDirectory);
+                File.WriteAllText(Path.Combine(DriveMonitor.StateDirectory, b.Id + ".running"),
+                    DateTime.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture));
+                var editLater = Task.Run(async () =>
+                {
+                    await Task.Delay(400);
+                    var kept = b.Copy();
+                    kept.DeleteAfterUpload = false;
+                    rig.Monitor.Reload(new[] { kept });
+                });
+                await rig.Monitor.RunDueAsync(rig.Client, all: true, DateTime.UtcNow, CancellationToken.None);
+                await editLater;
+                Check("queued edit: an edit while the pass waits after an unfinished one is honoured too",
+                    File.Exists(bFile) && rig.DriveTree(b).ContainsKey("b.txt"),
+                    $"on PC {File.Exists(bFile)}, Drive holds {Names(rig.DriveTree(b).Keys)}");
+            }
+            finally { DriveMonitor.AfterCrashWait = crashWait; }
         }
     }
 }

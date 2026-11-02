@@ -1181,12 +1181,25 @@ namespace ExplorerNative
                 all = _allDue;
                 _allDue = false;
             }
-            var now = DateTime.UtcNow;
+            await RunDueAsync(client, all, DateTime.UtcNow, token).ConfigureAwait(false);
+        }
 
-            foreach (var pair in await DuePairsAsync(client, Pairs, all, now, token).ConfigureAwait(false))
+        /// <summary>
+        /// The pairs due now, one after another, each with its settings as they
+        /// are when its turn comes. A pair edited while an earlier pair's pass
+        /// ran (Free up space unticked, deletes turned off, switched to download
+        /// only) was run with the copy listed before the edit, under the rules
+        /// just switched off; one paused or removed meanwhile is skipped.
+        /// </summary>
+        internal async Task RunDueAsync(DriveClient client, bool all, DateTime now, CancellationToken token)
+        {
+            foreach (var listed in await DuePairsAsync(client, Pairs, all, now, token).ConfigureAwait(false))
             {
                 if (token.IsCancellationRequested) return;
-                if (!await SyncOneAsync(client, pair, token).ConfigureAwait(false)) return;
+                bool gone;
+                lock (_gate) gone = !_pairs.Any(p => p.Id == listed.Id && !p.Paused) || _removed.Contains(listed.Id);
+                if (gone) continue;
+                if (!await SyncOneAsync(client, listed, token, fromLive: true).ConfigureAwait(false)) return;
             }
         }
 
@@ -1250,7 +1263,12 @@ namespace ExplorerNative
             MemoryGiveBack.Collect();
         }
 
-        internal async Task<bool> SyncOneAsync(DriveClient client, DriveSyncPair pair, CancellationToken token)
+        /// <remarks>
+        /// <paramref name="fromLive"/>: run the pair as settings hold it once the
+        /// records are its own (see <see cref="RunDueAsync"/>). The suite passes
+        /// pairs of its own, and keeps the one it gave.
+        /// </remarks>
+        internal async Task<bool> SyncOneAsync(DriveClient client, DriveSyncPair pair, CancellationToken token, bool fromLive = false)
         {
             {
                 lock (_gate)
@@ -1271,17 +1289,33 @@ namespace ExplorerNative
                     try
                     {
                         await records.WaitAsync(token).ConfigureAwait(false);
-                        // Kept on Drive only as it is now: Put back changes it while
-                        // holding the lock, and a pass that waited for it with the
-                        // old list listed Drive afresh and skipped the folder for good.
-                        DriveSyncPair? live;
-                        lock (_gate) live = _pairs.FirstOrDefault(p => p.Id == pair.Id);
-                        if (live != null)
+                        try
                         {
-                            pair = pair.Copy();
-                            pair.DriveOnlyFolders = new List<string>(live.DriveOnlyFolders ?? new());
+                            // Kept on Drive only as it is now: Put back changes it while
+                            // holding the lock, and a pass that waited for it with the
+                            // old list listed Drive afresh and skipped the folder for good.
+                            // From the loop, every setting as it is now, read with the
+                            // generation it goes with: an edit after this stops the pass
+                            // at its next action (see Stopped); one before it is this pass.
+                            DriveSyncPair? live;
+                            int generation;
+                            lock (_gate)
+                            {
+                                live = _removed.Contains(pair.Id) ? null : _pairs.FirstOrDefault(p => p.Id == pair.Id);
+                                generation = _generation.TryGetValue(pair.Id, out var g) ? g : 0;
+                            }
+                            if (fromLive)
+                            {
+                                if (live == null || live.Paused || string.IsNullOrEmpty(live.DriveFolderId)) return true;
+                                pair = live.Copy();
+                            }
+                            else if (live != null)
+                            {
+                                pair = pair.Copy();
+                                pair.DriveOnlyFolders = new List<string>(live.DriveOnlyFolders ?? new());
+                            }
+                            await SyncPairAsync(client, pair, token, fromLive ? generation : null).ConfigureAwait(false);
                         }
-                        try { await SyncPairAsync(client, pair, token).ConfigureAwait(false); }
                         finally { records.Release(); }
                     }
                     finally
@@ -2277,9 +2311,9 @@ namespace ExplorerNative
             public OfflineException(Exception inner) : base("Google Drive could not be reached", inner) { }
         }
 
-        private async Task SyncPairAsync(DriveClient client, DriveSyncPair pair, CancellationToken token)
+        private async Task SyncPairAsync(DriveClient client, DriveSyncPair pair, CancellationToken token, int? generationRead = null)
         {
-            int generation = GenerationOf(pair.Id);
+            int generation = generationRead ?? GenerationOf(pair.Id);
             var name = DisplayName(pair);
             var (state, read) = LoadState(pair);
 
