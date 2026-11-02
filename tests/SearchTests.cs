@@ -559,7 +559,8 @@ namespace ExplorerNative
             // and a walk of a whole disk that cannot be abandoned is a window
             // somebody has to wait out.
             Check("Escape stops a search that is still running",
-                main.Contains("case Keys.Escape when pane.Searching:", StringComparison.Ordinal));
+                main.IndexOf("case Keys.Escape when pane.Searching", StringComparison.Ordinal) is int stopAt && stopAt >= 0 &&
+                stopAt < main.IndexOf("case Keys.Escape when pane.SearchTerm != null:", StringComparison.Ordinal));
             Check("and the running flag is given back in a finally",
                 main.Contains("pane.Searching = false;", StringComparison.Ordinal) &&
                 main.Contains("finally\n            {\n                // In a finally", StringComparison.Ordinal),

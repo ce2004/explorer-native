@@ -167,6 +167,13 @@ namespace ExplorerNative
             public bool Searching;
 
             /// <summary>
+            /// The running search is the quiet re-run after a rename or delete
+            /// in results: the results are still on screen, nobody asked for a
+            /// search, so Escape leaves them rather than stopping it.
+            /// </summary>
+            public bool SearchQuietly;
+
+            /// <summary>
             /// A listing is on its way in. The folder watcher leaves its mark
             /// standing rather than cancel it and start again — on a slow share with
             /// a download growing in it, that was a reload that never finished.
@@ -5920,6 +5927,7 @@ namespace ExplorerNative
 
             SearchResult result;
             pane.Searching = true;
+            pane.SearchQuietly = quiet;
             try
             {
                 var drive = Drive;
@@ -5976,7 +5984,7 @@ namespace ExplorerNative
                 // that finished minutes ago instead of leaving the results it
                 // produced; a flag put down by a superseded search is Escape
                 // doing nothing while one is still going.
-                if (ReferenceEquals(pane.EnumCts, mine)) pane.Searching = false;
+                if (ReferenceEquals(pane.EnumCts, mine)) { pane.Searching = false; pane.SearchQuietly = false; }
             }
 
             if (IsDisposed) return;
@@ -6237,7 +6245,9 @@ namespace ExplorerNative
                 // being gathered, the way to stop. Nothing else in the list has
                 // ever used Escape, and it is what every other dialog and mode in
                 // this application means by "take me back".
-                case Keys.Escape when pane.Searching:
+                // A quiet re-run after a rename or delete in results is not a
+                // search anybody started: Escape leaves the results instead.
+                case Keys.Escape when pane.Searching && !pane.SearchQuietly:
                     CancelSearch();
                     e.Handled = e.SuppressKeyPress = true;
                     break;
