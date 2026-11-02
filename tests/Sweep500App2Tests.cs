@@ -27,6 +27,7 @@ namespace ExplorerNative
             Console.WriteLine("Sweep 5.0.0, Preferences and the tray's audio:");
             HotkeyPageChecksTheBoxesAsTicked();
             SignOutTurnsDriveOffAtOnce();
+            CheckBoxNamesHaveNoAccessKeyMarker();
             await Task.CompletedTask;
         }
 
@@ -223,6 +224,39 @@ namespace ExplorerNative
                 SettingsForm.Confirm = oldConfirm;
                 SettingsForm.Inform = oldInform;
                 SettingsForm.DisconnectDrive = oldDisconnect;
+                Settings.OverrideAppDataDir = null;
+                Cleanup(dir);
+            }
+        }
+
+        /// <summary>
+        /// Preferences' check boxes with an access key were named with the "&amp;"
+        /// in it, and NVDA read "Show Google Drive's and Trash folder".
+        /// </summary>
+        private static void CheckBoxNamesHaveNoAccessKeyMarker()
+        {
+            var dir = NewSettingsDir();
+            try
+            {
+                var offenders = new List<string>();
+                string trash = "";
+                var error = OnSta(() =>
+                {
+                    using var window = new SettingsForm(new Settings { SpeakEnabled = false }, null);
+                    window.BuildAllPages();
+                    foreach (var b in FindAll<ButtonBase>(window))
+                    {
+                        if (!b.UseMnemonic || b.AccessibleName == null) continue;
+                        if (b.AccessibleName.Replace("&&", "").Contains('&')) offenders.Add(b.AccessibleName);
+                        if (b.Text.Contains("&Trash", StringComparison.Ordinal)) trash = b.AccessibilityObject.Name ?? "";
+                    }
+                });
+                Equal("check box names: Preferences builds", "", error);
+                Equal("check box names: no control is named with an access-key marker", "", string.Join(" | ", offenders));
+                Equal("check box names: the Trash box reads as written", "Show Google Drive's Trash folder", trash);
+            }
+            finally
+            {
                 Settings.OverrideAppDataDir = null;
                 Cleanup(dir);
             }

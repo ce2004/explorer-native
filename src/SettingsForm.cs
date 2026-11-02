@@ -1731,7 +1731,9 @@ namespace ExplorerNative
         private CheckBox AddCheck(Control parent, string text, bool value, Action<bool> apply)
         {
             var box = new SpokenCheckBox { Text = text, Checked = value, AutoSize = true, Margin = new Padding(3, 4, 3, 4) };
-            box.AccessibleName = text;
+            // Without the access-key marker: NVDA read "&Trash" as "and Trash".
+            // A doubled one is a real ampersand and stays as one.
+            box.AccessibleName = text.Replace("&&", "\u0001").Replace("&", "").Replace("\u0001", "&");
             parent.Controls.Add(box);
             _applies.Add(() => apply(box.Checked));
             return box;
