@@ -663,8 +663,14 @@ namespace ExplorerNative
                             failed.Add(new ConnectFailure(path, "That drive has no Recycle Bin, so it would be deleted for good; do that on the computer."));
                             continue;
                         }
-                        if (ShellDelete.Recycle(path, IntPtr.Zero)) deleted++;
-                        else failed.Add(new ConnectFailure(path, "Kept, because it could only have been deleted for good."));
+                        // Never with a window: nobody at the PC is watching, so a file too big for the bin, or a
+                        // drive set to delete for good, would leave a question there whose Yes deletes for good.
+                        var refused = ShellDelete.RecycleWithoutUi(path);
+                        if (refused == null) deleted++;
+                        else failed.Add(new ConnectFailure(path,
+                            refused.StartsWith("it could only have been deleted for good", StringComparison.Ordinal)
+                                ? "It is too big for the Recycle Bin, or that drive deletes for good, so it is kept. Delete it on the computer."
+                                : ConnectServer.Sentence(refused)));
                     }
                     catch (Exception e) { failed.Add(new ConnectFailure(path, ConnectServer.Sentence(e.Message))); }
                 }
