@@ -707,6 +707,8 @@ async function newFolder() {
 
 const transfers = [];
 let transferSeq = 0;
+// Multi-file uploads still going, so Stop all can stop the files after the current one.
+const uploadBatches = new Set();
 
 function addTransfer(t) {
   t.key = ++transferSeq;
@@ -978,7 +980,18 @@ async function uploadFiles(files) {
   const folder = state.path;
   if (folder == null) return;
   announce(`Uploading ${plural(files.length, 'file', 'files')}`);
-  for (const f of files) await upload(f, folder);
+  // Stop all stops the files not started yet too, not just the one going up.
+  const batch = { stopped: false };
+  uploadBatches.add(batch);
+  try {
+    let left = files.length;
+    for (const f of files) {
+      if (batch.stopped) break;
+      left--;
+      await upload(f, folder);
+    }
+    if (batch.stopped && left > 0) announce(`${plural(left, 'more file was', 'more files were')} not sent.`);
+  } finally { uploadBatches.delete(batch); }
 }
 
 // ---------- Player ----------
@@ -1728,6 +1741,7 @@ function bindEvents() {
     renderTransfers(); announce('Cleared');
   });
   $('tr-stop').addEventListener('click', () => {
+    for (const b of uploadBatches) b.stopped = true;
     for (const t of transfers) if (['running', 'waiting'].includes(t.state) && t.cancel) t.cancel();
     announce('Stopping all transfers');
   });

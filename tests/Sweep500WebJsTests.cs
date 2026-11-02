@@ -28,6 +28,7 @@ namespace ExplorerNative
             SlowDeleteRefreshesTests(js);
             MoveHereKeepsFocusTests(js);
             UploadServerErrorEndsTests(js);
+            StopAllStopsTheBatchTests(js);
             await Task.CompletedTask;
         }
 
@@ -78,6 +79,20 @@ namespace ExplorerNative
                 Regex.IsMatch(handling, @"\w+\s*>=?\s*\d") && handling.Contains("throw err"), handling);
             Check("only no answer at all is waited out without a limit", !Regex.IsMatch(handling, @"status\s*<\s*500\)\s*throw err"), handling);
             Check("an upload that cannot go on is called off on the PC", handling.Contains("/api/upload/cancel"), handling);
+        }
+
+        // Bug 4: Stop all stopped only the file going up; the rest of a multi-file upload went on.
+        private static void StopAllStopsTheBatchTests(string js)
+        {
+            var many = Function(js, "uploadFiles");
+            var loop = After(many, "for (const f of files)");
+            int up = loop.IndexOf("await upload(", StringComparison.Ordinal);
+            var beforeEach = up < 0 ? "" : loop[..up];
+            var flag = Regex.Match(beforeEach, @"if \((\w+)\.stopped\)").Groups[1].Value;
+            Check("a multi-file upload looks for Stop before each file", flag.Length > 0, beforeEach);
+            var stop = After(js, "$('tr-stop').addEventListener");
+            stop = stop.Length > 400 ? stop[..400] : stop;
+            Check("Stop all marks the multi-file uploads stopped", Regex.IsMatch(stop, @"\.stopped = true"), stop);
         }
     }
 }
