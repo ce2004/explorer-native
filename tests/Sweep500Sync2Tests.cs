@@ -35,6 +35,7 @@ namespace ExplorerNative
             {
                 await KeepGivesThePassProblem(sandbox);
                 await KeepInDownloadOnlySaysWhyNot(sandbox);
+                await KeepSaysWhyFilesStayed(sandbox);
             }
             finally
             {
@@ -182,6 +183,82 @@ namespace ExplorerNative
                     !edited.Done && edited.Message.Contains("one.txt") && edited.Message.Contains("different from Google Drive's copy")
                     && !edited.Message.Contains("Try again"), edited.Message);
                 Check("and the edit is still on the PC", File.ReadAllText(rig.PathOf("School/one.txt")) == "ONE");
+            }
+        }
+
+        /// <summary>
+        /// Bug 3: a file open in another program that refuses deleting (a player
+        /// sharing read and write, not delete) stops Keep on Drive only before
+        /// anything changes; one opened or deleted after the check is said for
+        /// what it is, never as "changed while it was checked".
+        /// </summary>
+        private static async Task KeepSaysWhyFilesStayed(string sandbox)
+        {
+            async Task<Rig> Ready()
+            {
+                var rig = new Rig(sandbox, SyncMode.TwoWay);
+                rig.Write("School/one.txt", "one", T0);
+                rig.Write("School/two.txt", "two", T0);
+                await rig.Pass();
+                rig.Monitor.Reload(new[] { rig.Pair });
+                rig.Monitor.DriveOnlySyncWait = TimeSpan.FromMilliseconds(300);
+                return rig;
+            }
+
+            using (var rig = await Ready())
+            {
+                var one = rig.PathOf("School/one.txt");
+                File.SetAttributes(one, FileAttributes.ReadOnly);
+                DriveMonitor.DriveOnlyOutcome outcome;
+                using (new FileStream(one, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                    outcome = await rig.Monitor.KeepOnDriveOnlyAsync(rig.Pair.Id, "School", default, rig.Client);
+                Check("keep on Drive only: a file open without delete sharing stops it", !outcome.Done, outcome.Message);
+                Check("and says it is open in another program, by name",
+                    outcome.Message.Contains("open in another program") && outcome.Message.Contains("one.txt"), outcome.Message);
+                Check("and the folder is not on the list, so it can be tried again", rig.LiveDriveOnly().Count == 0);
+                Check("and every file is still there, read-only kept",
+                    File.Exists(rig.PathOf("School/two.txt")) && (File.GetAttributes(one) & FileAttributes.ReadOnly) != 0);
+                File.SetAttributes(one, FileAttributes.Normal);
+            }
+
+            using (var rig = await Ready())
+            {
+                DriveMonitor.DriveOnlyOutcome outcome;
+                using (new FileStream(rig.PathOf("School/one.txt"), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                    outcome = await rig.Monitor.KeepOnDriveOnlyAsync(rig.Pair.Id, "School", default, rig.Client);
+                Check("control: a handle that shares delete does not stop it", outcome.Done, outcome.Message);
+            }
+
+            using (var rig = await Ready())
+            {
+                var one = rig.PathOf("School/one.txt");
+                File.SetAttributes(one, FileAttributes.ReadOnly);
+                FileStream? late = null;
+                rig.Monitor.BeforeClearingForTests = _ => late = new FileStream(one, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                DriveMonitor.DriveOnlyOutcome outcome;
+                try { outcome = await rig.Monitor.KeepOnDriveOnlyAsync(rig.Pair.Id, "School", default, rig.Client); }
+                finally { late?.Dispose(); }
+                Check("a file opened after the check is said as open in another program",
+                    outcome.Message.Contains("open in another program") && outcome.Message.Contains("one.txt"), outcome.Message);
+                Check("not as changed while it was checked", !outcome.Message.Contains("changed while"), outcome.Message);
+                Check("and it keeps its read-only mark", File.Exists(one) && (File.GetAttributes(one) & FileAttributes.ReadOnly) != 0);
+                Check("and the rest was cleared", !File.Exists(rig.PathOf("School/two.txt")));
+                File.SetAttributes(one, FileAttributes.Normal);
+            }
+
+            using (var rig = await Ready())
+            {
+                rig.Monitor.BeforeClearingForTests = _ => File.Delete(rig.PathOf("School/one.txt"));
+                var outcome = await rig.Monitor.KeepOnDriveOnlyAsync(rig.Pair.Id, "School", default, rig.Client);
+                Equal("a file deleted after the check leaves nothing to say", "School is on Google Drive only now, and was cleared off this PC", outcome.Message);
+            }
+
+            using (var rig = await Ready())
+            {
+                rig.Monitor.BeforeClearingForTests = _ => rig.Write("School/one.txt", "ONE", T0.AddMinutes(3));
+                var outcome = await rig.Monitor.KeepOnDriveOnlyAsync(rig.Pair.Id, "School", default, rig.Client);
+                Check("a file really changed after the check is still said as changed, by name",
+                    outcome.Message.Contains("changed while") && outcome.Message.Contains("one.txt"), outcome.Message);
             }
         }
     }

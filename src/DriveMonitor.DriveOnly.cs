@@ -420,6 +420,18 @@ namespace ExplorerNative
                 }
             }
 
+            // A file open in another program that refuses deleting (a player
+            // through the C runtime shares read and write, not delete) could not
+            // be cleared, and would be left in a folder the sync then ignores:
+            // asked before anything changes, so the person can close it and retry.
+            var open = check.Matching.Where(f => OpenWithoutDelete(f.FullPath)).Select(f => Path.GetFileName(f.FullPath)).ToList();
+            if (open.Count > 0)
+            {
+                bool one = open.Count == 1;
+                return new(false, $"{NameRules.Counted(open.Count, "file")} in {name} {(one ? "is" : "are")} open in another program ({SomeOf(open)}), " +
+                                  $"so {name} can't be kept on Google Drive only yet. Nothing was removed. Close {(one ? "it" : "them")} and try again");
+            }
+
             // On the list first: from here the sync leaves the folder alone. A
             // folder inside it that was already on the list is part of it now.
             if (EditPair(pairId, p =>
@@ -433,28 +445,46 @@ namespace ExplorerNative
             // gone while it still remembers them. Every pass drops them as well.
             await ForgetFolderAsync(pairId, relative, token).ConfigureAwait(false);
 
-            // Cleared file by file, each only while it is as it was checked.
-            int kept = 0;
+            BeforeClearingForTests?.Invoke(pcFolder);
+
+            // Cleared file by file, each only while it is as it was checked. What
+            // stays is sorted by why: changed, open elsewhere, or refused.
+            var changed = new List<string>();
+            var inUse = new List<string>();
+            var refusedFiles = new List<string>();
             foreach (var file in check.Matching)
             {
                 token.ThrowIfCancellationRequested();
+                var leaf = Path.GetFileName(file.FullPath);
+                FileAttributes? cleared = null;
                 try
                 {
-                    var attributes = File.GetAttributes(file.FullPath);
-                    if ((attributes & FileAttributes.ReadOnly) != 0)
-                        File.SetAttributes(file.FullPath, attributes & ~FileAttributes.ReadOnly);
                     using var held = new FileStream(file.FullPath, FileMode.Open, FileAccess.Read,
                         FileShare.Read | FileShare.Delete);
                     if (held.Length != file.Size || File.GetLastWriteTimeUtc(file.FullPath) != file.ModifiedUtc)
                     {
-                        kept++;
+                        changed.Add(leaf);
                         continue;
+                    }
+                    var attributes = File.GetAttributes(file.FullPath);
+                    if ((attributes & FileAttributes.ReadOnly) != 0)
+                    {
+                        File.SetAttributes(file.FullPath, attributes & ~FileAttributes.ReadOnly);
+                        cleared = attributes;
                     }
                     Mine(file.FullPath);
                     File.Delete(file.FullPath);
                 }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { kept++; }
+                catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { }   // already gone
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    (InUseElsewhere(ex, file.FullPath) ? inUse : refusedFiles).Add(leaf);
+                    if (cleared is { } was)
+                        try { if (File.Exists(file.FullPath)) File.SetAttributes(file.FullPath, was); }
+                        catch (Exception again) when (again is IOException or UnauthorizedAccessException) { }
+                }
             }
+            int kept = changed.Count + inUse.Count + refusedFiles.Count;
             foreach (var leftover in check.Leftovers)
             {
                 try
@@ -502,8 +532,45 @@ namespace ExplorerNative
                 return left.Count == 0
                     ? new(true, $"{name} is on Google Drive only now, and was cleared off this PC")
                     : new(true, $"{name} is on Google Drive only now, and the rest was cleared off this PC.{stayed}");
-            return new(true, $"{name} is on Google Drive only now. {NameRules.Counted(kept, "file")} changed while it was checked, so {(kept == 1 ? "it was" : "they were")} left on this PC, in {name}." + stayed);
+            var said = $"{name} is on Google Drive only now.";
+            if (changed.Count > 0)
+            {
+                bool one = changed.Count == 1;
+                said += $" {NameRules.Counted(changed.Count, "file")} changed while {(one ? "it was" : "they were")} checked ({SomeOf(changed)}), " +
+                        $"so {(one ? "it was" : "they were")} left on this PC in {name}. {(one ? "It doesn't" : "They don't")} sync while {name} is kept on Google Drive only. " +
+                        $"Move {(one ? "it" : "them")} out of {name} to sync {(one ? "it" : "them")}.";
+            }
+            if (inUse.Count > 0)
+            {
+                bool one = inUse.Count == 1;
+                said += $" {NameRules.Counted(inUse.Count, "file")} {(one ? "was" : "were")} open in another program ({SomeOf(inUse)}), " +
+                        $"so {(one ? "it was" : "they were")} left on this PC in {name}. Google Drive has {(one ? "it" : "them")}. " +
+                        $"Close {(one ? "it" : "them")} and delete {(one ? "it" : "them")} yourself.";
+            }
+            if (refusedFiles.Count > 0)
+                said += $" Windows wouldn't let {NameRules.Counted(refusedFiles.Count, "file")} be removed ({SomeOf(refusedFiles)}). Google Drive has {(refusedFiles.Count == 1 ? "it" : "them")}.";
+            return new(true, said + stayed);
         }
+
+        /// <summary>The suite's way in between the check and the clearing, to open or delete a file there.</summary>
+        internal Action<string>? BeforeClearingForTests { get; set; }
+
+        /// <summary>
+        /// Whether another program holds the file open without letting it be
+        /// deleted: an open asking for delete access is refused with a sharing
+        /// or lock violation. A read-only open would not notice such a handle.
+        /// </summary>
+        private static bool OpenWithoutDelete(string path)
+        {
+            const uint Delete = 0x00010000, ReadAttributes = 0x80, ShareAll = 7, OpenExisting = 3, OpenReparsePoint = 0x00200000;
+            using var handle = CreateFileW(path, Delete | ReadAttributes, ShareAll, IntPtr.Zero, OpenExisting, OpenReparsePoint, IntPtr.Zero);
+            if (!handle.IsInvalid) return false;
+            return System.Runtime.InteropServices.Marshal.GetLastWin32Error() is 32 or 33;
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+        private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string name, uint access, uint share,
+            IntPtr security, uint disposition, uint flags, IntPtr template);
 
         /// <summary>
         /// Put back on PC: the folder (or the one on the list that holds it)
