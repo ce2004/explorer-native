@@ -3104,7 +3104,13 @@ namespace ExplorerNative
             // "Sequence contains no matching element", and the pair failed every
             // pass until the daily full listing.
             bool canFeed = CanListChangesOnly(ViewOf(header), pair, DateTime.UtcNow);
-            var unknownFolder = recordFolders.FirstOrDefault(f => !header.FolderIds.ContainsKey(f));
+            // Folders Drive has but the pair leaves out (twins, spelling clashes,
+            // unusable names) are known, not missing: read as missing, a folder
+            // with records that became a twin listed all of Drive every pass.
+            var leftOut = new SyncSkips();
+            foreach (var e in header.DriveClashing.Concat(header.DriveUnusable))
+                if (e.EndsWith('/')) leftOut.Folder(e.TrimEnd('/'));
+            var unknownFolder = recordFolders.FirstOrDefault(f => !header.FolderIds.ContainsKey(f) && !leftOut.Covers(f + "/"));
             bool full = forceFull || !canFeed || unknownFolder != null || !driveKnown;
             string why = !driveKnown ? "could not tell which drive the folder is on"
                 : !canFeed ? "no feed to go on"
@@ -3346,6 +3352,9 @@ namespace ExplorerNative
                             foreach (var n in next)
                             {
                                 if (visited.Contains(n) || allSkips.Covers(n + "/")) continue;
+                                // Left out on Drive last time, and its folder not
+                                // listed again: still left out, records kept.
+                                if (!full && !listed.Contains(f) && leftOut.Covers(n + "/")) { allSkips.Folder(n); continue; }
                                 if (partial)
                                 {
                                     if (wholeTree.Contains(f) || onPc.Contains(n) != known.Contains(n)) wholeTree.Add(n);

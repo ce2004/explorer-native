@@ -37,6 +37,8 @@ namespace ExplorerNative
             try
             {
                 await SharedDriveFeedTests(sandbox);
+                await TwinWithRecordsTests(sandbox, "Disc");
+                await TwinWithRecordsTests(sandbox, "disc");
             }
             finally
             {
@@ -195,6 +197,65 @@ namespace ExplorerNative
             lock (handler.Feeds) wrong = handler.Feeds.Where(f => !f.Contains("driveId=sd1", StringComparison.Ordinal)).ToArray();
             Check("shared drive feed: My Drive's feed is never read or saved for a shared-drive pair",
                 wrong.Length == 0, string.Join(" | ", wrong));
+        });
+
+        // ---------------- a recorded folder that became a Drive twin ----------------
+
+        /// <summary>
+        /// A batched pair has records in Disc. A second Drive folder called Disc
+        /// (or disc) appears beside it, both holding files, so both are left out
+        /// as a clash. After one full listing the old Disc id was gone from the
+        /// folder map while the records still named Disc, and every later pass
+        /// listed all of Drive again, for good. Now a folder Drive leaves out is
+        /// known, and the feed carries on.
+        /// </summary>
+        private static async Task TwinWithRecordsTests(string sandbox, string twinName) => await InBatches(async () =>
+        {
+            using var rig = new Rig(sandbox);
+            rig.Write("Disc/a.txt", "a", T0);
+            for (int i = 1; i <= 3; i++) rig.Write($"Other{i}/o.txt", "o" + i, T0);
+            var problem = await rig.Pass();
+            await rig.Pass();
+            Check($"twin {twinName}: the pair settled first", problem == null && rig.DriveTree().ContainsKey("Disc/a.txt"), problem);
+            var discId = rig.Drive.Find(rig.FolderId, "Disc")!;
+            var aId = rig.Drive.Find(rig.FolderId, "Disc/a.txt")!;
+
+            var twin = rig.Drive.AddFolder(twinName, rig.FolderId);
+            rig.Drive.AddFile("b.txt", Encoding.UTF8.GetBytes("b"), T0, twin);
+            var every = DriveMonitor.FullListEvery;
+            DriveMonitor.FullListEvery = TimeSpan.Zero;
+            try { await rig.Pass(); }
+            finally { DriveMonitor.FullListEvery = every; }
+
+            // A listing of all of Drive lists the pair's other folders, which
+            // nothing changed.
+            var others = Enumerable.Range(1, 3).Select(i => rig.Drive.Find(rig.FolderId, $"Other{i}")!).ToHashSet();
+            var listedOthers = new List<string>();
+            rig.Drive.BeforeAnswer = (kind, subject) => { if (kind == "list" && others.Contains(subject)) lock (listedOthers) listedOthers.Add(subject); };
+            problem = await rig.Pass();
+            int lists;
+            lock (listedOthers) { lists = listedOthers.Count; listedOthers.Clear(); }
+            Check($"twin {twinName}: the next pass goes by the feed, not a listing of all of Drive", lists == 0, $"{lists} untouched folders listed");
+
+            await rig.Pass();
+            lock (listedOthers) lists = listedOthers.Count;
+            Check($"twin {twinName}: and so does the one after", lists == 0, $"{lists} untouched folders listed");
+            rig.Drive.BeforeAnswer = null;
+
+            Check($"twin {twinName}: nothing was trashed or deleted on either side",
+                File.Exists(rig.LocalPath("Disc/a.txt")) && rig.Drive.Get(aId) is { Trashed: false } && rig.Drive.Get(discId) is { Trashed: false });
+
+            // The twin goes: Disc syncs again on the records it kept.
+            rig.Drive.Trash(twin);
+            rig.Write("Disc/new.txt", "new", T0);
+            int uploads = rig.Drive.Uploads;
+            problem = await rig.Pass();
+            await rig.Pass();
+            Check($"twin {twinName}: once the twin is gone, a new PC file goes up into Disc",
+                rig.Drive.Find(discId, "new.txt") != null, problem);
+            Check($"twin {twinName}: and the file already there is neither sent again nor trashed",
+                rig.Drive.Uploads - uploads == 1 && rig.Drive.Get(aId) is { Trashed: false } && File.Exists(rig.LocalPath("Disc/a.txt")),
+                $"{rig.Drive.Uploads - uploads} uploads");
         });
     }
 }
