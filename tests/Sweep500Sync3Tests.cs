@@ -39,6 +39,8 @@ namespace ExplorerNative
                 await SharedDriveFeedTests(sandbox);
                 await TwinWithRecordsTests(sandbox, "Disc");
                 await TwinWithRecordsTests(sandbox, "disc");
+                await InBatches(() => FolderDeletedOnDriveTests(sandbox, "batched"));
+                await FolderDeletedOnDriveTests(sandbox, "small");
             }
             finally
             {
@@ -198,6 +200,41 @@ namespace ExplorerNative
             Check("shared drive feed: My Drive's feed is never read or saved for a shared-drive pair",
                 wrong.Length == 0, string.Join(" | ", wrong));
         });
+
+        // ---------------- a folder deleted in Google Drive ----------------
+
+        /// <summary>
+        /// Two-way with deletes: the person trashes the folder Old in Google
+        /// Drive. Its files were recycled on the PC, but a batched pass made Old
+        /// again in Drive at once (its "Drive had it before this pass" was only
+        /// the root on a full listing), and both kinds of pair left the empty PC
+        /// folder, so the next whole walk made it again. Now the delete is
+        /// mirrored: the folder goes from the PC and stays gone from Drive.
+        /// </summary>
+        private static async Task FolderDeletedOnDriveTests(string sandbox, string kind)
+        {
+            using var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true);
+            rig.Write("Old/a.txt", "a", T0);
+            rig.Write("Keep/k.txt", "k", T0);
+            rig.Write("Kept/Inner/edited.txt", "e", T0);
+            var problem = await rig.Pass();
+            await rig.Pass();
+            Check($"folder deleted on Drive ({kind}): the pair settled first", problem == null && rig.DriveTree().ContainsKey("Old/a.txt"), problem);
+
+            rig.Drive.Trash(rig.Drive.Find(rig.FolderId, "Old")!);
+            problem = await rig.Pass();
+            Check($"folder deleted on Drive ({kind}): it is not made again in Drive", rig.Drive.Find(rig.FolderId, "Old") == null, problem);
+            Check($"folder deleted on Drive ({kind}): its file and folder go from the PC too",
+                !File.Exists(rig.LocalPath("Old/a.txt")) && !Directory.Exists(rig.LocalPath("Old")));
+
+            var every = DriveMonitor.FullListEvery;
+            DriveMonitor.FullListEvery = TimeSpan.Zero;
+            try { problem = await rig.Pass(); }
+            finally { DriveMonitor.FullListEvery = every; }
+            Check($"folder deleted on Drive ({kind}): and the next whole walk does not bring it back", rig.Drive.Find(rig.FolderId, "Old") == null, problem);
+            Check($"folder deleted on Drive ({kind}): folders Drive still has stay on the PC",
+                File.Exists(rig.LocalPath("Keep/k.txt")) && File.Exists(rig.LocalPath("Kept/Inner/edited.txt")));
+        }
 
         // ---------------- a recorded folder that became a Drive twin ----------------
 

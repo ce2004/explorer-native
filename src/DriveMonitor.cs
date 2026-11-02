@@ -2393,6 +2393,7 @@ namespace ExplorerNative
             {
                 await MakeEmptyFoldersAsync(client, pair, state, rules, pcFolders, folders, driveFoldersBefore, skips, tally, token)
                     .ConfigureAwait(false);
+                ClearFoldersGoneFromDrive(pair, rules, skips, pcFolders, folders, driveFoldersBefore, _ => fullList);
             }
             catch (Exception ex) when (ex is OperationCanceledException or PairStoppedException)
             {
@@ -3430,9 +3431,17 @@ namespace ExplorerNative
                         generation, tally, nextDirty, token).ConfigureAwait(false);
 
                 // ---- empty PC folders Drive does not have ----
+                // "Drive had it before this pass" is what Drive had when the pass
+                // began: on a full listing knownAtStart is only the root, and a
+                // folder deleted in Drive was made again straight away.
                 if (foldersToMake.Count > 0 && tally.SpaceProblem == null)
-                    await MakeEmptyFoldersAsync(client, pair, header, rules, foldersToMake, folders, knownAtStart, allSkips, tally, token)
+                {
+                    var driveBefore = new HashSet<string>(header.Remembered?.Keys ?? header.FolderIds.Keys, comparer);
+                    await MakeEmptyFoldersAsync(client, pair, header, rules, foldersToMake, folders, driveBefore, allSkips, tally, token)
                         .ConfigureAwait(false);
+                    ClearFoldersGoneFromDrive(pair, rules, allSkips, foldersToMake, folders, driveBefore,
+                        f => full || listedAll.Contains(SyncMoves.Parent(f)));
+                }
 
                 // ---- records of folders neither side has any more ----
                 // (A pass that looked at only some folders left the rest alone on purpose,
@@ -3509,6 +3518,42 @@ namespace ExplorerNative
             SaveState(pair.Id, header);
             await TidyTwinFoldersAsync(client, pair, rules, clashing, folders, tally, token).ConfigureAwait(false);
             FinishPass(pair, header, tally, unusable, clashing, localClashing);
+        }
+
+        /// <summary>
+        /// Two-way with deletes: a folder deleted in Google Drive goes from the
+        /// PC too, once the pass has recycled its files. Otherwise the empty PC
+        /// folder stayed, and the next walk made it in Drive again. Only folders
+        /// Drive had when the pass began, whose folder above was listed this
+        /// pass (<paramref name="parentListed"/>), not left out, and holding
+        /// nothing at all: the delete is Windows' own, which refuses a folder
+        /// with anything in it, so a file kept or edited on the PC keeps its
+        /// folder. Deepest first, then the folder above the same way.
+        /// </summary>
+        private void ClearFoldersGoneFromDrive(DriveSyncPair pair, SyncRules rules, SyncSkips skips, IEnumerable<string> pcFolders,
+            IReadOnlyDictionary<string, string> folders, IReadOnlySet<string> driveBefore, Func<string, bool> parentListed)
+        {
+            if (rules.Mode != SyncMode.TwoWay || !rules.CopyDeletes || !rules.IncludeSubfolders) return;
+            const FileAttributes kept = FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReparsePoint;
+            bool Gone(string at) => at.Length > 0 && !folders.ContainsKey(at) && driveBefore.Contains(at) && parentListed(at) &&
+                                    !IsLeftOutFolder(at, rules, skips) &&
+                                    !at.Split('/').Any(part => part.Equals(".sync", StringComparison.OrdinalIgnoreCase));
+            foreach (var folder in pcFolders.Distinct(SyncNameComparer.Instance).OrderByDescending(f => f.Count(c => c == '/')))
+            {
+                if (Stopped(pair)) break;
+                for (var at = folder; Gone(at); at = SyncMoves.Parent(at))
+                {
+                    var dir = new DirectoryInfo(LocalPathFor(pair.LocalFolder, at));
+                    try
+                    {
+                        if (!dir.Exists) continue;      // gone already: the one above may be empty now
+                        if ((dir.Attributes & kept) != 0 || dir.EnumerateFileSystemInfos().Any()) break;
+                        dir.Delete(recursive: false);
+                        SyncHistory.Add(pair.Id, "Deleted folder", at, "it was deleted in Google Drive");
+                    }
+                    catch (Exception) { break; }
+                }
+            }
         }
 
         /// <summary>
