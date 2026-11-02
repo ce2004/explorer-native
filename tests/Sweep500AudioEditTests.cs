@@ -28,7 +28,58 @@ namespace ExplorerNative
             EditedDecoderReadsTheLastPartToTheRealEnd();
             ConverterAsksTheLengthAgainAtTheEnd();
             DiscAudioIsNotConvertedOrEditedInPlace();
+            EditorLeavesTheLineUnderTheKeyboardAlone();
             await Task.CompletedTask;
+        }
+
+        // ---------- 4: every arrow said twice ----------
+
+        /// <summary>
+        /// The editor's state list rewrote the line under the keyboard after
+        /// every key. A list box changes a line by taking it out and putting it
+        /// back, which NVDA hears as landing on it again, so Right arrow said
+        /// "11 seconds" and then "Position 11.000 seconds of 3 minutes 45".
+        /// </summary>
+        private static void EditorLeavesTheLineUnderTheKeyboardAlone()
+        {
+            // The mechanism: only the selected line is taken out and put back.
+            int otherLines = -1, selectedLine = -1, selectedAfter = -1;
+            var thread = new Thread(() =>
+            {
+                using var form = new System.Windows.Forms.Form();
+                var box = new System.Windows.Forms.ListBox();
+                form.Controls.Add(box);
+                box.Items.AddRange(new object[] { "a", "b", "c", "d" });
+                _ = box.Handle;
+                box.SelectedIndex = 2;
+                int count = 0;
+                box.SelectedIndexChanged += (_, _) => count++;
+                box.Items[0] = "a2";
+                box.Items[3] = "d2";
+                otherLines = count;
+                box.Items[2] = "c2";
+                selectedLine = count - otherLines;
+                selectedAfter = box.SelectedIndex;
+            });
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
+            thread.Join();
+            Check($"rewriting list box lines that are not selected leaves the selection alone ({otherLines} changes)",
+                otherLines == 0 && selectedAfter == 2);
+            Check($"rewriting the selected line takes it out and puts it back ({selectedLine} selection changes)", selectedLine > 0);
+
+            // The decision: the editor leaves the focused line alone and brings
+            // it up to date once it is left.
+            var editor = SourceText("AudioEditorForm.cs");
+            var refresh = Between(editor, "private void Refresh_(", "private void Say(");
+            Check("the editor's list holds the line under the keyboard while it has focus",
+                refresh.Contains("_info.Focused") && refresh.Contains("hold"));
+            Check("and brings it up to date when the keyboard leaves it",
+                Between(editor, "public AudioEditorForm(", "// ------").Contains("SelectedIndexChanged"));
+            Check("the first fill replaces the Loading line under the keyboard",
+                Between(editor, "protected override async void OnShown", "private string? _openFailure").Contains("Refresh_(all: true)"));
+            Check("a spoken message does not rewrite the line under the keyboard",
+                !Between(editor, "private void Say(", "// ------").Contains("all: true"));
         }
 
         // ---------- 3: CD tracks and discs ----------

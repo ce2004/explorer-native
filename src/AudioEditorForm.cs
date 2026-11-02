@@ -99,6 +99,9 @@ namespace ExplorerNative
             _info.SelectedIndex = 0;
             Controls.Add(_info);
 
+            // The line the keyboard just left was held as it was (see Refresh_).
+            _info.SelectedIndexChanged += (_, _) => Refresh_();
+
             _timer = new System.Windows.Forms.Timer { Interval = 100 };
             _timer.Tick += (_, _) => Tick();
         }
@@ -130,7 +133,7 @@ namespace ExplorerNative
                 _tags = tags;
                 _history = new EditHistory(new EditList(frames, rate));
                 _cursor = 0;
-                Refresh_();
+                Refresh_(all: true);
                 Say($"Editing {Path.GetFileName(_path)}, {AudioPlayer.SpokenTime(_history.Current.Seconds)} long. Press F1 for the keys.");
             }
             catch (Exception ex)
@@ -199,11 +202,21 @@ namespace ExplorerNative
             return "No selection";
         }
 
-        /// <summary>Rewrites the list. Only lines that changed are touched, so the one under the cursor is not re-read for nothing.</summary>
-        private void Refresh_()
+        private bool _refreshing;
+
+        /// <summary>
+        /// Rewrites the list. Only lines that changed are touched, and the line
+        /// under the keyboard is left alone until it is left: a list box changes
+        /// a line by taking it out and putting it back, which NVDA hears as
+        /// landing on it again, so every arrow was said twice ("11 seconds", then
+        /// "Position 11.000 seconds of 3 minutes 45"). The change has been
+        /// spoken, and arrowing back to the line finds it up to date.
+        /// </summary>
+        /// <param name="all">The line under the keyboard too, when nothing else will say what changed.</param>
+        private void Refresh_(bool all = false)
         {
             var edits = Edits;
-            if (edits == null || _history == null) return;
+            if (edits == null || _history == null || _refreshing) return;
 
             var lines = new[]
             {
@@ -215,6 +228,8 @@ namespace ExplorerNative
             };
 
             int keep = Math.Max(0, _info.SelectedIndex);
+            int hold = !all && _info.Focused ? _info.SelectedIndex : -1;
+            _refreshing = true;
             _info.BeginUpdate();
             try
             {
@@ -222,11 +237,15 @@ namespace ExplorerNative
                 for (int i = 0; i < lines.Length; i++)
                 {
                     if (i >= _info.Items.Count) _info.Items.Add(lines[i]);
-                    else if (!Equals(_info.Items[i], lines[i])) _info.Items[i] = lines[i];
+                    else if (i != hold && !Equals(_info.Items[i], lines[i])) _info.Items[i] = lines[i];
                 }
                 _info.SelectedIndex = Math.Min(keep, _info.Items.Count - 1);
             }
-            finally { _info.EndUpdate(); }
+            finally
+            {
+                _info.EndUpdate();
+                _refreshing = false;
+            }
         }
 
         /// <summary>Spoken (queued, interrupting the last) and kept as the list's last line.</summary>
@@ -886,6 +905,7 @@ namespace ExplorerNative
                 _history = new EditHistory(new EditList(frames, _rate));
                 _cursor = 0;
                 _markStart = _markEnd = null;
+                Refresh_(all: true);
                 Say($"Replaced {name} with the edited audio{_notes}. The original is in the Recycle Bin");
             }
             catch (Exception ex)
