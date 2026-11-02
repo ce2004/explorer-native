@@ -17,6 +17,13 @@ namespace ExplorerNative
 
         /// <summary>Signed in, but Google wants the sign-in again: the button reconnects.</summary>
         NeedsSignIn,
+
+        /// <summary>
+        /// Switched on and signed in, but not on its letter: still connecting,
+        /// Google out of reach (the tray keeps trying), or something else in
+        /// the way. The sign-in is fine, so the button only tries again.
+        /// </summary>
+        NotConnectedYet,
     }
 
     /// <summary>
@@ -38,6 +45,17 @@ namespace ExplorerNative
         /// tray, which owns the drive; null (and so Connect) in tests.
         /// </summary>
         internal static Func<DriveAccountState>? AccountState;
+
+        /// <summary>
+        /// The account button's state from the drive's. Not on its letter used to
+        /// read as "Google needs you to sign in again" whenever Google simply
+        /// could not be reached, which sent people to sign out for nothing.
+        /// </summary>
+        internal static DriveAccountState AccountStateOf(bool enabled, bool savedSignIn, bool mounted, bool needsSignIn) =>
+            !enabled || !savedSignIn ? DriveAccountState.NotConnected
+            : needsSignIn ? DriveAccountState.NeedsSignIn
+            : mounted ? DriveAccountState.Connected
+            : DriveAccountState.NotConnectedYet;
 
         /// <summary>
         /// Takes the live drive off its letter, keeping the sign-in, after asking
@@ -866,6 +884,8 @@ namespace ExplorerNative
                         ("&Disconnect Google Drive", "Takes Google Drive off its drive letter. You stay signed in."),
                     DriveAccountState.NeedsSignIn =>
                         ("Reco&nnect Google Drive", "Google needs you to sign in again."),
+                    DriveAccountState.NotConnectedYet =>
+                        ("Reco&nnect Google Drive", "Google Drive is not connected right now. Press it to try again."),
                     _ => ("Co&nnect Google Drive", "Puts Google Drive on its drive letter."),
                 };
             }

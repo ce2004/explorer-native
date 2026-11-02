@@ -30,6 +30,7 @@ namespace ExplorerNative
             TrayMenuAccessKeysAreUnique();
             QuitDuringTheWinFspQuestionLeavesDriveOn();
             OkMovesDriveOnlyForANewLetter();
+            AccountButtonDoesNotBlameTheSignIn();
             await Task.CompletedTask;
         }
 
@@ -366,6 +367,65 @@ namespace ExplorerNative
             Check("drive letter: OK moves the drive only when the letter setting changed",
                 ifAt >= 0 && apply.IndexOf("LetterSettingChanged(", ifAt, StringComparison.Ordinal) is int changed &&
                 changed > ifAt && changed < move);
+        }
+
+        // ---- 9: Preferences blamed the sign-in when Drive was only offline or connecting ----
+
+        private static void AccountButtonDoesNotBlameTheSignIn()
+        {
+            Check("account button: signed in but not on its letter is not a sign-in problem",
+                SettingsForm.AccountStateOf(enabled: true, savedSignIn: true, mounted: false, needsSignIn: false)
+                    != DriveAccountState.NeedsSignIn);
+            Equal("account button: a lapsed sign-in on a live drive still asks for one", "NeedsSignIn",
+                SettingsForm.AccountStateOf(true, true, true, true).ToString());
+            Equal("account button: a working drive disconnects", "Connected",
+                SettingsForm.AccountStateOf(true, true, true, false).ToString());
+            Equal("account button: Drive off connects", "NotConnected",
+                SettingsForm.AccountStateOf(false, true, true, false).ToString());
+            Equal("account button: no saved sign-in connects", "NotConnected",
+                SettingsForm.AccountStateOf(true, false, false, false).ToString());
+
+            var tray = Source("TrayApplicationContext.cs");
+            Check("account button: the tray uses the mapping",
+                At(Body(tray, "public TrayApplicationContext("), "SettingsForm.AccountStateOf(") >= 0);
+
+            // What the button says in that state.
+            var dir = Path.Combine(Path.GetTempPath(), "en-account-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            var before = Settings.OverrideAppDataDir;
+            var hook = SettingsForm.AccountState;
+            Settings.OverrideAppDataDir = dir;
+            string text = "", description = "", error = "";
+            try
+            {
+                SettingsForm.AccountState = () => DriveAccountState.NotConnectedYet;
+                var thread = new System.Threading.Thread(() =>
+                {
+                    try
+                    {
+                        using var window = new SettingsForm(new Settings { GoogleDriveEnabled = true }, "Google Drive");
+                        window.BuildAllPages();
+                        var button = All<System.Windows.Forms.Button>(window)
+                            .First(b => b.Text.Contains("Google Drive", StringComparison.Ordinal) && !b.Text.Contains("monitor"));
+                        text = button.Text;
+                        description = button.AccessibleDescription ?? "";
+                    }
+                    catch (Exception ex) { error = ex.GetType().Name + ": " + ex.Message; }
+                });
+                thread.SetApartmentState(System.Threading.ApartmentState.STA);
+                thread.Start();
+                thread.Join(TimeSpan.FromSeconds(30));
+            }
+            finally
+            {
+                SettingsForm.AccountState = hook;
+                Settings.OverrideAppDataDir = before;
+                try { Directory.Delete(dir, true); } catch { }
+            }
+            Equal("account button: Preferences builds when Drive is not connected yet", "", error);
+            Equal("account button: not connected yet offers to reconnect, on N", "Reco&nnect Google Drive", text);
+            Check("account button: and says nothing about signing in",
+                description.Length is > 0 and < 70 && !description.Contains("sign in", StringComparison.OrdinalIgnoreCase), description);
         }
 
         private static IEnumerable<T> All<T>(System.Windows.Forms.Control root) where T : System.Windows.Forms.Control

@@ -180,10 +180,8 @@ namespace ExplorerNative
 
             // Preferences' account button says Connect, Disconnect or Reconnect
             // from the drive itself, and Disconnect acts on it directly.
-            SettingsForm.AccountState = () =>
-                !_settings.GoogleDriveEnabled || !GoogleDrive.HasSavedSignIn ? DriveAccountState.NotConnected
-                : _drive.Mounted && !_drive.NeedsSignIn ? DriveAccountState.Connected
-                : DriveAccountState.NeedsSignIn;
+            SettingsForm.AccountState = () => SettingsForm.AccountStateOf(
+                _settings.GoogleDriveEnabled, GoogleDrive.HasSavedSignIn, _drive.Mounted, _drive.NeedsSignIn);
             // It asks first while files on the letter are still on their way to
             // Google, as quitting does, with Preferences owning the question.
             SettingsForm.DisconnectDrive = owner =>
