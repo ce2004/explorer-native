@@ -29,6 +29,26 @@ namespace ExplorerNative
             await MarkOfTheWebTests();
             await SevenZipLineCapTests();
             await ChosenLinkTests();
+            await PasswordSevenZipTests();
+        }
+
+        /// <summary>Runs the bundled 7za with these arguments in a folder, for making fixtures.</summary>
+        private static int SevenZip(string folder, params string[] arguments)
+        {
+            var start = new System.Diagnostics.ProcessStartInfo(BsdTar.SevenZipExecutable!)
+            {
+                WorkingDirectory = folder,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            };
+            foreach (var a in arguments) start.ArgumentList.Add(a);
+            using var process = System.Diagnostics.Process.Start(start)!;
+            process.StandardOutput.ReadToEnd();
+            process.StandardError.ReadToEnd();
+            process.WaitForExit();
+            return process.ExitCode;
         }
 
         private static string NewDir(string what)
@@ -298,6 +318,59 @@ namespace ExplorerNative
             {
                 try { Directory.Delete(link); } catch { }
                 try { Directory.Delete(nested); } catch { }
+                try { Directory.Delete(dir, recursive: true); } catch { }
+            }
+        }
+
+        // ---------- 5: a 7z with its names encrypted ----------
+
+        /// <summary>
+        /// A protected 7z made with "Encrypt file names" (-mhe=on) was said to
+        /// be damaged, because only "ERROR: " lines were searched for the
+        /// password and "Headers Error" then counted as damage. A plain
+        /// protected 7z got the password sentence and a false "damaged" line.
+        /// </summary>
+        private static async Task PasswordSevenZipTests()
+        {
+            if (BsdTar.SevenZipExecutable == null) return;
+            var dir = NewDir("pw");
+            try
+            {
+                File.WriteAllText(Path.Combine(dir, "secret.txt"), string.Concat(Enumerable.Repeat("secret ", 2000)));
+                SevenZip(dir, "a", "-t7z", "-psecret", "-mhe=on", "headerpw.7z", "secret.txt");
+                SevenZip(dir, "a", "-t7z", "-psecret", "plainpw.7z", "secret.txt");
+
+                foreach (var name in new[] { "headerpw.7z", "plainpw.7z" })
+                {
+                    var archive = Path.Combine(dir, name);
+                    var result = await ArchiveEngine.ExtractAsync(archive, Path.Combine(dir, "out-" + name), PasteConflictPolicy.AutoRename,
+                        null, 1, null, CancellationToken.None);
+                    Check($"password 7z: {name} is said to be protected with a password, not damaged",
+                        File.Exists(archive) && result.Items == 0 &&
+                        result.Errors.Any(e => e.Contains("protected with a password")) &&
+                        !result.Errors.Any(e => e.Contains("damaged", StringComparison.OrdinalIgnoreCase)), Said(result));
+                }
+
+                string opened;
+                try { ArchiveBrowser.Open(Path.Combine(dir, "headerpw.7z"), null, CancellationToken.None); opened = "opened"; }
+                catch (Exception ex) { opened = ex.Message; }
+                Check("password 7z: Enter on one with encrypted names says it needs a password",
+                    opened.Contains("password") && !opened.Contains("damaged"), opened);
+
+                // Control: a cut plain 7z is still damaged.
+                File.WriteAllBytes(Path.Combine(dir, "big.bin"), Enumerable.Range(0, 400_000).Select(i => (byte)(i * 7919 >> 3)).ToArray());
+                SevenZip(dir, "a", "-t7z", "-mx1", "cut.7z", "big.bin", "secret.txt");
+                var bytes = File.ReadAllBytes(Path.Combine(dir, "cut.7z"));
+                bytes[bytes.Length / 3] ^= 0xFF;
+                bytes[bytes.Length / 3 + 1] ^= 0xFF;
+                File.WriteAllBytes(Path.Combine(dir, "cut.7z"), bytes);
+                var cut = await ArchiveEngine.ExtractAsync(Path.Combine(dir, "cut.7z"), Path.Combine(dir, "out-cut"),
+                    PasteConflictPolicy.AutoRename, null, 1, null, CancellationToken.None);
+                Check("password 7z: a damaged plain 7z is still said to be damaged",
+                    cut.Errors.Any(e => e.Contains("damaged")) && !cut.Errors.Any(e => e.Contains("password")), Said(cut));
+            }
+            finally
+            {
                 try { Directory.Delete(dir, recursive: true); } catch { }
             }
         }

@@ -373,14 +373,20 @@ namespace ExplorerNative
 
                 // "ERROR: Data Error : dir\f.bin", "ERROR: CRC Failed : f.bin",
                 // "ERROR: Data Error in encrypted file. Wrong password? : f.bin".
+                // A password is looked for on every line, not only "ERROR: "
+                // ones: a 7z with its names encrypted says "ERROR: <archive>",
+                // then "Cannot open encrypted archive. Wrong password?" and
+                // "Headers Error" on lines of their own, and was called
+                // damaged. Nothing about a protected archive is damage.
                 var distrusted = new List<string>();
-                bool damaged = false, locked = false;
+                bool damaged = false;
+                bool locked = lines.Any(l => l.Contains("Wrong password", StringComparison.OrdinalIgnoreCase) ||
+                                             l.Contains("Cannot open encrypted archive", StringComparison.OrdinalIgnoreCase));
                 foreach (var line in lines)
                 {
                     if (!line.StartsWith("ERROR: ", StringComparison.Ordinal)) continue;
                     var body = line[7..];
-                    if (body.Contains("Wrong password", StringComparison.OrdinalIgnoreCase)) locked = true;
-                    else if (LooksDamagedTo7Zip(body)) damaged = true;
+                    if (!locked && LooksDamagedTo7Zip(body)) damaged = true;
                     int at = body.LastIndexOf(" : ", StringComparison.Ordinal);
                     if (at > 0)
                     {
@@ -390,7 +396,7 @@ namespace ExplorerNative
                         distrusted.Add(ExtractionRules.Normalise(name.Replace('\\', '/')));
                     }
                 }
-                damaged |= lines.Any(LooksDamagedTo7Zip);
+                if (!locked) damaged |= lines.Any(LooksDamagedTo7Zip);
 
                 // Exit 2 with nothing named: it could not go on (a damaged header,
                 // a truncated file), so what came out is not trusted to be whole.
