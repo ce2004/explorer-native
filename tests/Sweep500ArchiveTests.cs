@@ -30,6 +30,7 @@ namespace ExplorerNative
             await SevenZipLineCapTests();
             await ChosenLinkTests();
             await PasswordSevenZipTests();
+            await SevenZipLinkTests();
         }
 
         /// <summary>Runs the bundled 7za with these arguments in a folder, for making fixtures.</summary>
@@ -368,6 +369,93 @@ namespace ExplorerNative
                     PasteConflictPolicy.AutoRename, null, 1, null, CancellationToken.None);
                 Check("password 7z: a damaged plain 7z is still said to be damaged",
                     cut.Errors.Any(e => e.Contains("damaged")) && !cut.Errors.Any(e => e.Contains("password")), Said(cut));
+            }
+            finally
+            {
+                try { Directory.Delete(dir, recursive: true); } catch { }
+            }
+        }
+
+        /// <summary>A tar of these entries: a name and its text, or a name, null and where it links to.</summary>
+        private static void WriteTar(string path, params (string Name, string? Text, string? LinkTo)[] entries)
+        {
+            using var file = File.Create(path);
+            using var writer = new TarWriter(file, TarEntryFormat.Pax);
+            foreach (var (name, text, linkTo) in entries)
+            {
+                if (linkTo != null)
+                {
+                    writer.WriteEntry(new PaxTarEntry(TarEntryType.SymbolicLink, name) { LinkName = linkTo });
+                    continue;
+                }
+                writer.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, name)
+                {
+                    DataStream = new MemoryStream(System.Text.Encoding.UTF8.GetBytes(text ?? "")),
+                });
+            }
+        }
+
+        // ---------- 6: links in a tar.xz through 7-Zip ----------
+
+        /// <summary>
+        /// 7-Zip cannot make a link without the privilege, and refuses any link
+        /// with ".." in it as dangerous (node's bin/npm). Both leave an empty
+        /// file in staging. Each was said as "the archive is damaged at this
+        /// point" (the dangerous one under its target's name, with the empty
+        /// file moved in), the staging path was quoted, and browsing called the
+        /// archive damaged. The decompressing half's inner tar was named as an
+        /// entry of its own.
+        /// </summary>
+        private static async Task SevenZipLinkTests()
+        {
+            if (BsdTar.SevenZipExecutable == null) return;
+            var dir = NewDir("links7");
+            try
+            {
+                WriteTar(Path.Combine(dir, "links.tar"),
+                    ("lib/cli.js", "cli", null),
+                    ("bin/npm", null, "../lib/cli.js"),
+                    ("out", null, "../../outside"),
+                    ("lib/same.js", null, "cli.js"),
+                    ("last.txt", "last", null));
+                SevenZip(dir, "a", "-txz", "links.tar.xz", "links.tar");
+                var archive = Path.Combine(dir, "links.tar.xz");
+
+                var into = Path.Combine(dir, "into");
+                Directory.CreateDirectory(Path.Combine(into, "bin"));
+                File.WriteAllText(Path.Combine(into, "bin", "npm"), "old");
+                var result = await ArchiveEngine.ExtractAsync(archive, into, PasteConflictPolicy.Overwrite, null, 1,
+                    null, CancellationToken.None);
+                var said = Said(result);
+                Check("7-Zip links: a link it refused does not land as an empty file, over a real one or new",
+                    File.ReadAllText(Path.Combine(into, "bin", "npm")) == "old" && !File.Exists(Path.Combine(into, "out")), said);
+                Check("7-Zip links: each link left out is said as a link",
+                    said.Contains("bin/npm: a symbolic link was not extracted") &&
+                    said.Contains("out: a symbolic link was not extracted") &&
+                    said.Contains("lib/same.js: a symbolic link was not extracted"), said);
+                Check("7-Zip links: a link is not called damage, and no staging folder or link target is quoted",
+                    !said.Contains("damaged") && !said.Contains(".extracting-") && !said.Contains("cli.js:") &&
+                    !said.Contains(@"..\lib") && !said.Contains("../lib"), said);
+                Check("7-Zip links: the files around the links come out",
+                    File.Exists(Path.Combine(into, "last.txt")) && File.Exists(Path.Combine(into, "lib", "cli.js")), said);
+
+                var listing = ArchiveBrowser.Open(archive, null, CancellationToken.None);
+                Check("7-Zip links: browsing a tarball with links does not call it damaged",
+                    !listing.Damaged && listing.Partial == null, listing.Partial);
+
+                // A cut tar.xz: the decompressing half names the inner "cut.tar".
+                var random = new Random(5);
+                var big = new byte[300_000];
+                random.NextBytes(big);
+                WriteTar(Path.Combine(dir, "cut.tar"), ("a.txt", "a", null), ("b.bin", Convert.ToBase64String(big), null));
+                SevenZip(dir, "a", "-txz", "-mx1", "cut.tar.xz", "cut.tar");
+                var bytes = File.ReadAllBytes(Path.Combine(dir, "cut.tar.xz"));
+                File.WriteAllBytes(Path.Combine(dir, "cut.tar.xz"), bytes[..(bytes.Length * 7 / 10)]);
+                var cut = await ArchiveEngine.ExtractAsync(Path.Combine(dir, "cut.tar.xz"), Path.Combine(dir, "cut-out"),
+                    PasteConflictPolicy.AutoRename, null, 1, null, CancellationToken.None);
+                Check("7-Zip links: a cut tar.xz does not name its inner tar as a damaged entry",
+                    !Said(cut).Contains("cut.tar:") && Said(cut).Contains("damaged") &&
+                    !File.Exists(Path.Combine(dir, "cut-out", "b.bin")), Said(cut));
             }
             finally
             {

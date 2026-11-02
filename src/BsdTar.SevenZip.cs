@@ -361,6 +361,11 @@ namespace ExplorerNative
                 }
                 finally { feeding?.Finish(); }
 
+                // Only the half that wrote the files names entries: the
+                // decompressing half's "Unexpected end of data : x.tar" names
+                // the inner tar, which was said as a damaged entry of its own.
+                var own = new List<string>(lines);
+
                 // The decompressing half's complaints count with the tar's:
                 // a damaged .xz is said by the first, not the second.
                 if (feeding != null)
@@ -379,46 +384,97 @@ namespace ExplorerNative
                 // "Headers Error" on lines of their own, and was called
                 // damaged. Nothing about a protected archive is damage.
                 var distrusted = new List<string>();
+                var links = new List<string>();
+                var notes = new List<string>();
                 bool damaged = false;
                 bool locked = lines.Any(l => l.Contains("Wrong password", StringComparison.OrdinalIgnoreCase) ||
                                              l.Contains("Cannot open encrypted archive", StringComparison.OrdinalIgnoreCase));
-                foreach (var line in lines)
+
+                // A name as the rules see it, without the staging folder, which
+                // is gone by the time anyone reads what was said.
+                var stagingShown = Unliteral(SevenZipPath(staging)).TrimEnd('\\') + "\\";
+                string Entry(string said)
+                {
+                    var name = Unliteral(said.Trim());
+                    if (name.StartsWith(stagingShown, StringComparison.OrdinalIgnoreCase)) name = name[stagingShown.Length..];
+                    return ExtractionRules.Normalise(name.Replace('\\', '/'));
+                }
+
+                // A link 7-Zip could not make ("Cannot create symbolic link :
+                // <reason> : <path>") or would not ("Dangerous link path was
+                // ignored : bin\npm : ..\lib\cli.js", any link with ".." in
+                // it) leaves an empty file in its place. Those are links left
+                // out, as the tar route says them, not damage; and the name of
+                // the dangerous one is the entry, not where it pointed.
+                const string dangerous = "Dangerous link path was ignored : ";
+                HashSet<string>? staged = null;
+                foreach (var line in own)
                 {
                     if (!line.StartsWith("ERROR: ", StringComparison.Ordinal)) continue;
                     var body = line[7..];
-                    if (!locked && LooksDamagedTo7Zip(body)) damaged = true;
+                    if (body.StartsWith(dangerous, StringComparison.OrdinalIgnoreCase))
+                    {
+                        var rest = body[dangerous.Length..];
+                        staged ??= StagedNames(staging);
+                        string? found = null;
+                        for (int cut = rest.IndexOf(" : ", StringComparison.Ordinal); cut > 0;
+                             cut = rest.IndexOf(" : ", cut + 3, StringComparison.Ordinal))
+                            if (staged.Contains(Entry(rest[..cut]))) found = Entry(rest[..cut]);
+                        int first = rest.IndexOf(" : ", StringComparison.Ordinal);
+                        links.Add(found ?? Entry(first > 0 ? rest[..first] : rest));
+                        continue;
+                    }
+
                     int at = body.LastIndexOf(" : ", StringComparison.Ordinal);
+                    if (body.StartsWith("Cannot create symbolic link", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (at > 0) links.Add(Entry(body[(at + 3)..]));
+                        continue;
+                    }
+
+                    bool hurt = !locked && LooksDamagedTo7Zip(body);
+                    if (hurt) damaged = true;
                     if (at > 0)
                     {
-                        var name = body[(at + 3)..].Trim();
-                        if (name.StartsWith(staging, StringComparison.OrdinalIgnoreCase))
-                            name = Path.GetRelativePath(staging, name);
-                        distrusted.Add(ExtractionRules.Normalise(name.Replace('\\', '/')));
+                        var name = Entry(body[(at + 3)..]);
+                        distrusted.Add(name);
+                        if (!locked)
+                            notes.Add(hurt
+                                ? $"{name}: the archive is damaged at this point"
+                                : $"{name}: it could not be extracted ({body[..at].Replace(" : ", ", ").Trim().TrimEnd('.')})");
                     }
                 }
                 if (!locked) damaged |= lines.Any(LooksDamagedTo7Zip);
 
                 // Exit 2 with nothing named: it could not go on (a damaged header,
                 // a truncated file), so what came out is not trusted to be whole.
-                bool unfinished = stalled || (exit >= 2 && distrusted.Count == 0);
+                bool unfinished = stalled || (exit >= 2 && distrusted.Count == 0 && links.Count == 0);
 
-                // Damage that names no file it wrote (the decompressing half
-                // names the inner tar; a .7z can name nothing): the file it was
+                // Damage that names no file it wrote (only the decompressing
+                // half complained, or a .7z named nothing): the file it was
                 // writing when it stopped is the one cut short, as bsdtar's last
                 // line is.
                 if (damaged && exit >= 2)
                     lock (printed)
                         if (printed.Count > 0 && !distrusted.Any(d => printed.Any(p =>
                                 string.Equals(ExtractionRules.Normalise(p.Name), d, StringComparison.OrdinalIgnoreCase))))
-                            distrusted.Add(ExtractionRules.Normalise(printed[^1].Name));
+                        {
+                            var last = ExtractionRules.Normalise(printed[^1].Name);
+                            distrusted.Add(last);
+                            notes.Add($"{last}: the archive is damaged at this point");
+                        }
 
                 if (locked)
                     errors.Add("This archive is protected with a password, which Explorer Native can't open yet");
-                else if (exit >= 2 && !damaged && !stalled)
-                    errors.Add(SevenZipProblem(exit, lines, extracting: true));
+                else if (exit >= 2 && !damaged && !stalled && distrusted.Count == 0 && links.Count == 0)
+                    errors.Add(SevenZipProblem(exit, lines, extracting: true)
+                        .Replace(stagingShown, "", StringComparison.OrdinalIgnoreCase));
 
+                // Links left out are withdrawn like a damaged entry: their empty
+                // stand-in never goes in, over a real file or as a new one.
+                var stoppedAt = distrusted.Concat(links).ToList();
                 var (done, conflicts, _) = Rehome(staging, destination, policy, ask, reporter, errors, token,
-                    distrusted.Count > 0 || unfinished ? distrusted : null, unfinished,
+                    stoppedAt.Count > 0 || unfinished ? stoppedAt : null, unfinished,
                     staged =>
                     {
                         List<(string Name, string? Failure)> names;
@@ -426,8 +482,9 @@ namespace ExplorerNative
                         return Withheld(names, staged, destination, null, token);
                     }, zone);
 
-                foreach (var name in distrusted)
-                    if (!locked) errors.Add($"{name}: the archive is damaged at this point");
+                errors.AddRange(notes);
+                foreach (var link in links.Distinct(StringComparer.OrdinalIgnoreCase))
+                    errors.Add($"{link}: a symbolic link was not extracted");
                 if (damaged) errors.Add(ArchiveEngine.DamagedMessage(done));
                 if (unfinished) stoppedShort?.Invoke();
 
