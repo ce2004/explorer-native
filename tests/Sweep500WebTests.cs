@@ -30,7 +30,61 @@ namespace ExplorerNative
             DetailsNeverSpeakOnThePc();
             MoveOutOfDriveThatFailedSaysCopied();
             MoveInsideDriveCountsWhatMoved();
+            OwnerTrustNeedsTheTailscaleService();
+            EveryLoopbackAddressSharesOneCount();
             await Task.CompletedTask;
+        }
+
+        // ---------------- 10. owner trust only from the Tailscale service, not anything named tailscaled ----------------
+
+        private static void OwnerTrustNeedsTheTailscaleService()
+        {
+            const int service = 3844;
+            var svc = new ProcessFacts(service, 700, 0, 1000, "tailscaled.exe");
+            var child = new ProcessFacts(5532, service, 0, 2000, "tailscaled.exe");
+            Check("owner trust: the Tailscale service's own process is Tailscale", ConnectServer.IsTailscaleService(svc, null, service));
+            Check("owner trust: the tailscaled the service started is Tailscale", ConnectServer.IsTailscaleService(child, svc, service));
+            var copy = new ProcessFacts(9100, 4200, 0, 3000, "tailscaled.exe");
+            var copier = new ProcessFacts(4200, 700, 0, 2500, "svchost.exe");
+            Check("owner trust: a tailscaled a service account started in session 0 is not, so it needs the pairing code",
+                !ConnectServer.IsTailscaleService(copy, copier, service));
+            var reused = new ProcessFacts(service, 700, 0, 5000, "tailscaled.exe");
+            Check("owner trust: a child whose parent id was reused by a newer service process is not",
+                !ConnectServer.IsTailscaleService(child with { CreateTime = 4000 }, reused, service));
+            Check("owner trust: with no Tailscale service running, nothing is", !ConnectServer.IsTailscaleService(child, svc, 0));
+            Check("owner trust: something else the service started is not", !ConnectServer.IsTailscaleService(child with { Name = "cmd.exe" }, svc, service));
+
+            // Live, on this PC: the snapshot reads, the suite itself is not Tailscale, and if Tailscale runs here
+            // one of its processes passes (so the owner is still let in without the code).
+            var table = ProcessTable.Snapshot();
+            int me = Environment.ProcessId;
+            Check("owner trust: the process snapshot finds this process with its parent and start time",
+                table.TryGetValue(me, out var self) && self.CreateTime > 0 && self.Name.Length > 0, table.Count.ToString());
+            Check("owner trust: this suite is not taken for Tailscale",
+                !ConnectServer.IsTailscaleService(self, table.TryGetValue(self.ParentPid, out var sp) ? sp : null, TailscaleServiceProcess.Pid()));
+            int live = TailscaleServiceProcess.Pid();
+            if (live > 0)
+            {
+                bool any = false;
+                foreach (var f in table.Values)
+                    if (ConnectServer.IsTailscaleService(f, table.TryGetValue(f.ParentPid, out var pf) ? pf : null, live)) any = true;
+                Check("owner trust: the Tailscale service running on this PC passes", any, $"service {live}");
+            }
+            else Console.WriteLine("  (no Tailscale service running here; the live check is skipped)");
+        }
+
+        // ---------------- 11. every loopback address shares one count of wrong codes ----------------
+
+        private static void EveryLoopbackAddressSharesOneCount()
+        {
+            var one = ConnectServer.AddressKey(System.Net.IPAddress.Loopback);
+            Check("pairing code: 127.0.0.2, 127.45.6.7 and ::ffff:127.0.0.3 count as 127.0.0.1, so new addresses get no new guesses",
+                ConnectServer.AddressKey(System.Net.IPAddress.Parse("127.0.0.2")) == one &&
+                ConnectServer.AddressKey(System.Net.IPAddress.Parse("127.45.6.7")) == one &&
+                ConnectServer.AddressKey(System.Net.IPAddress.Parse("::ffff:127.0.0.3")) == one &&
+                ConnectServer.AddressKey(System.Net.IPAddress.IPv6Loopback) == one, one);
+            Check("pairing code: another address keeps a count of its own",
+                ConnectServer.AddressKey(System.Net.IPAddress.Parse("100.64.0.9")) == "addr:100.64.0.9");
         }
 
         // ---------------- 8. a move out of Drive with a failure says nothing left Drive ----------------
