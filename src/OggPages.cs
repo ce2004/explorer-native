@@ -163,6 +163,102 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// The comment fields ("TITLE", "Converter test") of the first Opus,
+        /// Vorbis, FLAC or Speex stream in an Ogg file, or null when it is not
+        /// one or its header cannot be read. Reads only the head of the file.
+        /// Windows' property handler for Ogg gives a duration and nothing else.
+        /// </summary>
+        public static List<(string Key, string Value)>? ReadComments(string path)
+        {
+            try
+            {
+                using var stream = new FileStream(NameRules.ExactPath(path), FileMode.Open, FileAccess.Read,
+                    FileShare.ReadWrite | FileShare.Delete, 4096);
+                // Cover art can make the comment packet megabytes long.
+                var pages = new OggPages(stream) { MostPacketBytes = 16 << 20 };
+                if (!pages.FindStream(_ => KindOf(pages.Body) != 0, out var first)) return null;
+
+                pages.Restart(first.Offset);
+                var packets = new List<byte[]>();
+                while (packets.Count < 2 && pages.NextPage - first.Offset < (32L << 20))
+                    if (!pages.ReadPackets(packets, out _, out _, out _)) break;
+                return packets.Count < 2 ? null : CommentsIn(packets[0], packets[1]);
+            }
+            catch { return null; }
+        }
+
+        /// <summary>1 Opus, 2 Vorbis, 3 FLAC, 4 Speex, from a stream's first packet; 0 for anything else.</summary>
+        private static int KindOf(ReadOnlySpan<byte> id)
+        {
+            static bool At(ReadOnlySpan<byte> data, int at, string ascii)
+            {
+                if (data.Length < at + ascii.Length) return false;
+                for (int i = 0; i < ascii.Length; i++) if (data[at + i] != ascii[i]) return false;
+                return true;
+            }
+
+            if (At(id, 0, "OpusHead")) return 1;
+            if (id.Length > 0 && id[0] == 1 && At(id, 1, "vorbis")) return 2;
+            if (id.Length > 0 && id[0] == 0x7F && At(id, 1, "FLAC")) return 3;
+            if (At(id, 0, "Speex   ")) return 4;
+            return 0;
+        }
+
+        /// <summary>
+        /// The fields of a comment header, given the stream's first two packets;
+        /// null when the second is not the comment header the first calls for.
+        /// Every length is checked against what is there.
+        /// </summary>
+        internal static List<(string Key, string Value)>? CommentsIn(byte[] id, byte[] comment)
+        {
+            int at;
+            switch (KindOf(id))
+            {
+                case 1:
+                    if (comment.Length < 8 || System.Text.Encoding.ASCII.GetString(comment, 0, 8) != "OpusTags") return null;
+                    at = 8;
+                    break;
+                case 2:
+                    if (comment.Length < 7 || comment[0] != 3 || System.Text.Encoding.ASCII.GetString(comment, 1, 6) != "vorbis") return null;
+                    at = 7;
+                    break;
+                case 3:
+                    if (comment.Length < 4 || (comment[0] & 0x7F) != 4) return null;
+                    at = 4;
+                    break;
+                case 4:
+                    at = 0;
+                    break;
+                default:
+                    return null;
+            }
+
+            uint Le32(int from) => (uint)(comment[from] | comment[from + 1] << 8 | comment[from + 2] << 16 | comment[from + 3] << 24);
+
+            if (at + 4 > comment.Length) return null;
+            uint vendor = Le32(at);
+            at += 4;
+            if (vendor > comment.Length - at) return null;
+            at += (int)vendor;
+            if (at + 4 > comment.Length) return null;
+            uint count = Le32(at);
+            at += 4;
+
+            var fields = new List<(string Key, string Value)>();
+            for (uint k = 0; k < count && at + 4 <= comment.Length; k++)
+            {
+                uint length = Le32(at);
+                at += 4;
+                if (length > comment.Length - at) break;
+                var entry = System.Text.Encoding.UTF8.GetString(comment, at, (int)length);
+                at += (int)length;
+                int eq = entry.IndexOf('=');
+                if (eq > 0) fields.Add((entry[..eq], entry[(eq + 1)..]));
+            }
+            return fields;
+        }
+
+        /// <summary>
         /// Where the Ogg data starts: 0, or just past any ID3v2 tags some
         /// taggers and download tools put in front of an .ogg or .opus file.
         /// Reads only the tag headers and four bytes after them, never a scan,

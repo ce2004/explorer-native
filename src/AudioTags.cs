@@ -300,10 +300,53 @@ namespace ExplorerNative
 
         /// <summary>
         /// The seven tags the converter copies, or null when the file has none
-        /// of them (or Windows has no property handler for it, as for Ogg).
-        /// Runs on a worker.
+        /// of them. Runs on a worker. Windows' property handler for Ogg gives a
+        /// duration and no tags, so converting or replacing an Opus file lost
+        /// them all: Ogg files are read from their own comment header.
         /// </summary>
-        public static AudioTagSet? ReadTagSet(string path)
+        public static AudioTagSet? ReadTagSet(string path) =>
+            ReadStoreTagSet(path) ?? (OggPages.ReadComments(path) is { } fields ? FromVorbisFields(fields) : null);
+
+        /// <summary>
+        /// The seven tags from Vorbis comment fields, matched without regard to
+        /// case; repeated artists joined, blank values absent, the year from the
+        /// date's first four digits, the track from "7/12"'s leading number.
+        /// </summary>
+        internal static AudioTagSet? FromVorbisFields(IReadOnlyList<(string Key, string Value)> fields)
+        {
+            List<string> All(string key)
+            {
+                var values = new List<string>();
+                foreach (var (k, v) in fields)
+                    if (k.Trim().Equals(key, StringComparison.OrdinalIgnoreCase) && v.Trim().Length > 0 && !values.Contains(v.Trim()))
+                        values.Add(v.Trim());
+                return values;
+            }
+
+            string? One(params string[] keys)
+            {
+                foreach (var key in keys)
+                    if (All(key) is { Count: > 0 } values) return values[0];
+                return null;
+            }
+
+            uint? Number(string? text, int digits, uint most)
+            {
+                if (text == null) return null;
+                var match = digits == 4
+                    ? System.Text.RegularExpressions.Regex.Match(text, @"\d{4}")
+                    : System.Text.RegularExpressions.Regex.Match(text, @"^\s*\d{1,9}");
+                return match.Success && uint.TryParse(match.Value.Trim(), out var n) && n > 0 && n <= most ? n : null;
+            }
+
+            var artists = All("ARTIST");
+            var tags = new AudioTagSet(One("TITLE"), artists.Count > 0 ? string.Join("; ", artists) : null, One("ALBUM"),
+                One("ALBUMARTIST", "ALBUM ARTIST"), One("GENRE"),
+                Number(One("DATE", "YEAR"), 4, 9999), Number(One("TRACKNUMBER"), 0, 99999));
+            return tags.IsEmpty ? null : tags;
+        }
+
+        private static AudioTagSet? ReadStoreTagSet(string path)
         {
             IPropertyStore? store = null;
             try { store = Open(path); } catch { }

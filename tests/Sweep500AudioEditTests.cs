@@ -29,7 +29,70 @@ namespace ExplorerNative
             ConverterAsksTheLengthAgainAtTheEnd();
             DiscAudioIsNotConvertedOrEditedInPlace();
             EditorLeavesTheLineUnderTheKeyboardAlone();
+            OggTagsAreReadAndCarried();
             await Task.CompletedTask;
+        }
+
+        // ---------- 6: Ogg tags ----------
+
+        /// <summary>
+        /// Windows' property handler for Ogg gives a duration and no tags, and
+        /// tags were read only through it, so converting an Opus album to MP3 or
+        /// FLAC, or replacing an edited Opus file, dropped every tag in silence.
+        /// </summary>
+        private static void OggTagsAreReadAndCarried()
+        {
+            var dir = NewDir();
+            try
+            {
+                var wav = Path.Combine(dir, "tone.wav");
+                Tests.WriteTone(wav, 1, 0.5);
+                var opus = Path.Combine(dir, "tagged.opus");
+                var tags = new AudioTagSet("Converter test", "Explorer Native", "Tones", "The Band", "Test", 2024, 7);
+                using (var decoder = TrackDecoder.Open(wav, null, 0, 0, out _)!)
+                    AudioConverter.Encode(decoder, AudioFormats.ById("opus-96"), opus, 16, tags, null, CancellationToken.None, new List<string>());
+
+                var read = AudioTags.ReadTagSet(opus);
+                Equal("an Opus file's tags are read",
+                    "Converter test|Explorer Native|Tones|The Band|Test|2024|7",
+                    read == null ? "(none)" : $"{read.Title}|{read.Artist}|{read.Album}|{read.AlbumArtist}|{read.Genre}|{read.Year}|{read.Track}");
+
+                // Carried through a conversion.
+                var target = Path.Combine(dir, "tagged.flac");
+                string written = AudioConverter.ConvertFile(new ConvertJob(opus, target, 0, false), AudioFormats.ById("flac"),
+                    null, CancellationToken.None, new List<string>());
+                var carried = AudioTags.ReadTagSet(written);
+                Equal("converting an Opus file to FLAC keeps its tags",
+                    "Converter test|Explorer Native|Tones",
+                    carried == null ? "(none)" : $"{carried.Title}|{carried.Artist}|{carried.Album}");
+
+                // A Vorbis comment header built by hand: a date, a track out of a total, repeated artists.
+                var id = new byte[30];
+                id[0] = 1;
+                System.Text.Encoding.ASCII.GetBytes("vorbis").CopyTo(id, 1);
+                var comment = new List<byte> { 3 };
+                comment.AddRange(System.Text.Encoding.ASCII.GetBytes("vorbis"));
+                void Field(string text)
+                {
+                    var bytes = System.Text.Encoding.UTF8.GetBytes(text);
+                    comment.AddRange(BitConverter.GetBytes(bytes.Length));
+                    comment.AddRange(bytes);
+                }
+                Field("test vendor");
+                comment.AddRange(BitConverter.GetBytes(5));
+                Field("title=Café");
+                Field("DATE=1999-05-01");
+                Field("TRACKNUMBER=3/12");
+                Field("ARTIST=One");
+                Field("ARTIST=Two");
+                var fields = OggPages.CommentsIn(id, comment.ToArray());
+                var parsed = fields == null ? null : AudioTags.FromVorbisFields(fields);
+                Equal("a Vorbis comment header gives title, artists, year and track",
+                    "Café|One; Two|1999|3",
+                    parsed == null ? "(none)" : $"{parsed.Title}|{parsed.Artist}|{parsed.Year}|{parsed.Track}");
+                Check("a file that is not Ogg has no Ogg comments", OggPages.ReadComments(wav) == null);
+            }
+            finally { Cleanup(dir); }
         }
 
         // ---------- 4: every arrow said twice ----------
