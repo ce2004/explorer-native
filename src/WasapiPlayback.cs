@@ -943,7 +943,56 @@ namespace ExplorerNative
         private bool PumpShouldYield() =>
             !_pumping ||
             !double.IsNaN(Volatile.Read(ref _seekTo)) ||
-            Volatile.Read(ref _switchTo) != null;
+            (Volatile.Read(ref _switchTo) != null && !_cushioning);
+
+        // A device change waiting while the ring is filled deep first, on the
+        // pump thread only. See TakeSwitchWhenCushioned.
+        private bool _cushioning;
+        private long _cushionUntil;
+        private const int CushionMostMilliseconds = 500;
+
+        /// <summary>Called just before a new device is opened. Tests only.</summary>
+        internal static Action? BeforeSwitchOpenForTests;
+
+        /// <summary>
+        /// The device change waiting, once the ring holds enough to keep the old
+        /// device playing while the new one opens; otherwise null.
+        ///
+        /// The open blocks this thread, the only one that fills the ring, for as
+        /// long as the device takes (seconds for some Bluetooth endpoints), and a
+        /// local track keeps only 0.2s in it. The old device used to play that
+        /// and then silence, said as "Buffering", until the open finished. So
+        /// the ring is filled to the brim first (milliseconds for a local file),
+        /// for at most half a second, and drains back to its usual depth after.
+        /// Not when nothing would be heard: paused, or the old device gone.
+        /// </summary>
+        private string? TakeSwitchWhenCushioned()
+        {
+            var waiting = Volatile.Read(ref _switchTo);
+            if (waiting == null) { _cushioning = false; return null; }
+
+            bool needed = !_paused && !_resting && !_sourceDone && !_renderer.Lost &&
+                          !(waiting == DefaultMoved && _renderer.DeviceId.Length != 0);
+            if (needed && !_cushioning)
+            {
+                _cushioning = true;
+                _cushionUntil = Environment.TickCount64 + CushionMostMilliseconds;
+                return null;
+            }
+            if (needed && Environment.TickCount64 < _cushionUntil)
+            {
+                int stored, room;
+                lock (_ringGate)
+                {
+                    stored = _stored / Math.Max(1, _channels);
+                    room = (_ring.Length - _stored) / Math.Max(1, _channels);
+                }
+                if (Math.Min(room, TargetFrames() - stored) >= SmallestWriteFrames) return null;
+            }
+
+            _cushioning = false;
+            return Interlocked.Exchange(ref _switchTo, null);
+        }
 
         /// <summary>
         /// Reads ahead into the ring, and does the waiting so the renderer does
@@ -981,7 +1030,7 @@ namespace ExplorerNative
                     _lostRetryDelay = Math.Min(_lostRetryDelay * 2, 30_000);
                 }
 
-                var switchTo = Interlocked.Exchange(ref _switchTo, null);
+                var switchTo = TakeSwitchWhenCushioned();
                 if (switchTo != null) SwitchNow(switchTo);
 
                 // Both are sized from channel counts a device switch can change
@@ -1371,7 +1420,7 @@ namespace ExplorerNative
             // in holds a 1.3GB Ogg, against a budget of one gigabyte. Asking the
             // plainer question costs nothing and cannot be wrong in the direction
             // that stutters.
-            return download != null && download.Available < download.Length
+            return _cushioning || download != null && download.Available < download.Length
                 ? AtDeviceRate(RingFrames)
                 : AtDeviceRate(ShallowFrames);
         }
@@ -1678,6 +1727,7 @@ namespace ExplorerNative
             fresh.SetSuspended(true);
 
             Watch(fresh);
+            BeforeSwitchOpenForTests?.Invoke();
             if (!fresh.Start(Fill, _preferRaw, string.IsNullOrEmpty(deviceId) ? null : deviceId))
             {
                 // The old one is still running and still has the track. A device

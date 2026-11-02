@@ -33,6 +33,7 @@ namespace ExplorerNative
             try
             {
                 ResetDeviceIsReopenedTests(dir);
+                SlowOpenKeepsPlayingTests(dir);
             }
             finally
             {
@@ -270,6 +271,59 @@ namespace ExplorerNative
                 afterSecond == "", $"device after the second reset: \"{afterSecond}\"");
             Check("and nothing keeps switching after that", switchesAfterSecond == 0,
                 $"{switchesAfterSecond} more switches");
+        }
+
+        // ---- bug 5: a slow device open ----
+
+        /// <summary>
+        /// The new device opens on the pump thread, the only thing that fills
+        /// the ring, and a local track keeps only 0.2s there. While a slow
+        /// Bluetooth endpoint opened, the old device played that and then
+        /// silence, said as "Buffering". It must keep playing through the open.
+        /// </summary>
+        private static void SlowOpenKeepsPlayingTests(string dir)
+        {
+            var endpoint = WasapiRenderer.DefaultEndpointId();
+            if (endpoint == null)
+            {
+                Console.WriteLine("  (no playback device here; the slow-open checks are skipped)");
+                return;
+            }
+
+            var wav = System.IO.Path.Combine(dir, "slow.wav");
+            Tests.WriteTone(wav, 8, 0.5, 44100, 2);
+
+            string problem = "";
+            double early = 0, late = 0;
+            bool starvedBeforeSwitch = false;
+            bool finished = RunWithin(60_000, () =>
+            {
+                using var playback = new WasapiPlayback { Gain = 0f };
+                if (!playback.Start(wav, preferRaw: false)) { problem = "did not start: " + playback.Diagnostic; return; }
+                if (!WaitFor(() => playback.Position > 0.3, 4000)) { problem = "the clock never moved"; return; }
+
+                bool switched = false;
+                playback.Starved += starving => { if (starving && !Volatile.Read(ref switched)) starvedBeforeSwitch = true; };
+                playback.DeviceSwitched += (_, _) => Volatile.Write(ref switched, true);
+                WasapiPlayback.BeforeSwitchOpenForTests = () => Thread.Sleep(1500);
+                try
+                {
+                    playback.SwitchDevice(endpoint);
+                    Thread.Sleep(100);
+                    early = playback.Position;
+                    Thread.Sleep(1200);
+                    late = playback.Position;
+                    if (!WaitFor(() => Volatile.Read(ref switched), 15_000)) problem = "the switch never finished";
+                }
+                finally { WasapiPlayback.BeforeSwitchOpenForTests = null; }
+                playback.Stop();
+            });
+
+            Check("the slow-open harness finished", finished && problem.Length == 0,
+                finished ? problem : "did not finish in 60 seconds");
+            Check($"the old device keeps playing while a slow device opens ({early:0.##}s to {late:0.##}s)",
+                late - early >= 1.0);
+            Check("and nothing says Buffering while it opens", !starvedBeforeSwitch);
         }
 
         // ---- bug 6: Same lift at any volume and the volume control ----
