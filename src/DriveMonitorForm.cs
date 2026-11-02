@@ -234,6 +234,9 @@ namespace ExplorerNative
         {
             public LineList()
             {
+                // A list, not a table (see MainForm.FileListView): since .NET 9 a
+                // details-view ListView otherwise reports itself to UIA as a Table.
+                AccessibleRole = AccessibleRole.List;
                 View = View.Details;
                 HeaderStyle = ColumnHeaderStyle.None;
                 FullRowSelect = true;

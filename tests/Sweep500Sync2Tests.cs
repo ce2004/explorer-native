@@ -36,6 +36,7 @@ namespace ExplorerNative
                 await KeepGivesThePassProblem(sandbox);
                 await KeepInDownloadOnlySaysWhyNot(sandbox);
                 await KeepSaysWhyFilesStayed(sandbox);
+                SyncListsAreLists();
             }
             finally
             {
@@ -184,6 +185,42 @@ namespace ExplorerNative
                     && !edited.Message.Contains("Try again"), edited.Message);
                 Check("and the edit is still on the PC", File.ReadAllText(rig.PathOf("School/one.txt")) == "ONE");
             }
+        }
+
+        /// <summary>
+        /// Bug 4: the sync window's Synced folders and Status lists and the
+        /// History list (all LineList) say they are lists to UIA, not tables.
+        /// </summary>
+        private static void SyncListsAreLists()
+        {
+            string role = "", controlType = "";
+            var thread = new System.Threading.Thread(() =>
+            {
+                using var list = new DriveMonitorForm.LineList();
+                role = list.AccessibleRole.ToString();
+                try
+                {
+                    _ = list.Handle;
+                    var accessible = list.AccessibilityObject;
+                    var get = accessible.GetType().GetMethods(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic)
+                        .FirstOrDefault(m => m.Name == "GetPropertyValue" && m.GetParameters().Length == 1 && m.GetParameters()[0].ParameterType.IsEnum);
+                    if (get != null)
+                    {
+                        var value = get.Invoke(accessible, new[] { Enum.ToObject(get.GetParameters()[0].ParameterType, 30003) });
+                        var plain = value?.GetType().GetMethod("ToObject", Type.EmptyTypes)?.Invoke(value, null) ?? value;
+                        controlType = plain?.ToString() ?? "";
+                    }
+                }
+                catch (Exception ex) { controlType = "probe failed: " + ex.GetType().Name; }
+            });
+            thread.SetApartmentState(System.Threading.ApartmentState.STA);
+            thread.Start();
+            thread.Join();
+            Equal("sync window lists say they are lists, not tables", "List", role);
+            if (controlType.Length > 0 && !controlType.StartsWith("probe failed", StringComparison.Ordinal))
+                Equal("and UIA hears ControlType List (50008), not Table (50036)", "50008", controlType);
+            else
+                Console.WriteLine("  (UIA control type not readable here: " + controlType + ")");
         }
 
         /// <summary>
