@@ -82,6 +82,16 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// The files the player has loaded (playing or paused), so the editor
+        /// can ask before anything is typed rather than refuse after Save.
+        /// </summary>
+        public static string[] LoadedAmong(IReadOnlyList<string> paths, string? loadedPath)
+        {
+            if (string.IsNullOrEmpty(loadedPath)) return Array.Empty<string>();
+            return paths.Where(p => string.Equals(p, loadedPath, StringComparison.OrdinalIgnoreCase)).ToArray();
+        }
+
+        /// <summary>
         /// Why a file will not be written, decided from its path and the player
         /// alone, with no read. Null when it is worth trying.
         /// </summary>
