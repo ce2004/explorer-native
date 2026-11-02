@@ -42,6 +42,7 @@ namespace ExplorerNative
                 await InBatches(() => FolderDeletedOnDriveTests(sandbox, "batched"));
                 await FolderDeletedOnDriveTests(sandbox, "small");
                 await InBatches(() => FreeUpDriveCountTests(sandbox));
+                await SharedDriveQuotaTests(sandbox);
             }
             finally
             {
@@ -272,6 +273,44 @@ namespace ExplorerNative
             try { await rig.Pass(); }
             finally { DriveMonitor.FullListEvery = every; }
             Equal("free up count: a whole listing agrees", "19", rig.Monitor.StatusOf(rig.Pair.Id).DriveFound.ToString());
+        }
+
+        // ---------------- a shared drive and the person's own quota ----------------
+
+        /// <summary>
+        /// Files in a shared drive count against the organisation's storage,
+        /// not the person's own. With their own Drive full, every upload to a
+        /// shared-drive pair stopped as "Google Drive is full", in the careful
+        /// loop and the fast lanes alike. A My Drive pair still stops.
+        /// </summary>
+        private static async Task SharedDriveQuotaTests(string sandbox)
+        {
+            async Task<(string? Problem, int OnDrive)> Run(string drivePath, int files, bool batched = false, bool sharedById = false)
+            {
+                var account = new GoogleDrive();
+                account.SetQuotaForTests(1000, 1000);
+                (string?, int) result = default;
+                async Task Go()
+                {
+                    using var rig = new Rig(sandbox, SyncMode.UploadOnly, drivePath: drivePath, drive: account,
+                        wrap: sharedById ? d => new SharedDriveHandler(d) : null);
+                    for (int i = 0; i < files; i++) rig.Write($"f{i:D3}.txt", "ten bytes!", T0);
+                    var problem = await rig.Pass();
+                    result = (problem, rig.DriveTree().Count);
+                }
+                if (batched) await InBatches(Go); else await Go();
+                return result;
+            }
+
+            var (problem, onDrive) = await Run("Shared drives/Team", 1);
+            Check("shared drive quota: a full My Drive does not stop uploads to a shared drive", problem == null && onDrive == 1, problem);
+            (problem, onDrive) = await Run("Shared drives/Team", 70);
+            Check("shared drive quota: nor the fast lane's", problem == null && onDrive == 70, $"{onDrive} up; {problem}");
+            (problem, onDrive) = await Run("Team folder", 1, batched: true, sharedById: true);
+            Check("shared drive quota: a shared drive known by its drive id, not its path, too", problem == null && onDrive == 1, problem);
+            (problem, onDrive) = await Run("My Drive/Music", 1);
+            Check("shared drive quota: a My Drive pair still stops when My Drive is full",
+                problem != null && problem.StartsWith("paused: Google Drive is full", StringComparison.Ordinal) && onDrive == 0, problem);
         }
 
         // ---------------- a recorded folder that became a Drive twin ----------------

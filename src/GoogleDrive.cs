@@ -246,6 +246,9 @@ namespace ExplorerNative
 
         public bool Mounted => Letter != null;
 
+        /// <summary>For the suite: the account's storage, as About would say it.</summary>
+        internal void SetQuotaForTests(long used, long limit) { QuotaUsed = used; QuotaLimit = limit; }
+
         /// <summary>For the suite: a mount over the fake Drive, with no sign-in and no letter.</summary>
         internal void UseForTests(DriveMount mount, DriveClient client)
         {

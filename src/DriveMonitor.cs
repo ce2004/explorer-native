@@ -3099,6 +3099,7 @@ namespace ExplorerNative
             bool driveKnown = true;
             try { driveId = await Patiently(pair, () => client.DriveOf(pair.DriveFolderId, token), client, token).ConfigureAwait(false); }
             catch (Exception) when (!token.IsCancellationRequested) { driveKnown = false; }
+            if (driveKnown) lock (_gate) _driveOf[pair.Id] = driveId;
 
             // The retry after FullListingNeededException comes here with the feed
             // still usable and every recorded folder known: First() then threw
@@ -3530,6 +3531,19 @@ namespace ExplorerNative
             SaveState(pair.Id, header);
             await TidyTwinFoldersAsync(client, pair, rules, clashing, folders, tally, token).ConfigureAwait(false);
             FinishPass(pair, header, tally, unusable, clashing, localClashing);
+        }
+
+        /// <summary>
+        /// Whether the pair's Drive folder is in a shared drive. Files there
+        /// count against the organisation's storage, not the person's own, so
+        /// the account's quota says nothing about room there (a full My Drive
+        /// stopped every upload to a shared drive as "Google Drive is full").
+        /// Google's own refusal still stops a shared drive that really is full.
+        /// </summary>
+        private bool OnSharedDrive(DriveSyncPair pair)
+        {
+            if ((pair.DriveFolderPath ?? "").StartsWith("Shared drives/", StringComparison.Ordinal)) return true;
+            lock (_gate) return _driveOf.TryGetValue(pair.Id, out var driveId) && driveId != null;
         }
 
         /// <summary>
@@ -4044,7 +4058,7 @@ namespace ExplorerNative
                             break;
                         }
                     }
-                    if (action.Kind is SyncActionKind.Upload or SyncActionKind.KeepBothLocalWins && _drive.QuotaLimit > 0)
+                    if (action.Kind is SyncActionKind.Upload or SyncActionKind.KeepBothLocalWins && _drive.QuotaLimit > 0 && !OnSharedDrive(pair))
                     {
                         long room = _drive.QuotaLimit - _drive.QuotaUsed - uploadedThisPass;
                         if (local[path].Size > room)
@@ -5679,7 +5693,7 @@ namespace ExplorerNative
             Dictionary<string, string> doubtful, FreeUpLane? freeUp = null)
         {
             var sent = new HashSet<string>(SyncNameComparer.Instance);
-            long room = _drive.QuotaLimit > 0 ? _drive.QuotaLimit - _drive.QuotaUsed - alreadyUp : long.MaxValue;
+            long room = _drive.QuotaLimit > 0 && !OnSharedDrive(pair) ? _drive.QuotaLimit - _drive.QuotaUsed - alreadyUp : long.MaxValue;
             var batch = new List<string>();
             foreach (var action in plan)
             {
@@ -5837,7 +5851,7 @@ namespace ExplorerNative
             Dictionary<string, string> doubtful, FreeUpLane? freeUp = null)
         {
             var sent = new HashSet<string>(SyncNameComparer.Instance);
-            long room = _drive.QuotaLimit > 0 ? _drive.QuotaLimit - _drive.QuotaUsed - alreadyUp : long.MaxValue;
+            long room = _drive.QuotaLimit > 0 && !OnSharedDrive(pair) ? _drive.QuotaLimit - _drive.QuotaUsed - alreadyUp : long.MaxValue;
             var batch = new List<string>();
             foreach (var action in plan)
             {
