@@ -278,7 +278,7 @@ namespace ExplorerNative
             // only listens to the answer, and arrives on that thread.
             Speech.Notification += OnSpeechAvailabilityChanged;
 
-            if (_settings.GoogleDriveEnabled) MountGoogleDrive();
+            if (_settings.GoogleDriveEnabled) MountGoogleDrive(mayConsent: false);
             ApplyAudioSettings();
             if (_settings.AudioPlayerEnabled) WarmAudio();
 
@@ -508,7 +508,11 @@ namespace ExplorerNative
         internal static TimeSpan MountRetryWait(int tries) =>
             TimeSpan.FromSeconds(Math.Min(120, 10 * Math.Pow(2, Math.Min(tries, 4))));
 
-        private void MountGoogleDrive()
+        /// <param name="mayConsent">
+        /// False at start-up: nobody asked to connect, so a missing or revoked
+        /// sign-in is said, never answered with Google's sign-in page in the browser.
+        /// </param>
+        private void MountGoogleDrive(bool mayConsent = true)
         {
             int attempt = Interlocked.Increment(ref _mountAttempt);
             _ = System.Threading.Tasks.Task.Run(async () =>
@@ -516,7 +520,7 @@ namespace ExplorerNative
                 // A leftover sync root or letter is cleared before a new one is
                 // made, as it was when the sweep ran in the constructor.
                 await _sweeps;
-                bool ok = await _drive.Mount(_settings);
+                bool ok = await _drive.Mount(_settings, mayConsent: mayConsent);
 
                 // No network yet (started with Windows, before it was up: "No such
                 // host is known") is tried again until Google answers. It was
@@ -534,11 +538,15 @@ namespace ExplorerNative
                     await System.Threading.Tasks.Task.Delay(MountRetryWait(tries));
                     if (_quitting || !_settings.GoogleDriveEnabled || attempt != Volatile.Read(ref _mountAttempt) ||
                         _drive.Mounted) return;
-                    ok = await _drive.Mount(_settings, quietly: true);
+                    // Never a browser from a retry: it only refreshes a saved sign-in.
+                    ok = await _drive.Mount(_settings, quietly: true, mayConsent: false);
                     if (!ok && !_drive.FailedOnNetwork && !_settings.GoogleDriveEnabled) return;
                 }
                 PostUi(() =>
                 {
+                    // A newer Connect took over (and called this one's browser
+                    // sign-in off): it speaks for itself.
+                    if (attempt != Volatile.Read(ref _mountAttempt)) return;
                     if (ok)
                     {
                         Notify("drive.mounted", $"Google Drive is on {_drive.Letter}");
@@ -555,10 +563,12 @@ namespace ExplorerNative
                         // behind somebody's back: it is a driver, and Windows asks too.
                         OfferWinFsp();
                     }
-                    else if (_settings.GoogleDriveEnabled)
+                    else if (_settings.GoogleDriveEnabled && (mayConsent || !_drive.NeedsSignIn))
                     {
                         // Not when Drive was switched off while this was on its way
-                        // up: that is a mount being called off, not failing.
+                        // up: that is a mount being called off, not failing. Nor
+                        // at start-up with no sign-in: "sign-in has expired" was
+                        // already said.
                         Notify("drive.signin.refused",
                             "Google Drive did not connect. " + _drive.Status);
                     }

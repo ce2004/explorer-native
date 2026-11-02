@@ -161,9 +161,13 @@ namespace ExplorerNative
                 if (await AlreadyDone() is { } done) return done;
 
                 HttpResponseMessage response;
+                bool sent = false;
                 try
                 {
                     using var request = await build();
+                    // From here the request may reach Google. Before it (the token
+                    // fetch failing), nothing was sent and nothing can have landed.
+                    sent = true;
 
                     // Somebody waiting, and the last try ran out of the quick
                     // client's fifteen seconds: this one gets longer. A big
@@ -205,7 +209,7 @@ namespace ExplorerNative
                     // both used to be the end of the transfer.
                     last = ex;
                     asked = null;
-                    maybeDone = true;
+                    if (sent) maybeDone = true;
 
                     // Somebody waiting is told now that the network is gone,
                     // rather than after it comes back.
@@ -455,6 +459,13 @@ namespace ExplorerNative
             _waitScale = waitScale;
         }
 
+        /// <summary>For the suite: as above, with the token fetched by <paramref name="token"/>, so a test can make a refresh fail.</summary>
+        internal DriveClient(HttpMessageHandler handler, Func<CancellationToken, Task<string>> token, double waitScale)
+            : this(handler, waitScale)
+        {
+            _token = token;
+        }
+
         /// <summary>For the suite: the quick client's timeout, set before the first request.</summary>
         internal TimeSpan QuickTimeoutForTests { set => _http.Timeout = value; }
 
@@ -647,9 +658,20 @@ namespace ExplorerNative
                     "Trash is Google Drive's trash, not a folder; nothing can be put in it from here");
 
             url = AllDrives(url);
+            // The token fetch is outside Send, so a refresh that cannot reach
+            // Google (a wake from sleep with no network: the token expired an
+            // hour ago) is counted here. Uncounted, Drive never read as offline,
+            // the letter stayed, and pastes spent their tries instead of waiting.
+            string bearer;
+            try { bearer = await _token(token); }
+            catch (Exception ex) when (!token.IsCancellationRequested && ex is not GoogleAuth.SignInBusyException &&
+                                       DriveHealth.LooksLikeNetwork(ex))
+            {
+                Health.Failed(ex);
+                throw;
+            }
             var request = new HttpRequestMessage(method, url);
-            request.Headers.Authorization =
-                new AuthenticationHeaderValue("Bearer", await _token(token));
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
             if (ListingGzip && method == HttpMethod.Get && IsListing(url))
             {
                 // Google sends gzip only to a User-Agent that says "gzip" as well.
@@ -730,6 +752,12 @@ namespace ExplorerNative
             return (user, used, limit);
         }
 
+        /// <summary>A folder holding more than a listing was allowed to take, when the whole of it was needed.</summary>
+        internal sealed class ListingCutException : IOException
+        {
+            public ListingCutException(int max) : base($"Google Drive holds more than {max:N0} items in this folder") { }
+        }
+
         /// <summary>
         /// Everything directly inside a folder. Paged, because a music library is
         /// not going to arrive in one response and a listing that silently stops
@@ -756,11 +784,15 @@ namespace ExplorerNative
         /// to show is one somebody is looking at, and is interactive; the upload,
         /// copy and folder-monitor callers pass neither and keep the patient
         /// two-minute client and the outage wait.
+        ///
+        /// A folder holding more than <paramref name="max"/> throws
+        /// <see cref="ListingCutException"/> unless <paramref name="partial"/>
+        /// says the first <paramref name="max"/> will do.
         /// </summary>
         public async Task<List<DriveEntry>> ListChildren(
             string folderId, CancellationToken token, int max = 100_000, string? label = null,
             string? driveId = null, Action<List<DriveEntry>>? onPage = null, bool? interactive = null,
-            bool trashed = false)
+            bool trashed = false, bool partial = false)
         {
             bool waiting = interactive ?? (label != null || onPage != null);
 
@@ -822,9 +854,12 @@ namespace ExplorerNative
                 using var doc = JsonDocument.Parse(body);
                 var root = doc.RootElement;
                 int pageStart = results.Count;
+                var files = root.GetProperty("files");
+                int inPage = files.GetArrayLength(), seen = 0;
 
-                foreach (var f in root.GetProperty("files").EnumerateArray())
+                foreach (var f in files.EnumerateArray())
                 {
+                    seen++;
                     // size is absent for folders and for Google's own document
                     // types, and absent is not zero — see DriveEntry.
                     long size = f.TryGetProperty("size", out var s) && long.TryParse(s.GetString(), out var sv)
@@ -841,6 +876,13 @@ namespace ExplorerNative
 
                     if (results.Count >= max)
                     {
+                        // Cut with more to come: only a caller that asked for part
+                        // of the folder gets part of it. Handed back as if whole, a
+                        // move out of Drive checked only the first 100,000 and a
+                        // copy inside Drive said it was complete.
+                        bool more = seen < inPage ||
+                                    (root.TryGetProperty("nextPageToken", out var next) && next.GetString() != null);
+                        if (more && !partial) throw new ListingCutException(max);
                         onPage?.Invoke(results.GetRange(pageStart, results.Count - pageStart));
                         return results;
                     }
@@ -1356,7 +1398,7 @@ namespace ExplorerNative
                         if (response.StatusCode != HttpStatusCode.PartialContent && response.StatusCode != HttpStatusCode.OK)
                         {
                             var body = await response.Content.ReadAsStringAsync(attempt.Token);
-                            if (RefusedAcknowledge(fileId, (int)response.StatusCode, url))
+                            if (RefusedAcknowledge(fileId, (int)response.StatusCode, url, body))
                                 throw new RetryableReadException("refused with acknowledgeAbuse; asking plain");
                             throw ReadRefused((int)response.StatusCode, body);
                         }
@@ -1478,9 +1520,15 @@ namespace ExplorerNative
         /// <summary>
         /// A 400 or 403 to a request that carried acknowledgeAbuse: true the first
         /// time, and the file is asked plain from then on, so the caller retries.
+        /// A rate limit or a download quota is not about the flag: counted, one
+        /// busy moment left a big unscanned file asked plain until restart, and
+        /// every read of it then waited out Google's 25-second hold and failed.
         /// </summary>
-        internal static bool RefusedAcknowledge(string fileId, int status, string url) =>
+        internal static bool RefusedAcknowledge(string fileId, int status, string url, string? body = null) =>
             (status == 400 || status == 403) &&
+            !WorthRetrying(status, body) &&
+            ErrorReason(body) is not ("downloadQuotaExceeded" or "dailyLimitExceeded" or "quotaExceeded"
+                or "sharingRateLimitExceeded") &&
             url.Contains("acknowledgeAbuse=true", StringComparison.Ordinal) &&
             NoAcknowledge.TryAdd(fileId, true);
 
@@ -1525,7 +1573,7 @@ namespace ExplorerNative
                 response.StatusCode != HttpStatusCode.OK)
             {
                 var body = await response.Content.ReadAsStringAsync(token);
-                if (RefusedAcknowledge(fileId, (int)response.StatusCode, url))
+                if (RefusedAcknowledge(fileId, (int)response.StatusCode, url, body))
                     throw new RetryableReadException("refused with acknowledgeAbuse; asking plain");
                 throw ReadRefused((int)response.StatusCode, body);
             }

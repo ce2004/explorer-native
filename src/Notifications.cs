@@ -279,7 +279,7 @@ namespace ExplorerNative
             // this is the sentence that tells them apart — it is worth
             // interrupting for, because the alternative is somebody watching a
             // progress window that has not moved for four minutes.
-            Live("drive.offline.waiting", "Waiting for the internet", DriveOperations, Say, "Waiting for the internet to come back before {0}", "sending album.flac"),
+            Live("drive.offline.waiting", "Waiting for the internet", DriveOperations, Say, "Waiting for the internet to come back before {0}", "sending anything more to Google Drive"),
             Live("drive.offline.back", "Back online", DriveOperations, Say, "Back online, carrying on"),
             Live("drive.upload.cancelled", "Upload cancelled", DriveOperations, Say, "Upload of {0} cancelled", "album.flac"),
             Live("drive.download.start", "Fetching a file", DriveOperations, Off, "Fetching {0}", "song.flac"),

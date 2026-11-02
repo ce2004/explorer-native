@@ -761,6 +761,32 @@ namespace ExplorerNative
             _sweep = new WorkTimer(SweepIdle, () => !_caches.IsEmpty && IdleRelease > TimeSpan.Zero);
             _probe = new Probe(this);
             _drive.Health.Changed += OnHealthChanged;
+            _drive.TrashEdited += OnTrashEdited;
+        }
+
+        /// <summary>
+        /// Something was trashed, restored or deleted for good through this
+        /// client: the Trash folder is listed again on its next visit, from the
+        /// kept copy, so a file just deleted is there to restore.
+        /// </summary>
+        private void OnTrashEdited()
+        {
+            if (TrashKey() is { } key) ForgetKey(key);
+        }
+
+        /// <summary>The key of the Trash folder on the letter, or null while it has not been listed.</summary>
+        internal string? TrashKey()
+        {
+            foreach (var pair in _folders)
+                if (pair.Value == DriveClient.TrashId) return pair.Key;
+            return null;
+        }
+
+        /// <summary>Forgets the listing of every folder on the letter that is the Drive folder <paramref name="id"/>.</summary>
+        internal void ForgetFolderId(string id)
+        {
+            foreach (var pair in _folders)
+                if (pair.Value == id) ForgetKey(pair.Key);
         }
 
 
@@ -2357,6 +2383,28 @@ namespace ExplorerNative
         internal static TimeSpan DrainFor = TimeSpan.FromSeconds(60);
 
         /// <summary>
+        /// Set before <see cref="Dispose"/> when the person signed in again as a
+        /// different Google account: what this mount still holds belongs to the
+        /// old one, so it is kept on the PC (<see cref="UnsavedFolder"/>) instead
+        /// of being sent.
+        /// </summary>
+        internal volatile bool AccountGone;
+
+        /// <summary>Stops sending and sets aside every file not yet on Drive, saying so.</summary>
+        private void KeepWhatCannotBeSent()
+        {
+            StopUploads(TimeSpan.FromSeconds(5));
+            foreach (var p in _pending.Values.ToList())
+            {
+                bool keep;
+                lock (p.Gate) keep = p.Dirty && !p.Deleted && !p.Retired;
+                if (!keep) continue;
+                try { Refuse(p, "you signed in to Google Drive as a different account", WinFsp.AccessDenied); }
+                catch (Exception ex) { _log($"  could not set {p.Name} aside: {ex.Message}"); }
+            }
+        }
+
+        /// <summary>
         /// Takes the letter away, sends what programs saved and closed that is
         /// still only in memory, stops answering, and lets every download go.
         /// </summary>
@@ -2365,11 +2413,13 @@ namespace ExplorerNative
             // The letter first, so nothing new arrives; then every closed file
             // still in memory goes up — there is no disk to keep it on.
             _stopping = true;
-            ChooseWhatDrains();
+            bool gone = AccountGone;
+            if (!gone) ChooseWhatDrains();
             WinFsp.Host? host;
             lock (_letterGate) { host = _host; _host = null; }
             try { host?.Unmount(); } catch { }
-            DrainUploads(DrainFor);
+            if (gone) KeepWhatCannotBeSent();
+            else DrainUploads(DrainFor);
 
             // Nothing new is opened from here on: a warm arriving from a copy
             // made a moment ago would start downloads nobody would ever stop.
@@ -2378,6 +2428,7 @@ namespace ExplorerNative
             try { _sweep.Dispose(); } catch { }
             try { _probe.Dispose(); } catch { }
             try { _drive.Health.Changed -= OnHealthChanged; } catch { }
+            try { _drive.TrashEdited -= OnTrashEdited; } catch { }
 
             // Every request still being answered is failed rather than left to
             // run out its deadline.

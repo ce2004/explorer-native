@@ -1494,7 +1494,8 @@ namespace ExplorerNative
                 }
                 else
                 {
-                    var entries = await _client.ListChildren(FolderId, _cancel.Token);
+                    // Folders come first, so the first 100,000 hold every one there is.
+                    var entries = await _client.ListChildren(FolderId, _cancel.Token, partial: true);
                     if (IsDisposed) return;
                     _folders = entries.Where(e => e.IsFolder).OrderBy(e => e.Name, StringComparer.CurrentCultureIgnoreCase).ToList();
                 }

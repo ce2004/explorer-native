@@ -938,6 +938,11 @@ namespace ExplorerNative
 
                 bool gone = GoogleDrive.ForgetSignIn();
 
+                // Switched off and saved now, as Disconnect does, so Cancel or
+                // Escape cannot undo it: left on, the next start found no sign-in
+                // and opened Google's sign-in page in the browser unasked.
+                DisconnectDrive?.Invoke();
+
                 // The box, not the field: OK applies from the box, so setting
                 // the field alone was undone by pressing OK — signing out and
                 // then saving left Drive switched on, and the next mount opened
@@ -950,8 +955,7 @@ namespace ExplorerNative
 
                 MessageBox.Show(this,
                     gone
-                        ? "Signed out. The drive letter is removed the next time the application starts, "
-                          + "or immediately if Google Drive was switched off just now."
+                        ? "Signed out. Google Drive is switched off and its drive letter is gone."
                         : "There was no saved sign-in to remove.",
                     "Sign out of Google", MessageBoxButtons.OK, MessageBoxIcon.Information);
             };

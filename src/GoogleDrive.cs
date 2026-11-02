@@ -418,7 +418,14 @@ namespace ExplorerNative
         /// consent they declined.
         /// </summary>
         /// <param name="quietly">A retry after the network failed: "Connecting" is not said again.</param>
-        public async Task<bool> Mount(Settings settings, CancellationToken token = default, bool quietly = false)
+        /// <param name="mayConsent">
+        /// A deliberate connect (Connect, OK in Preferences), the only kind that
+        /// may open Google's sign-in page. The start-up mount and the retries
+        /// after a network failure pass false: with no saved sign-in they say so
+        /// instead of putting a browser in front of somebody who asked for nothing.
+        /// </param>
+        public async Task<bool> Mount(Settings settings, CancellationToken token = default, bool quietly = false,
+            bool mayConsent = true)
         {
             // One at a time. Two in parallel — OK pressed and a settings reload a
             // moment apart — both chose the same root, and the second tore the
@@ -426,9 +433,22 @@ namespace ExplorerNative
             var lifetime = _lifetime;
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, lifetime.Token);
 
+            // Connect pressed again while a sign-in waits in the browser (a tab
+            // closed by mistake, a page behind another window): the new press
+            // replaces the waiting one. It used to queue behind it silently for
+            // up to thirty minutes and then open a browser out of nowhere.
+            CancellationTokenSource? consent = null;
+            if (mayConsent)
+            {
+                consent = new CancellationTokenSource();
+                var waiting = Interlocked.Exchange(ref _consentWait, consent);
+                try { waiting?.Cancel(); } catch { }
+            }
+
             try { await _mountGate.WaitAsync(linked.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) { return false; }
 
+            var consentToken = consent?.Token ?? CancellationToken.None;
             try
             {
                 if (linked.IsCancellationRequested) return false;
@@ -442,33 +462,59 @@ namespace ExplorerNative
                 if (Mounted)
                 {
                     if (!NeedsSignIn) return true;
-                    var (renewed, otherAccount) = await RenewSignIn(linked.Token).ConfigureAwait(false);
-                    if (!otherAccount) return renewed;
+                    var (renewed, otherAccount, fresh) =
+                        await RenewSignIn(linked.Token, mayConsent, consentToken).ConfigureAwait(false);
+                    if (!otherAccount || fresh == null) return renewed;
 
                     // Signed in again as somebody else. Every entry on the letter, the
                     // path-to-id map and the search graph belong to the old
                     // account, and its ids sent with the new token fail
                     // everywhere, so the letter is mounted again from scratch.
                     // TearDown, not Unmount: Unmount cancels _lifetime, and with
-                    // it the token this mount runs on. The new sign-in is already
-                    // saved to disk, and MountFresh reads it from there.
+                    // it the token this mount runs on.
+                    //
+                    // The old sign-in is retired first, so nothing of the old
+                    // account's (an unsent save, a size refresh, a read-ahead) can
+                    // go out as the new one: a file saved to the root of the letter
+                    // used to land in the other account's My Drive, said as saved.
+                    // Its unsent files are kept on this PC instead (AccountGone).
                     GoogleAuth? old;
-                    lock (_gate) { old = _auth; _otherAccountsSwept = false; }
-                    if (old != null) old.SignInLapsed -= OnSignInLapsed;
+                    DriveMount? going;
+                    lock (_gate) { old = _auth; going = _mount; _otherAccountsSwept = false; }
+                    if (old != null) { old.SignInLapsed -= OnSignInLapsed; old.Retire(); }
+                    if (going != null) going.AccountGone = true;
                     TearDown();
+
+                    // Only now is the new account's sign-in put where MountFresh reads it.
+                    if (GoogleAuth.Credentials(SafeDirectory()) is { } credentials)
+                        new GoogleAuth(credentials.ClientId, credentials.ClientSecret, TokenPath).AdoptFrom(fresh);
                     if (linked.IsCancellationRequested) return false;
                     return await MountFresh(settings, linked.Token, quietly: true).ConfigureAwait(false);
                 }
 
-                return await MountFresh(settings, linked.Token, quietly).ConfigureAwait(false);
+                return await MountFresh(settings, linked.Token, quietly, mayConsent, consentToken).ConfigureAwait(false);
             }
             finally
             {
+                if (consent != null) Interlocked.CompareExchange(ref _consentWait, null, consent);
                 _mountGate.Release();
             }
         }
 
         private readonly SemaphoreSlim _mountGate = new(1, 1);
+
+        /// <summary>The deliberate connect whose browser sign-in a newer press may call off. Cancelled, never disposed.</summary>
+        private CancellationTokenSource? _consentWait;
+
+        /// <summary>
+        /// Whether a connect that failed is worth trying again by itself: the
+        /// network, and not a sign-in somebody left unfinished in the browser.
+        /// Retrying that one opened Google's page again every half hour.
+        /// </summary>
+        internal static bool RetryableConnectFailure(Exception ex, bool cancelled, bool consentStarted,
+            bool consentGranted) =>
+            !cancelled && ex is not GoogleSignInRequiredException && !(consentStarted && !consentGranted) &&
+            DriveHealth.LooksLikeNetwork(ex);
 
         /// <summary>The connection state last passed on to ConnectionChanged.</summary>
         private DriveState? _lastSaid;
@@ -483,25 +529,39 @@ namespace ExplorerNative
         private bool _disposed;
 
         /// <summary>
-        /// Asks for consent again through the client the live mount is already
-        /// using, so every entry on the letter and every cache stays where it is.
-        /// OtherAccount is true when the person chose a different Google
-        /// account: the mount then belongs to nobody signed in, and the caller
-        /// mounts again from scratch.
+        /// Asks for consent again, and keeps the live mount with every entry on
+        /// the letter and every cache where it is when the same account comes
+        /// back. The consent goes through a scratch sign-in, never the live one:
+        /// a different account chosen in Google's chooser must not reach the
+        /// client the old account's unsent saves go out on. OtherAccount is true
+        /// then, with that sign-in in Fresh, and the caller mounts again from scratch.
         /// </summary>
-        private async Task<(bool Ok, bool OtherAccount)> RenewSignIn(CancellationToken token)
+        private async Task<(bool Ok, bool OtherAccount, GoogleAuth? Fresh)> RenewSignIn(CancellationToken token,
+            bool mayConsent, CancellationToken consentToken)
         {
             GoogleAuth? auth;
-            DriveClient? client;
-            lock (_gate) { auth = _auth; client = _client; }
-            if (auth == null || client == null) return (false, false);
+            lock (_gate) auth = _auth;
+            if (auth == null) return (false, false, null);
+            if (GoogleAuth.Credentials(SafeDirectory()) is not { } credentials)
+            {
+                Status = "No Google client ID and secret yet. Enter them in Preferences, Google Drive, then connect.";
+                return (false, false, null);
+            }
 
+            var scratchPath = Path.Combine(Path.GetTempPath(), "en-renew-" + Guid.NewGuid().ToString("N") + ".dat");
             // Consent for this request alone; see GoogleAuth.ConsentScope.
             try
             {
+                // A sign-in saved meanwhile is tried before any browser.
+                try { if (File.Exists(TokenPath)) File.Copy(TokenPath, scratchPath); } catch { }
+                var scratch = new GoogleAuth(credentials.ClientId, credentials.ClientSecret, scratchPath)
+                    { AllowConsent = false, Notify = Forward };
+                var client = new DriveClient(scratch) { Notify = Forward, Units = _units };
+
                 string user;
-                using (GoogleAuth.ConsentScope())
-                    (user, _, _) = await client.Whoami(token).ConfigureAwait(false);
+                var asking = CancellationTokenSource.CreateLinkedTokenSource(token, consentToken);
+                using (mayConsent ? GoogleAuth.ConsentScope() : null)
+                    (user, _, _) = await client.Whoami(asking.Token).ConfigureAwait(false);
                 bool other;
                 lock (_gate)
                 {
@@ -510,19 +570,23 @@ namespace ExplorerNative
                     // under that account's own name.
                     if (!other) _account = user;
                 }
-                if (auth.ConsentGranted) Say("drive.signin.done", $"Signed in to Google Drive as {user}");
-                if (other) return (false, true);
+                if (scratch.ConsentGranted) Say("drive.signin.done", $"Signed in to Google Drive as {user}");
+                if (other) return (false, true, scratch);
 
+                auth.AdoptFrom(scratch);
                 NeedsSignIn = false;
                 Interlocked.Exchange(ref _lapseSaid, 0);
                 Status = $"{user} on {Letter}";
-                return (true, false);
+                return (true, false, null);
             }
             catch (Exception ex)
             {
-                Status = $"Could not sign in again: {GoogleNet.Reason(ex)}";
-                return (false, false);
+                Status = consentToken.IsCancellationRequested && !token.IsCancellationRequested
+                    ? "Not connected."
+                    : $"Could not sign in again: {GoogleNet.Reason(ex)}";
+                return (false, false, null);
             }
+            finally { try { File.Delete(scratchPath); } catch { } }
         }
 
         /// <summary>
@@ -539,7 +603,8 @@ namespace ExplorerNative
             try { SignInRequired?.Invoke(); } catch { }
         }
 
-        private async Task<bool> MountFresh(Settings settings, CancellationToken token, bool quietly = false)
+        private async Task<bool> MountFresh(Settings settings, CancellationToken token, bool quietly = false,
+            bool mayConsent = true, CancellationToken consentToken = default)
         {
             _units = settings.SizeUnits;
             FailedOnNetwork = false;
@@ -570,13 +635,13 @@ namespace ExplorerNative
                 return false;
             }
 
+            GoogleAuth? auth = null;
             try
             {
                 // Consent is allowed here and nowhere else: this is somebody
                 // asking to connect, so a browser opening is the expected answer
                 // rather than an ambush from inside a directory listing.
-                var auth = new GoogleAuth(client.Value.ClientId, client.Value.ClientSecret,
-                    Path.Combine(SafeDirectory(), $"google-drive-token-v{GoogleAuth.ScopeVersion}.dat"))
+                auth = new GoogleAuth(client.Value.ClientId, client.Value.ClientSecret, TokenPath)
                 { AllowConsent = false, Notify = Forward };
                 auth.SignInLapsed += OnSignInLapsed;
                 var drive = new DriveClient(auth) { Notify = Forward, Units = _units };
@@ -605,10 +670,14 @@ namespace ExplorerNative
                 // behind by a sign-in that then failed is worse than no mount.
                 // The one request allowed to open a browser: a deliberate
                 // connect. Nothing the mount does afterwards may.
+                // Not at start-up, nor on a retry: those never open a browser
+                // (with no saved sign-in they say it has expired instead). A newer
+                // Connect press calls the browser wait off (consentToken).
                 string user;
                 long used, limit;
-                using (GoogleAuth.ConsentScope())
-                    (user, used, limit) = await drive.Whoami(token);
+                var asking = CancellationTokenSource.CreateLinkedTokenSource(token, consentToken);
+                using (mayConsent ? GoogleAuth.ConsentScope() : null)
+                    (user, used, limit) = await drive.Whoami(asking.Token);
 
                 // Only when the browser was actually used. A mount that refreshed
                 // a stored token in silence is not a sign-in, and saying so on
@@ -641,6 +710,11 @@ namespace ExplorerNative
                 LabelTheDrive(root);
 
                 ShowTrash = settings.ShowDriveTrash;
+
+                // Drive switched off and on again quickly: the old volume, same
+                // name, may still be sending what it held. It goes first.
+                await Teardown.WaitAsync(token).ConfigureAwait(false);
+
                 var mount = new DriveMount(drive, root, budget, Note)
                 {
                     Notify = Forward,
@@ -714,11 +788,16 @@ namespace ExplorerNative
                 // TearDown first: it sets "Not connected.", and the reason must
                 // be the last word, because the tray and Preferences read it.
                 TearDown();
-                Status = token.IsCancellationRequested
+                // Called off by a newer Connect press: that one is connecting now.
+                bool cancelled = token.IsCancellationRequested || consentToken.IsCancellationRequested;
+                bool unfinished = auth?.ConsentStarted == true && !auth.ConsentGranted;
+                Status = cancelled
                     ? "Not connected."
-                    : $"Could not connect: {GoogleNet.Reason(ex)}";
-                FailedOnNetwork = !token.IsCancellationRequested && ex is not GoogleSignInRequiredException &&
-                                  DriveHealth.LooksLikeNetwork(ex);
+                    : unfinished
+                        ? "Google sign-in was not finished."
+                        : $"Could not connect: {GoogleNet.Reason(ex)}";
+                FailedOnNetwork = RetryableConnectFailure(ex, cancelled, auth?.ConsentStarted == true,
+                    auth?.ConsentGranted == true);
                 return false;
             }
         }
@@ -737,10 +816,21 @@ namespace ExplorerNative
         public bool LetterShown { get { lock (_gate) return _mount?.LetterShown ?? false; } }
 
         /// <summary>Files saved on the letter by other programs that are still on their way to Google.</summary>
-        public int UploadsPending { get { lock (_gate) return _mount?.UploadsPending ?? 0; } }
+        public int UploadsPending
+        {
+            get { lock (_gate) return (_mount?.UploadsPending ?? 0) + _goingAway.Sum(m => m.UploadsPending); }
+        }
 
-        /// <summary>The names of those files, for the question before quitting.</summary>
-        public IReadOnlyList<string> UploadNames { get { lock (_gate) return _mount?.UploadNames ?? Array.Empty<string>(); } }
+        /// <summary>The names of those files, for the question before quitting, a mount just disconnected and still sending them included.</summary>
+        public IReadOnlyList<string> UploadNames
+        {
+            get
+            {
+                lock (_gate)
+                    return (_mount?.UploadNames ?? Array.Empty<string>())
+                        .Concat(_goingAway.SelectMany(m => m.UploadNames)).ToList();
+            }
+        }
 
         /// <summary>
         /// Moves a mounted Drive to the letter Preferences now names, without
@@ -783,10 +873,41 @@ namespace ExplorerNative
             var old = _disposed ? _lifetime : Interlocked.Exchange(ref _lifetime, new CancellationTokenSource());
             try { old.Cancel(); } catch { }
 
-            TearDown();
+            // Disconnect and switching Drive off call this on the UI thread, and
+            // taking a mount down sends what programs saved and closed for up to
+            // a minute (DrainFor). So the mount is taken off at once (Mounted is
+            // false from here) and goes away on a worker; Dispose and the next
+            // mount wait for it, and the question before quitting still sees
+            // what it is sending.
+            var (mount, sizes) = Detach();
+            if (mount == null && sizes == null) return;
+            lock (_gate)
+            {
+                if (mount != null) _goingAway.Add(mount);
+                _teardown = _teardown.ContinueWith(_ => Finish(mount, sizes), TaskScheduler.Default);
+            }
         }
 
+        /// <summary>Mounts taken off by <see cref="Unmount"/> that are still sending what they hold.</summary>
+        private readonly List<DriveMount> _goingAway = new();
+
+        /// <summary>Those mounts going away, one after another.</summary>
+        private Task _teardown = Task.CompletedTask;
+
+        /// <summary>For the suite: the mounts <see cref="Unmount"/> handed to a worker, finished.</summary>
+        internal Task TeardownForTests { get { lock (_gate) return _teardown; } }
+
+        private Task Teardown { get { lock (_gate) return _teardown; } }
+
+        /// <summary>Takes a mount down where the caller is: already on a worker, or quitting.</summary>
         private void TearDown()
+        {
+            var (old, sizes) = Detach();
+            Finish(old, sizes);
+        }
+
+        /// <summary>Takes the mount and its size indexes out of use. Quick: nothing is sent or saved.</summary>
+        private (DriveMount? Old, Dictionary<string, DriveSizeIndex>? Sizes) Detach()
         {
             DriveMount? old;
             Dictionary<string, DriveSizeIndex>? sizes;
@@ -798,7 +919,15 @@ namespace ExplorerNative
                 sizes = _sizes;
                 _sizes = null;
             }
+            // Here, not after the mount has gone: a mount made since may already
+            // have said "user on G:", and the old one finishing must not undo it.
+            Status = "Not connected.";
+            return (old, sizes);
+        }
 
+        /// <summary>Saves the size indexes and lets the mount go, sending what it holds. Slow.</summary>
+        private void Finish(DriveMount? old, Dictionary<string, DriveSizeIndex>? sizes)
+        {
             // Changes the feed brought in since the last save, so the next start begins from here.
             if (sizes != null)
                 foreach (var index in sizes.Values)
@@ -809,14 +938,14 @@ namespace ExplorerNative
             // health event, which takes this lock: held here, that callback
             // could not finish, the wait ran out, and the provider disconnected
             // under a read — the one thing the wait exists to prevent.
-            bool was = old != null;
             try { old?.Dispose(); } catch { }
-            Status = "Not connected.";
+            if (old == null) return;
+            lock (_gate) _goingAway.Remove(old);
 
             // Only when there was something to take down. A mount failing on its
             // way up comes through here too, and a connection that never came up
             // disconnecting is not news.
-            if (was) Say("drive.unmounted", "Google Drive disconnected");
+            Say("drive.unmounted", "Google Drive disconnected");
         }
 
         /// <summary>
@@ -1108,7 +1237,14 @@ namespace ExplorerNative
             // *synchronous* Drive listing at about 1.3 seconds each. A search
             // across five folders would have been six seconds of frozen window,
             // which is the one rule this codebase does not bend.
-            var found = await client.FindByName(query.DriveHints, token, most, driveId).ConfigureAwait(false);
+            // From the size index when it holds the whole drive: Google's own
+            // name search matches only the start of a word ("mix" never finds
+            // "Remix", "World" never finds "HelloWorld"), while the same search
+            // in a folder on the PC matches any part of a name.
+            var indexed = await FoundInIndex(client, query, driveId, token).ConfigureAwait(false);
+            var found = indexed == null
+                ? await client.FindByName(query.DriveHints, token, most, driveId).ConfigureAwait(false)
+                : indexed.Count > most ? indexed.GetRange(0, most) : indexed;
             var folders = await FolderGraph(client, driveId, token).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();
 
@@ -1300,6 +1436,54 @@ namespace ExplorerNative
 
         /// <summary>The size indexes, per drive ("" for My Drive). See <see cref="DriveSizeIndex"/>.</summary>
         private Dictionary<string, DriveSizeIndex>? _sizes;
+
+        /// <summary>
+        /// Everything in the drive's size index whose name holds any of the
+        /// query's words anywhere in it, as a search's candidates; null when no
+        /// index holds the whole drive yet, and Google is asked instead.
+        /// </summary>
+        private async Task<List<DriveFound>?> FoundInIndex(DriveClient client, SearchQuery query, string? driveId,
+            CancellationToken token)
+        {
+            DriveSizeIndex? index = null;
+            CancellationToken lifetime;
+            lock (_gate)
+            {
+                _sizes?.TryGetValue(driveId ?? "", out index);
+                lifetime = _lifetime.Token;
+            }
+            if (index == null || !index.Built) return null;
+
+            // Changes made a moment ago (a file just saved), as a size waits for them.
+            var refresh = index.Refresh(client, lifetime);
+            try { await refresh.WaitAsync(DriveSizeIndex.AnswerWithin, token).ConfigureAwait(false); }
+            catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+            catch (Exception) { }
+            if (!refresh.IsCompleted)
+                _ = refresh.ContinueWith(t => Note($"folder sizes: {t.Exception?.GetBaseException().Message}"),
+                    CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
+
+            var items = index.Snapshot();
+            if (items == null) return null;
+            var hints = query.DriveHints.Select(SearchQuery.FoldName).Where(h => h.Length > 0).ToArray();
+            var found = new List<DriveFound>();
+            foreach (var item in items)
+            {
+                token.ThrowIfCancellationRequested();
+                if (item.Name.Length == 0) continue;
+                if (hints.Length > 0)
+                {
+                    var name = SearchQuery.FoldName(item.Name);
+                    if (!Array.Exists(hints, h => name.Contains(h, StringComparison.Ordinal))) continue;
+                }
+                // Google's documents and shortcuts are not on the letter: marked as documents, they are left out.
+                var mime = item.IsFolder ? DriveClient.FolderMimeType
+                    : item.Counted ? "application/octet-stream" : "application/vnd.google-apps.document";
+                found.Add(new DriveFound(item.Id, item.Name, mime, item.IsFolder ? -1 : item.Size,
+                    new DateTime(item.ModifiedTicks, DateTimeKind.Utc), item.Parent));
+            }
+            return found;
+        }
 
         /// <summary>Who the mount is signed in as, from Whoami. Keys the saved size indexes.</summary>
         private string? _account;
@@ -1692,8 +1876,8 @@ namespace ExplorerNative
 
             try
             {
-                var children = await client.ListChildren(id, token, driveId: mount.DriveIdFor(path))
-                    .ConfigureAwait(false);
+                var children = await client.ListChildren(id, token, max: 1, driveId: mount.DriveIdFor(path),
+                    partial: true).ConfigureAwait(false);
                 return children.Count == 0;
             }
             catch { return false; }
@@ -1736,7 +1920,9 @@ namespace ExplorerNative
                     // copy read as missing.
                     if (!Directory.Exists(NameRules.ExactPath(copy))) return false;
 
-                    var children = await client.ListChildren(folderId, token, driveId: driveId)
+                    // The whole folder: a child past the first 100,000 that never
+                    // arrived must make this false, or the move trashes it.
+                    var children = await client.ListChildren(folderId, token, max: int.MaxValue, driveId: driveId)
                         .ConfigureAwait(false);
                     foreach (var child in children)
                     {
@@ -1777,7 +1963,7 @@ namespace ExplorerNative
 
             try
             {
-                var children = await client.ListChildren(id, token, driveId: mount.DriveIdFor(path))
+                var children = await client.ListChildren(id, token, max: int.MaxValue, driveId: mount.DriveIdFor(path))
                     .ConfigureAwait(false);
                 return children.Any(c => c.IsGoogleDocument);
             }
@@ -1906,6 +2092,23 @@ namespace ExplorerNative
             // to. Asking Drive for the parent again rebuilds exactly the entries
             // needed — and "it is not part of the mounted Drive" is both untrue and
             // impossible to act on.
+            // Still on its way up (a recording a moment ago, a big file
+            // streaming): Drive has no id for it yet, so it is deleted the way the
+            // letter deletes a new file, and whatever its upload makes is
+            // trashed when it lands. It used to be refused as "Google Drive does
+            // not have a file by that name here", and then landed anyway.
+            if (mount.IsNewNotLanded(path, out var open))
+            {
+                if (open)
+                {
+                    Say("drive.trash.failed", $"Could not delete {name}: another program is still saving it");
+                    return false;
+                }
+                await Task.Run(() => mount.RemoveOne(path), token).ConfigureAwait(false);
+                Say("drive.trash", $"{name} deleted before it reached Google Drive");
+                return true;
+            }
+
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var id = await IdOrRelist(mount, path, token).ConfigureAwait(false);
             long idMs = clock.ElapsedMilliseconds;
@@ -1939,6 +2142,9 @@ namespace ExplorerNative
             Say("drive.trash", $"{name} moved to the Google Drive trash");
             return true;
         }
+
+        /// <summary>Why a file saved on the letter a moment ago cannot be moved or copied yet.</summary>
+        private const string StillSaving = "it is still being saved to Google Drive. Try again in a moment";
 
         /// <summary>
         /// Makes a folder inside a folder on the drive, and gives back the local
@@ -2136,6 +2342,15 @@ namespace ExplorerNative
             {
                 Say("rename.failed",
                     $"Could not rename {Path.GetFileName(path)}: shared drives are renamed from drive.google.com");
+                return null;
+            }
+
+            // Still on its way up: Drive has nothing to rename yet, and saying it
+            // has no such file was not true.
+            if (mount.IsNewNotLanded(path, out _))
+            {
+                Say("rename.failed",
+                    $"Could not rename {Path.GetFileName(path)}: it is still being saved to Google Drive. Try again in a moment");
                 return null;
             }
 
@@ -2411,6 +2626,9 @@ namespace ExplorerNative
                 throw new InvalidOperationException(
                     "shared drives cannot be moved; move what is inside one instead");
 
+            if (mount.IsNewNotLanded(fromPath, out _))
+                throw new InvalidOperationException(StillSaving);
+
             // Through the relisting lookup, as trash and rename are: a path whose
             // folder listing was dropped is still a file somebody has selected.
             var id = await IdOrRelist(mount, fromPath, token).ConfigureAwait(false)
@@ -2531,6 +2749,8 @@ namespace ExplorerNative
             if (mount.IsTrashFolder(fromPath)) return 0;
             if (InTrash(mount, toFolder))
                 throw new InvalidOperationException("nothing can be copied into the Google Drive trash");
+            if (mount.IsNewNotLanded(fromPath, out _))
+                throw new InvalidOperationException(StillSaving);
 
             var id = await IdOrRelist(mount, fromPath, token).ConfigureAwait(false)
                      ?? throw new InvalidOperationException("Google Drive does not have a file by that name here");
@@ -2582,7 +2802,7 @@ namespace ExplorerNative
             // and never copied. Copying a folder into itself, or into a folder
             // inside it, otherwise finds its own copy among the things to copy —
             // and copies that, into itself, until Drive or the quota gives out.
-            var children = await client.ListChildren(id, token, driveId: fromDrive).ConfigureAwait(false);
+            var children = await client.ListChildren(id, token, max: int.MaxValue, driveId: fromDrive).ConfigureAwait(false);
             var made = new HashSet<string>(StringComparer.Ordinal);
 
             // Drive's own name when none was chosen: the letter's is cleaned up.
@@ -2685,7 +2905,9 @@ namespace ExplorerNative
 
             int files = 0;
             long bytes = 0;
-            var pending = new List<(string Id, string? Drive, string Name)>();
+            // Trashed carries down: inside a trashed folder everything is trashed
+            // with it, and listed as not trashed the Trash folder measured empty.
+            var pending = new List<(string Id, string? Drive, string Name, bool Trashed)>();
 
             foreach (var path in paths)
             {
@@ -2701,7 +2923,7 @@ namespace ExplorerNative
                     continue;
                 }
                 var id = await IdOrRelist(mount, path, token).ConfigureAwait(false);
-                if (id != null) pending.Add((id, mount.DriveIdFor(path), name));
+                if (id != null) pending.Add((id, mount.DriveIdFor(path), name, InTrash(mount, path)));
             }
 
             while (pending.Count > 0)
@@ -2712,12 +2934,13 @@ namespace ExplorerNative
                 foreach (var item in batch) looking?.Invoke(item.Name);
 
                 var listings = await Task.WhenAll(batch.Select(item =>
-                    client.ListChildren(item.Id, token, driveId: item.Drive))).ConfigureAwait(false);
+                    client.ListChildren(item.Id, token, max: int.MaxValue, driveId: item.Drive, trashed: item.Trashed)))
+                    .ConfigureAwait(false);
 
                 for (int i = 0; i < batch.Count; i++)
                     foreach (var child in listings[i])
                     {
-                        if (child.IsFolder) pending.Add((child.Id, child.DriveId ?? batch[i].Drive, child.Name));
+                        if (child.IsFolder) pending.Add((child.Id, child.DriveId ?? batch[i].Drive, child.Name, batch[i].Trashed));
                         else { files++; bytes += Math.Max(0, child.Size); }
                     }
             }
@@ -2736,7 +2959,7 @@ namespace ExplorerNative
             string fromId, string name, string intoId, string? intoPath, HashSet<string> made,
             string? fromDrive, CancellationToken token, DriveCopyReport? report, object gate)
         {
-            var children = await client.ListChildren(fromId, token, driveId: fromDrive).ConfigureAwait(false);
+            var children = await client.ListChildren(fromId, token, max: int.MaxValue, driveId: fromDrive).ConfigureAwait(false);
 
             var folderId = await client.CreateFolder(name, intoId, token).ConfigureAwait(false);
             if (string.IsNullOrEmpty(folderId)) return 0;
@@ -2812,7 +3035,8 @@ namespace ExplorerNative
         {
             var (mount, client, id, name) = await TrashItem(path, "restore", token).ConfigureAwait(false);
             if (mount == null || client == null || id == null) return false;
-            try { await client.Untrash(id, token).ConfigureAwait(false); }
+            IReadOnlyList<string> backIn;
+            try { backIn = await client.Untrash(id, token).ConfigureAwait(false); }
             catch (Exception ex)
             {
                 Say("drive.restore.failed", $"Could not restore {name}: {ex.Message}");
@@ -2820,6 +3044,19 @@ namespace ExplorerNative
             }
             mount.RemoveOne(path);
             lock (_gate) _folders = null;
+
+            // The folder it went back to shows it on the next visit, listed
+            // already or not. Drive has agreed by now, so nothing here may make
+            // the restore read as failed.
+            try
+            {
+                foreach (var parent in backIn)
+                {
+                    if (parent == await client.RootId(token).ConfigureAwait(false)) mount.ForgetKey("");
+                    mount.ForgetFolderId(parent);
+                }
+            }
+            catch (Exception ex) { Note($"restore {name}: could not refresh its folder: {ex.Message}"); }
             Say("drive.restored", $"Restored {name}");
             return true;
         }
@@ -2900,6 +3137,9 @@ namespace ExplorerNative
             // drive behind a process that is on its way out.
             _disposed = true;
             try { _lifetime.Cancel(); } catch { }
+            // A mount disconnected a moment ago may still be sending; the process
+            // must not leave with that volume half taken down.
+            try { Teardown.Wait(DriveMount.DrainFor + TimeSpan.FromSeconds(15)); } catch { }
             TearDown();
         }
     }

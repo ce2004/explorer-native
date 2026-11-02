@@ -106,6 +106,15 @@ namespace ExplorerNative
         private bool MayConsent => AllowConsent || ConsentHere.Value;
 
         /// <summary>
+        /// A request gave up waiting behind a refresh or somebody signing in.
+        /// Not the network: somebody slow in the browser must not make Drive read as offline.
+        /// </summary>
+        internal sealed class SignInBusyException : TimeoutException
+        {
+            public SignInBusyException() : base("Google's sign-in did not answer in time") { }
+        }
+
+        /// <summary>
         /// Raised when a request needed a sign-in it could not have: whatever
         /// asked — a search, an upload, a track — rather than only a folder
         /// listing, which was the one place that noticed.
@@ -128,6 +137,9 @@ namespace ExplorerNative
         /// </summary>
         public bool ConsentGranted { get; private set; }
 
+        /// <summary>True once the browser was opened for consent, finished or not.</summary>
+        public bool ConsentStarted { get; private set; }
+
         /// <summary>
         /// The access token and when it stops being good, as one value.
         ///
@@ -143,6 +155,39 @@ namespace ExplorerNative
 
         private Access _access = new("", DateTime.MinValue);
         private string _refreshToken = "";
+
+        /// <summary>Set by <see cref="Retire"/>: this sign-in belongs to an account that is no longer connected.</summary>
+        private volatile bool _retired;
+
+        /// <summary>
+        /// Takes another sign-in's tokens as this one's and saves them here: a
+        /// renewed sign-in for the same account, made through a scratch sign-in
+        /// so a different account chosen in the browser never reaches this one.
+        /// </summary>
+        internal void AdoptFrom(GoogleAuth other)
+        {
+            _tokenGate.Wait();
+            try
+            {
+                _access = other._access;
+                _refreshToken = other._refreshToken;
+                SaveRefreshToken();
+                ConsentGranted = other.ConsentGranted;
+            }
+            finally { _tokenGate.Release(); }
+        }
+
+        /// <summary>
+        /// Forgets the tokens for good. Every request after this fails as not
+        /// signed in, and the saved file is never read again: it may already
+        /// hold another account's sign-in.
+        /// </summary>
+        internal void Retire()
+        {
+            _retired = true;
+            _access = new Access("", DateTime.MinValue);
+            _refreshToken = "";
+        }
 
         /// <summary>
         /// Forgets <paramref name="token"/> because Google has refused it, so the
@@ -399,6 +444,7 @@ namespace ExplorerNative
             // The common case, and it must stay lock-free: this is on the path of
             // every ranged read, and a token that is still good is the answer
             // almost every time.
+            if (_retired) throw new GoogleSignInRequiredException();
             var current = _access;
             if (current.Good) return current.Token;
 
@@ -408,13 +454,14 @@ namespace ExplorerNative
             // saying so used to announce while the person was in the browser.
             if (!await _tokenGate.WaitAsync(
                     MayConsent ? Timeout.Infinite : GateWaitMilliseconds, token))
-                throw new TimeoutException("Google's sign-in did not answer in time");
+                throw new SignInBusyException();
 
             try
             {
                 // Re-checked inside. Everything that queued up behind one refresh
                 // is now holding an answer from before it happened, and refreshing
                 // again would throw away the token that just arrived.
+                if (_retired) throw new GoogleSignInRequiredException();
                 current = _access;
                 if (current.Good) return current.Token;
 
@@ -552,6 +599,10 @@ namespace ExplorerNative
                 // the last still works.
                 $"&access_type=offline&prompt=consent";
 
+            // A sign-in left unfinished from here (no answer in thirty minutes,
+            // or the code exchange failing) is not a network failure to retry:
+            // retrying opened the page again every half hour.
+            ConsentStarted = true;
             OpenBrowser(url);
 
             // Said here rather than by the caller, because this is the moment the
@@ -811,8 +862,12 @@ namespace ExplorerNative
             return port;
         }
 
+        /// <summary>For the suite: called in place of opening the browser, so no test ever opens one.</summary>
+        internal static Action<string>? OpenBrowserForTests;
+
         private static void OpenBrowser(string url)
         {
+            if (OpenBrowserForTests is { } instead) { instead(url); return; }
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
             {
                 FileName = url,

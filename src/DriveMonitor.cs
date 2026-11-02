@@ -4416,7 +4416,7 @@ namespace ExplorerNative
                 var leaf = SyncMoves.Leaf(path);
                 try
                 {
-                    var siblings = await Patiently(pair, () => client.ListChildren(parentId, token), client, token).ConfigureAwait(false);
+                    var siblings = await Patiently(pair, () => client.ListChildren(parentId, token, max: int.MaxValue), client, token).ConfigureAwait(false);
                     var same = siblings.Where(e => e.IsFolder && string.Equals(e.Name, leaf, StringComparison.Ordinal)).ToList();
                     if (same.Count < 2) continue;      // two spellings, not twins: said as before
                     clashing.Remove(entry);
@@ -4425,7 +4425,7 @@ namespace ExplorerNative
                     var empty = new List<DriveEntry>();
                     foreach (var twin in same)
                     {
-                        var inside = await Patiently(pair, () => client.ListChildren(twin.Id, token, max: 1), client, token)
+                        var inside = await Patiently(pair, () => client.ListChildren(twin.Id, token, max: 1, partial: true), client, token)
                             .ConfigureAwait(false);
                         if (inside.Count == 0) empty.Add(twin);
                     }
