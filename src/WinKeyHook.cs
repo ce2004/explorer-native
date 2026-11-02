@@ -33,7 +33,8 @@ namespace ExplorerNative
         /// Without it the shell sees Windows go down and up with nothing between
         /// and opens the Start menu on the way up.
         /// </summary>
-        private const byte MaskKey = 0xE8;
+        internal const int MaskKeyCode = 0xE8;
+        private const byte MaskKey = (byte)MaskKeyCode;
         private const uint KEYEVENTF_KEYUP = 0x0002;
 
         /// <summary>Marks our own mask key, so the hook lets it straight through.</summary>
