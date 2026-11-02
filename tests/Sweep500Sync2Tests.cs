@@ -34,6 +34,7 @@ namespace ExplorerNative
             try
             {
                 await KeepGivesThePassProblem(sandbox);
+                await KeepInDownloadOnlySaysWhyNot(sandbox);
             }
             finally
             {
@@ -136,6 +137,51 @@ namespace ExplorerNative
                 }
                 else
                     Check("control: with nothing refused the same pass sends it and the folder is kept", outcome.Done, outcome.Message);
+            }
+        }
+
+        /// <summary>
+        /// Bug 2: in a download-only pair, a file only on the PC never goes up,
+        /// so Keep on Drive only says so at once instead of "try again once it
+        /// has synced"; a PC edit still differing after the pass is said too.
+        /// </summary>
+        private static async Task KeepInDownloadOnlySaysWhyNot(string sandbox)
+        {
+            using (var rig = new Rig(sandbox, SyncMode.DownloadOnly))
+            {
+                rig.Put("School/one.txt", "one", T0);
+                await rig.Pass();
+                Check("download only rig: Drive's file came down", File.Exists(rig.PathOf("School/one.txt")));
+                rig.Monitor.Reload(new[] { rig.Pair });
+                rig.Monitor.DriveOnlySyncWait = TimeSpan.FromSeconds(20);
+                rig.Write("School/notes.txt", "pc only", T0.AddMinutes(1));
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                var outcome = await rig.Monitor.KeepOnDriveOnlyAsync(rig.Pair.Id, "School", default, rig.Client);
+                Check("download only: a file only on the PC is not kept on Drive only", !outcome.Done, outcome.Message);
+                Check("and the message names it and says the pair only copies from Drive",
+                    outcome.Message.Contains("notes.txt") && outcome.Message.Contains("only copies from Google Drive"), outcome.Message);
+                Check("and does not say try again once it has synced", !outcome.Message.Contains("Try again once it has synced"), outcome.Message);
+                Check("and it is said at once, without waiting on a pass that can never send it", clock.Elapsed < TimeSpan.FromSeconds(10), clock.Elapsed.ToString());
+                Check("and nothing was removed", File.Exists(rig.PathOf("School/one.txt")) && File.Exists(rig.PathOf("School/notes.txt")));
+                Check("and the folder is not on the list", rig.LiveDriveOnly().Count == 0);
+
+                Directory.CreateDirectory(rig.PathOf("Empty"));
+                var empty = await rig.Monitor.KeepOnDriveOnlyAsync(rig.Pair.Id, "Empty", default, rig.Client);
+                Check("download only: an empty folder Drive lacks is said to never go up",
+                    !empty.Done && empty.Message.Contains("only copies from Google Drive") && !empty.Message.Contains("Try again"), empty.Message);
+
+                // A PC edit of a file Drive has: the pass runs (it could bring a
+                // newer copy down), then the edit is said to never go up.
+                File.Delete(rig.PathOf("School/notes.txt"));
+                rig.Write("School/one.txt", "ONE", T0.AddMinutes(2));
+                var ask = rig.Monitor.KeepOnDriveOnlyAsync(rig.Pair.Id, "School", default, rig.Client);
+                await Task.Delay(300);
+                await rig.Pass();
+                var edited = await ask;
+                Check("download only: a PC edit still differing after the pass is said as never going up",
+                    !edited.Done && edited.Message.Contains("one.txt") && edited.Message.Contains("different from Google Drive's copy")
+                    && !edited.Message.Contains("Try again"), edited.Message);
+                Check("and the edit is still on the PC", File.ReadAllText(rig.PathOf("School/one.txt")) == "ONE");
             }
         }
     }

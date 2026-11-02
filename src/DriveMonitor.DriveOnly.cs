@@ -367,6 +367,22 @@ namespace ExplorerNative
                     return new(false, $"{files} in {name} {(byRules.Count == 1 ? "is" : "are")} left out by the sync settings of {DisplayName(pair)} ({SomeOf(byRules)}), " +
                                       "so it can't be kept on Google Drive only. Nothing was removed");
                 }
+                // Download only never sends anything up, so a file only on the PC
+                // would wait for ever: said now, with no pass. A file Drive has
+                // that differs still gets the pass, which may bring Drive's down.
+                if (pair.Mode == SyncMode.DownloadOnly)
+                {
+                    var pcOnly = check.NotOnDrive.Where(r => !remote.ContainsKey(r)).ToList();
+                    if (pcOnly.Count > 0)
+                    {
+                        bool one = pcOnly.Count == 1;
+                        return new(false, $"{NameRules.Counted(pcOnly.Count, "file")} in {name} {(one ? "is" : "are")} only on this PC ({SomeOf(pcOnly)}), " +
+                                          $"and {DisplayName(pair)} only copies from Google Drive, so {(one ? "it" : "they")} will never go up. " +
+                                          $"Move {(one ? "it" : "them")} out of {name}, or put {(one ? "it" : "them")} in Google Drive, then try again. Nothing was removed");
+                    }
+                    if (folderId == null)
+                        return new(false, $"{name} is not in Google Drive, and {DisplayName(pair)} only copies from Google Drive, so it never will be. Nothing was removed");
+                }
                 bool synced = false;
                 string? passProblem = null;
                 if (round == 0 && !pair.Paused)
@@ -379,6 +395,14 @@ namespace ExplorerNative
                 if (synced) lastPassSaid = passProblem;
                 if (!synced)
                 {
+                    // Download only, after a pass: what still differs is a PC edit,
+                    // which that mode never sends.
+                    if (pair.Mode == SyncMode.DownloadOnly && round > 0 && check.NotOnDrive.Count > 0)
+                    {
+                        bool one = check.NotOnDrive.Count == 1;
+                        return new(false, $"{NameRules.Counted(check.NotOnDrive.Count, "file")} in {name} {(one ? "is" : "are")} different from Google Drive's copy ({SomeOf(check.NotOnDrive)}), " +
+                                          $"and {DisplayName(pair)} only copies from Google Drive, so the changes on this PC never go up. Nothing was removed");
+                    }
                     // Said instead of "try again", which would never help.
                     var why = lastPassSaid != null && !pair.Paused
                         ? $" {DisplayName(pair)} could not send {(check.NotOnDrive.Count == 1 ? "it" : "them")}: {lastPassSaid}. Nothing was removed"
