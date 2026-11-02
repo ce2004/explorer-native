@@ -943,7 +943,56 @@ namespace ExplorerNative
         private bool PumpShouldYield() =>
             !_pumping ||
             !double.IsNaN(Volatile.Read(ref _seekTo)) ||
-            Volatile.Read(ref _switchTo) != null;
+            (Volatile.Read(ref _switchTo) != null && !_cushioning);
+
+        // A device change waiting while the ring is filled deep first, on the
+        // pump thread only. See TakeSwitchWhenCushioned.
+        private bool _cushioning;
+        private long _cushionUntil;
+        private const int CushionMostMilliseconds = 500;
+
+        /// <summary>Called just before a new device is opened. Tests only.</summary>
+        internal static Action? BeforeSwitchOpenForTests;
+
+        /// <summary>
+        /// The device change waiting, once the ring holds enough to keep the old
+        /// device playing while the new one opens; otherwise null.
+        ///
+        /// The open blocks this thread, the only one that fills the ring, for as
+        /// long as the device takes (seconds for some Bluetooth endpoints), and a
+        /// local track keeps only 0.2s in it. The old device used to play that
+        /// and then silence, said as "Buffering", until the open finished. So
+        /// the ring is filled to the brim first (milliseconds for a local file),
+        /// for at most half a second, and drains back to its usual depth after.
+        /// Not when nothing would be heard: paused, or the old device gone.
+        /// </summary>
+        private string? TakeSwitchWhenCushioned()
+        {
+            var waiting = Volatile.Read(ref _switchTo);
+            if (waiting == null) { _cushioning = false; return null; }
+
+            bool needed = !_paused && !_resting && !_sourceDone && !_renderer.Lost &&
+                          !(waiting == DefaultMoved && _renderer.DeviceId.Length != 0);
+            if (needed && !_cushioning)
+            {
+                _cushioning = true;
+                _cushionUntil = Environment.TickCount64 + CushionMostMilliseconds;
+                return null;
+            }
+            if (needed && Environment.TickCount64 < _cushionUntil)
+            {
+                int stored, room;
+                lock (_ringGate)
+                {
+                    stored = _stored / Math.Max(1, _channels);
+                    room = (_ring.Length - _stored) / Math.Max(1, _channels);
+                }
+                if (Math.Min(room, TargetFrames() - stored) >= SmallestWriteFrames) return null;
+            }
+
+            _cushioning = false;
+            return Interlocked.Exchange(ref _switchTo, null);
+        }
 
         /// <summary>
         /// Reads ahead into the ring, and does the waiting so the renderer does
@@ -981,7 +1030,7 @@ namespace ExplorerNative
                     _lostRetryDelay = Math.Min(_lostRetryDelay * 2, 30_000);
                 }
 
-                var switchTo = Interlocked.Exchange(ref _switchTo, null);
+                var switchTo = TakeSwitchWhenCushioned();
                 if (switchTo != null) SwitchNow(switchTo);
 
                 // Both are sized from channel counts a device switch can change
@@ -1371,7 +1420,7 @@ namespace ExplorerNative
             // in holds a 1.3GB Ogg, against a budget of one gigabyte. Asking the
             // plainer question costs nothing and cannot be wrong in the direction
             // that stutters.
-            return download != null && download.Available < download.Length
+            return _cushioning || download != null && download.Available < download.Length
                 ? AtDeviceRate(RingFrames)
                 : AtDeviceRate(ShallowFrames);
         }
@@ -1601,27 +1650,54 @@ namespace ExplorerNative
             {
                 var playing = _renderer;
                 if (playing.DeviceId.Length != 0 && !playing.Lost) return;
+
+                // A device picked by name that Windows reset rather than took
+                // away (a format change, a Bluetooth headset switching to
+                // hands-free, a driver restart, waking from sleep) is still
+                // there: open it again before following the default, or the
+                // music moves to the speakers for the rest of the track. Open
+                // falls back to the default itself when it really has gone.
+                // Once per device in 30s, so one that keeps going quiet ends
+                // on the default instead of four silent seconds at a time.
+                if (playing.Lost && playing.DeviceId.Length != 0 &&
+                    !(string.Equals(playing.DeviceId, _reopenedId, StringComparison.Ordinal) &&
+                      Environment.TickCount64 - _reopenedAt < 30_000))
+                {
+                    _reopenedId = playing.DeviceId;
+                    _reopenedAt = Environment.TickCount64;
+                    if (SwitchCore(playing.DeviceId, automatic: true, reopenSame: true)) return;
+                }
                 SwitchCore("", automatic: true);
                 return;
             }
+            _reopenedId = "";
             SwitchCore(deviceId, automatic: false);
         }
+
+        // The last lost named device opened again, on the pump thread only.
+        private string _reopenedId = "";
+        private long _reopenedAt;
 
         /// <param name="automatic">
         /// Queued by the player itself — a default that moved, a device that
         /// went — rather than picked. Only those are kept quiet on a retry.
         /// </param>
-        private void SwitchCore(string deviceId, bool automatic)
+        /// <param name="reopenSame">
+        /// Opening a lost device again by name. On failure nothing is queued
+        /// or said, because the caller goes to the default straight away.
+        /// </param>
+        /// <returns>True once the new device has taken over.</returns>
+        private bool SwitchCore(string deviceId, bool automatic, bool reopenSame = false)
         {
             var decoder = _decoder;
-            if (decoder == null) return;
+            if (decoder == null) return false;
 
             // Already on the default, and it is still there: a reopen of the same
             // endpoint is a gap for nothing.
             if (deviceId.Length == 0 && _renderer.DeviceId.Length == 0 && !_renderer.Lost &&
                 WasapiRenderer.DefaultEndpointId() is { } current &&
                 string.Equals(current, _renderer.EndpointId, StringComparison.OrdinalIgnoreCase))
-                return;
+                return false;
 
             var old = _renderer;
 
@@ -1651,6 +1727,7 @@ namespace ExplorerNative
             fresh.SetSuspended(true);
 
             Watch(fresh);
+            BeforeSwitchOpenForTests?.Invoke();
             if (!fresh.Start(Fill, _preferRaw, string.IsNullOrEmpty(deviceId) ? null : deviceId))
             {
                 // The old one is still running and still has the track. A device
@@ -1661,6 +1738,7 @@ namespace ExplorerNative
 
                 var refused = NameFor(deviceId);
                 fresh.Dispose();
+                if (reopenSame) return false;
 
                 // Staying put means staying on the default the old renderer
                 // followed, which may have moved while the other device was
@@ -1682,7 +1760,7 @@ namespace ExplorerNative
                 if (!(retrying && _lostFailureSaid))
                     try { DeviceSwitched?.Invoke(refused, false); } catch { }
                 if (retrying) _lostFailureSaid = true;
-                return;
+                return false;
             }
 
             bool sameFormat = fresh.SampleRate == old.SampleRate && fresh.Channels == old.Channels;
@@ -1698,7 +1776,7 @@ namespace ExplorerNative
                 {
                     fresh.Stop();
                     fresh.Dispose();
-                    return;
+                    return false;
                 }
 
                 // Again, from the old renderer, because a Bluetooth device can
@@ -1815,6 +1893,7 @@ namespace ExplorerNative
             Diagnostic = fresh.Diagnostic;
 
             try { DeviceSwitched?.Invoke(DisplayNameOf(fresh), true); } catch { }
+            return true;
         }
 
         /// <summary>What to call a device in a sentence.</summary>

@@ -182,7 +182,7 @@ namespace ExplorerNative
             // doing anything" — the way to compare the effect against none.
             var onBox = new SpokenCheckBox
             {
-                Text = "Silence reduction &on",
+                Text = "Silence &reduction on",
                 Checked = on,
                 AutoSize = true,
                 Location = new Point(160, 212),

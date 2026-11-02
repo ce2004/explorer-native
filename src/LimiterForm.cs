@@ -90,7 +90,7 @@ namespace ExplorerNative
                 AudioPlayer.DescribeRelease, releaseMilliseconds,
                 "How slowly it lets go again. Arrow up and down; it applies as you go.");
 
-            var ceiling = AddRow("&Ceiling:", 92, AudioPlayer.LimiterCeilingLadder,
+            var ceiling = AddRow("C&eiling:", 92, AudioPlayer.LimiterCeilingLadder,
                 AudioPlayer.DescribeCeiling, ceilingPercent,
                 "How loud it aims for. Arrow up and down; it applies as you go.");
 
@@ -101,7 +101,7 @@ namespace ExplorerNative
             // between the limiter doing very little and doing a great deal.
             var wholeRangeBox = new SpokenCheckBox
             {
-                Text = "Same lift at &any volume",
+                Text = "Same lift at any &volume",
                 Checked = wholeRange,
                 AutoSize = true,
                 Location = new Point(90, 132),
@@ -121,7 +121,7 @@ namespace ExplorerNative
             // quickest way to compare the effect against none.
             var onBox = new SpokenCheckBox
             {
-                Text = "Limiter &on",
+                Text = "&Limiter on",
                 Checked = on,
                 AutoSize = true,
                 Location = new Point(90, 160),
