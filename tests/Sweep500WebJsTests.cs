@@ -31,6 +31,7 @@ namespace ExplorerNative
             StopAllStopsTheBatchTests(js);
             UnplayableTrackIsSkippedTests(js);
             StopWhileWaitingStaysStoppedTests(js);
+            ClipboardSendScalesWithSizeTests(js);
             await Task.CompletedTask;
         }
 
@@ -137,6 +138,18 @@ namespace ExplorerNative
             int fetched = download.IndexOf("await fetch(", StringComparison.Ordinal);
             Check("a big download stopped while it was asked for is not handed to Safari",
                 safari > fetched && fetched >= 0 && download[fetched..safari].Contains("if (stopped)"), download);
+        }
+
+        // Bug 7: sending a file to the PC clipboard gave up after five minutes whatever its size, with no Stop.
+        private static void ClipboardSendScalesWithSizeTests(string js)
+        {
+            var body = Function(js, "sendFiles");
+            var call = After(body, "/api/clipboard/send?");
+            int end = call.IndexOf("});", StringComparison.Ordinal);
+            call = end < 0 ? call : call[..end];
+            Check("a clipboard send's time limit grows with the file's size", Regex.IsMatch(call, @"timeout:[^,}]*\.size"), call);
+            Check("a clipboard send can be stopped", call.Contains("signal:"), call);
+            Check("a clipboard send shows in Transfers", body.Contains("addTransfer("), body);
         }
     }
 }

@@ -728,7 +728,8 @@ function transferText(t) {
     case 'failed': return `${t.name}, failed: ${t.message || 'unknown problem'}`;
     case 'cancelled': return `${t.name}, stopped`;
     case 'waiting': return `${t.name}, waiting for the PC, ${pct} percent`;
-    default: return `${t.name}, ${pct} percent${t.total ? `, ${words(t.done)} of ${words(t.total)}` : ''}`;
+    default: if (t.sending) return `${t.name}, sending`;
+      return `${t.name}, ${pct} percent${t.total ? `, ${words(t.done)} of ${words(t.total)}` : ''}`;
   }
 }
 
@@ -1552,16 +1553,31 @@ async function sendText(text) {
 async function sendFiles(files) {
   const batch = `web${Date.now()}`;
   $('clip-status').textContent = '';
+  let t = null, stopped = false;
   try {
     for (const f of files) {
       announce(`Sending ${f.name}`);
+      // Shown in Transfers with a Stop. One request carries the whole file, so its time limit grows with the size
+      // (about 200 kilobits a second plus five minutes); the PC already gives up on a body that stops arriving.
+      const ctrl = new AbortController();
+      t = addTransfer({ kind: 'upload', name: f.name, state: 'running', sending: true, done: 0, total: f.size });
+      t.cancel = async () => { stopped = true; ctrl.abort(); finishTransfer(t, 'cancelled'); };
       await api(`/api/clipboard/send?name=${encodeURIComponent(f.name)}&batch=${batch}`,
-        { method: 'POST', body: f, raw: true, timeout: 300000 });
+        { method: 'POST', body: f, raw: true, timeout: 300000 + Math.ceil(f.size / 25000) * 1000, signal: ctrl.signal });
+      if (stopped) return;
+      t.done = t.total;
+      t.state = 'done';
+      t.message = 'Sent to the PC clipboard';
+      renderTransfers();
+      t = null;
     }
     await api('/api/clipboard/send/commit', { method: 'POST', body: { batch } });
     $('clip-status').textContent = 'Sent to the PC clipboard';
     announce(`Sent to the PC clipboard: ${plural(files.length, 'file', 'files')}. Paste with Control V.`);
-  } catch (err) { announce(err.message, true); }
+  } catch (err) {
+    if (stopped) return;
+    if (t) finishTransfer(t, 'failed', err.message); else announce(err.message, true);
+  }
 }
 
 // ---------- Settings ----------
