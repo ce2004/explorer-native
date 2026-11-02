@@ -27,7 +27,33 @@ namespace ExplorerNative
             EscapeDuringQuietRerunLeavesResults(main);
             SpaceMidWordNeverReachesTheControl(main);
             DriveMenuHidesArchiveCommands(main);
+            EmptyFolderMessageNeverCutsOffTheTab(main);
             await Task.CompletedTask;
+        }
+
+        // Bugs 4 and 5: "This folder is empty" on focus interrupted the tab
+        // announcement (and NVDA's list name), repeated on a held Tab, and
+        // said "folder" in Apple Music.
+        private static void EmptyFolderMessageNeverCutsOffTheTab(string main)
+        {
+            var say = Body(main, "private void SayIfEmpty(");
+            Check("the empty message holds back while a spoken tab announcement is on its way",
+                say.Contains("_switchingTab", StringComparison.Ordinal) && say.Contains("\"nav.tab\"", StringComparison.Ordinal));
+            var tab = Body(main, "private void SetActiveTab(");
+            int raise = tab.IndexOf("_switchingTab = true", StringComparison.Ordinal);
+            Check("the tab switch is marked before the new list can take focus, and cleared in a finally",
+                raise >= 0 && raise < tab.IndexOf("ShowActivePane();", StringComparison.Ordinal) &&
+                tab.Contains("finally { _switchingTab = false; }", StringComparison.Ordinal));
+            Check("the empty message never interrupts speech",
+                !say.Contains("AnnounceOperation(", StringComparison.Ordinal) &&
+                say.Contains("interrupt: false", StringComparison.Ordinal));
+            Check("a held Tab restarts one timer instead of starting one per press",
+                say.Contains("_emptyTimer.Stop();", StringComparison.Ordinal) &&
+                !say.Replace("if (_emptyTimer == null)", "").Contains("var wait = new", StringComparison.Ordinal));
+            var words = Body(main, "private static string EmptyWords(");
+            Check("an empty Apple Music list is a list, as navigation says",
+                say.Contains("EmptyWords(", StringComparison.Ordinal) &&
+                words.Contains("AppleMusic.Is", StringComparison.Ordinal) && words.Contains("This list is empty", StringComparison.Ordinal));
         }
 
         // Bug 3: on the Drive letter Compress, Extract and Extract here can

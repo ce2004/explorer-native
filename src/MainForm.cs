@@ -2103,6 +2103,11 @@ namespace ExplorerNative
 
             _activeIndex = index;
 
+            // The new list's Enter fires inside ShowActivePane or Focus; either
+            // way SayIfEmpty must know the tab announcement is coming.
+            _switchingTab = true;
+            try
+            {
             // Showing one list and hiding the other is a layout change, and the
             // form would otherwise re-lay-out every child — menu, status bar, both
             // lists — twice per switch. Held down, Tab repeats about thirty times
@@ -2123,6 +2128,8 @@ namespace ExplorerNative
             finally { ResumeLayout(performLayout: false); }
 
             Active.List.Focus();
+            }
+            finally { _switchingTab = false; }
 
             // Deferred, both of them. Totalling the selection and building the
             // announcement are wasted on a tab you are passing through on the way
@@ -7521,15 +7528,52 @@ namespace ExplorerNative
         private void SayIfEmpty(Pane pane)
         {
             if (!IsEmptyAndSettled(pane)) return;
-            var wait = new System.Windows.Forms.Timer { Interval = 200 };
-            wait.Tick += (_, _) =>
+
+            // On a tab switch the tab announcement already says "0 items"; a
+            // second message 80ms later cut it off before the folder was named.
+            // Only when that announcement is not spoken does this one stand in.
+            if (_switchingTab && _settings.SpeakEnabled &&
+                Notifications.ChannelsFor("nav.tab", _settings) == NotificationChannel.Speech) return;
+
+            // One timer, restarted: a held Tab gives one message after the last press.
+            _emptyPane = pane;
+            if (_emptyTimer == null)
             {
-                wait.Dispose();
-                if (IsDisposed || pane != Active || !pane.List.Focused || !IsEmptyAndSettled(pane)) return;
-                AnnounceOperation("nav.empty", pane.SearchTerm != null ? "No results" : "This folder is empty");
-            };
-            wait.Start();
+                _emptyTimer = new System.Windows.Forms.Timer { Interval = 200 };
+                _emptyTimer.Tick += (_, _) =>
+                {
+                    _emptyTimer?.Stop();
+                    var waiting = _emptyPane;
+                    _emptyPane = null;
+                    if (IsDisposed || waiting == null || waiting != Active || !waiting.List.Focused ||
+                        !IsEmptyAndSettled(waiting)) return;
+                    var words = EmptyWords(waiting);
+                    // Never interrupting: the screen reader's own name for the
+                    // list finishes first and this follows it.
+                    ShowStatus(words);
+                    WindowsToasts.Raise("nav.empty", words, _settings);
+                    if (_settings.SpeakEnabled &&
+                        Notifications.ChannelsFor("nav.empty", _settings) == NotificationChannel.Speech)
+                        Speech.Speak(words, interrupt: false);
+                };
+            }
+            _emptyTimer.Stop();
+            _emptyTimer.Start();
         }
+
+        private System.Windows.Forms.Timer? _emptyTimer;
+        private Pane? _emptyPane;
+
+        /// <summary>Set while SetActiveTab moves focus, so SayIfEmpty knows the tab announcement follows.</summary>
+        private bool _switchingTab;
+
+        /// <summary>What an empty list is called: the same words navigation uses.</summary>
+        private static string EmptyWords(Pane pane) =>
+            pane.SearchTerm != null ? "No results"
+            : string.Equals(pane.CurrentPath, AppleMusic.SearchFolder, StringComparison.OrdinalIgnoreCase)
+                ? "No searches yet. Press F1 to search Apple Music"
+            : AppleMusic.Is(pane.CurrentPath) ? "This list is empty"
+            : "This folder is empty";
 
         /// <summary>Nothing listed, and nothing on its way: not a folder still loading.</summary>
         private static bool IsEmptyAndSettled(Pane pane) =>
@@ -11389,6 +11433,8 @@ namespace ExplorerNative
                 _prefetchTimer?.Dispose();
                 _tabAnnounceTimer?.Stop();
                 _tabAnnounceTimer?.Dispose();
+            _emptyTimer?.Stop();
+            _emptyTimer?.Dispose();
                 _watchTimer?.Stop();
                 _watchTimer?.Dispose();
 
