@@ -26,6 +26,7 @@ namespace ExplorerNative
             QuitSaysWhatDriveDidNotSave();
             DisconnectAsksAndNeverBlocksTheWindow();
             SessionEndQuitsAndSaysWhy();
+            LaunchesOutwaitAQuitThatIsDraining();
             await Task.CompletedTask;
         }
 
@@ -272,6 +273,34 @@ namespace ExplorerNative
                 At(quit, "if (_quitting) return;") >= 0 && At(quit, "if (_quitting) return;") < At(quit, "_drive.Dispose();"));
             Check("session end: nothing is relaunched as Windows ends",
                 At(quit, "!sessionEnding && _unserved.TryDequeue(") >= 0);
+        }
+
+        // ---- 7 and 14: Ctrl+R or a folder opened during a long quit left nothing running ----
+
+        private static void LaunchesOutwaitAQuitThatIsDraining()
+        {
+            Check("launch waits: a launch waits longer than quitting's Drive drain and every bounded wait after it",
+                SingleInstance.QuittingMost >= DriveMount.DrainFor + TimeSpan.FromSeconds(33),
+                $"{SingleInstance.QuittingMost} against a drain of {DriveMount.DrainFor}");
+
+            var program = Source("Program.cs");
+            var main = Body(program, "static void Main(");
+            int restartWait = At(main, "mutex.WaitOne(isRestart ?");
+            Check("launch waits: a restart waits the whole quitting time for the lock",
+                restartWait >= 0 && At(main.Substring(restartWait), "SingleInstance.QuittingMost") is >= 0 and < 80);
+            int loop = At(main, "var until = ");
+            Check("launch waits: a folder opened while quitting waits the whole quitting time",
+                loop >= 0 && At(main.Substring(loop), "SingleInstance.QuittingMost") is >= 0 and < 120);
+            // The last test of the lock, after every wait.
+            int giveUp = main.LastIndexOf("if (!acquired)", StringComparison.Ordinal);
+            var rest = giveUp >= 0 ? main.Substring(giveUp) : "";
+            int deliver = At(rest, "Deliver("), returns = At(rest, "return;");
+            Check("launch waits: giving up says so instead of ending silently",
+                giveUp >= 0 && deliver >= 0 && returns > deliver);
+
+            var restart = Body(Source("MainForm.cs"), "private void RestartApp(");
+            Check("launch waits: Ctrl+R asks about unsent Drive files before it starts the new copy",
+                At(restart, "ConfirmUnsavedDrive(") >= 0 && At(restart, "Process.Start(") > At(restart, "ConfirmUnsavedDrive("));
         }
 
         private static IEnumerable<T> All<T>(System.Windows.Forms.Control root) where T : System.Windows.Forms.Control

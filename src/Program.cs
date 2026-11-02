@@ -108,7 +108,7 @@ namespace ExplorerNative
             bool acquired;
             try
             {
-                acquired = mutex.WaitOne(isRestart ? TimeSpan.FromSeconds(15) : TimeSpan.Zero);
+                acquired = mutex.WaitOne(isRestart ? SingleInstance.QuittingMost : TimeSpan.Zero);
             }
             catch (AbandonedMutexException)
             {
@@ -129,13 +129,15 @@ namespace ExplorerNative
                 // lock go at the very end. Waiting a few seconds for it turns
                 // "the folder I double-clicked opened nothing" into "the folder
                 // opened, a moment later".
-                // Thirty, not five: quitting has three bounded waits of up to
-                // five seconds each, and a launcher that gave up first opened
-                // nothing. In slices, trying the handoff again between them: two
-                // launches waiting together, one of them wins the lock and
-                // becomes the application, and the other hands its folder to it
-                // rather than waiting out the thirty seconds for nothing.
-                var until = DateTime.UtcNow.AddSeconds(30);
+                // As long as quitting can take (SingleInstance.QuittingMost):
+                // it sends Google Drive's unsent files for up to a minute, and
+                // a launcher that gave up first opened nothing. In slices,
+                // trying the handoff again between them: two launches waiting
+                // together, one of them wins the lock and becomes the
+                // application, and the other hands its folder to it rather than
+                // waiting out the time for nothing. A restart has already waited
+                // that long for the lock.
+                var until = DateTime.UtcNow + (isRestart ? TimeSpan.Zero : SingleInstance.QuittingMost);
                 while (!acquired && DateTime.UtcNow < until)
                 {
                     try { acquired = mutex.WaitOne(TimeSpan.FromMilliseconds(500)); }
@@ -147,7 +149,16 @@ namespace ExplorerNative
                             FirstPathArgument(args) ?? SingleInstance.ShowCommand)) return;
                 }
 
-                if (!acquired) return;
+                if (!acquired)
+                {
+                    // Never silently: Ctrl+R said "Restarting", and then nothing.
+                    var folder = FirstPathArgument(args);
+                    Deliver("Explorer Native", folder != null
+                        ? $"{folder} did not open, because Explorer Native was still closing. Try again in a moment."
+                        : "Explorer Native did not start, because the copy that was closing has not finished. Try again in a moment.",
+                        failed: true);
+                    return;
+                }
             }
 
             try
@@ -982,6 +993,14 @@ namespace ExplorerNative
 
         /// <summary>Ends this process so a replacement started by Ctrl+R can take over.</summary>
         public static void QuitForRestart() => _context?.QuitImmediately();
+
+        /// <summary>
+        /// Asks before something that takes Google Drive down while files saved
+        /// on it are still on their way (see the tray's ConfirmUnsavedDrive).
+        /// True when nothing is waiting or the answer was Yes.
+        /// </summary>
+        public static bool ConfirmUnsavedDrive(string before, string question) =>
+            _context?.ConfirmUnsavedDrive(before, question) ?? true;
 
         /// <summary>
         /// Hands a file to the audio player, which the tray owns because it has to

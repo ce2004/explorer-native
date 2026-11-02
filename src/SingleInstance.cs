@@ -27,6 +27,20 @@ namespace ExplorerNative
     internal static class SingleInstance
     {
         /// <summary>
+        /// How long a copy can take to quit, and so how long a launch waits for
+        /// its lock: a restart (Ctrl+R, an update) before taking over, a folder
+        /// opened meanwhile before opening it. Quitting sends the Drive letter's
+        /// unsent files for up to DriveMount.DrainFor (60s), after the player,
+        /// WaitForReads, the archive cache and the folder monitor (5s each) and
+        /// before WaitForCallbacks and StopUploads (5s each) and WaitForServer
+        /// (3s), so two minutes leaves a margin. 15s and 30s predate the drain,
+        /// and a restart gave up while the old copy was still sending, leaving
+        /// nothing running. A constant, so a folder-open messenger never runs
+        /// DriveMount's type initialiser.
+        /// </summary>
+        internal static readonly TimeSpan QuittingMost = TimeSpan.FromMinutes(2);
+
+        /// <summary>
         /// Appended to the pipe name so the self-test can exercise the handoff
         /// without talking to the copy the user has running. Left empty in the
         /// application; a shared name would mean the suite's "nobody is

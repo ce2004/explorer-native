@@ -707,6 +707,7 @@ namespace ExplorerNative
             // already coming up, and answering "no" there would leave two of
             // them fighting over the single-instance lock.
             if (!ConfirmAbandonTransfers("Restart")) return;
+            if (!Program.ConfirmUnsavedDrive("restarts", "Restart anyway?")) return;
 
             try
             {
