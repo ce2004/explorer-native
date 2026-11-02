@@ -635,6 +635,12 @@ namespace ExplorerNative
             var areas = new (string Key, Func<Task> Run)[]
             {
                 ("mount", () => Sweep500MountTests.RunAll(Check, Equal)),
+                ("app2", () => Sweep500App2Tests.RunAll(Check, Equal)),
+                ("player2", () => Sweep500Player2Tests.RunAll(Check, Equal)),
+                ("archives2", () => Sweep500Archive2Tests.RunAll(Check, Equal)),
+                ("webjs", () => Sweep500WebJsTests.RunAll(Check, Equal)),
+                ("sync3", () => Sweep500Sync3Tests.RunAll(Check, Equal)),
+                ("sync2", () => Sweep500Sync2Tests.RunAll(Check, Equal)),
                 ("client", () => Sweep500ClientTests.RunAll(Check, Equal)),
                 ("sync", () => Sweep500SyncTests.RunAll(Check, Equal)),
                 ("web", () => Sweep500WebTests.RunAll(Check, Equal)),

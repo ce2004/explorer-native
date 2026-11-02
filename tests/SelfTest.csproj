@@ -77,6 +77,12 @@
     <Compile Include="..\src\WinFspSetup.cs" />
     <Compile Include="WinFspTests.cs" />
     <Compile Include="Sweep500MountTests.cs" />
+    <Compile Include="Sweep500App2Tests.cs" />
+    <Compile Include="Sweep500Player2Tests.cs" />
+    <Compile Include="Sweep500Archive2Tests.cs" />
+    <Compile Include="Sweep500WebJsTests.cs" />
+    <Compile Include="Sweep500Sync3Tests.cs" />
+    <Compile Include="Sweep500Sync2Tests.cs" />
     <Compile Include="Sweep500ClientTests.cs" />
     <Compile Include="Sweep500SyncTests.cs" />
     <Compile Include="Sweep500WebTests.cs" />
