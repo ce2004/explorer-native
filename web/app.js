@@ -880,6 +880,8 @@ async function uploadSmall(file, folder) {
       t.state = 'waiting';
       renderTransfers();
       await waitForNetwork(Math.min(30000, 2000 * attempt));
+      // Stopped while it waited: Stop stays stopped.
+      if (stopped) return;
       t.state = 'running';
     }
   }
@@ -948,6 +950,9 @@ async function upload(file, folder) {
     // Asked again if the answer is lost; the PC answers a repeat the same way.
     let f;
     for (let attempt = 1; ; attempt++) {
+      // Stopped while the finish waited for the network: send the cancel again, as the first may have been lost offline.
+      // The finish itself is never called off once sent: the PC may already be making the file.
+      if (stopped) { api('/api/upload/cancel', { method: 'POST', body: { id } }).catch(() => { }); return; }
       // Long: into another drive on the PC, finishing is a copy of the whole file.
       try { f = await api('/api/upload/finish', { method: 'POST', body: { id }, timeout: 600000 }); break; }
       catch (err) {
@@ -956,6 +961,7 @@ async function upload(file, folder) {
         t.state = 'waiting';
         renderTransfers();
         await waitForNetwork(Math.min(30000, 2000 * attempt));
+        if (stopped) continue;
         t.state = 'running';
       }
     }
@@ -1465,10 +1471,12 @@ async function downloadToPhone(url, name) {
   // attempt, and it is tried again like any other dropped connection.
   const quiet = () => { clearTimeout(stall); const c = ctrl; stall = setTimeout(() => c.abort(), 30000); };
   for (let attempt = 1; ; attempt++) {
+    if (stopped) return;
     ctrl = new AbortController();
     try {
       quiet();
       const res = await fetch(url, { cache: 'no-store', signal: ctrl.signal });
+      if (stopped) { ctrl.abort(); return; }
       if (!res.ok) {
         const data = await res.json().catch(() => null);
         throw new ApiError(res.status, (data && data.error) || `The PC answered ${res.status}.`);
@@ -1512,6 +1520,8 @@ async function downloadToPhone(url, name) {
       t.state = 'waiting';
       renderTransfers();
       await waitForNetwork(Math.min(30000, 2000 * attempt));
+      // Stopped while it waited: Stop stays stopped.
+      if (stopped) return;
       t.state = 'running';
     }
   }

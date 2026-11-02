@@ -30,6 +30,7 @@ namespace ExplorerNative
             UploadServerErrorEndsTests(js);
             StopAllStopsTheBatchTests(js);
             UnplayableTrackIsSkippedTests(js);
+            StopWhileWaitingStaysStoppedTests(js);
             await Task.CompletedTask;
         }
 
@@ -112,6 +113,30 @@ namespace ExplorerNative
             Check("a queue where nothing plays stops rather than loops", Regex.IsMatch(setup, @"\+\+\w+\s*>=?"), setup);
             var src = Function(js, "srcFor");
             Check("a track this browser can't play goes through the PC's decoder", src.Contains("viaPc") && src.Contains("/api/audio"), src);
+        }
+
+        // Bug 6: Stop pressed while a transfer waited for the network was undone when the network came back.
+        private static void StopWhileWaitingStaysStoppedTests(string js)
+        {
+            foreach (var name in new[] { "downloadToPhone", "uploadSmall", "upload" })
+            {
+                var body = Function(js, name);
+                int waits = 0, unchecked_ = 0;
+                foreach (Match m in Regex.Matches(body, @"await waitForNetwork\("))
+                {
+                    waits++;
+                    var rest = body[m.Index..];
+                    int running = rest.IndexOf("t.state = 'running'", StringComparison.Ordinal);
+                    if (running >= 0 && !rest[..running].Contains("if (stopped)")) unchecked_++;
+                }
+                Check($"{name}: Stop pressed while waiting for the network is looked at before it carries on",
+                    waits > 0 && unchecked_ == 0, $"{waits} waits, {unchecked_} not checked");
+            }
+            var download = Function(js, "downloadToPhone");
+            int safari = download.IndexOf("handToSafari(url", StringComparison.Ordinal);
+            int fetched = download.IndexOf("await fetch(", StringComparison.Ordinal);
+            Check("a big download stopped while it was asked for is not handed to Safari",
+                safari > fetched && fetched >= 0 && download[fetched..safari].Contains("if (stopped)"), download);
         }
     }
 }
