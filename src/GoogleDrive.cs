@@ -462,21 +462,32 @@ namespace ExplorerNative
                 if (Mounted)
                 {
                     if (!NeedsSignIn) return true;
-                    var (renewed, otherAccount) =
+                    var (renewed, otherAccount, fresh) =
                         await RenewSignIn(linked.Token, mayConsent, consentToken).ConfigureAwait(false);
-                    if (!otherAccount) return renewed;
+                    if (!otherAccount || fresh == null) return renewed;
 
                     // Signed in again as somebody else. Every entry on the letter, the
                     // path-to-id map and the search graph belong to the old
                     // account, and its ids sent with the new token fail
                     // everywhere, so the letter is mounted again from scratch.
                     // TearDown, not Unmount: Unmount cancels _lifetime, and with
-                    // it the token this mount runs on. The new sign-in is already
-                    // saved to disk, and MountFresh reads it from there.
+                    // it the token this mount runs on.
+                    //
+                    // The old sign-in is retired first, so nothing of the old
+                    // account's (an unsent save, a size refresh, a read-ahead) can
+                    // go out as the new one: a file saved to the root of the letter
+                    // used to land in the other account's My Drive, said as saved.
+                    // Its unsent files are kept on this PC instead (AccountGone).
                     GoogleAuth? old;
-                    lock (_gate) { old = _auth; _otherAccountsSwept = false; }
-                    if (old != null) old.SignInLapsed -= OnSignInLapsed;
+                    DriveMount? going;
+                    lock (_gate) { old = _auth; going = _mount; _otherAccountsSwept = false; }
+                    if (old != null) { old.SignInLapsed -= OnSignInLapsed; old.Retire(); }
+                    if (going != null) going.AccountGone = true;
                     TearDown();
+
+                    // Only now is the new account's sign-in put where MountFresh reads it.
+                    if (GoogleAuth.Credentials(SafeDirectory()) is { } credentials)
+                        new GoogleAuth(credentials.ClientId, credentials.ClientSecret, TokenPath).AdoptFrom(fresh);
                     if (linked.IsCancellationRequested) return false;
                     return await MountFresh(settings, linked.Token, quietly: true).ConfigureAwait(false);
                 }
@@ -518,23 +529,35 @@ namespace ExplorerNative
         private bool _disposed;
 
         /// <summary>
-        /// Asks for consent again through the client the live mount is already
-        /// using, so every entry on the letter and every cache stays where it is.
-        /// OtherAccount is true when the person chose a different Google
-        /// account: the mount then belongs to nobody signed in, and the caller
-        /// mounts again from scratch.
+        /// Asks for consent again, and keeps the live mount with every entry on
+        /// the letter and every cache where it is when the same account comes
+        /// back. The consent goes through a scratch sign-in, never the live one:
+        /// a different account chosen in Google's chooser must not reach the
+        /// client the old account's unsent saves go out on. OtherAccount is true
+        /// then, with that sign-in in Fresh, and the caller mounts again from scratch.
         /// </summary>
-        private async Task<(bool Ok, bool OtherAccount)> RenewSignIn(CancellationToken token, bool mayConsent,
-            CancellationToken consentToken)
+        private async Task<(bool Ok, bool OtherAccount, GoogleAuth? Fresh)> RenewSignIn(CancellationToken token,
+            bool mayConsent, CancellationToken consentToken)
         {
             GoogleAuth? auth;
-            DriveClient? client;
-            lock (_gate) { auth = _auth; client = _client; }
-            if (auth == null || client == null) return (false, false);
+            lock (_gate) auth = _auth;
+            if (auth == null) return (false, false, null);
+            if (GoogleAuth.Credentials(SafeDirectory()) is not { } credentials)
+            {
+                Status = "No Google client ID and secret yet. Enter them in Preferences, Google Drive, then connect.";
+                return (false, false, null);
+            }
 
+            var scratchPath = Path.Combine(Path.GetTempPath(), "en-renew-" + Guid.NewGuid().ToString("N") + ".dat");
             // Consent for this request alone; see GoogleAuth.ConsentScope.
             try
             {
+                // A sign-in saved meanwhile is tried before any browser.
+                try { if (File.Exists(TokenPath)) File.Copy(TokenPath, scratchPath); } catch { }
+                var scratch = new GoogleAuth(credentials.ClientId, credentials.ClientSecret, scratchPath)
+                    { AllowConsent = false, Notify = Forward };
+                var client = new DriveClient(scratch) { Notify = Forward, Units = _units };
+
                 string user;
                 var asking = CancellationTokenSource.CreateLinkedTokenSource(token, consentToken);
                 using (mayConsent ? GoogleAuth.ConsentScope() : null)
@@ -547,21 +570,23 @@ namespace ExplorerNative
                     // under that account's own name.
                     if (!other) _account = user;
                 }
-                if (auth.ConsentGranted) Say("drive.signin.done", $"Signed in to Google Drive as {user}");
-                if (other) return (false, true);
+                if (scratch.ConsentGranted) Say("drive.signin.done", $"Signed in to Google Drive as {user}");
+                if (other) return (false, true, scratch);
 
+                auth.AdoptFrom(scratch);
                 NeedsSignIn = false;
                 Interlocked.Exchange(ref _lapseSaid, 0);
                 Status = $"{user} on {Letter}";
-                return (true, false);
+                return (true, false, null);
             }
             catch (Exception ex)
             {
                 Status = consentToken.IsCancellationRequested && !token.IsCancellationRequested
                     ? "Not connected."
                     : $"Could not sign in again: {GoogleNet.Reason(ex)}";
-                return (false, false);
+                return (false, false, null);
             }
+            finally { try { File.Delete(scratchPath); } catch { } }
         }
 
         /// <summary>
@@ -616,8 +641,7 @@ namespace ExplorerNative
                 // Consent is allowed here and nowhere else: this is somebody
                 // asking to connect, so a browser opening is the expected answer
                 // rather than an ambush from inside a directory listing.
-                auth = new GoogleAuth(client.Value.ClientId, client.Value.ClientSecret,
-                    Path.Combine(SafeDirectory(), $"google-drive-token-v{GoogleAuth.ScopeVersion}.dat"))
+                auth = new GoogleAuth(client.Value.ClientId, client.Value.ClientSecret, TokenPath)
                 { AllowConsent = false, Notify = Forward };
                 auth.SignInLapsed += OnSignInLapsed;
                 var drive = new DriveClient(auth) { Notify = Forward, Units = _units };

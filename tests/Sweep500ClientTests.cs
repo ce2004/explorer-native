@@ -30,6 +30,7 @@ namespace ExplorerNative
             await Guard("acknowledgeAbuse", RateLimitKeepsAcknowledgeAbuse);
             await Guard("offline said once", OfflineWaitSaidOncePerOutage);
             await Guard("sign-in only when asked", SignInOnlyWhenAsked);
+            await Guard("other account", OtherAccountKeepsOldSavesOnPc);
         }
 
         private static async Task Guard(string name, Func<Task> test)
@@ -55,7 +56,7 @@ namespace ExplorerNative
                 Client = new DriveClient(Fake, 0.0005);
                 Root = Path.Combine(Path.GetTempPath(), "en-s500c-" + Guid.NewGuid().ToString("N")[..8]);
                 Drive.Notification += (id, message) => { lock (Said) Said.Add(id + ": " + message); };
-                Mount = new DriveMount(Client, Root, 16L * 1024 * 1024, _ => { });
+                Mount = new DriveMount(Client, Root, 16L * 1024 * 1024, _ => { }) { UnsavedFolder = Root + "-unsaved" };
                 Mount.Start("root", assignLetter: false);
                 Drive.UseForTests(Mount, Client);
             }
@@ -75,6 +76,7 @@ namespace ExplorerNative
                 // The GoogleDrive takes down the mount it was handed (or waits for the one it let go).
                 try { Drive.Dispose(); } catch { }
                 try { Directory.Delete(Root, true); } catch { }
+                try { Directory.Delete(Root + "-unsaved", true); } catch { }
             }
         }
 
@@ -323,6 +325,57 @@ namespace ExplorerNative
                 first.Cancel();
                 try { await Task.WhenAny(two, Task.Delay(10_000)); } catch { }
             });
+        }
+
+        // ---- 6. Signing in again as another account never sends the old account's saves ----
+
+        private static async Task OtherAccountKeepsOldSavesOnPc()
+        {
+            // A retired sign-in never reads the token file, which may hold the new account's sign-in.
+            var tokenPath = Path.Combine(Path.GetTempPath(), "en-s500-retired-" + Guid.NewGuid().ToString("N")[..8] + ".dat");
+            File.WriteAllText(tokenPath, "not to be read");
+            try
+            {
+                var auth = new GoogleAuth("id.apps.googleusercontent.com", "secret", tokenPath) { AllowConsent = false };
+                bool lapsed = false;
+                auth.SignInLapsed += () => lapsed = true;
+                auth.Retire();
+                Exception? thrown = null;
+                try { await auth.AccessToken(CancellationToken.None); }
+                catch (Exception ex) { thrown = ex; }
+                Check("a retired sign-in refuses every request as not signed in",
+                    thrown is GoogleSignInRequiredException, thrown?.GetType().Name);
+                Check("and does not say the sign-in expired", !lapsed);
+            }
+            finally { try { File.Delete(tokenPath); } catch { } }
+
+            using var rig = new Rig();
+            rig.Fake.AddFault(new FakeDrive.Fault { Kind = "multipart", Times = 100, Status = 503 });
+            rig.Mount.NewPending("", "note.txt", "root");
+            int uploads = rig.Fake.Uploads, requests = rig.Fake.Requests;
+            rig.Mount.AccountGone = true;
+            var clock = Stopwatch.StartNew();
+            rig.Drive.Unmount();
+            var finished = rig.Drive.TeardownForTests;
+            bool done = await Task.WhenAny(finished, Task.Delay(20_000)) == finished;
+            Check("a mount whose account was replaced goes without draining", done && clock.ElapsedMilliseconds < 15_000,
+                clock.ElapsedMilliseconds + " ms");
+            Check("and sends nothing it held", rig.Fake.Uploads == uploads && rig.Fake.Find(FakeDrive.Root, "note.txt") == null,
+                $"{rig.Fake.Uploads - uploads} uploads, {rig.Fake.Requests - requests} requests");
+            Check("its unsent file is kept on this PC", File.Exists(Path.Combine(rig.Root + "-unsaved", "note.txt")));
+            Check("and that is said", rig.SaidText().Contains("different account", StringComparison.Ordinal), rig.SaidText());
+
+            var drive = SourceText("GoogleDrive.cs");
+            var mount = MethodText(drive, "public async Task<bool> Mount(", 6000);
+            int retire = mount.IndexOf(".Retire()", StringComparison.Ordinal);
+            int gone = mount.IndexOf("AccountGone = true", StringComparison.Ordinal);
+            int tear = mount.IndexOf("TearDown();", StringComparison.Ordinal);
+            Check("another account: the old sign-in is retired and the mount told before it is taken down",
+                retire > 0 && gone > 0 && tear > retire && tear > gone);
+            var renew = MethodText(drive, "RenewSignIn(CancellationToken token,", 4000);
+            Check("a renewed sign-in goes through a scratch sign-in, not the live client",
+                renew.Contains("new DriveClient(scratch)", StringComparison.Ordinal) &&
+                !renew.Contains("_client", StringComparison.Ordinal));
         }
 
         // ---- 4. Waiting for the internet is said once per outage ----

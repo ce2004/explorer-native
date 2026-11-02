@@ -156,6 +156,39 @@ namespace ExplorerNative
         private Access _access = new("", DateTime.MinValue);
         private string _refreshToken = "";
 
+        /// <summary>Set by <see cref="Retire"/>: this sign-in belongs to an account that is no longer connected.</summary>
+        private volatile bool _retired;
+
+        /// <summary>
+        /// Takes another sign-in's tokens as this one's and saves them here: a
+        /// renewed sign-in for the same account, made through a scratch sign-in
+        /// so a different account chosen in the browser never reaches this one.
+        /// </summary>
+        internal void AdoptFrom(GoogleAuth other)
+        {
+            _tokenGate.Wait();
+            try
+            {
+                _access = other._access;
+                _refreshToken = other._refreshToken;
+                SaveRefreshToken();
+                ConsentGranted = other.ConsentGranted;
+            }
+            finally { _tokenGate.Release(); }
+        }
+
+        /// <summary>
+        /// Forgets the tokens for good. Every request after this fails as not
+        /// signed in, and the saved file is never read again: it may already
+        /// hold another account's sign-in.
+        /// </summary>
+        internal void Retire()
+        {
+            _retired = true;
+            _access = new Access("", DateTime.MinValue);
+            _refreshToken = "";
+        }
+
         /// <summary>
         /// Forgets <paramref name="token"/> because Google has refused it, so the
         /// next request refreshes rather than sending it again. Only that token:
@@ -411,6 +444,7 @@ namespace ExplorerNative
             // The common case, and it must stay lock-free: this is on the path of
             // every ranged read, and a token that is still good is the answer
             // almost every time.
+            if (_retired) throw new GoogleSignInRequiredException();
             var current = _access;
             if (current.Good) return current.Token;
 
@@ -427,6 +461,7 @@ namespace ExplorerNative
                 // Re-checked inside. Everything that queued up behind one refresh
                 // is now holding an answer from before it happened, and refreshing
                 // again would throw away the token that just arrived.
+                if (_retired) throw new GoogleSignInRequiredException();
                 current = _access;
                 if (current.Good) return current.Token;
 
