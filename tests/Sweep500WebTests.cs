@@ -27,7 +27,68 @@ namespace ExplorerNative
             LongAudioIsNotCut();
             AacDetailsAreNotMp3();
             DeepMatroskaDoesNotCrash();
+            DetailsNeverSpeakOnThePc();
+            MoveOutOfDriveThatFailedSaysCopied();
+            MoveInsideDriveCountsWhatMoved();
             await Task.CompletedTask;
+        }
+
+        // ---------------- 8. a move out of Drive with a failure says nothing left Drive ----------------
+
+        private static void MoveOutOfDriveThatFailedSaysCopied()
+        {
+            var job = new ConnectJob("d", "move");
+            job.Counted(9, 1);
+            job.Fail(@"G:\a\y.txt", "It is open in another program.");
+            job.KeepOriginals();
+            var (state, message) = ConnectServer.Outcome(job, move: true);
+            Check("move out of Drive with one failure: says Copied 9 files, and that the originals are all still on Drive, never Moved",
+                state == "done" && message != null && message.StartsWith("Copied 9 files; 1 file could not be copied.", StringComparison.Ordinal) &&
+                message.Contains("Google Drive", StringComparison.Ordinal) && !message.Contains("Moved", StringComparison.Ordinal), $"{state}: {message}");
+
+            var local = new ConnectJob("l", "move");
+            local.Counted(2, 1);
+            local.Fail(@"C:\a\y.txt", "It is open in another program.");
+            var (_, localSaid) = ConnectServer.Outcome(local, move: true);
+            Check("a local move with one failure still says Moved", localSaid?.StartsWith("Moved 2 files; 1 file could not be moved.", StringComparison.Ordinal) == true, localSaid);
+
+            var log = new ConflictLog();
+            for (int i = 0; i < 33; i++) log.Skipped($"name {i}");
+            var said = ConnectFiles.MoveOutSentence("Copied out of Google Drive. Some items were skipped, so nothing was removed from Drive.", log.Snapshot(), 0, true);
+            Check("move out of Drive with over 32 skipped: says both that nothing was removed and what was skipped",
+                said != null && said.Contains("nothing was removed from Drive", StringComparison.Ordinal) && said.Contains("33", StringComparison.Ordinal), said);
+
+            var main = Source(Path.Combine("src", "MainForm.cs")) ?? "";
+            Check("the window says the same: a failed move out of Drive is a copy with nothing removed from Google Drive",
+                main.Contains("nothing was removed from Google Drive", StringComparison.Ordinal));
+        }
+
+        // ---------------- 9. a move inside Drive counts what moved, not what was tried ----------------
+
+        private static void MoveInsideDriveCountsWhatMoved()
+        {
+            var body = Slice(Source(Path.Combine("src", "ConnectFiles.cs")), "async Task DriveToDrive(", "private async Task<int> OnDrive(");
+            Check("web move inside Drive: the source of DriveToDrive was found", body.Length > 0);
+            Check("web move inside Drive gives the job OnDrive's count of what really moved",
+                body.Contains("= await OnDrive(", StringComparison.Ordinal) && body.Contains("job.Counted(", StringComparison.Ordinal));
+
+            // What DriveToDrive now leaves behind when all three moves are refused.
+            var job = new ConnectJob("m", "move");
+            job.Report(3, 3, 0, 0, "");
+            for (int i = 0; i < 3; i++) job.Fail($@"G:\a\{i}.txt", "You do not have permission to add anything to that folder.");
+            job.Counted(0, 3);
+            var (state, _) = ConnectServer.Outcome(job, move: true);
+            Equal("a move inside Drive where every item was refused is failed, not done", "failed", state);
+        }
+
+        // ---------------- 6. web details never ask Drive for a link, whose failure the PC would say ----------------
+
+        private static void DetailsNeverSpeakOnThePc()
+        {
+            var body = Slice(Source(Path.Combine("src", "ConnectFiles.cs")), "public async Task<Dictionary<string, object?>> DetailsAsync(", "public async Task<string> RenameAsync(");
+            Check("web details: the source of DetailsAsync was found", body.Length > 0);
+            Check("web details ask Drive for no share link, so Details on Shared drives or Trash from the phone says nothing on the PC",
+                !body.Contains("LinkFor(", StringComparison.Ordinal));
         }
 
         private static string TempDir()

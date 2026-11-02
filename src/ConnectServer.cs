@@ -207,6 +207,15 @@ namespace ExplorerNative
         /// counts a file it gave up on (ERROR 32, in use) as one it got through, so a copy of a locked file read
         /// as done with one item copied.
         /// </summary>
+        private bool _originalsKept;
+
+        /// <summary>
+        /// A move out of Drive that only copied: something failed, so no original was removed. The outcome says
+        /// "Copied", never "Moved", and that everything is still on Drive.
+        /// </summary>
+        public void KeepOriginals() { lock (_gate) _originalsKept = true; }
+        public bool OriginalsKept { get { lock (_gate) return _originalsKept; } }
+
         public void Counted(int succeeded, int failed) { lock (_gate) _counted = (Math.Max(0, succeeded), Math.Max(0, failed)); }
 
         /// <summary>The engine's own count, when it gave one.</summary>
@@ -1313,14 +1322,17 @@ namespace ExplorerNative
             int failed = Math.Max(failures.Count, counts?.Failed ?? 0);
             if (failed == 0) return ("done", null);
             bool nothing = counts is { } c ? c.Succeeded == 0 : job.ItemsDone == 0;
+            bool kept = move && job.OriginalsKept;
+            bool moved = move && !kept;
             // Filed as sentences already; Sentence again would capitalise a file name at the front of one.
             string first = failures.Count > 0 && failures[0].Error.Trim().Length > 0
                 ? (failures[0].Error.TrimEnd().EndsWith('.') ? failures[0].Error.Trim() : Sentence(failures[0].Error))
                 : move ? "It could not be moved." : "It could not be copied.";
             if (nothing) return ("failed", first);
             int done = counts?.Succeeded ?? job.ItemsDone;
-            return ("done", $"{(move ? "Moved" : "Copied")} {NameRules.Items(done, "file")}; " +
-                            $"{NameRules.Items(failed, "file")} could not be {(move ? "moved" : "copied")}. {first}");
+            return ("done", $"{(moved ? "Moved" : "Copied")} {NameRules.Items(done, "file")}; " +
+                            $"{NameRules.Items(failed, "file")} could not be {(moved ? "moved" : "copied")}. {first}" +
+                            (kept ? " Nothing was removed from Google Drive, so the originals are all still there." : ""));
         }
 
         private ConnectJob FindJob(string id) =>

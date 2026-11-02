@@ -289,17 +289,9 @@ namespace ExplorerNative
 
             try
             {
+                // No Drive share link here: the web app shows none, and asking cost a request on every track
+                // change, with any failure (always for Shared drives and Trash) spoken on the PC.
                 await Section("file", () => FileSection(path, stat, onDrive, hash, OpenStream, token));
-                if (onDrive && result.TryGetValue("file", out var f) && f is Dictionary<string, object?> file)
-                {
-                    try
-                    {
-                        var link = await Drive.LinkFor(path, makePublic: false, token).WaitAsync(token);
-                        if (link != null) file["driveWebLink"] = link;
-                    }
-                    catch (OperationCanceledException) when (token.IsCancellationRequested) { partial = true; }
-                    catch { }
-                }
 
                 if (stat.Folder)
                 {
@@ -876,13 +868,27 @@ namespace ExplorerNative
             }
             if (result.Cancelled) throw new OperationCanceledException(token);
 
+            // Originals leave Drive only once every file has arrived; otherwise this was a copy, and is said so.
+            if (move && fromDrive && result.Failed > 0) job.KeepOriginals();
+            string? notice = null;
             if (move && fromDrive && result.Failed == 0)
             {
                 job.Current("Checking the copies before removing the originals");
-                await FinishMoveOutOfDrive(job, paths, destination, result.Collisions, renamedAway, token);
+                notice = await FinishMoveOutOfDrive(job, paths, destination, result.Collisions, renamedAway, token);
             }
-            var said = CollisionSentence(result.Collisions, result.AlreadyThere, move);
+            var said = MoveOutSentence(notice, result.Collisions, result.AlreadyThere, move);
             if (said != null) job.Say(said);
+        }
+
+        /// <summary>
+        /// The move out of Drive's own notice and what the conflict setting did, as one message: the job keeps
+        /// only the last thing said, and "nothing was removed from Drive" must not be lost behind "33 skipped".
+        /// </summary>
+        internal static string? MoveOutSentence(string? notice, ConflictOutcomes collisions, int alreadyThere, bool move)
+        {
+            var said = CollisionSentence(collisions, alreadyThere, move);
+            if (notice == null) return said;
+            return said == null ? notice : notice + " " + said;
         }
 
         /// <summary>
@@ -904,15 +910,12 @@ namespace ExplorerNative
         /// MainForm.FinishMoveOutOfDrive: the originals go to the Drive trash only once each is shown to have
         /// arrived, never one the conflict policy skipped. Whatever stays is a failure with the reason.
         /// </summary>
-        private async Task FinishMoveOutOfDrive(ConnectJob job, string[] paths, string destination,
+        private async Task<string?> FinishMoveOutOfDrive(ConnectJob job, string[] paths, string destination,
             ConflictOutcomes collisions, HashSet<string>? renamedAway, CancellationToken token)
         {
             var drive = Drive;
             if (collisions.SkippedCount > collisions.Skipped.Count)
-            {
-                job.Say("Copied out of Google Drive. Some items were skipped, so nothing was removed from Drive.");
-                return;
-            }
+                return "Copied out of Google Drive. Some items were skipped, so nothing was removed from Drive.";
 
             var skipped = new HashSet<string>(collisions.Skipped, StringComparer.OrdinalIgnoreCase);
             foreach (var path in paths)
@@ -953,6 +956,7 @@ namespace ExplorerNative
                 catch { trashed = false; }
                 if (!trashed) job.Fail(path, "Copied, but it could not be removed from Google Drive; the original is still there.");
             }
+            return null;
         }
 
         /// <summary>Local items (or a copy mixing both) into a Drive folder: DriveUpload, as the window pastes.</summary>
@@ -1009,9 +1013,15 @@ namespace ExplorerNative
             };
 
             var log = new ConflictLog();
-            await OnDrive(job, paths, destination, conflict, move, log, token,
+            int failedBefore = job.Failed.Count;
+            int moved = await OnDrive(job, paths, destination, conflict, move, log, token,
                 name => { if (move) handled++; Show(name); }, report: report);
-            if (move) { handled = paths.Length; Show(""); }
+            if (move)
+            {
+                handled = paths.Length; Show("");
+                // The progress counted tries; the outcome is what really moved, so a refused move is not "Moved".
+                job.Counted(moved, job.Failed.Count - failedBefore);
+            }
 
             var c = log.Snapshot();
             if (CollisionSentence(c) is { } said) job.Say(said);
