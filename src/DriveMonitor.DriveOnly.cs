@@ -254,7 +254,9 @@ namespace ExplorerNative
         /// <summary>
         /// Runs a pass of one pair now and waits, at most <paramref name="max"/>,
         /// for it to finish. False when it did not (paused, stopped, too long),
-        /// with the pair's problem when the pass hit one that lasts. Only a
+        /// with the pair's problem when the pass hit one that lasts. True when
+        /// it went through, with the problem it ended on (files refused, Drive
+        /// full), if any. Only a
         /// pass that began after the ask counts: one already running may have
         /// looked at the folder before the files came.
         /// </summary>
@@ -274,7 +276,14 @@ namespace ExplorerNative
                     if (_running == pairId || !_ranFrom.TryGetValue(pairId, out var ran) || ran <= asked) continue;
                     // A pass sets _lastChecked only when it went through, before
                     // _running is cleared.
-                    if (_lastChecked.TryGetValue(pairId, out var at) && at >= ran) return (true, null);
+                    // It went through, but may have ended on a problem it noted
+                    // without stopping (files Google refused, Drive full): handed
+                    // back, for the caller to give if files are still missing.
+                    if (_lastChecked.TryGetValue(pairId, out var at) && at >= ran)
+                    {
+                        var left = _status.TryGetValue(pairId, out var done) ? done.Problem : null;
+                        return (true, left == null || left.StartsWith("offline", StringComparison.Ordinal) ? null : left);
+                    }
                     var problem = _status.TryGetValue(pairId, out var status) ? status.Problem : null;
                     // No problem left: it was stopped (paused, edited or removed).
                     if (problem == null) return (false, null);
@@ -335,6 +344,7 @@ namespace ExplorerNative
             // gets one pass of the pair to go up, then it is looked at again.
             var rules = SyncRules.For(pair);
             FolderCheck check;
+            string? lastPassSaid = null;   // the problem the pass went through with, if any
             for (int round = 0; ; round++)
             {
                 var folderId = await DriveFolderAtAsync(client, pair.DriveFolderId, relative, token).ConfigureAwait(false);
@@ -357,21 +367,69 @@ namespace ExplorerNative
                     return new(false, $"{files} in {name} {(byRules.Count == 1 ? "is" : "are")} left out by the sync settings of {DisplayName(pair)} ({SomeOf(byRules)}), " +
                                       "so it can't be kept on Google Drive only. Nothing was removed");
                 }
+                // Download only never sends anything up, so a file only on the PC
+                // would wait for ever: said now, with no pass. A file Drive has
+                // that differs still gets the pass, which may bring Drive's down.
+                if (pair.Mode == SyncMode.DownloadOnly)
+                {
+                    var pcOnly = check.NotOnDrive.Where(r => !remote.ContainsKey(r)).ToList();
+                    if (pcOnly.Count > 0)
+                    {
+                        bool one = pcOnly.Count == 1;
+                        return new(false, $"{NameRules.Counted(pcOnly.Count, "file")} in {name} {(one ? "is" : "are")} only on this PC ({SomeOf(pcOnly)}), " +
+                                          $"and {DisplayName(pair)} only copies from Google Drive, so {(one ? "it" : "they")} will never go up. " +
+                                          $"Move {(one ? "it" : "them")} out of {name}, or put {(one ? "it" : "them")} in Google Drive, then try again. Nothing was removed");
+                    }
+                    if (folderId == null)
+                        return new(false, $"{name} is not in Google Drive, and {DisplayName(pair)} only copies from Google Drive, so it never will be. Nothing was removed");
+                }
                 bool synced = false;
                 string? passProblem = null;
                 if (round == 0 && !pair.Paused)
                     (synced, passProblem) = await SyncPairNowAsync(pairId, DriveOnlySyncWait, token).ConfigureAwait(false);
-                if (passProblem != null)
+                if (!synced && passProblem != null)
                     return new(false, $"{DisplayName(pair)} could not sync just now ({passProblem}), so {name} was left as it is. Nothing was removed");
+                // A pass that went through but ended on a problem (a file Google
+                // refused, Drive full) is only the reason if the look after it
+                // still finds files missing: it may be about another folder.
+                if (synced) lastPassSaid = passProblem;
                 if (!synced)
                 {
+                    // Download only, after a pass: what still differs is a PC edit,
+                    // which that mode never sends.
+                    if (pair.Mode == SyncMode.DownloadOnly && round > 0 && check.NotOnDrive.Count > 0)
+                    {
+                        bool one = check.NotOnDrive.Count == 1;
+                        return new(false, $"{NameRules.Counted(check.NotOnDrive.Count, "file")} in {name} {(one ? "is" : "are")} different from Google Drive's copy ({SomeOf(check.NotOnDrive)}), " +
+                                          $"and {DisplayName(pair)} only copies from Google Drive, so the changes on this PC never go up. Nothing was removed");
+                    }
+                    // Said instead of "try again", which would never help.
+                    var why = lastPassSaid != null && !pair.Paused
+                        ? $" {DisplayName(pair)} could not send {(check.NotOnDrive.Count == 1 ? "it" : "them")}: {lastPassSaid}. Nothing was removed"
+                        : null;
                     if (check.NotOnDrive.Count == 0)
-                        return new(false, $"{name} is not in Google Drive yet. Nothing was removed. Try again once it has synced");
+                        return new(false, why != null
+                            ? $"{name} is not in Google Drive yet.{why}"
+                            : $"{name} is not in Google Drive yet. Nothing was removed. Try again once it has synced");
                     var count = NameRules.Counted(check.NotOnDrive.Count, "file");
+                    var notYet = $"{count} in {name} {(check.NotOnDrive.Count == 1 ? "is" : "are")} not in Google Drive yet ({SomeOf(check.NotOnDrive)})";
                     return new(false, pair.Paused
-                        ? $"{count} in {name} {(check.NotOnDrive.Count == 1 ? "is" : "are")} not in Google Drive yet ({SomeOf(check.NotOnDrive)}), and {DisplayName(pair)} is paused. Nothing was removed"
-                        : $"{count} in {name} {(check.NotOnDrive.Count == 1 ? "is" : "are")} not in Google Drive yet ({SomeOf(check.NotOnDrive)}). Nothing was removed. Try again once it has synced");
+                        ? $"{notYet}, and {DisplayName(pair)} is paused. Nothing was removed"
+                        : why != null ? notYet + "." + why
+                        : $"{notYet}. Nothing was removed. Try again once it has synced");
                 }
+            }
+
+            // A file open in another program that refuses deleting (a player
+            // through the C runtime shares read and write, not delete) could not
+            // be cleared, and would be left in a folder the sync then ignores:
+            // asked before anything changes, so the person can close it and retry.
+            var open = check.Matching.Where(f => OpenWithoutDelete(f.FullPath)).Select(f => Path.GetFileName(f.FullPath)).ToList();
+            if (open.Count > 0)
+            {
+                bool one = open.Count == 1;
+                return new(false, $"{NameRules.Counted(open.Count, "file")} in {name} {(one ? "is" : "are")} open in another program ({SomeOf(open)}), " +
+                                  $"so {name} can't be kept on Google Drive only yet. Nothing was removed. Close {(one ? "it" : "them")} and try again");
             }
 
             // On the list first: from here the sync leaves the folder alone. A
@@ -387,28 +445,46 @@ namespace ExplorerNative
             // gone while it still remembers them. Every pass drops them as well.
             await ForgetFolderAsync(pairId, relative, token).ConfigureAwait(false);
 
-            // Cleared file by file, each only while it is as it was checked.
-            int kept = 0;
+            BeforeClearingForTests?.Invoke(pcFolder);
+
+            // Cleared file by file, each only while it is as it was checked. What
+            // stays is sorted by why: changed, open elsewhere, or refused.
+            var changed = new List<string>();
+            var inUse = new List<string>();
+            var refusedFiles = new List<string>();
             foreach (var file in check.Matching)
             {
                 token.ThrowIfCancellationRequested();
+                var leaf = Path.GetFileName(file.FullPath);
+                FileAttributes? cleared = null;
                 try
                 {
-                    var attributes = File.GetAttributes(file.FullPath);
-                    if ((attributes & FileAttributes.ReadOnly) != 0)
-                        File.SetAttributes(file.FullPath, attributes & ~FileAttributes.ReadOnly);
                     using var held = new FileStream(file.FullPath, FileMode.Open, FileAccess.Read,
                         FileShare.Read | FileShare.Delete);
                     if (held.Length != file.Size || File.GetLastWriteTimeUtc(file.FullPath) != file.ModifiedUtc)
                     {
-                        kept++;
+                        changed.Add(leaf);
                         continue;
+                    }
+                    var attributes = File.GetAttributes(file.FullPath);
+                    if ((attributes & FileAttributes.ReadOnly) != 0)
+                    {
+                        File.SetAttributes(file.FullPath, attributes & ~FileAttributes.ReadOnly);
+                        cleared = attributes;
                     }
                     Mine(file.FullPath);
                     File.Delete(file.FullPath);
                 }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { kept++; }
+                catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException) { }   // already gone
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    (InUseElsewhere(ex, file.FullPath) ? inUse : refusedFiles).Add(leaf);
+                    if (cleared is { } was)
+                        try { if (File.Exists(file.FullPath)) File.SetAttributes(file.FullPath, was); }
+                        catch (Exception again) when (again is IOException or UnauthorizedAccessException) { }
+                }
             }
+            int kept = changed.Count + inUse.Count + refusedFiles.Count;
             foreach (var leftover in check.Leftovers)
             {
                 try
@@ -456,8 +532,45 @@ namespace ExplorerNative
                 return left.Count == 0
                     ? new(true, $"{name} is on Google Drive only now, and was cleared off this PC")
                     : new(true, $"{name} is on Google Drive only now, and the rest was cleared off this PC.{stayed}");
-            return new(true, $"{name} is on Google Drive only now. {NameRules.Counted(kept, "file")} changed while it was checked, so {(kept == 1 ? "it was" : "they were")} left on this PC, in {name}." + stayed);
+            var said = $"{name} is on Google Drive only now.";
+            if (changed.Count > 0)
+            {
+                bool one = changed.Count == 1;
+                said += $" {NameRules.Counted(changed.Count, "file")} changed while {(one ? "it was" : "they were")} checked ({SomeOf(changed)}), " +
+                        $"so {(one ? "it was" : "they were")} left on this PC in {name}. {(one ? "It doesn't" : "They don't")} sync while {name} is kept on Google Drive only. " +
+                        $"Move {(one ? "it" : "them")} out of {name} to sync {(one ? "it" : "them")}.";
+            }
+            if (inUse.Count > 0)
+            {
+                bool one = inUse.Count == 1;
+                said += $" {NameRules.Counted(inUse.Count, "file")} {(one ? "was" : "were")} open in another program ({SomeOf(inUse)}), " +
+                        $"so {(one ? "it was" : "they were")} left on this PC in {name}. Google Drive has {(one ? "it" : "them")}. " +
+                        $"Close {(one ? "it" : "them")} and delete {(one ? "it" : "them")} yourself.";
+            }
+            if (refusedFiles.Count > 0)
+                said += $" Windows wouldn't let {NameRules.Counted(refusedFiles.Count, "file")} be removed ({SomeOf(refusedFiles)}). Google Drive has {(refusedFiles.Count == 1 ? "it" : "them")}.";
+            return new(true, said + stayed);
         }
+
+        /// <summary>The suite's way in between the check and the clearing, to open or delete a file there.</summary>
+        internal Action<string>? BeforeClearingForTests { get; set; }
+
+        /// <summary>
+        /// Whether another program holds the file open without letting it be
+        /// deleted: an open asking for delete access is refused with a sharing
+        /// or lock violation. A read-only open would not notice such a handle.
+        /// </summary>
+        private static bool OpenWithoutDelete(string path)
+        {
+            const uint Delete = 0x00010000, ReadAttributes = 0x80, ShareAll = 7, OpenExisting = 3, OpenReparsePoint = 0x00200000;
+            using var handle = CreateFileW(path, Delete | ReadAttributes, ShareAll, IntPtr.Zero, OpenExisting, OpenReparsePoint, IntPtr.Zero);
+            if (!handle.IsInvalid) return false;
+            return System.Runtime.InteropServices.Marshal.GetLastWin32Error() is 32 or 33;
+        }
+
+        [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+        private static extern Microsoft.Win32.SafeHandles.SafeFileHandle CreateFileW(string name, uint access, uint share,
+            IntPtr security, uint disposition, uint flags, IntPtr template);
 
         /// <summary>
         /// Put back on PC: the folder (or the one on the list that holds it)
