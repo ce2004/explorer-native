@@ -383,7 +383,10 @@ namespace ExplorerNative
         /// </summary>
         public void RefreshIfShowingDrive(string? letter)
         {
-            if (string.IsNullOrEmpty(letter) || IsDisposed) return;
+            if (IsDisposed) return;
+            // The Drives list read before the mount has no row for the letter.
+            RefreshDrivesList();
+            if (string.IsNullOrEmpty(letter)) return;
 
             foreach (var pane in _panes)
                 if (pane?.CurrentPath != null &&
@@ -398,6 +401,27 @@ namespace ExplorerNative
                     else if (pane == Active) Navigate(pane.CurrentPath);
                     else { pane.NeedsRefresh = true; pane.ReloadQuietly = true; }
                 }
+        }
+
+        /// <summary>
+        /// A drive came or went (Google Drive mounting, going offline and back,
+        /// a USB stick): a pane on the Drives list reads it again. Marked and
+        /// left to ApplyPendingRefresh, never navigated here, so it waits for a
+        /// listing in progress or another window in front, keeps the cursor on
+        /// its drive, and does not pull focus out of a menu or the address bar.
+        /// </summary>
+        public void RefreshDrivesList()
+        {
+            if (IsDisposed) return;
+            bool any = false;
+            foreach (var pane in _panes)
+            {
+                if (pane == null || pane.CurrentPath != DrivesPath) continue;
+                pane.NeedsRefresh = true;
+                if (pane.SearchTerm == null && !pane.Searching) pane.ReloadQuietly = true;
+                any = true;
+            }
+            if (any) ScheduleWatchCheck();
         }
 
         public MainForm(Settings settings)
@@ -788,6 +812,7 @@ namespace ExplorerNative
                 var row = Moved(FocusedPathOf(pane), from, to);
                 _ = NavigateAsync(folder, preferPath: row, onPane: pane, quiet: true, keepFocus: pane != Active);
             }
+            RefreshDrivesList();
         }
 
         public void ApplyNewSettings(Settings settings)
@@ -1480,6 +1505,30 @@ namespace ExplorerNative
                 return false;
             }
 
+            // The player holds its file open, so a loaded song cannot be written.
+            // Asked now, before the editor opens: refused after Save, everything
+            // typed was thrown away.
+            var refusedBefore = new List<TagResult>();
+            var loaded = Program.AudioState is { HasTrack: true } loadedState ? loadedState.Path : null;
+            var held = TagEditing.LoadedAmong(local, loaded);
+            if (held.Length > 0)
+            {
+                var answer = MessageBox.Show(owner,
+                    $"{Path.GetFileName(held[0])} is playing. Stop it so its tags can be saved?",
+                    "Edit tags", MessageBoxButtons.YesNo, MessageBoxIcon.Question, MessageBoxDefaultButton.Button2);
+                if (answer == DialogResult.Yes) Program.RunAudioAction(AudioAction.Stop);
+                else if (local.Length == 1)
+                {
+                    Announce(TagEditing.PlayingRefusal, isError: true);
+                    return false;
+                }
+                else
+                {
+                    local = local.Where(p => !held.Contains(p, StringComparer.OrdinalIgnoreCase)).ToArray();
+                    refusedBefore.AddRange(held.Select(p => new TagResult(p, TagEditing.PlayingRefusal)));
+                }
+            }
+
             ShowStatus(local.Length == 1 ? "Reading tags" : $"Reading tags of {local.Length} files");
             var current = await Task.Run(() =>
                 local.Select(p => TagEditing.IsOggFamily(p) ? null : AudioTags.ReadFields(p)).ToList());
@@ -1513,6 +1562,7 @@ namespace ExplorerNative
             ShowStatus(local.Length == 1 ? "Saving tags" : $"Saving tags for {local.Length} files");
             // Drive files are reported, never opened.
             var results = drive.Select(p => new TagResult(p, TagEditing.DriveRefusal)).ToList();
+            results.AddRange(refusedBefore);
             results.AddRange(await Task.Run(() =>
                 TagEditing.Apply(local, changes, numberInOrder, onDrive: null, IsPlaying)));
             if (IsDisposed) return false;
@@ -3295,6 +3345,10 @@ namespace ExplorerNative
                 int mask = System.Runtime.InteropServices.Marshal.PtrToStructure<DEV_BROADCAST_VOLUME>(data).dbcv_unitmask;
                 for (int bit = 0; bit < 26; bit++)
                     if ((mask & (1 << bit)) != 0) _releasedRoots.Remove($"{(char)('A' + bit)}:\\");
+                // And a Drives list on screen gains or loses its row: a USB
+                // stick, or WinFsp's own broadcast when Google Drive's letter
+                // is put back or taken away (offline, back online).
+                RefreshDrivesList();
             }
         }
 
