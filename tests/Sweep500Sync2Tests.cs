@@ -37,6 +37,7 @@ namespace ExplorerNative
                 await KeepInDownloadOnlySaysWhyNot(sandbox);
                 await KeepSaysWhyFilesStayed(sandbox);
                 SyncListsAreLists();
+                WindowSavesOntoLivePairs(sandbox);
             }
             finally
             {
@@ -221,6 +222,71 @@ namespace ExplorerNative
                 Equal("and UIA hears ControlType List (50008), not Table (50036)", "50008", controlType);
             else
                 Console.WriteLine("  (UIA control type not readable here: " + controlType + ")");
+        }
+
+        /// <summary>
+        /// Bug 5: the sync window saves the person's one change onto the pairs
+        /// as the monitor has them, so Pause all from the tray, or the sync's own
+        /// pause, made while the window is open is never quietly undone.
+        /// </summary>
+        private static void WindowSavesOntoLivePairs(string sandbox)
+        {
+            using var rig = new Rig(sandbox, SyncMode.TwoWay);
+            var otherFolder = Path.Combine(sandbox, Guid.NewGuid().ToString("N")[..8], "other");
+            Directory.CreateDirectory(otherFolder);
+            var b = new DriveSyncPair
+            {
+                Name = "Other", LocalFolder = otherFolder, DriveFolderId = rig.Drive.AddFolder("Other"), DriveFolderPath = "My Drive/Other",
+                Mode = SyncMode.TwoWay, CheckMinutes = 0,
+            };
+            var a = rig.Pair;
+            rig.Monitor.SetPairs(new List<DriveSyncPair> { a, b });
+            bool Paused(string id) => rig.Monitor.Pairs.First(p => p.Id == id).Paused;
+
+            string? failure = null;
+            string pauseText = "", afterResume = "", afterRemove = "";
+            var thread = new System.Threading.Thread(() =>
+            {
+                try
+                {
+                    const System.Reflection.BindingFlags Any = System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public;
+                    using var form = new DriveMonitorForm(rig.Monitor.Pairs);
+                    _ = form.Handle;
+                    var type = typeof(DriveMonitorForm);
+                    var list = (DriveMonitorForm.LineList)type.GetField("_list", Any)!.GetValue(form)!;
+                    var pause = (System.Windows.Forms.Button)type.GetField("_pause", Any)!.GetValue(form)!;
+                    _ = list.Handle;
+                    void Call(string method, params object[] args) => type.GetMethod(method, Any)!.Invoke(form, args);
+
+                    // Pause all from the tray while the window is open.
+                    rig.Monitor.PauseAll(true);
+                    Call("Fill", false);
+                    list.SelectedIndex = 0;
+                    Call("ShowButtons");
+                    pauseText = pause.Text;
+                    // The button now offers Resume for the first folder; pressed,
+                    // only that folder resumes.
+                    Call("PauseOrResume");
+                    afterResume = $"{Paused(a.Id)},{Paused(b.Id)}";
+
+                    // The sync pauses the first folder by itself (damaged records);
+                    // removing the other from the window must not resume it.
+                    var live = rig.Monitor.Pairs;
+                    live.First(p => p.Id == a.Id).Paused = true;
+                    rig.Monitor.SetPairs(live);
+                    list.SelectedIndex = rig.Monitor.Pairs.FindIndex(p => p.Id == b.Id);
+                    Call("RemovePair");
+                    afterRemove = string.Join(",", rig.Monitor.Pairs.Select(p => $"{p.Name}:{p.Paused}"));
+                }
+                catch (Exception ex) { failure = ex.ToString(); }
+            });
+            thread.SetApartmentState(System.Threading.ApartmentState.STA);
+            thread.Start();
+            thread.Join();
+            Check("sync window rig ran", failure == null, failure);
+            Equal("after Pause all from the tray, the window's button offers Resume", "Res&ume", pauseText);
+            Equal("pressing it resumes only that folder; the other stays paused", "False,True", afterResume);
+            Equal("removing a folder from the window keeps a pause the sync made meanwhile", "Test:True", afterRemove);
         }
 
         /// <summary>

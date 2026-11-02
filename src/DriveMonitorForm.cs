@@ -160,22 +160,25 @@ namespace ExplorerNative
         {
             int at = _list.SelectedIndex;
             if (at < 0 || at >= _pairs.Count) return;
-            var pair = _pairs[at];
-            pair.Paused = !pair.Paused;
-            Commit();
-            _list.SelectedIndex = at;
+            // What the button offered: Fill keeps it as the monitor has it.
+            var id = _pairs[at].Id;
+            var name = DriveMonitor.DisplayName(_pairs[at]);
+            bool pause = !_pairs[at].Paused;
+            Save(list => { if (list.Find(p => p.Id == id) is { } p) p.Paused = pause; });
+            int now = _pairs.FindIndex(p => p.Id == id);
+            if (now >= 0) _list.SelectedIndex = now;
             FillDetails();
             ShowButtons();
-            Say(pair.Paused
-                ? $"Paused {DriveMonitor.DisplayName(pair)}. Nothing syncs until you resume it."
-                : $"Resumed {DriveMonitor.DisplayName(pair)}. Syncing now.");
+            Say(pause
+                ? $"Paused {name}. Nothing syncs until you resume it."
+                : $"Resumed {name}. Syncing now.");
         }
 
 
         /// <param name="all">After a folder is added, edited or removed: every line, the one being read too, since the rows have moved.</param>
         private void Fill(bool all = false)
         {
-            TakeLiveDriveOnly();
+            TakeLive();
             var rows = _pairs.Count == 0
                 ? new List<string> { "No folders are synced yet. Press Add a folder to choose one." }
                 : _pairs.Select(p => Describe(p, _monitor?.StatusIfLoaded(p.Id), DateTime.UtcNow)).ToList();
@@ -491,15 +494,13 @@ namespace ExplorerNative
             {
                 var made = await EverythingAsync(dialog.Pair);
                 if (made == null || IsDisposed) return;
-                _pairs.AddRange(made);
-                Commit();
-                ShowSaved(_pairs.Count - made.Count);
+                Save(list => list.AddRange(made));
+                ShowSaved(_pairs.FindIndex(p => p.Id == made[0].Id));
                 return;
             }
 
-            _pairs.Add(dialog.Pair);
-            Commit();
-            ShowSaved(_pairs.Count - 1);
+            Save(list => list.Add(dialog.Pair));
+            ShowSaved(_pairs.FindIndex(p => p.Id == dialog.Pair.Id));
           }
           catch (Exception ex) { Say("The folder could not be added: " + ex.Message); }
           finally { _adding = false; }
@@ -580,6 +581,7 @@ namespace ExplorerNative
         /// </summary>
         private void ShowSaved(int at)
         {
+            if (at < 0 || at >= _pairs.Count) return;
             _list.SelectedIndex = at;
             FillDetails();
             _list.Focus();
@@ -600,13 +602,24 @@ namespace ExplorerNative
           {
             int at = _list.SelectedIndex;
             if (at < 0 || at >= _pairs.Count) return;
-            TakeLiveDriveOnly();
+            TakeLive();
+            if (at >= _pairs.Count) return;
             using var dialog = new DrivePairForm(_pairs[at].Copy(), "Change a synced folder")
                 { Others = _pairs.Where((_, i) => i != at).ToList() };
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
-            _pairs[at] = dialog.Pair;
-            Commit();
-            ShowSaved(at);
+            // Onto the pairs as they are now: the tray or the sync itself may have
+            // paused others meanwhile, and Drive-only folders are the monitor's
+            // (their staged changes run below).
+            bool gone = false;
+            Save(list =>
+            {
+                int i = list.FindIndex(p => p.Id == dialog.Pair.Id);
+                if (i < 0) { gone = true; return; }
+                dialog.Pair.DriveOnlyFolders = new List<string>(list[i].DriveOnlyFolders ?? new());
+                list[i] = dialog.Pair;
+            });
+            if (gone) { Say($"{DriveMonitor.DisplayName(dialog.Pair)} was removed meanwhile, so nothing was changed."); return; }
+            ShowSaved(_pairs.FindIndex(p => p.Id == dialog.Pair.Id));
 
             // Kept on Google Drive only, as changed in the window: each put back
             // or checked and cleared by the monitor, and said when it is done.
@@ -619,26 +632,23 @@ namespace ExplorerNative
                 Say($"Checking {SyncMoves.Leaf(folder)} against Google Drive");
                 Say((await _monitor.KeepOnDriveOnlyAsync(id, folder, CancellationToken.None)).Message);
             }
-            if (!IsDisposed)
-            {
-                TakeLiveDriveOnly();
-                Fill(all: true);
-            }
+            if (!IsDisposed) Fill(all: true);
           }
           catch (Exception ex) { Say("Kept on Google Drive only could not be changed: " + ex.Message); }
         }
 
         /// <summary>
-        /// Kept on Google Drive only as the monitor has it now. Shift+F10 in the
-        /// main window changes it while this window is open, and a save from here
-        /// with the list as it was would undo that.
+        /// The pairs as the monitor has them now. While this window is open the
+        /// tray's Pause all, the sync's own pause after damaged records, and
+        /// Shift+F10's Keep on Drive only all change them; a save from here with
+        /// the list as it was would undo those.
         /// </summary>
-        private void TakeLiveDriveOnly()
+        private void TakeLive()
         {
             if (_monitor == null) return;
-            foreach (var live in _monitor.Pairs)
-                if (_pairs.FirstOrDefault(p => p.Id == live.Id) is { } mine)
-                    mine.DriveOnlyFolders = new List<string>(live.DriveOnlyFolders ?? new());
+            var live = _monitor.Pairs;
+            _pairs.Clear();
+            _pairs.AddRange(live);
         }
 
         private async void RemovePair()
@@ -650,8 +660,7 @@ namespace ExplorerNative
             if (at < 0 || at >= _pairs.Count) return;
             var id = _pairs[at].Id;
             var name = DriveMonitor.DisplayName(_pairs[at]);
-            _pairs.RemoveAt(at);
-            Commit();
+            Save(list => list.RemoveAll(p => p.Id == id));
 
             // Its pass, if one is running, stops at its next file; "removed" is
             // said once it has, or after ten seconds at most.
@@ -661,10 +670,15 @@ namespace ExplorerNative
           catch { }
         }
 
-        /// <summary>Saves straight away, and keeps Preferences' copy in step so its OK does not undo it.</summary>
-        private void Commit()
+        /// <summary>
+        /// Saves straight away: the person's one change, by pair id, onto the
+        /// pairs as the monitor has them now, never the window's older copy.
+        /// Keeps Preferences' copy in step so its OK does not undo it.
+        /// </summary>
+        private void Save(Action<List<DriveSyncPair>> change)
         {
-            TakeLiveDriveOnly();
+            TakeLive();
+            change(_pairs);
             _working.Clear();
             _working.AddRange(_pairs.Select(p => p.Copy()));
             _monitor?.SetPairs(_pairs);
