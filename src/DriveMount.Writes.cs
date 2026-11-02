@@ -189,6 +189,25 @@ namespace ExplorerNative
         private bool UploadedRecently(string id) =>
             _uploadedAt.TryGetValue(id, out var at) && Environment.TickCount64 - at < 60_000;
 
+        /// <summary>
+        /// What this mount sent to the Drive trash in the last minute, by id.
+        /// Google's listing can lag a trash, so a folder whose files were just
+        /// deleted through the letter is not refused as "not empty" because of them.
+        /// </summary>
+        private readonly ConcurrentDictionary<string, long> _trashedAt = new(StringComparer.Ordinal);
+
+        private bool TrashedRecently(string id) =>
+            _trashedAt.TryGetValue(id, out var at) && Environment.TickCount64 - at < 60_000;
+
+        private void NoteTrashed(string id)
+        {
+            long now = Environment.TickCount64;
+            _trashedAt[id] = now;
+            if (_trashedAt.Count > 4096)
+                foreach (var (old, at) in _trashedAt)
+                    if (now - at >= 60_000) _trashedAt.TryRemove(old, out _);
+        }
+
         private DrivePlaced[] Overlay(string relative, DrivePlaced[] rows)
         {
             if (_pending.IsEmpty) return rows;
@@ -1117,11 +1136,62 @@ namespace ExplorerNative
 
         // ---- deleting and renaming ------------------------------------------------------
 
+        /// <summary>How long CanDelete's word that a folder is empty on Drive is taken at its close.</summary>
+        private const long EmptyTrustedMs = 5000;
+
+        /// <summary>
+        /// Whether a folder about to be removed holds nothing on Drive itself.
+        /// The letter's listing is not enough: it leaves out Google Docs, Sheets,
+        /// Slides and shortcuts, and it can be old, so a folder that looked empty
+        /// was trashed with documents (or files added on the web) inside, and
+        /// Google trashed them with it. Only what this mount has just trashed is
+        /// passed over (Google's listing lags a trash). Offline, or with no
+        /// answer, the folder is not removed.
+        /// </summary>
+        private int EmptyOnDrive(string key)
+        {
+            var id = FolderIdAt(key);
+            if (id == null || id == DriveClient.SharedDrivesId || id == DriveClient.TrashId) return WinFsp.Success;
+            if (_drive.Health.IsOffline) return WinFsp.NetworkUnreachable;
+            try
+            {
+                using var limit = CancellationTokenSource.CreateLinkedTokenSource(_closing.Token);
+                limit.CancelAfter(TimeSpan.FromSeconds(20));
+                _driveIds.TryGetValue(key, out var driveId);
+                var children = _drive.ListChildren(id, limit.Token, driveId: driveId, interactive: true)
+                    .GetAwaiter().GetResult();
+                foreach (var child in children)
+                {
+                    if (TrashedRecently(child.Id)) continue;
+                    _log($"  not removing {LeafOf(key)}: Drive still has {child.Name} in it");
+                    return WinFsp.DirectoryNotEmpty;
+                }
+                return WinFsp.Success;
+            }
+            catch (Exception ex)
+            {
+                _log($"  could not ask Drive whether {LeafOf(key)} is empty: {ex.Message}");
+                return StatusOf(ex);
+            }
+        }
+
         private void DeleteOpened(Opened opened)
         {
             var key = opened.Key;
             if (Fixed(key)) return;
             if (opened.Folder && _listings.TryGetValue(key, out var rows) && rows.Length > 0) return;
+            // Asked when the delete was set; a handle kept open since with
+            // delete-on-close is asked again, since Drive may have more by now.
+            if (opened.Folder && Environment.TickCount64 - opened.EmptyAt > EmptyTrustedMs &&
+                EmptyOnDrive(key) is var empty && empty != WinFsp.Success)
+            {
+                var folder = RowAt(key)?.Name ?? LeafOf(key);
+                Say("drive.trash.failed", empty == WinFsp.DirectoryNotEmpty
+                    ? $"Could not delete {folder}: it still has things in it on Google Drive"
+                    : $"Could not delete {folder}: Google Drive did not answer");
+                ForgetKey(key);
+                return;
+            }
 
             var p = opened.Folder ? null : PendingAt(key);
             string? id;
@@ -1148,6 +1218,7 @@ namespace ExplorerNative
                     using var limit = CancellationTokenSource.CreateLinkedTokenSource(_closing.Token);
                     limit.CancelAfter(TimeSpan.FromSeconds(90));
                     _drive.Trash(id, limit.Token, retry: true).GetAwaiter().GetResult();
+                    NoteTrashed(id);
                 }
                 catch (Exception ex)
                 {
@@ -1213,6 +1284,7 @@ namespace ExplorerNative
         /// </summary>
         private void ForgetTrashed(string id)
         {
+            NoteTrashed(id);
             lock (_treeGate)
                 foreach (var (key, bound) in _ids.ToArray())
                     if (bound == id && PendingAt(key) == null) RemoveKeyHeld(key);
@@ -1368,6 +1440,7 @@ namespace ExplorerNative
                     using var limit = CancellationTokenSource.CreateLinkedTokenSource(_closing.Token);
                     limit.CancelAfter(TimeSpan.FromSeconds(90));
                     _drive.Trash(id, limit.Token, retry: true).GetAwaiter().GetResult();
+                    NoteTrashed(id);
                 }
                 catch (Exception ex) { _log($"  could not trash the replaced {LeafOf(key)}: {ex.Message}"); }
             }

@@ -312,6 +312,8 @@ namespace ExplorerNative
             public DateTime Modified;
             public Pending? Local;
             public IntPtr DirBuffer;
+            /// <summary>When Drive last said this folder holds nothing (CanDelete), by TickCount64.</summary>
+            public long EmptyAt = long.MinValue / 2;
         }
 
         // Every handle open now, so a rename or a move done any way re-keys the
@@ -821,7 +823,12 @@ namespace ExplorerNative
                 int status = _m.EnsureListed(opened.Key, out _);
                 if (status != WinFsp.Success) return status;
                 bool empty = !_m._listings.TryGetValue(opened.Key, out var rows) || rows.Length == 0;
-                return empty ? WinFsp.Success : WinFsp.DirectoryNotEmpty;
+                if (!empty) return WinFsp.DirectoryNotEmpty;
+                // What the letter shows is not all a folder holds (Google Docs
+                // are left out, and the listing can be old), so Drive is asked.
+                status = _m.EmptyOnDrive(opened.Key);
+                if (status == WinFsp.Success) opened.EmptyAt = Environment.TickCount64;
+                return status;
             }
 
             public override int Rename(object context, string path, string newPath, bool replace)
