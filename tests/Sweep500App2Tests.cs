@@ -28,6 +28,7 @@ namespace ExplorerNative
             HotkeyPageChecksTheBoxesAsTicked();
             SignOutTurnsDriveOffAtOnce();
             CheckBoxNamesHaveNoAccessKeyMarker();
+            NewAppleMusicSignInReachesThePlayer();
             await Task.CompletedTask;
         }
 
@@ -260,6 +261,38 @@ namespace ExplorerNative
                 Settings.OverrideAppDataDir = null;
                 Cleanup(dir);
             }
+        }
+
+        /// <summary>
+        /// A new cookies.txt reached browsing but not the player's page, which
+        /// kept the token it started with: "Load a new cookies.txt" never helped.
+        /// Configure now says whether the sign-in changed, and the tray closes
+        /// the player's page when it did.
+        /// </summary>
+        private static void NewAppleMusicSignInReachesThePlayer()
+        {
+            try
+            {
+                AppleMusic.ResetForTests();
+                bool first = AppleMusic.Configure("a");
+                bool same = AppleMusic.Configure("a");
+                bool other = AppleMusic.Configure("b");
+                bool forgotten = AppleMusic.Configure("");
+                Equal("apple sign-in: Configure says whether the sign-in changed",
+                    "True False True True", $"{first} {same} {other} {forgotten}");
+            }
+            finally { AppleMusic.ResetForTests(); }
+
+            var tray = Source("TrayApplicationContext.cs");
+            var apply = Body(tray, "void ApplySettings(");
+            Check("apple sign-in: Preferences tells the player when the sign-in changed",
+                System.Text.RegularExpressions.Regex.IsMatch(apply,
+                    @"if\s*\(\s*AppleMusic\.Configure\([^;]*\)\s*\)\s*AppleMusicPlayer\.SignInChanged\(\)"));
+
+            var player = Source("AppleMusicPlayer.cs");
+            var signIn = Body(player, "public static void SignInChanged(");
+            Check("apple sign-in: the player closes its page on a new sign-in", signIn.Contains("Reset()", StringComparison.Ordinal));
+            Check("apple sign-in: and drops what was playing so a waiting start gives up", signIn.Contains("_generation++", StringComparison.Ordinal));
         }
     }
 }

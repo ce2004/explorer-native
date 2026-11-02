@@ -215,7 +215,7 @@ namespace ExplorerNative
             // A track on the Drive letter downloads straight from Google.
             AudioPlayer.RangeSourceFor = path => _drive.OpenRange(path);
 
-            // Apple Music's browsing sign-in; the player signs in on its own.
+            // Apple Music's sign-in; the player reads the token when its page starts.
             AppleMusic.Configure(_settings.AppleMusicUserToken);
             AppleMusic.Autoplay = _settings.AppleMusicAutoplay;
             AppleMusicPlayer.SetModes(_settings.AppleMusicShuffle,
@@ -677,7 +677,9 @@ namespace ExplorerNative
             bool portSettingChanged = settings.WebAppPort != _settings.WebAppPort;
             int savedPortWas = _settings.WebAppPort;
             _settings = settings;
-            AppleMusic.Configure(settings.AppleMusicUserToken);
+            // A new sign-in closes the player's page too: it keeps the token it
+            // started with, so every play kept failing on the old one.
+            if (AppleMusic.Configure(settings.AppleMusicUserToken)) AppleMusicPlayer.SignInChanged();
             AppleMusic.Autoplay = settings.AppleMusicAutoplay;
             // Import, Reset or an outside reload: the player takes the modes too.
             AppleMusicPlayer.SetModes(settings.AppleMusicShuffle,

@@ -69,13 +69,13 @@ namespace ExplorerNative
         /// <summary>Preferences, Apple Music, Autoplay: whether a finished list plays on.</summary>
         public static volatile bool Autoplay = true;
 
-        /// <summary>From settings, at start and whenever Preferences are saved.</summary>
-        public static void Configure(string userToken)
+        /// <summary>From settings, at start and whenever Preferences are saved. True when the sign-in changed.</summary>
+        public static bool Configure(string userToken)
         {
             lock (Gate)
             {
                 userToken ??= "";
-                if (userToken == _token) return;
+                if (userToken == _token) return false;
                 _token = userToken;
                 _client = userToken.Length > 0 ? new AppleMusicClient(userToken) : null;
                 _account++;
@@ -89,6 +89,7 @@ namespace ExplorerNative
                 _playlists = null; _playlistsAt = 0; _playlistsLoading = null;
                 AddedTo.Clear();
             }
+            return true;
         }
 
         /// <summary>
