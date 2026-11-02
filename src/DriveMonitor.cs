@@ -982,11 +982,13 @@ namespace ExplorerNative
 
         /// <summary>
         /// The shared look at each drive's feed (keyed by drive id, "" for My
-        /// Drive): where it has read up to, and since when it has been unbroken.
-        /// A pair is skipped only if it began its last pass after that, so no
-        /// change between its own read of the feed and the shared one is missed.
+        /// Drive): where it has read up to, since when it has been unbroken, and
+        /// when it last found (and so used up) any change. A pair is skipped
+        /// only if it began its last pass after both, so no change between its
+        /// own read of the feed and the shared one is missed: a pair not due in
+        /// the minute whose look used up a change missed it until QuietMost.
         /// </summary>
-        private readonly Dictionary<string, (string Token, DateTime Since)> _shared = new();
+        private readonly Dictionary<string, (string Token, DateTime Since, DateTime Found)> _shared = new();
 
         /// <summary>However quiet Drive is, a pair runs at least this often (a missed PC event, the daily walk).</summary>
         internal static TimeSpan QuietMost { get; set; } = TimeSpan.FromMinutes(15);
@@ -1041,7 +1043,7 @@ namespace ExplorerNative
             foreach (var (key, group) in groups)
             {
                 string? driveId = key.Length == 0 ? null : key;
-                (string Token, DateTime Since) look;
+                (string Token, DateTime Since, DateTime Found) look;
                 bool have;
                 lock (_gate) have = _shared.TryGetValue(key, out look);
                 try
@@ -1052,18 +1054,20 @@ namespace ExplorerNative
                         // run, and from their next minute the look decides.
                         var since = DateTime.UtcNow;
                         var start = await client.ChangesStartToken(driveId, token).ConfigureAwait(false);
-                        lock (_gate) _shared[key] = (start, since);
+                        lock (_gate) _shared[key] = (start, since, DateTime.MinValue);
                         run.AddRange(group);
                         continue;
                     }
 
                     var (changes, next) = await client.SyncChangesSince(look.Token, driveId, token).ConfigureAwait(false);
                     Interlocked.Increment(ref SharedLooks);
-                    lock (_gate) _shared[key] = (next, look.Since);
+                    // Taken once the read is in: a pass that began after this saw the change itself.
+                    var found = changes.Count > 0 ? DateTime.UtcNow : look.Found;
+                    lock (_gate) _shared[key] = (next, look.Since, found);
                     foreach (var pair in group)
                     {
                         bool unbroken;
-                        lock (_gate) unbroken = _ranFrom.TryGetValue(pair.Id, out var ran) && ran >= look.Since;
+                        lock (_gate) unbroken = _ranFrom.TryGetValue(pair.Id, out var ran) && ran >= look.Since && ran >= found;
                         if (changes.Count > 0 || !unbroken) run.Add(pair);
                         else lock (_gate) _lastChecked[pair.Id] = now;
                     }

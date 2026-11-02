@@ -37,6 +37,7 @@ namespace ExplorerNative
             {
                 await DeadWatcherTests(sandbox);
                 await EditedWhileQueuedTests(sandbox);
+                await SharedLookOutOfStepTests(sandbox);
             }
             finally
             {
@@ -321,6 +322,48 @@ namespace ExplorerNative
                     $"on PC {File.Exists(bFile)}, Drive holds {Names(rig.DriveTree(b).Keys)}");
             }
             finally { DriveMonitor.AfterCrashWait = crashWait; }
+        }
+
+        // ---------------- 3. the shared look using up a change for a pair not due that minute ----------------
+
+        /// <summary>
+        /// Clean pairs on one drive share a look at its feed each minute. A pair
+        /// that ran early (a PC change) is out of step with the others; when
+        /// another pair's minute came first, its look read the change made in
+        /// the first pair's folder and moved the feed past it, and the first
+        /// pair was skipped every minute after, until QuietMost (15 minutes).
+        /// </summary>
+        private static async Task SharedLookOutOfStepTests(string sandbox)
+        {
+            using var rig = new Rig(sandbox);
+            var a = rig.Pair;
+            var b = rig.AddPair("B", SyncMode.TwoWay);
+            a.CheckMinutes = b.CheckMinutes = 1;
+            rig.Write(a, "a.txt", "for A", T0);
+            rig.Write(b, "b.txt", "for B", T0);
+            var t = DateTime.UtcNow;
+            Task<List<DriveSyncPair>> Due(int minutes, params DriveSyncPair[] pairs) =>
+                rig.Monitor.DuePairsAsync(rig.Client, pairs, false, t.AddMinutes(minutes), default);
+
+            foreach (var pair in new[] { a, b }) { await rig.Pass(pair); await rig.Pass(pair); }
+            await Due(2, a, b);                         // the first look finds where the feed is
+            await rig.Pass(a);
+            await rig.Pass(b);
+            Check("shared look out of step: both pairs are quiet on a quiet minute", (await Due(4, a, b)).Count == 0);
+
+            await rig.Pass(a);                          // A runs early, as a PC change makes it
+            rig.Put(a, "new.txt", "made on the phone", T0);
+            var onlyB = await Due(6, b);                // only B's minute is up, and its look reads the change
+            Check("shared look out of step: the look on B's minute sees the change", onlyB.Count == 1);
+
+            var later = await Due(8, a, b);
+            Check("shared look out of step: A, not due when B's look used up its change, still runs on its next minute",
+                later.Contains(a), $"due: {string.Join(",", later.Select(p => p.Name))}");
+            await rig.Pass(a);
+            Check("shared look out of step: and the new Drive file comes down", File.Exists(Path.Combine(a.LocalFolder, "new.txt")));
+            await rig.Pass(a);
+            await rig.Pass(b);
+            Check("shared look out of step: both are quiet again afterwards", (await Due(10, a, b)).Count == 0);
         }
     }
 }
