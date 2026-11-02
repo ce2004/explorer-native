@@ -1271,10 +1271,11 @@ function setupAudio() {
   });
   let retry = 0, skipped = 0;
   // A track that will not play is skipped, and the queue goes on; a queue where none will play stops.
-  const skip = (message) => {
+  const skip = (why) => {
     retry = 0;
+    if (player.queue.length === 1) { announce(why, true); return; }
     if (++skipped >= Math.min(10, player.queue.length)) { skipped = 0; announce('None of the tracks in this queue would play.', true); return; }
-    announce(message, true);
+    announce(`${why} It was skipped.`, true);
     step(1);
   };
   a.addEventListener('error', async () => {
@@ -1300,11 +1301,11 @@ function setupAudio() {
         if (res.body) res.body.cancel().catch(() => { });
         // The PC sent it and this browser can't play it: once through the PC's decoder, then skip it.
         if (src.includes('/api/file') && !t.viaPc) { t.viaPc = true; loadTrack(player.index, true, at0); return; }
-        skip(`${t.name} can't be played here, so it was skipped.`);
+        skip(`${t.name} can't be played here.`);
         return;
       }
       const data = await res.json().catch(() => null);
-      skip(`Could not play ${t.name}. ${(data && data.error) || `The PC answered ${res.status}.`} It was skipped.`);
+      skip(`Could not play ${t.name}. ${(data && data.error) || `The PC answered ${res.status}.`}`);
       return;
     }
     // No answer: the connection dropped. Try again from where it was, a few times.
@@ -1560,8 +1561,9 @@ async function sendFiles(files) {
       // Shown in Transfers with a Stop. One request carries the whole file, so its time limit grows with the size
       // (about 200 kilobits a second plus five minutes); the PC already gives up on a body that stops arriving.
       const ctrl = new AbortController();
-      t = addTransfer({ kind: 'upload', name: f.name, state: 'running', sending: true, done: 0, total: f.size });
-      t.cancel = async () => { stopped = true; ctrl.abort(); finishTransfer(t, 'cancelled'); };
+      const row = addTransfer({ kind: 'upload', name: f.name, state: 'running', sending: true, done: 0, total: f.size });
+      row.cancel = async () => { stopped = true; ctrl.abort(); finishTransfer(row, 'cancelled'); };
+      t = row;
       await api(`/api/clipboard/send?name=${encodeURIComponent(f.name)}&batch=${batch}`,
         { method: 'POST', body: f, raw: true, timeout: 300000 + Math.ceil(f.size / 25000) * 1000, signal: ctrl.signal });
       if (stopped) return;
