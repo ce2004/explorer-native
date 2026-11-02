@@ -641,6 +641,11 @@ namespace ExplorerNative
                 LabelTheDrive(root);
 
                 ShowTrash = settings.ShowDriveTrash;
+
+                // Drive switched off and on again quickly: the old volume, same
+                // name, may still be sending what it held. It goes first.
+                await Teardown.WaitAsync(token).ConfigureAwait(false);
+
                 var mount = new DriveMount(drive, root, budget, Note)
                 {
                     Notify = Forward,
@@ -737,10 +742,21 @@ namespace ExplorerNative
         public bool LetterShown { get { lock (_gate) return _mount?.LetterShown ?? false; } }
 
         /// <summary>Files saved on the letter by other programs that are still on their way to Google.</summary>
-        public int UploadsPending { get { lock (_gate) return _mount?.UploadsPending ?? 0; } }
+        public int UploadsPending
+        {
+            get { lock (_gate) return (_mount?.UploadsPending ?? 0) + _goingAway.Sum(m => m.UploadsPending); }
+        }
 
-        /// <summary>The names of those files, for the question before quitting.</summary>
-        public IReadOnlyList<string> UploadNames { get { lock (_gate) return _mount?.UploadNames ?? Array.Empty<string>(); } }
+        /// <summary>The names of those files, for the question before quitting, a mount just disconnected and still sending them included.</summary>
+        public IReadOnlyList<string> UploadNames
+        {
+            get
+            {
+                lock (_gate)
+                    return (_mount?.UploadNames ?? Array.Empty<string>())
+                        .Concat(_goingAway.SelectMany(m => m.UploadNames)).ToList();
+            }
+        }
 
         /// <summary>
         /// Moves a mounted Drive to the letter Preferences now names, without
@@ -783,10 +799,41 @@ namespace ExplorerNative
             var old = _disposed ? _lifetime : Interlocked.Exchange(ref _lifetime, new CancellationTokenSource());
             try { old.Cancel(); } catch { }
 
-            TearDown();
+            // Disconnect and switching Drive off call this on the UI thread, and
+            // taking a mount down sends what programs saved and closed for up to
+            // a minute (DrainFor). So the mount is taken off at once (Mounted is
+            // false from here) and goes away on a worker; Dispose and the next
+            // mount wait for it, and the question before quitting still sees
+            // what it is sending.
+            var (mount, sizes) = Detach();
+            if (mount == null && sizes == null) return;
+            lock (_gate)
+            {
+                if (mount != null) _goingAway.Add(mount);
+                _teardown = _teardown.ContinueWith(_ => Finish(mount, sizes), TaskScheduler.Default);
+            }
         }
 
+        /// <summary>Mounts taken off by <see cref="Unmount"/> that are still sending what they hold.</summary>
+        private readonly List<DriveMount> _goingAway = new();
+
+        /// <summary>Those mounts going away, one after another.</summary>
+        private Task _teardown = Task.CompletedTask;
+
+        /// <summary>For the suite: the mounts <see cref="Unmount"/> handed to a worker, finished.</summary>
+        internal Task TeardownForTests { get { lock (_gate) return _teardown; } }
+
+        private Task Teardown { get { lock (_gate) return _teardown; } }
+
+        /// <summary>Takes a mount down where the caller is: already on a worker, or quitting.</summary>
         private void TearDown()
+        {
+            var (old, sizes) = Detach();
+            Finish(old, sizes);
+        }
+
+        /// <summary>Takes the mount and its size indexes out of use. Quick: nothing is sent or saved.</summary>
+        private (DriveMount? Old, Dictionary<string, DriveSizeIndex>? Sizes) Detach()
         {
             DriveMount? old;
             Dictionary<string, DriveSizeIndex>? sizes;
@@ -798,7 +845,15 @@ namespace ExplorerNative
                 sizes = _sizes;
                 _sizes = null;
             }
+            // Here, not after the mount has gone: a mount made since may already
+            // have said "user on G:", and the old one finishing must not undo it.
+            Status = "Not connected.";
+            return (old, sizes);
+        }
 
+        /// <summary>Saves the size indexes and lets the mount go, sending what it holds. Slow.</summary>
+        private void Finish(DriveMount? old, Dictionary<string, DriveSizeIndex>? sizes)
+        {
             // Changes the feed brought in since the last save, so the next start begins from here.
             if (sizes != null)
                 foreach (var index in sizes.Values)
@@ -809,14 +864,14 @@ namespace ExplorerNative
             // health event, which takes this lock: held here, that callback
             // could not finish, the wait ran out, and the provider disconnected
             // under a read — the one thing the wait exists to prevent.
-            bool was = old != null;
             try { old?.Dispose(); } catch { }
-            Status = "Not connected.";
+            if (old == null) return;
+            lock (_gate) _goingAway.Remove(old);
 
             // Only when there was something to take down. A mount failing on its
             // way up comes through here too, and a connection that never came up
             // disconnecting is not news.
-            if (was) Say("drive.unmounted", "Google Drive disconnected");
+            Say("drive.unmounted", "Google Drive disconnected");
         }
 
         /// <summary>
@@ -2900,6 +2955,9 @@ namespace ExplorerNative
             // drive behind a process that is on its way out.
             _disposed = true;
             try { _lifetime.Cancel(); } catch { }
+            // A mount disconnected a moment ago may still be sending; the process
+            // must not leave with that volume half taken down.
+            try { Teardown.Wait(DriveMount.DrainFor + TimeSpan.FromSeconds(15)); } catch { }
             TearDown();
         }
     }
