@@ -604,11 +604,13 @@ namespace ExplorerNative
             bool shift = (_working.HotkeyModifiers & HotkeyManager.MOD_SHIFT) != 0;
             bool win = (_working.HotkeyModifiers & HotkeyManager.MOD_WIN) != 0;
 
-            bool nCtrl = ctrl, nAlt = alt, nShift = shift, nWin = win;
-            AddCheck(panel, "Control", ctrl, v => nCtrl = v);
-            AddCheck(panel, "Alt", alt, v => nAlt = v);
-            AddCheck(panel, "Shift", shift, v => nShift = v);
-            AddCheck(panel, "Windows key", win, v => nWin = v);
+            // The check before OK reads the boxes themselves: copied into locals
+            // by the applies, it saw the modifiers the page opened with, so a
+            // new shortcut was refused and an unticked one saved unchecked.
+            var ctrlBox = AddCheck(panel, "Control", ctrl, _ => { });
+            var altBox = AddCheck(panel, "Alt", alt, _ => { });
+            var shiftBox = AddCheck(panel, "Shift", shift, _ => { });
+            var winBox = AddCheck(panel, "Windows key", win, _ => { });
 
             var keyBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
             keyBox.AccessibleName = "Hotkey letter or key";
@@ -644,16 +646,17 @@ namespace ExplorerNative
             // Nothing on this page touched: the saved value stays exactly as
             // it is, stray bits and all. Rebuilt from the four boxes, a file
             // holding 0x4003 came back as 3 from OK on any page.
-            bool Untouched() => nCtrl == ctrl && nAlt == alt && nShift == shift && nWin == win &&
+            bool Untouched() => ctrlBox.Checked == ctrl && altBox.Checked == alt &&
+                                shiftBox.Checked == shift && winBox.Checked == win &&
                                 keyBox.SelectedIndex == openedAt;
 
             uint ChosenMods()
             {
                 uint m = 0;
-                if (nCtrl) m |= HotkeyManager.MOD_CONTROL;
-                if (nAlt) m |= HotkeyManager.MOD_ALT;
-                if (nShift) m |= HotkeyManager.MOD_SHIFT;
-                if (nWin) m |= HotkeyManager.MOD_WIN;
+                if (ctrlBox.Checked) m |= HotkeyManager.MOD_CONTROL;
+                if (altBox.Checked) m |= HotkeyManager.MOD_ALT;
+                if (shiftBox.Checked) m |= HotkeyManager.MOD_SHIFT;
+                if (winBox.Checked) m |= HotkeyManager.MOD_WIN;
                 return m;
             }
 
