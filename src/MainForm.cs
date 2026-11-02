@@ -640,6 +640,7 @@ namespace ExplorerNative
                 }
 
                 if (!ConfirmAbandonTransfers("Update")) return;
+                if (!AudioEditorForm.ConfirmEndingEditors(this, "Update")) return;
 
                 string exe;
                 try
@@ -657,6 +658,7 @@ namespace ExplorerNative
                 // Asked again: a paste or move started during the download
                 // would be cut off by the installer's <exit>, which never asks.
                 if (!ConfirmAbandonTransfers("Update")) return;
+                if (!AudioEditorForm.ConfirmEndingEditors(this, "Update")) return;
 
                 Announce("Installing update. Explorer Native will restart");
                 CaptureState();
@@ -707,6 +709,7 @@ namespace ExplorerNative
             // already coming up, and answering "no" there would leave two of
             // them fighting over the single-instance lock.
             if (!ConfirmAbandonTransfers("Restart")) return;
+            if (!AudioEditorForm.ConfirmEndingEditors(this, "Restart")) return;
 
             try
             {

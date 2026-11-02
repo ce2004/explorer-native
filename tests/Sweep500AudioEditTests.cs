@@ -30,7 +30,50 @@ namespace ExplorerNative
             DiscAudioIsNotConvertedOrEditedInPlace();
             EditorLeavesTheLineUnderTheKeyboardAlone();
             OggTagsAreReadAndCarried();
+            QuittingAsksAboutUnsavedEdits();
             await Task.CompletedTask;
+        }
+
+        // ---------- 5: quit, restart and update with an editor open ----------
+
+        /// <summary>
+        /// Quit, restart and update end the process without closing the
+        /// editor's window, so its question about unsaved edits never ran and
+        /// twenty minutes of edits went without a word; a quit in the middle of
+        /// a replace left the original in the Recycle Bin and the edit under a
+        /// temporary name.
+        /// </summary>
+        private static void QuittingAsksAboutUnsavedEdits()
+        {
+            Check("nothing open, nothing asked", EditorEnding.QuestionFor(Array.Empty<(string, bool, bool)>(), "Quit") == null);
+            Check("nothing unsaved, nothing asked", EditorEnding.QuestionFor(new[] { ("a.mp3", false, false) }, "Quit") == null);
+            var one = EditorEnding.QuestionFor(new[] { ("a.mp3", false, false), ("book.mp3", true, false) }, "Restart");
+            Check($"one editor with unsaved edits is asked about by name and verb ({one?.Text})",
+                one is { Refuse: false } q && q.Text.Contains("book.mp3") && q.Text.Contains("Restart anyway"));
+            var two = EditorEnding.QuestionFor(new[] { ("a.mp3", true, false), ("b.mp3", true, false) }, "Quit");
+            Check($"two are counted ({two?.Text})", two is { Refuse: false } t && t.Text.StartsWith("2 audio editors"));
+            var saving = EditorEnding.QuestionFor(new[] { ("a.mp3", true, false), ("b.mp3", false, true) }, "Update");
+            Check($"an editor that is saving refuses, before any question ({saving?.Text})",
+                saving is { Refuse: true } s && s.Text.Contains("b.mp3"));
+
+            var tray = SourceText("TrayApplicationContext.cs");
+            var main = SourceText("MainForm.cs");
+            var editor = SourceText("AudioEditorForm.cs");
+            Check("Quit asks about the editors before it starts closing",
+                Between(tray, "private void Quit(bool ask", "Notify(\"app.quitting\"").Contains("AudioEditorForm.ConfirmEndingEditors"));
+            Check("and waits for a replace that is under way before it ends",
+                Between(tray, "private void Quit(bool ask", "ExitThread();").Contains("AudioEditorForm.WaitForReplaces"));
+            Check("Restart asks before the new copy is started",
+                Between(main, "private void RestartApp()", "Process.Start").Contains("AudioEditorForm.ConfirmEndingEditors"));
+            Check("Update asks after the download, before the installer",
+                Between(main, "Updater.DownloadAsync", "Updater.StartInstall").Contains("AudioEditorForm.ConfirmEndingEditors"));
+            Check("closing the main window does not ask (the editor lives on)",
+                !Between(main, "public bool ConfirmAbandonTransfers", "protected override void Dispose").Contains("ConfirmEndingEditors"));
+            Check("an editor is saving from its first question to its last word",
+                Between(editor, "private async Task BusyWhile", "private async Task SaveAsNewCore").Contains("_saving"));
+            var replace = Between(editor, "private async Task ReplaceOriginalCore", "private string _notes");
+            Check("the Recycle Bin and the move into place are one piece of work, nothing between them on the window's thread",
+                replace.Contains("ReplaceWith") && !replace.Contains("Task.Run(() => ShellDelete.RecycleWithoutUi"));
         }
 
         // ---------- 6: Ogg tags ----------

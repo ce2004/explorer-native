@@ -402,6 +402,35 @@ namespace ExplorerNative
     }
 
     /// <summary>
+    /// What to say before quitting, restarting or updating with audio editors
+    /// open. Those end the process; they never close an editor's window, so its
+    /// own question about unsaved edits was never asked and the edits were lost
+    /// without a word.
+    /// </summary>
+    internal static class EditorEnding
+    {
+        /// <summary>
+        /// Null when nothing would be lost. A refusal while one is saving: cut
+        /// off in the middle of a replace, the original is in the Recycle Bin
+        /// and the edit under a temporary name. Otherwise a question whose
+        /// <paramref name="verb"/> says what would end them ("Quit").
+        /// </summary>
+        public static (string Text, bool Refuse)? QuestionFor(
+            IReadOnlyList<(string Name, bool Unsaved, bool Saving)> editors, string verb)
+        {
+            foreach (var editor in editors)
+                if (editor.Saving)
+                    return ($"The audio editor is still saving {editor.Name}. Wait for it to finish, or cancel it in its window.", true);
+
+            var unsaved = editors.Where(e => e.Unsaved).ToList();
+            if (unsaved.Count == 0) return null;
+            return (unsaved.Count == 1
+                ? $"Your changes to {unsaved[0].Name} in the audio editor have not been saved. {verb} anyway and lose them?"
+                : $"{unsaved.Count} audio editors have changes that have not been saved. {verb} anyway and lose them?", false);
+        }
+    }
+
+    /// <summary>
     /// How the editor opens its source. An MP3's exact length and seeks come
     /// from a frame walk that starts in the background when the file opens.
     /// The editor read the length and seeked the moment it opened, so it got

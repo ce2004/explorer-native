@@ -102,6 +102,8 @@ namespace ExplorerNative
             // The line the keyboard just left was held as it was (see Refresh_).
             _info.SelectedIndexChanged += (_, _) => Refresh_();
 
+            s_open.Add(this);
+
             _timer = new System.Windows.Forms.Timer { Interval = 100 };
             _timer.Tick += (_, _) => Tick();
         }
@@ -735,13 +737,20 @@ namespace ExplorerNative
         /// </summary>
         private async Task BusyWhile(Func<Task> save)
         {
+            // Saving as well as busy: Normalise is busy too, and measuring is not
+            // something a quit can leave half done (see ConfirmEndingEditors).
             _busy = true;
+            _saving = true;
             try { await save(); }
             catch (Exception ex)
             {
                 if (!IsDisposed) Say("Could not save: " + AudioConverter.Reason(ex));
             }
-            finally { _busy = false; }
+            finally
+            {
+                _busy = false;
+                _saving = false;
+            }
         }
 
         private async Task SaveAsNewCore()
@@ -860,7 +869,10 @@ namespace ExplorerNative
                         $"{Path.GetFileNameWithoutExtension(_path)} (edited){choice.Extension}"), null, folder: false),
                     replace: false);
 
-                string? refused = await Task.Run(() => ShellDelete.RecycleWithoutUi(_path));
+                var path = _path;
+                var replacing = Task.Run(() => ReplaceWith(temp, path));
+                s_replacing = replacing;
+                var (refused, moveFailed) = await replacing;
                 if (refused != null)
                 {
                     var kept = await Task.Run(KeepAsEdited);
@@ -871,17 +883,10 @@ namespace ExplorerNative
                     return;
                 }
 
-                // The original is in the Recycle Bin now. If the move fails (an
+                // The original is in the Recycle Bin now. If the move failed (an
                 // antivirus or the indexer holding the new file), the edit must
                 // not be left under a hidden temp name with nothing at the
-                // original's: a few tries, then it is kept as "(edited)".
-                Exception? moveFailed = null;
-                for (int attempt = 0; attempt < 5; attempt++)
-                {
-                    try { await Task.Run(() => File.Move(NameRules.ExactPath(temp), NameRules.ExactPath(_path))); moveFailed = null; break; }
-                    catch (IOException ex) { moveFailed = ex; await Task.Delay(300); }
-                    catch (UnauthorizedAccessException ex) { moveFailed = ex; await Task.Delay(300); }
-                }
+                // original's: it is kept as "(edited)".
                 if (moveFailed != null)
                 {
                     var kept = await Task.Run(KeepAsEdited);
@@ -989,6 +994,74 @@ namespace ExplorerNative
 
         // ---------------------------------------------------------- closing
 
+        private static readonly List<AudioEditorForm> s_open = new();
+        private static Task s_replacing = Task.CompletedTask;
+        private bool _saving;
+
+        /// <summary>
+        /// Asks before Quit, Restart or Update ends the process under an open
+        /// editor. Those never close its window, so its own question about
+        /// unsaved edits was not asked and the edits were lost without a word.
+        /// Refuses while one is saving. True when it may go ahead. UI thread.
+        /// </summary>
+        internal static bool ConfirmEndingEditors(IWin32Window? owner, string verb)
+        {
+            s_open.RemoveAll(editor => editor.IsDisposed);
+            var question = EditorEnding.QuestionFor(
+                s_open.Select(editor => (Path.GetFileName(editor._path), editor._history is { Unsaved: true }, editor._saving)).ToList(),
+                verb);
+            if (question is not { } q) return true;
+
+            var first = s_open.FirstOrDefault(editor => editor._saving) ??
+                        s_open.First(editor => editor._history is { Unsaved: true });
+            if (q.Refuse)
+            {
+                MessageBox.Show(owner, q.Text, "Audio editor", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                first.Activate();
+                return false;
+            }
+
+            if (MessageBox.Show(owner, q.Text, "Audio editor", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
+                    MessageBoxDefaultButton.Button2) == DialogResult.Yes)
+                return true;
+            first.Activate();
+            first._info.Focus();
+            return false;
+        }
+
+        /// <summary>
+        /// Waits, at most <paramref name="most"/>, for a replace of an original
+        /// that is under way, so a quit that does not ask (an installer's) does
+        /// not end it between the Recycle Bin and the move. Never needs the UI thread.
+        /// </summary>
+        internal static void WaitForReplaces(TimeSpan most)
+        {
+            try { s_replacing.Wait(most); } catch { }
+        }
+
+        /// <summary>
+        /// The original to the Recycle Bin, then the edited file into its place,
+        /// in one piece of work on a worker. With the window's thread between
+        /// the two, a quit could leave the original in the bin and the edit under
+        /// a temporary name. Why the bin refused, or why the move failed after
+        /// a few tries; both null when it was replaced.
+        /// </summary>
+        private static (string? Refused, Exception? MoveFailed) ReplaceWith(string temp, string path)
+        {
+            string? refused = ShellDelete.RecycleWithoutUi(path);
+            if (refused != null) return (refused, null);
+
+            // An antivirus or the indexer can hold the new file a moment.
+            Exception? failed = null;
+            for (int attempt = 0; attempt < 5; attempt++)
+            {
+                try { File.Move(NameRules.ExactPath(temp), NameRules.ExactPath(path)); return (null, null); }
+                catch (IOException ex) { failed = ex; Thread.Sleep(300); }
+                catch (UnauthorizedAccessException ex) { failed = ex; Thread.Sleep(300); }
+            }
+            return (null, failed);
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             if (e.CloseReason == CloseReason.UserClosing)
@@ -1013,6 +1086,7 @@ namespace ExplorerNative
 
         protected override void OnFormClosed(FormClosedEventArgs e)
         {
+            s_open.Remove(this);
             _timer.Stop();
             _timer.Dispose();
             StopPlayback();
