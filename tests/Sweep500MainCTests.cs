@@ -28,7 +28,56 @@ namespace ExplorerNative
             SpaceMidWordNeverReachesTheControl(main);
             DriveMenuHidesArchiveCommands(main);
             EmptyFolderMessageNeverCutsOffTheTab(main);
+            PasteIntoDriveTrashRefusesOnce(main);
             await Task.CompletedTask;
+        }
+
+        // Bug 6: Ctrl+V in the Drive trash surveyed, opened a transfer window
+        // and spoke one failure per file.
+        private static void PasteIntoDriveTrashRefusesOnce(string main)
+        {
+            var paste = Body(main, "private async void PasteClipboard(");
+            int trashAt = paste.IndexOf("IsInTrash(", StringComparison.Ordinal);
+            int runAt = paste.IndexOf("RunTransfer(", StringComparison.Ordinal);
+            Check("Paste refuses the Drive trash once, before anything is read or transferred",
+                trashAt >= 0 && paste.Contains("IsTrashFolder(", StringComparison.Ordinal) && runAt > trashAt &&
+                paste.IndexOf("TryGetFiles", StringComparison.Ordinal) > trashAt);
+
+            var fake = new FakeDrive();
+            var client = new DriveClient(fake, 0.0005);
+            var root = Path.Combine(Path.GetTempPath(), "en-mc-trash-" + Guid.NewGuid().ToString("N")[..8]);
+            var local = Path.Combine(Path.GetTempPath(), "en-mc-up-" + Guid.NewGuid().ToString("N")[..8] + ".txt");
+            var said = new System.Collections.Generic.List<string>();
+            using var drive = new GoogleDrive();
+            drive.Notification += (id, message) => { lock (said) said.Add(id); };
+            DriveMount? mount = null;
+            try
+            {
+                try
+                {
+                    mount = new DriveMount(client, root, 16L * 1024 * 1024, _ => { });
+                    mount.Start("root", assignLetter: false);
+                }
+                catch (Exception ex) { Check("a fake Drive stands up for the trash upload test", false, ex.Message); return; }
+                drive.UseForTests(mount, client);
+                mount.Forget(root);
+                mount.Populate(root);
+                var trash = Path.Combine(root, "Trash");
+                File.WriteAllText(local, "up");
+                int uploads = fake.Uploads;
+                bool allRefused = true;
+                for (int i = 0; i < 3; i++)
+                    allRefused &= drive.UploadInto(local, trash, announce: false).GetAwaiter().GetResult() == null;
+                lock (said)
+                    Check("a bulk upload into the trash is refused without a message per file",
+                        allRefused && fake.Uploads == uploads && !said.Contains("drive.upload.failed"), string.Join(" | ", said));
+            }
+            finally
+            {
+                try { mount?.Dispose(); } catch { }
+                try { File.Delete(local); } catch { }
+                try { Directory.Delete(root, true); } catch { }
+            }
         }
 
         // Bugs 4 and 5: "This folder is empty" on focus interrupted the tab

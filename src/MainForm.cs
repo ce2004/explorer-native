@@ -7930,6 +7930,14 @@ namespace ExplorerNative
         {
             if (IsDrivesView) { Announce("Cannot paste into the drive list", isError: true); return; }
             if (RefuseInArchive()) return;
+            // Once, up front, by path alone: otherwise the upload surveyed,
+            // opened a window and refused every file one by one.
+            if (Drive is { } trashDrive &&
+                (trashDrive.IsTrashFolder(Active.CurrentPath) || trashDrive.IsInTrash(Active.CurrentPath)))
+            {
+                Announce("Nothing can be pasted into the Google Drive trash", isError: true);
+                return;
+            }
 
             if (!ClipboardInterop.TryGetFiles(out var paths, out bool isCut))
             {
