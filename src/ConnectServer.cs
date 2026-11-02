@@ -28,6 +28,99 @@ namespace ExplorerNative
 
     public sealed record ConnectFailure(string Path, string Error);
 
+    /// <summary>What Windows says about a process, read without opening it.</summary>
+    internal readonly record struct ProcessFacts(int Pid, int ParentPid, int SessionId, long CreateTime, string Name);
+
+    /// <summary>
+    /// Every process's id, parent, session, start time and image name, from one NtQuerySystemInformation
+    /// snapshot. No process is opened, so it works unelevated for the SYSTEM service too.
+    /// </summary>
+    internal static class ProcessTable
+    {
+        private const int SystemProcessInformation = 5;
+        private const int StatusInfoLengthMismatch = unchecked((int)0xC0000004);
+
+        [System.Runtime.InteropServices.DllImport("ntdll.dll")]
+        private static extern int NtQuerySystemInformation(int infoClass, IntPtr info, int length, out int needed);
+
+        public static Dictionary<int, ProcessFacts> Snapshot()
+        {
+            var all = new Dictionary<int, ProcessFacts>();
+            // SYSTEM_PROCESS_INFORMATION's 64-bit layout; the app is built for x64 and ARM64 only.
+            if (IntPtr.Size != 8) return all;
+            int size = 512 * 1024;
+            for (int attempt = 0; attempt < 6; attempt++)
+            {
+                IntPtr buffer = System.Runtime.InteropServices.Marshal.AllocHGlobal(size);
+                try
+                {
+                    int status = NtQuerySystemInformation(SystemProcessInformation, buffer, size, out int needed);
+                    if (status == StatusInfoLengthMismatch) { size = Math.Max(size * 2, needed + 64 * 1024); continue; }
+                    if (status != 0) return all;
+                    long at = 0;
+                    while (true)
+                    {
+                        IntPtr p = buffer + (int)at;
+                        int next = System.Runtime.InteropServices.Marshal.ReadInt32(p, 0);
+                        long created = System.Runtime.InteropServices.Marshal.ReadInt64(p, 32);
+                        int nameBytes = System.Runtime.InteropServices.Marshal.ReadInt16(p, 56) & 0xFFFF;
+                        IntPtr nameAt = System.Runtime.InteropServices.Marshal.ReadIntPtr(p, 64);
+                        int pid = (int)System.Runtime.InteropServices.Marshal.ReadInt64(p, 80);
+                        int parent = (int)System.Runtime.InteropServices.Marshal.ReadInt64(p, 88);
+                        int session = System.Runtime.InteropServices.Marshal.ReadInt32(p, 100);
+                        string name = nameAt != IntPtr.Zero && nameBytes > 0
+                            ? System.Runtime.InteropServices.Marshal.PtrToStringUni(nameAt, nameBytes / 2) : "";
+                        all[pid] = new ProcessFacts(pid, parent, session, created, name);
+                        if (next == 0) break;
+                        at += next;
+                    }
+                    return all;
+                }
+                finally { System.Runtime.InteropServices.Marshal.FreeHGlobal(buffer); }
+            }
+            return all;
+        }
+    }
+
+    /// <summary>The Tailscale Windows service's own process id, from the service manager (works unelevated).</summary>
+    internal static class TailscaleServiceProcess
+    {
+        private const uint ScManagerConnect = 0x0001, ServiceQueryStatus = 0x0004;
+        private const int ScStatusProcessInfo = 0;
+
+        [System.Runtime.InteropServices.DllImport("advapi32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr OpenSCManagerW(string? machine, string? database, uint access);
+
+        [System.Runtime.InteropServices.DllImport("advapi32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr OpenServiceW(IntPtr manager, string name, uint access);
+
+        [System.Runtime.InteropServices.DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool QueryServiceStatusEx(IntPtr service, int level, byte[] buffer, int size, out int needed);
+
+        [System.Runtime.InteropServices.DllImport("advapi32.dll")]
+        private static extern bool CloseServiceHandle(IntPtr handle);
+
+        /// <summary>The service's process id, or 0 when it is not installed, not running or cannot be asked.</summary>
+        public static int Pid(string service = "Tailscale")
+        {
+            IntPtr manager = OpenSCManagerW(null, null, ScManagerConnect);
+            if (manager == IntPtr.Zero) return 0;
+            try
+            {
+                IntPtr handle = OpenServiceW(manager, service, ServiceQueryStatus);
+                if (handle == IntPtr.Zero) return 0;
+                try
+                {
+                    var status = new byte[36]; // SERVICE_STATUS_PROCESS: nine DWORDs, the process id eighth
+                    return QueryServiceStatusEx(handle, ScStatusProcessInfo, status, status.Length, out _)
+                        ? BitConverter.ToInt32(status, 28) : 0;
+                }
+                finally { CloseServiceHandle(handle); }
+            }
+            finally { CloseServiceHandle(manager); }
+        }
+    }
+
     /// <summary>Which process holds the other end of a TCP connection on this machine.</summary>
     internal static class TcpOwner
     {
@@ -207,6 +300,15 @@ namespace ExplorerNative
         /// counts a file it gave up on (ERROR 32, in use) as one it got through, so a copy of a locked file read
         /// as done with one item copied.
         /// </summary>
+        private bool _originalsKept;
+
+        /// <summary>
+        /// A move out of Drive that only copied: something failed, so no original was removed. The outcome says
+        /// "Copied", never "Moved", and that everything is still on Drive.
+        /// </summary>
+        public void KeepOriginals() { lock (_gate) _originalsKept = true; }
+        public bool OriginalsKept { get { lock (_gate) return _originalsKept; } }
+
         public void Counted(int succeeded, int failed) { lock (_gate) _counted = (Math.Max(0, succeeded), Math.Max(0, failed)); }
 
         /// <summary>The engine's own count, when it gave one.</summary>
@@ -1313,14 +1415,17 @@ namespace ExplorerNative
             int failed = Math.Max(failures.Count, counts?.Failed ?? 0);
             if (failed == 0) return ("done", null);
             bool nothing = counts is { } c ? c.Succeeded == 0 : job.ItemsDone == 0;
+            bool kept = move && job.OriginalsKept;
+            bool moved = move && !kept;
             // Filed as sentences already; Sentence again would capitalise a file name at the front of one.
             string first = failures.Count > 0 && failures[0].Error.Trim().Length > 0
                 ? (failures[0].Error.TrimEnd().EndsWith('.') ? failures[0].Error.Trim() : Sentence(failures[0].Error))
                 : move ? "It could not be moved." : "It could not be copied.";
             if (nothing) return ("failed", first);
             int done = counts?.Succeeded ?? job.ItemsDone;
-            return ("done", $"{(move ? "Moved" : "Copied")} {NameRules.Items(done, "file")}; " +
-                            $"{NameRules.Items(failed, "file")} could not be {(move ? "moved" : "copied")}. {first}");
+            return ("done", $"{(moved ? "Moved" : "Copied")} {NameRules.Items(done, "file")}; " +
+                            $"{NameRules.Items(failed, "file")} could not be {(moved ? "moved" : "copied")}. {first}" +
+                            (kept ? " Nothing was removed from Google Drive, so the originals are all still there." : ""));
         }
 
         private ConnectJob FindJob(string id) =>
@@ -1832,10 +1937,14 @@ namespace ExplorerNative
                 if (socket.RemoteEndPoint is not IPEndPoint remote || socket.LocalEndPoint is not IPEndPoint local) return false;
                 var pid = TcpOwner.PidOf(remote, local);
                 if (pid == null) return false;
-                using var process = System.Diagnostics.Process.GetProcessById(pid.Value);
-                // Session 0 too: a program a user starts runs in their own session, whatever it is called.
-                bool ok = IsTailscaleService(process.ProcessName, process.SessionId);
-                if (!ok) _log?.Invoke($"Connect: the owner's login header came from {process.ProcessName} ({pid}), not Tailscale; code needed");
+                // Not the name and session alone: any service account runs in session 0 and can start a program
+                // called tailscaled. Only the Tailscale service, or a process it started, is Tailscale.
+                var table = ProcessTable.Snapshot();
+                if (!table.TryGetValue(pid.Value, out var peer)) return false;
+                ProcessFacts? parent = table.TryGetValue(peer.ParentPid, out var p) ? p : null;
+                int service = TailscaleServiceProcess.Pid();
+                bool ok = IsTailscaleService(peer, parent, service);
+                if (!ok) _log?.Invoke($"Connect: the owner's login header came from {peer.Name} ({pid}), not the Tailscale service ({service}); code needed");
                 return ok;
             }
             catch (Exception e)
@@ -1848,6 +1957,20 @@ namespace ExplorerNative
         /// <summary>The Tailscale daemon: tailscaled, running as a service.</summary>
         public static bool IsTailscaleService(string processName, int sessionId) =>
             sessionId == 0 && string.Equals(processName, "tailscaled", StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// The Tailscale service itself: tailscaled in session 0 that is the service's own process, or a child it
+        /// started (the one that does the work), the parent older than the child so a reused id is not taken for
+        /// it. A service account can start a tailscaled of its own in session 0, but never as the service or
+        /// under it.
+        /// </summary>
+        internal static bool IsTailscaleService(ProcessFacts peer, ProcessFacts? parent, int servicePid)
+        {
+            var name = peer.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? peer.Name[..^4] : peer.Name;
+            if (servicePid <= 0 || !IsTailscaleService(name, peer.SessionId)) return false;
+            if (peer.Pid == servicePid) return true;
+            return peer.ParentPid == servicePid && parent is { } p && p.Pid == servicePid && p.CreateTime <= peer.CreateTime;
+        }
 
         /// <summary>
         /// The web app's rule, pure for the tests. Only a loopback connection can be
@@ -1972,7 +2095,18 @@ namespace ExplorerNative
         /// </summary>
         private static string ClientKey(Request r) =>
             r.Headers.TryGetValue("tailscale-user-login", out var l) && l.Length > 0 && r.FromServe?.Invoke() == true ? "user:" + l
-                : "addr:" + ((r.Socket?.RemoteEndPoint as IPEndPoint)?.Address.ToString() ?? "?");
+                : AddressKey((r.Socket?.RemoteEndPoint as IPEndPoint)?.Address);
+
+        /// <summary>
+        /// The count for an address. Every loopback address is one: Windows answers all of 127.0.0.0/8, and a
+        /// program binding 127.0.0.2, 127.0.0.3 and on was a fresh count, with four free guesses, on each.
+        /// </summary>
+        internal static string AddressKey(IPAddress? peer)
+        {
+            if (peer == null) return "addr:?";
+            if (peer.IsIPv4MappedToIPv6) peer = peer.MapToIPv4();
+            return "addr:" + (IPAddress.IsLoopback(peer) ? IPAddress.Loopback : peer);
+        }
 
         /// <summary>How long <paramref name="key"/> must wait before trying a code again; zero for not at all.</summary>
         internal TimeSpan CodeWait(string key, DateTime now)

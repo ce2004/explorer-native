@@ -8936,11 +8936,15 @@ namespace ExplorerNative
                     // One id for both verbs: a move that half succeeded is the
                     // same event as a copy that half succeeded, and the sentence
                     // already says which it was.
+                    // A move out of Drive with any failure removed no original: it was a copy, and is said so.
+                    bool keptAll = move && fromDrive;
+                    bool moved = move && !keptAll;
                     AnnounceOperation("copy.partial",
                         result.Copied == 0
                             ? $"Nothing was {(move ? "moved" : "copied")}: {NameRules.Items(result.Failed)} failed"
-                            : $"{(move ? "Moved" : "Copied")} {NameRules.Items(result.Copied, "file")}, but " +
-                              $"{NameRules.Items(result.Failed)} could not be {(move ? "moved" : "copied")}");
+                            : $"{(moved ? "Moved" : "Copied")} {NameRules.Items(result.Copied, "file")}, but " +
+                              $"{NameRules.Items(result.Failed)} could not be {(moved ? "moved" : "copied")}" +
+                              (keptAll ? "; nothing was removed from Google Drive" : ""));
                     ShowErrors(result.Errors);
                 }
                 // Not "Move complete" over the warnings that some originals stayed.

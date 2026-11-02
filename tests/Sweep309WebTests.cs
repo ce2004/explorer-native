@@ -235,7 +235,7 @@ namespace ExplorerNative
         /// </summary>
         private static void MoveOutOfDriveChecksLiteralPathTests()
         {
-            var body = Method(Source("ConnectFiles.cs") ?? "", "private async Task FinishMoveOutOfDrive(");
+            var body = Method(Source("ConnectFiles.cs") ?? "", " FinishMoveOutOfDrive(ConnectJob job,");
             Check("FinishMoveOutOfDrive is there", body.Length > 0);
             Check("the copy of a file is looked at by its literal path", body.Contains("new FileInfo(Io(arrivedAt))"));
             Check("and a folder's copy is checked by it too", body.Contains("VerifyCopied(path, Io(arrivedAt)"));
