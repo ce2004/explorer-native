@@ -227,10 +227,14 @@ namespace ExplorerNative
                     // Read now, not when Start began: a pause or a Play next chosen
                     // while the player was still starting has to go with the song.
                     int volume; string device; string? queued; bool hold;
-                    lock (Gate) { volume = _volumePercent; device = _deviceName; queued = _queuedId; hold = !_wantPlaying; }
+                    lock (Gate) { volume = _volumePercent; device = _deviceName; }
                     await CallAsync("volume", Gain(volume)).ConfigureAwait(true);
                     await CallAsync("device", device).ConfigureAwait(true);
-                    await CallAsync("play", catalogId, mine, queued, startAt, hold).ConfigureAwait(true);
+                    // A seek pressed while the player was starting never reached the page
+                    // (CallAsync drops it), so the song starts where that seek went.
+                    double at;
+                    lock (Gate) { at = _seekTarget >= 0 ? _seekTarget : startAt; queued = _queuedId; hold = !_wantPlaying; }
+                    await CallAsync("play", catalogId, mine, queued, at, hold).ConfigureAwait(true);
                     WatchStart(mine, path, catalogId, spokenName, retried);
                 }
                 catch (AppleMusicException ex)
@@ -1291,7 +1295,7 @@ namespace ExplorerNative
             var core = _controller?.CoreWebView2;
             if (core == null) return;
             var payload = JsonSerializer.Serialize(new { command, arg, gen = generation, next, at, paused });
-            Log("send " + command + " " + arg + (next != null ? " then " + next : ""));
+            Log("send " + command + " " + arg + (next != null ? " then " + next : "") + (at > 0 ? " at " + at : ""));
             try { await core.ExecuteScriptAsync("window.amCommand(" + payload + ")").ConfigureAwait(true); }
             catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException)
             {
