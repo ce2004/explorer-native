@@ -1257,10 +1257,16 @@ namespace ExplorerNative
                     // image around whenever one side was busier than the other,
                     // which is the same mistake TimeStretch is careful not to
                     // make with its correlation.
+                    //
+                    // Below a gain of one (only with "Same lift at any volume")
+                    // the lift is worked out at unity, so the volume and fades
+                    // stay a plain multiply on top of it. Measured after the
+                    // volume, the aim at the ceiling lifted a turned-down track
+                    // straight back up to 0.9 and the volume keys did nothing.
                     float loudest = 0f;
                     for (int c = 0; c < channels; c++)
                     {
-                        float s = buffer[at + c] * gain;
+                        float s = buffer[at + c] * drive;
                         float m = s < 0 ? -s : s;
                         if (m > loudest) loudest = m;
                     }

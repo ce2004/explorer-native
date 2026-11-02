@@ -26,6 +26,7 @@ namespace ExplorerNative
 
             Console.WriteLine("Sweep 5.0.0, the audio output and effect dialogs:");
             EffectDialogAccessKeyTests();
+            WholeRangeKeepsTheVolumeTests();
             await Task.CompletedTask;
         }
 
@@ -172,6 +173,62 @@ namespace ExplorerNative
             Check("the Ceiling access key does not press Cancel", limiterOpen);
             Check("Alt+O from the Attack list leaves the limiter on", limiterOnKept);
             Check("Alt+O from the Attack list presses OK", limiterOk);
+        }
+
+        // ---- bug 6: Same lift at any volume and the volume control ----
+
+        private static float SettledWide(float amplitude, float gain, int seconds = 3)
+        {
+            var renderer = new WasapiRenderer { Gain = gain, Limiter = true, LimiterWholeRange = true };
+            var block = new float[4096];
+            float last = 0f;
+            int blocks = seconds * 48000 / block.Length;
+            for (int b = 0; b < blocks; b++)
+            {
+                for (int i = 0; i < block.Length; i++) block[i] = amplitude;
+                renderer.ApplyGainAndMeasure(block, block.Length);
+                last = block[^1];
+            }
+            return last;
+        }
+
+        /// <summary>
+        /// The limiter measured the music after the volume and aimed it at the
+        /// ceiling, so with "Same lift at any volume" on, turning down (or a
+        /// fade) was lifted straight back up to 0.9. The volume must stay a
+        /// plain multiply on top of the lift gain 1 would give.
+        /// </summary>
+        private static void WholeRangeKeepsTheVolumeTests()
+        {
+            float loudQuiet = SettledWide(0.8f, 0.25f);
+            Check($"whole range at 50 percent volume leaves a loud passage turned down ({loudQuiet:0.###})",
+                loudQuiet <= 0.25f * 0.91f && loudQuiet >= 0.25f * 0.8f);
+
+            float q1 = SettledWide(0.002f, 1f), q4 = SettledWide(0.002f, 0.25f);
+            Check($"whole range gives the same lift at a quarter gain, so the volume still scales it ({q4 / q1:0.###})",
+                Math.Abs(q4 / q1 - 0.25f) < 0.02f);
+
+            var renderer = new WasapiRenderer { Gain = 1f, Limiter = true, LimiterWholeRange = true };
+            var block = new float[1200];
+            for (int b = 0; b < 3 * 48000 / block.Length; b++)
+            {
+                Array.Fill(block, 0.8f);
+                renderer.ApplyGainAndMeasure(block, block.Length);
+            }
+            float settled = Math.Abs(block[^1]);
+            var peaks = new List<float>();
+            for (int step = 0; step <= 40; step++)
+            {
+                renderer.Gain = 1f - step / 40f;
+                Array.Fill(block, 0.8f);
+                renderer.ApplyGainAndMeasure(block, block.Length);
+                peaks.Add(block.Max(Math.Abs));
+            }
+            bool falling = true;
+            for (int i = 1; i < peaks.Count; i++) if (peaks[i] > peaks[i - 1] + 1e-4f) falling = false;
+            Check($"a fade out with whole range on is halfway down at half time ({peaks[20]:0.###} of {settled:0.###})",
+                peaks[20] <= settled * 0.6f);
+            Check("a fade out with whole range on never gets louder on the way down", falling);
         }
     }
 }
