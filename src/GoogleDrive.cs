@@ -2092,6 +2092,23 @@ namespace ExplorerNative
             // to. Asking Drive for the parent again rebuilds exactly the entries
             // needed — and "it is not part of the mounted Drive" is both untrue and
             // impossible to act on.
+            // Still on its way up (a recording a moment ago, a big file
+            // streaming): Drive has no id for it yet, so it is deleted the way the
+            // letter deletes a new file, and whatever its upload makes is
+            // trashed when it lands. It used to be refused as "Google Drive does
+            // not have a file by that name here", and then landed anyway.
+            if (mount.IsNewNotLanded(path, out var open))
+            {
+                if (open)
+                {
+                    Say("drive.trash.failed", $"Could not delete {name}: another program is still saving it");
+                    return false;
+                }
+                await Task.Run(() => mount.RemoveOne(path), token).ConfigureAwait(false);
+                Say("drive.trash", $"{name} deleted before it reached Google Drive");
+                return true;
+            }
+
             var clock = System.Diagnostics.Stopwatch.StartNew();
             var id = await IdOrRelist(mount, path, token).ConfigureAwait(false);
             long idMs = clock.ElapsedMilliseconds;
@@ -2125,6 +2142,9 @@ namespace ExplorerNative
             Say("drive.trash", $"{name} moved to the Google Drive trash");
             return true;
         }
+
+        /// <summary>Why a file saved on the letter a moment ago cannot be moved or copied yet.</summary>
+        private const string StillSaving = "it is still being saved to Google Drive. Try again in a moment";
 
         /// <summary>
         /// Makes a folder inside a folder on the drive, and gives back the local
@@ -2322,6 +2342,15 @@ namespace ExplorerNative
             {
                 Say("rename.failed",
                     $"Could not rename {Path.GetFileName(path)}: shared drives are renamed from drive.google.com");
+                return null;
+            }
+
+            // Still on its way up: Drive has nothing to rename yet, and saying it
+            // has no such file was not true.
+            if (mount.IsNewNotLanded(path, out _))
+            {
+                Say("rename.failed",
+                    $"Could not rename {Path.GetFileName(path)}: it is still being saved to Google Drive. Try again in a moment");
                 return null;
             }
 
@@ -2597,6 +2626,9 @@ namespace ExplorerNative
                 throw new InvalidOperationException(
                     "shared drives cannot be moved; move what is inside one instead");
 
+            if (mount.IsNewNotLanded(fromPath, out _))
+                throw new InvalidOperationException(StillSaving);
+
             // Through the relisting lookup, as trash and rename are: a path whose
             // folder listing was dropped is still a file somebody has selected.
             var id = await IdOrRelist(mount, fromPath, token).ConfigureAwait(false)
@@ -2717,6 +2749,8 @@ namespace ExplorerNative
             if (mount.IsTrashFolder(fromPath)) return 0;
             if (InTrash(mount, toFolder))
                 throw new InvalidOperationException("nothing can be copied into the Google Drive trash");
+            if (mount.IsNewNotLanded(fromPath, out _))
+                throw new InvalidOperationException(StillSaving);
 
             var id = await IdOrRelist(mount, fromPath, token).ConfigureAwait(false)
                      ?? throw new InvalidOperationException("Google Drive does not have a file by that name here");

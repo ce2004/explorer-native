@@ -180,6 +180,18 @@ namespace ExplorerNative
 
         private bool HasPending(string key) => PendingAt(key) != null;
 
+        /// <summary>
+        /// A file saved on the letter that Drive does not have yet (no id: it is
+        /// still on its way up), and whether a program still has it open.
+        /// </summary>
+        internal bool IsNewNotLanded(string fullPath, out bool open)
+        {
+            open = false;
+            var key = KeyFor(fullPath);
+            if (key == null || PendingAt(key) is not { } p) return false;
+            lock (p.Gate) { open = p.Handles > 0; return p.Id == null; }
+        }
+
         private IEnumerable<Pending> PendingIn(string relative)
         {
             foreach (var p in _pending.Values)

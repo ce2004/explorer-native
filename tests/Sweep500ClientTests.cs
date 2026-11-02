@@ -33,6 +33,7 @@ namespace ExplorerNative
             await Guard("other account", OtherAccountKeepsOldSavesOnPc);
             await Guard("search part of a word", SearchFindsPartOfAWord);
             await Guard("cut listing", CutListingIsNotWhole);
+            await Guard("still uploading", StillUploadingFile);
         }
 
         private static async Task Guard(string name, Func<Task> test)
@@ -442,6 +443,45 @@ namespace ExplorerNative
             var capped = calls.Where(c => !c.Contains("max:", StringComparison.Ordinal)).ToList();
             Check("every folder listing in GoogleDrive says how much of the folder it needs",
                 calls.Count >= 6 && capped.Count == 0, string.Join(" | ", capped));
+        }
+
+        // ---- 11. A file still on its way up can be deleted, and rename and move say why they wait ----
+
+        private static async Task StillUploadingFile()
+        {
+            using var rig = new Rig();
+            var music = rig.Fake.AddFolder("Music");
+            rig.Mount.Forget(rig.Root);
+            rig.Listed(rig.Root);
+            rig.Listed(rig.P("Music"));
+            var take = rig.P("Music", "take.wav");
+            rig.Mount.NewPending("music", "take.wav", music);
+            Check("a file saved a moment ago is on its way up", rig.Mount.IsNewNotLanded(take, out _));
+
+            var renamed = await rig.Drive.RenameOnDrive(take, "other.wav");
+            Check("rename says it is still being saved, not that Drive has no such file",
+                renamed == null && rig.SaidText().Contains("still being saved", StringComparison.Ordinal) &&
+                !rig.SaidText().Contains("does not have a file", StringComparison.Ordinal), rig.SaidText());
+            string? moveRefusal = null;
+            try { await rig.Drive.MoveOnDrive(take, rig.Root); }
+            catch (InvalidOperationException ex) { moveRefusal = ex.Message; }
+            Check("so does a move", moveRefusal?.Contains("still being saved", StringComparison.Ordinal) == true, moveRefusal);
+
+            bool deleted = await rig.Drive.TrashPath(take);
+            Check("Delete on a file still going up deletes it", deleted, rig.SaidText());
+            Check("and it leaves the folder", !Names(rig.Mount.TryListing(rig.P("Music"), out var rows) ? rows : null)
+                .Split(',').Contains("take.wav"));
+            Check("and it is no longer waiting to be sent", rig.Mount.PendingAt("music\\take.wav") == null);
+            await Task.Delay(DriveMount.Settle + TimeSpan.FromSeconds(1));
+            Check("and it never lands on Google Drive", rig.Fake.Find(music, "take.wav") == null);
+
+            var open = rig.Mount.NewPending("music", "open.wav", music)!;
+            lock (open.Gate) open.Handles = 1;
+            bool refused = !await rig.Drive.TrashPath(rig.P("Music", "open.wav"));
+            Check("a file another program still has open is not deleted, and that is said",
+                refused && rig.SaidText().Contains("another program is still saving it", StringComparison.Ordinal) &&
+                rig.Mount.PendingAt("music\\open.wav") != null, rig.SaidText());
+            lock (open.Gate) open.Handles = 0;
         }
 
         // ---- 4. Waiting for the internet is said once per outage ----
