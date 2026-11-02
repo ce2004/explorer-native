@@ -491,10 +491,9 @@ namespace ExplorerNative
                 // Not files, as ReadInto already knows: counted here, git
                 // archive's global header made the total one more than anything
                 // could finish, and took part in the clash check.
-                if (entry.EntryType is TarEntryType.GlobalExtendedAttributes or TarEntryType.ExtendedAttributes)
-                    continue;
+                if (IsNotAnEntry(entry.EntryType)) continue;
 
-                bool isDirectory = entry.EntryType == TarEntryType.Directory;
+                bool isDirectory = IsFolder(entry.EntryType);
                 var sparse = SparseOf(entry);
                 entries.Add(new ArchiveEntryInfo(
                     sparse?.Name ?? entry.Name,
@@ -763,10 +762,9 @@ namespace ExplorerNative
                     // Metadata, not files: `git archive` begins every tarball with
                     // a global header, which was reported as a file that could not
                     // be extracted.
-                    if (entry.EntryType is TarEntryType.GlobalExtendedAttributes or TarEntryType.ExtendedAttributes)
-                        continue;
+                    if (IsNotAnEntry(entry.EntryType)) continue;
 
-                    bool isDirectory = entry.EntryType == TarEntryType.Directory;
+                    bool isDirectory = IsFolder(entry.EntryType);
                     var sparse = isDirectory ? null : SparseOf(entry);
                     var name = sparse?.Name ?? entry.Name;
                     var target = rules.TargetFor(name, isDirectory, out var problem);
@@ -1102,8 +1100,24 @@ namespace ExplorerNative
             }, bufferSize: 0, modified: modified, expectedLength: pipe.Expected);
         }
 
+        /// <summary>
+        /// Headers that are not members: metadata, and a GNU volume label
+        /// ('V', tar -V), which was listed as a file and failed to extract.
+        /// </summary>
+        private static bool IsNotAnEntry(TarEntryType type) =>
+            type is TarEntryType.GlobalExtendedAttributes or TarEntryType.ExtendedAttributes or TarEntryType.TapeVolume;
+
+        /// <summary>
+        /// A folder, including GNU incremental tar's dumpdir ('D', tar -g),
+        /// which is a folder with a list of its names as data. Taken for a
+        /// file, it hid everything under it.
+        /// </summary>
+        private static bool IsFolder(TarEntryType type) =>
+            type is TarEntryType.Directory or TarEntryType.DirectoryList;
+
         private static string Describe(TarEntryType type) => type switch
         {
+            TarEntryType.MultiVolume => "the rest of a file split across the volumes of a multi-volume archive",
             TarEntryType.SymbolicLink => "a symbolic link",
             TarEntryType.HardLink => "a hard link",
             TarEntryType.CharacterDevice => "a character device",

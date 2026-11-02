@@ -26,7 +26,84 @@ namespace ExplorerNative
 
             Console.WriteLine("Sweep 5.0.0, archives opened as folders and the tar reader:");
             TreeWithWriteFailuresIsPartialNotKept();
+            IncrementalTarFoldersAreFolders();
             await Task.CompletedTask;
+        }
+
+        private static ArchiveFormat Format(string id) => ArchiveFormats.All.First(f => f.Id == id);
+
+        private static string NewTemp(string what)
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "en-sweep500a2-" + what + "-" + Guid.NewGuid().ToString("N")[..8]);
+            Directory.CreateDirectory(dir);
+            return dir;
+        }
+
+        /// <summary>Changes one header's type flag and puts its checksum right, for types TarWriter will not write.</summary>
+        private static void Retype(byte[] tar, string name, char type)
+        {
+            for (int at = 0; at + 512 <= tar.Length; at += 512)
+            {
+                int len = Array.IndexOf(tar, (byte)0, at, 100) - at;
+                if (len <= 0 || System.Text.Encoding.ASCII.GetString(tar, at, len) != name) continue;
+                tar[at + 156] = (byte)type;
+                for (int i = 148; i < 156; i++) tar[at + i] = (byte)' ';
+                int sum = 0;
+                for (int i = 0; i < 512; i++) sum += tar[at + i];
+                var octal = System.Text.Encoding.ASCII.GetBytes(Convert.ToString(sum, 8).PadLeft(6, '0'));
+                Array.Copy(octal, 0, tar, at + 148, 6);
+                tar[at + 154] = 0;
+                tar[at + 155] = (byte)' ';
+                return;
+            }
+            throw new InvalidOperationException("no header " + name);
+        }
+
+        // Bug 2: GNU incremental tar's dumpdir folders ('D') were files that hid
+        // everything under them, and a volume label ('V') was a file that failed.
+        private static void IncrementalTarFoldersAreFolders()
+        {
+            var ms = new MemoryStream();
+            using (var writer = new TarWriter(ms, TarEntryFormat.Gnu, leaveOpen: true))
+            {
+                writer.WriteEntry(new GnuTarEntry(TarEntryType.Directory, "label"));
+                writer.WriteEntry(new GnuTarEntry(TarEntryType.Directory, "home/"));
+                writer.WriteEntry(new GnuTarEntry(TarEntryType.Directory, "home/empty/"));
+                writer.WriteEntry(new GnuTarEntry(TarEntryType.RegularFile, "home/conner/notes.txt")
+                    { DataStream = new MemoryStream(System.Text.Encoding.ASCII.GetBytes("hello notes")) });
+            }
+            var bytes = ms.ToArray();
+            Retype(bytes, "label", 'V');
+            Retype(bytes, "home/", 'D');
+            Retype(bytes, "home/empty/", 'D');
+
+            var index = TarEngine.ReadIndex(new MemoryStream(bytes), CancellationToken.None);
+            Check("archives2 dumpdir: a 'D' entry is listed as a folder",
+                index.Any(e => e.Name == "home/" && e.IsDirectory),
+                string.Join(", ", index.Select(e => $"{e.Name}={e.IsDirectory}")));
+            Check("archives2 dumpdir: a volume label is not listed", index.All(e => e.Name != "label"));
+
+            var dir = NewTemp("dumpdir");
+            try
+            {
+                var path = Path.Combine(dir, "home.tar");
+                File.WriteAllBytes(path, bytes);
+                var listing = ArchiveListing.Build(path, Format("tar"), null, path, index, CancellationToken.None);
+                Check("archives2 dumpdir: the browsed folder is a folder", listing.IsFolder("home"));
+                Check("archives2 dumpdir: files under it are shown", listing.Find("home/conner/notes.txt") != null);
+                Equal("archives2 dumpdir: nothing is hidden as unsafe", "0", listing.Unsafe.ToString());
+
+                var dest = Path.Combine(dir, "out");
+                Directory.CreateDirectory(dest);
+                var errors = new List<string>();
+                TarEngine.Extract(path, Format("tar"), ExtractionRules.Selecting(dest, n => n), 2,
+                    new ArchiveEngine.Reporter(null), errors, CancellationToken.None);
+                Equal("archives2 dumpdir: extracting reports no failures", "", string.Join(" | ", errors));
+                Check("archives2 dumpdir: an empty dumpdir folder is made", Directory.Exists(Path.Combine(dest, "home", "empty")));
+                Check("archives2 dumpdir: the file arrives", File.Exists(Path.Combine(dest, "home", "conner", "notes.txt")));
+                Check("archives2 dumpdir: no file is made for the volume label", !File.Exists(Path.Combine(dest, "label")));
+            }
+            finally { try { Directory.Delete(dir, true); } catch { } }
         }
 
         private static string SourceRoot()
