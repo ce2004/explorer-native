@@ -1,5 +1,10 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Forms;
 
 namespace ExplorerNative
 {
@@ -20,7 +25,340 @@ namespace ExplorerNative
             _equal = equal;
 
             Console.WriteLine("Sweep 5.0.0, Preferences and the tray's audio:");
+            HotkeyPageChecksTheBoxesAsTicked();
+            SignOutTurnsDriveOffAtOnce();
+            CheckBoxNamesHaveNoAccessKeyMarker();
+            NewAppleMusicSignInReachesThePlayer();
+            HeldKeyAtAnEdgeSpeaksOncePerHold();
+            AudioWarmStaysOffTheUiThread();
             await Task.CompletedTask;
+        }
+
+        private static string NewSettingsDir()
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "en-sweep500app2-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            Settings.OverrideAppDataDir = dir;
+            return dir;
+        }
+
+        private static void Cleanup(string dir)
+        {
+            try { Directory.Delete(dir, recursive: true); } catch { }
+        }
+
+        private static string OnSta(Action work, int seconds = 60)
+        {
+            string error = "";
+            var thread = new Thread(() =>
+            {
+                try { work(); }
+                catch (Exception ex) { error = ex.GetType().Name + ": " + ex.Message; }
+            })
+            { IsBackground = true };
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
+            if (!thread.Join(TimeSpan.FromSeconds(seconds))) return "timed out";
+            return error;
+        }
+
+        private static List<T> FindAll<T>(Control root) where T : Control
+        {
+            var found = new List<T>();
+            foreach (Control child in root.Controls)
+            {
+                if (child is T match) found.Add(match);
+                found.AddRange(FindAll<T>(child));
+            }
+            return found;
+        }
+
+        private static string Source(string file)
+        {
+            var dir = AppContext.BaseDirectory;
+            for (int i = 0; i < 8 && dir != null; i++)
+            {
+                var candidate = Path.Combine(dir, "src", file);
+                if (File.Exists(candidate)) return File.ReadAllText(candidate);
+                dir = Path.GetDirectoryName(dir.TrimEnd('\\'));
+            }
+            throw new FileNotFoundException(file);
+        }
+
+        /// <summary>The text of a member, from its declaration to the next one at the same indent.</summary>
+        private static string Body(string source, string declaration)
+        {
+            int at = source.IndexOf(declaration, StringComparison.Ordinal);
+            if (at < 0) return "";
+            int end = source.IndexOf("\n        private ", at + declaration.Length, StringComparison.Ordinal);
+            int end2 = source.IndexOf("\n        public ", at + declaration.Length, StringComparison.Ordinal);
+            int e = new[] { end, end2 }.Where(x => x > 0).DefaultIfEmpty(source.Length).Min();
+            return source[at..e];
+        }
+
+        /// <summary>
+        /// The Hotkey page checked the modifiers the dialog opened with, because
+        /// the boxes were only copied out by the applies, which run after the check.
+        /// A fresh install could never set Ctrl+Alt+E, and unticking Alt saved Ctrl+C.
+        /// </summary>
+        private static void HotkeyPageChecksTheBoxesAsTicked()
+        {
+            var dir = NewSettingsDir();
+            var oldWarn = SettingsForm.Warn;
+            try
+            {
+                (bool accepted, string warned, uint mods, uint key) Run(Settings start, Action<Func<string, CheckBox>, ComboBox> change)
+                {
+                    bool accepted = false; string warned = ""; uint mods = 99, key = 99;
+                    SettingsForm.Warn = (_, text, _) => warned = text;
+                    var error = OnSta(() =>
+                    {
+                        using var window = new SettingsForm(start, null);
+                        window.BuildAllPages();
+                        var boxes = FindAll<CheckBox>(window);
+                        var keyBox = FindAll<ComboBox>(window).First(c => c.AccessibleName == "Hotkey letter or key");
+                        change(name => boxes.First(c => c.Text == name), keyBox);
+                        accepted = window.AcceptAsync().GetAwaiter().GetResult();
+                        mods = window.Result.HotkeyModifiers;
+                        key = window.Result.HotkeyKey;
+                    });
+                    Equal("Preferences builds for the hotkey page", "", error);
+                    return (accepted, warned, mods, key);
+                }
+
+                uint ctrlAlt = HotkeyManager.MOD_CONTROL | HotkeyManager.MOD_ALT;
+
+                // Fresh install: tick Control and Alt, pick E.
+                var r = Run(new Settings { SpeakEnabled = false, GlobalHotkeyEnabled = true }, (box, keys) =>
+                {
+                    box("Control").Checked = true;
+                    box("Alt").Checked = true;
+                    keys.SelectedIndex = keys.Items.IndexOf("E");
+                });
+                Check("hotkey: Ctrl+Alt+E is accepted on a fresh install", r.accepted, r.warned);
+                Equal("hotkey: and nothing is refused", "", r.warned);
+                Equal("hotkey: and Ctrl+Alt+E is saved", $"{ctrlAlt} {(uint)Keys.E}", $"{r.mods} {r.key}");
+
+                // Ctrl+Alt+C saved, Alt unticked: Ctrl+C is reserved.
+                Settings Saved() => new Settings
+                {
+                    SpeakEnabled = false, GlobalHotkeyEnabled = true,
+                    HotkeyModifiers = ctrlAlt, HotkeyKey = (uint)Keys.C,
+                };
+                r = Run(Saved(), (box, _) => box("Alt").Checked = false);
+                Check("hotkey: unticking Alt from Ctrl+Alt+C is refused", !r.accepted);
+                Check("hotkey: and the refusal names Ctrl plus C", r.warned.Contains("Ctrl plus C", StringComparison.Ordinal), r.warned);
+                Equal("hotkey: and Ctrl+Alt+C is kept", $"{ctrlAlt} {(uint)Keys.C}", $"{r.mods} {r.key}");
+
+                // Every box unticked: a bare C.
+                r = Run(Saved(), (box, _) =>
+                {
+                    box("Control").Checked = false;
+                    box("Alt").Checked = false;
+                });
+                Check("hotkey: unticking every modifier is refused", !r.accepted);
+                Equal("hotkey: and nothing changes", $"{ctrlAlt} {(uint)Keys.C}", $"{r.mods} {r.key}");
+
+                // Shift and P: the refusal names Shift plus P, not a bare P.
+                r = Run(new Settings { SpeakEnabled = false, GlobalHotkeyEnabled = true }, (box, keys) =>
+                {
+                    box("Shift").Checked = true;
+                    keys.SelectedIndex = keys.Items.IndexOf("P");
+                });
+                Check("hotkey: Shift+P is refused", !r.accepted);
+                Check("hotkey: and the refusal names Shift plus P", r.warned.Contains("Shift plus P", StringComparison.Ordinal), r.warned);
+            }
+            finally
+            {
+                SettingsForm.Warn = oldWarn;
+                Settings.OverrideAppDataDir = null;
+                Cleanup(dir);
+            }
+        }
+
+        /// <summary>
+        /// Sign out of Google deleted the token but left Drive on in the dialog's
+        /// copy only, so Cancel kept Drive on with no sign-in, and the next start
+        /// opened Google's sign-in page in the browser unasked. It now switches
+        /// the live drive off and unmounts it at once, before the token goes.
+        /// </summary>
+        private static void SignOutTurnsDriveOffAtOnce()
+        {
+            var dir = NewSettingsDir();
+            var oldConfirm = SettingsForm.Confirm;
+            var oldInform = SettingsForm.Inform;
+            var oldDisconnect = SettingsForm.DisconnectDrive;
+            try
+            {
+                var token = GoogleDrive.SavedTokenPath;
+                Directory.CreateDirectory(Path.GetDirectoryName(token)!);
+                File.WriteAllText(token, "dummy");
+
+                var order = new List<string>();
+                string told = "";
+                SettingsForm.Confirm = (_, _, _) => true;
+                SettingsForm.Inform = (_, text, _) => told = text;
+                SettingsForm.DisconnectDrive = () => order.Add(File.Exists(token) ? "disconnect, token still there" : "disconnect, token gone");
+
+                bool found = false;
+                var error = OnSta(() =>
+                {
+                    using var window = new SettingsForm(new Settings { SpeakEnabled = false, GoogleDriveEnabled = true }, null);
+                    window.BuildAllPages();
+                    var button = FindAll<Button>(window).FirstOrDefault(b => b.Text.Replace("&", "") == "Sign out of Google");
+                    found = button != null && button.Enabled;
+                    // OnClick, not PerformClick: the window is never shown, and
+                    // PerformClick does nothing on a control that cannot be selected.
+                    if (button != null)
+                        typeof(Control).GetMethod("OnClick", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                            .Invoke(button, new object[] { EventArgs.Empty });
+                    // Closed without OK: Cancel.
+                });
+                Equal("sign out: Preferences builds", "", error);
+                Check("sign out: the button is there and enabled with a saved sign-in", found);
+                Equal("sign out: the live drive is switched off and unmounted before the token goes",
+                    "disconnect, token still there", string.Join("; ", order));
+                Check("sign out: the token is deleted", !File.Exists(token));
+                Check("sign out: the message says Drive is off now, not at the next start",
+                    !told.Contains("next time", StringComparison.OrdinalIgnoreCase) && told.Contains("off", StringComparison.Ordinal), told);
+            }
+            finally
+            {
+                SettingsForm.Confirm = oldConfirm;
+                SettingsForm.Inform = oldInform;
+                SettingsForm.DisconnectDrive = oldDisconnect;
+                Settings.OverrideAppDataDir = null;
+                Cleanup(dir);
+            }
+        }
+
+        /// <summary>
+        /// Preferences' check boxes with an access key were named with the "&amp;"
+        /// in it, and NVDA read "Show Google Drive's and Trash folder".
+        /// </summary>
+        private static void CheckBoxNamesHaveNoAccessKeyMarker()
+        {
+            var dir = NewSettingsDir();
+            try
+            {
+                var offenders = new List<string>();
+                string trash = "";
+                var error = OnSta(() =>
+                {
+                    using var window = new SettingsForm(new Settings { SpeakEnabled = false }, null);
+                    window.BuildAllPages();
+                    foreach (var b in FindAll<ButtonBase>(window))
+                    {
+                        if (!b.UseMnemonic || b.AccessibleName == null) continue;
+                        if (b.AccessibleName.Replace("&&", "").Contains('&')) offenders.Add(b.AccessibleName);
+                        if (b.Text.Contains("&Trash", StringComparison.Ordinal)) trash = b.AccessibilityObject.Name ?? "";
+                    }
+                });
+                Equal("check box names: Preferences builds", "", error);
+                Equal("check box names: no control is named with an access-key marker", "", string.Join(" | ", offenders));
+                Equal("check box names: the Trash box reads as written", "Show Google Drive's Trash folder", trash);
+            }
+            finally
+            {
+                Settings.OverrideAppDataDir = null;
+                Cleanup(dir);
+            }
+        }
+
+        /// <summary>
+        /// A new cookies.txt reached browsing but not the player's page, which
+        /// kept the token it started with: "Load a new cookies.txt" never helped.
+        /// Configure now says whether the sign-in changed, and the tray closes
+        /// the player's page when it did.
+        /// </summary>
+        private static void NewAppleMusicSignInReachesThePlayer()
+        {
+            try
+            {
+                AppleMusic.ResetForTests();
+                bool first = AppleMusic.Configure("a");
+                bool same = AppleMusic.Configure("a");
+                bool other = AppleMusic.Configure("b");
+                bool forgotten = AppleMusic.Configure("");
+                Equal("apple sign-in: Configure says whether the sign-in changed",
+                    "True False True True", $"{first} {same} {other} {forgotten}");
+            }
+            finally { AppleMusic.ResetForTests(); }
+
+            var tray = Source("TrayApplicationContext.cs");
+            var apply = Body(tray, "void ApplySettings(");
+            Check("apple sign-in: Preferences tells the player when the sign-in changed",
+                System.Text.RegularExpressions.Regex.IsMatch(apply,
+                    @"if\s*\(\s*AppleMusic\.Configure\([^;]*\)\s*\)\s*AppleMusicPlayer\.SignInChanged\(\)"));
+
+            var player = Source("AppleMusicPlayer.cs");
+            var signIn = Body(player, "public static void SignInChanged(");
+            Check("apple sign-in: the player closes its page on a new sign-in", signIn.Contains("Reset()", StringComparison.Ordinal));
+            Check("apple sign-in: and drops what was playing so a waiting start gives up", signIn.Contains("_generation++", StringComparison.Ordinal));
+        }
+
+        /// <summary>
+        /// Held at the top or bottom of the volume, or with nothing loaded, the
+        /// same sentence was spoken on every 20ms repeat, cutting itself off.
+        /// The once-per-hold set now covers the same-sentence path and Apple
+        /// Music's, and is cleared before either.
+        /// </summary>
+        private static void HeldKeyAtAnEdgeSpeaksOncePerHold()
+        {
+            var core = Body(Source("TrayApplicationContext.cs"), "private void RunAudioActionCore(");
+            Check("held edge: RunAudioActionCore found", core.Length > 0);
+
+            int clear = core.IndexOf("_saidThisHold.Clear()", StringComparison.Ordinal);
+            int apple = core.IndexOf("AppleMusicPlayer.IsActive", StringComparison.Ordinal);
+            int same = core.IndexOf("finerMessage == message", StringComparison.Ordinal);
+            Check("held edge: a new press clears the hold before Apple Music's branch", clear >= 0 && apple > clear);
+            Check("held edge: and before the same-sentence branch", clear >= 0 && same > clear);
+
+            // The same-sentence branch, up to its return, consults the set.
+            int sameEnd = same < 0 ? -1 : core.IndexOf("return;", same, StringComparison.Ordinal);
+            Check("held edge: the same-sentence branch speaks once per hold",
+                same >= 0 && sameEnd > same && core[same..sameEnd].Contains("_saidThisHold.Add(", StringComparison.Ordinal));
+
+            // Apple Music's branch, up to the file player's switch, does too.
+            int filePlayer = core.IndexOf("_audio.TogglePlayPause()", StringComparison.Ordinal);
+            Check("held edge: Apple Music's maximum and minimum are said once per hold",
+                apple >= 0 && filePlayer > apple && core[apple..filePlayer].Contains("_saidThisHold.Add(", StringComparison.Ordinal));
+        }
+
+        /// <summary>
+        /// The start-up audio warm ran on the UI thread: file checks, then a
+        /// Media Foundation open and decode of the last track. With a CD track or
+        /// a sleeping disk last played, the window froze for seconds at start.
+        /// The warm now runs on a worker, never wakes a CD or removable drive,
+        /// and the Drive guard it promised is wired.
+        /// </summary>
+        private static void AudioWarmStaysOffTheUiThread()
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "en-sweep500app2-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            try
+            {
+                var local = Path.Combine(dir, "tone.wav");
+                File.WriteAllBytes(local, new byte[64]);
+                Check("audio warm: a CD track is not woken for a warm", AudioPlayer.SlowToWake(@"D:\Track05.cda"));
+                Check("audio warm: a CD track named in capitals is not either", AudioPlayer.SlowToWake(@"E:\TRACK01.CDA"));
+                Check("audio warm: a file on the local disk is still warmed", !AudioPlayer.SlowToWake(local));
+
+                var warm = Body(Source("AudioPlayer.cs"), "public void Warm(");
+                int slow = warm.IndexOf("SlowToWake(", StringComparison.Ordinal);
+                int exists = warm.IndexOf("File.Exists(", StringComparison.Ordinal);
+                Check("audio warm: the slow-drive check comes before any access to the file", slow >= 0 && exists > slow);
+
+                var tray = Source("TrayApplicationContext.cs");
+                var warmAudio = Body(tray, "private void WarmAudio(");
+                int run = warmAudio.IndexOf("Task.Run(", StringComparison.Ordinal);
+                if (run < 0) run = warmAudio.IndexOf("ThreadPool.", StringComparison.Ordinal);
+                int call = warmAudio.IndexOf("_audio.Warm(", StringComparison.Ordinal);
+                Check("audio warm: the warm runs on a worker, not in the UI post", run >= 0 && call > run);
+                Check("audio warm: the Drive guard is wired",
+                    System.Text.RegularExpressions.Regex.IsMatch(tray, @"AudioPlayer\.IsDrivePath\s*="));
+            }
+            finally { try { Directory.Delete(dir, true); } catch { } }
         }
     }
 }

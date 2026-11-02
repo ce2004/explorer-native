@@ -911,6 +911,11 @@ namespace ExplorerNative
             if (preloadPath.StartsWith(@"\\", StringComparison.Ordinal) ||
                 AudioPrefetch.LooksRemote(preloadPath)) return;
 
+            // A CD or a removable disk may be asleep, and waking it for a warm
+            // costs seconds; the first real play warms MF instead. Decided from
+            // the drive type alone, with no access to the disc.
+            if (SlowToWake(preloadPath)) return;
+
             if (!File.Exists(NameRules.ExactPath(preloadPath))) return;
 
             try
@@ -1047,6 +1052,20 @@ namespace ExplorerNative
         /// process-wide and thread-safe, so it is paid for on a worker at startup
         /// and the first play does not wear it.
         /// </summary>
+        /// <summary>A CD track, or a file on a CD or removable drive: not worth waking for a warm.</summary>
+        internal static bool SlowToWake(string path)
+        {
+            try
+            {
+                if (CdTrackStream.IsCdaName(Path.GetExtension(path))) return true;
+                var root = Path.GetPathRoot(path);
+                if (string.IsNullOrEmpty(root)) return true;
+                var type = new DriveInfo(root).DriveType;
+                return type is DriveType.CDRom or DriveType.Removable;
+            }
+            catch { return true; }
+        }
+
         public static void Prewarm() => ThreadPool.QueueUserWorkItem(_ => { try { EnsureStarted(); } catch { } });
 
         private static bool EnsureStarted()

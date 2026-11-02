@@ -69,6 +69,15 @@ namespace ExplorerNative
         internal static Action<IWin32Window, string, string> Warn { get; set; } =
             (owner, text, title) => MessageBox.Show(owner, text, title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
 
+        /// <summary>A yes-or-no question (Yes is true). Replaced by the suite, which cannot answer a message box.</summary>
+        internal static Func<IWin32Window, string, string, bool> Confirm { get; set; } =
+            (owner, text, title) => MessageBox.Show(owner, text, title,
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+
+        /// <summary>A plain result message. Replaced by the suite.</summary>
+        internal static Action<IWin32Window, string, string> Inform { get; set; } =
+            (owner, text, title) => MessageBox.Show(owner, text, title, MessageBoxButtons.OK, MessageBoxIcon.Information);
+
         private readonly List<Func<System.Threading.Tasks.Task<bool>>> _beforeOkChecks = new();
 
         /// <summary>
@@ -626,11 +635,13 @@ namespace ExplorerNative
             bool shift = (_working.HotkeyModifiers & HotkeyManager.MOD_SHIFT) != 0;
             bool win = (_working.HotkeyModifiers & HotkeyManager.MOD_WIN) != 0;
 
-            bool nCtrl = ctrl, nAlt = alt, nShift = shift, nWin = win;
-            AddCheck(panel, "Control", ctrl, v => nCtrl = v);
-            AddCheck(panel, "Alt", alt, v => nAlt = v);
-            AddCheck(panel, "Shift", shift, v => nShift = v);
-            AddCheck(panel, "Windows key", win, v => nWin = v);
+            // The check before OK reads the boxes themselves: copied into locals
+            // by the applies, it saw the modifiers the page opened with, so a
+            // new shortcut was refused and an unticked one saved unchecked.
+            var ctrlBox = AddCheck(panel, "Control", ctrl, _ => { });
+            var altBox = AddCheck(panel, "Alt", alt, _ => { });
+            var shiftBox = AddCheck(panel, "Shift", shift, _ => { });
+            var winBox = AddCheck(panel, "Windows key", win, _ => { });
 
             var keyBox = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 120 };
             keyBox.AccessibleName = "Hotkey letter or key";
@@ -666,16 +677,17 @@ namespace ExplorerNative
             // Nothing on this page touched: the saved value stays exactly as
             // it is, stray bits and all. Rebuilt from the four boxes, a file
             // holding 0x4003 came back as 3 from OK on any page.
-            bool Untouched() => nCtrl == ctrl && nAlt == alt && nShift == shift && nWin == win &&
+            bool Untouched() => ctrlBox.Checked == ctrl && altBox.Checked == alt &&
+                                shiftBox.Checked == shift && winBox.Checked == win &&
                                 keyBox.SelectedIndex == openedAt;
 
             uint ChosenMods()
             {
                 uint m = 0;
-                if (nCtrl) m |= HotkeyManager.MOD_CONTROL;
-                if (nAlt) m |= HotkeyManager.MOD_ALT;
-                if (nShift) m |= HotkeyManager.MOD_SHIFT;
-                if (nWin) m |= HotkeyManager.MOD_WIN;
+                if (ctrlBox.Checked) m |= HotkeyManager.MOD_CONTROL;
+                if (altBox.Checked) m |= HotkeyManager.MOD_ALT;
+                if (shiftBox.Checked) m |= HotkeyManager.MOD_SHIFT;
+                if (winBox.Checked) m |= HotkeyManager.MOD_WIN;
                 return m;
             }
 
@@ -953,14 +965,19 @@ namespace ExplorerNative
             {
                 // Asked, because it is not obvious from the button that the
                 // drive goes away with the sign-in.
-                if (MessageBox.Show(this,
+                if (!Confirm(this,
                         "Forget the saved Google sign-in on this computer?\r\n\r\n"
                         + "Nothing in your Drive is changed or deleted. The drive letter goes away "
                         + "until you connect again.",
-                        "Sign out of Google",
-                        MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                        "Sign out of Google"))
                     return;
 
+                // Off now, saved and unmounted, as Disconnect does. Left to OK,
+                // Cancel kept Drive on with no sign-in, so the next start opened
+                // Google's sign-in page in the browser unasked. Unmounted first,
+                // so the live drive cannot write a refreshed token back after
+                // the file is deleted.
+                DisconnectDrive?.Invoke();
                 bool gone = GoogleDrive.ForgetSignIn();
 
                 // Switched off and saved now, as Disconnect does, so Cancel or
@@ -978,11 +995,12 @@ namespace ExplorerNative
                 signOut.Enabled = false;
                 Show(DriveAccountState.NotConnected);
 
-                MessageBox.Show(this,
+                Inform(this,
                     gone
-                        ? "Signed out. Google Drive is switched off and its drive letter is gone."
+                        ? "Signed out. Google Drive is off and its drive letter is gone. "
+                          + "Connect again from here when you want it back."
                         : "There was no saved sign-in to remove.",
-                    "Sign out of Google", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    "Sign out of Google");
             };
 
             // Runs before OK (and Connect) close the dialog. Unchanged or empty
@@ -1743,7 +1761,9 @@ namespace ExplorerNative
         private CheckBox AddCheck(Control parent, string text, bool value, Action<bool> apply)
         {
             var box = new SpokenCheckBox { Text = text, Checked = value, AutoSize = true, Margin = new Padding(3, 4, 3, 4) };
-            box.AccessibleName = text;
+            // Without the access-key marker: NVDA read "&Trash" as "and Trash".
+            // A doubled one is a real ampersand and stays as one.
+            box.AccessibleName = text.Replace("&&", "\u0001").Replace("&", "").Replace("\u0001", "&");
             parent.Controls.Add(box);
             _applies.Add(() => apply(box.Checked));
             return box;

@@ -742,6 +742,29 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// The sign-in changed in Preferences (a new cookies.txt, another account,
+        /// or forgotten). The page holds the old token for as long as it lives,
+        /// so after "Load a new cookies.txt" every play still failed the same way.
+        /// The page is closed, quietly, and the next play or Warm builds one with
+        /// the new token.
+        /// </summary>
+        public static void SignInChanged()
+        {
+            lock (Gate)
+            {
+                _currentPath = ""; _currentName = ""; _playing = false; _wantPlaying = false; _generation++;
+                _queuedPath = null; _queuedId = null; _queuedName = null; _displacedPath = null; _displacedId = null;
+                _upNext.Clear(); _anchor = null; _listQueue = null; _listFolder = null; _history.Clear();
+            }
+            Log("sign-in changed");
+            OnUi(() =>
+            {
+                try { if (_ready != null || _controller != null) Reset(); }
+                catch (Exception ex) { Log("sign-in changed: " + ex.Message); }
+            });
+        }
+
+        /// <summary>
         /// The Windows name of the output device chosen in the Output device
         /// list ("" for the system default), which Apple's player then plays to.
         /// </summary>

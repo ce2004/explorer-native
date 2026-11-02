@@ -219,12 +219,14 @@ namespace ExplorerNative
 
             // A track on the Drive letter downloads straight from Google.
             AudioPlayer.RangeSourceFor = path => _drive.OpenRange(path);
+            // And the warm never practises on it (decided from the path alone).
+            AudioPlayer.IsDrivePath = path => _drive.Owns(path);
 
             // And a track there that would not open while Drive is offline is
             // said as Drive being offline, not as the file having gone.
             AudioPlayer.DriveUnreachable = path => _drive.Owns(path) && !_drive.LetterShown;
 
-            // Apple Music's browsing sign-in; the player signs in on its own.
+            // Apple Music's sign-in; the player reads the token when its page starts.
             AppleMusic.Configure(_settings.AppleMusicUserToken);
             AppleMusic.Autoplay = _settings.AppleMusicAutoplay;
             AppleMusicPlayer.SetModes(_settings.AppleMusicShuffle,
@@ -797,7 +799,9 @@ namespace ExplorerNative
             int savedPortWas = _settings.WebAppPort;
             string? letterWas = _settings.GoogleDriveLetter;
             _settings = settings;
-            AppleMusic.Configure(settings.AppleMusicUserToken);
+            // A new sign-in closes the player's page too: it keeps the token it
+            // started with, so every play kept failing on the old one.
+            if (AppleMusic.Configure(settings.AppleMusicUserToken)) AppleMusicPlayer.SignInChanged();
             AppleMusic.Autoplay = settings.AppleMusicAutoplay;
             // Import, Reset or an outside reload: the player takes the modes too.
             AppleMusicPlayer.SetModes(settings.AppleMusicShuffle,
@@ -1374,6 +1378,10 @@ namespace ExplorerNative
 
         private void RunAudioActionCore(AudioAction action, int repeat)
         {
+            // A new press starts a new hold: every path below says its edge
+            // messages ("maximum", "Nothing is loaded") once per hold.
+            if (repeat == 0) _saidThisHold.Clear();
+
             // Apple Music's shuffle can be set before anything plays, like in Apple Music itself.
             if (action == AudioAction.ToggleShuffle)
             {
@@ -1451,7 +1459,12 @@ namespace ExplorerNative
                         if (m == "Nothing is playing") id = "audio.nothing";
                         break;
                 }
-                SayAudio(id, m);
+                // Held at an end, or with nothing loaded, the same sentence came
+                // back on every repeat; said once, then only shown.
+                if (id is "volume.max" or "volume.min" or "audio.nothing" && !_saidThisHold.Add(id))
+                    SayAudio(null, m, speak: false);
+                else
+                    SayAudio(id, m);
                 return;
             }
 
@@ -1499,7 +1512,12 @@ namespace ExplorerNative
 
             if (finerId != null && finerMessage == message)
             {
-                SayAudio(finerId, message);
+                // Once per hold, like the separate messages below: held at the
+                // top, "Volume 1000 percent, maximum" restarted itself fifty
+                // times a second. The repeats only update the status bar (a
+                // null id: no speech, no Windows notification).
+                if (_saidThisHold.Add(finerId)) SayAudio(finerId, message);
+                else SayAudio(null, message, speak: false);
                 return;
             }
 
@@ -1512,8 +1530,8 @@ namespace ExplorerNative
             // Once per hold, by id. Held at the end of a ladder, "Already at 400
             // percent" was raised on every repeat and started itself over eight
             // times a second — and a hold is also when most of these happen, so
-            // they are not simply dropped after the first press.
-            if (repeat == 0) _saidThisHold.Clear();
+            // they are not simply dropped after the first press. (Cleared at
+            // the top on repeat 0.)
             if (finerId != null && !string.IsNullOrEmpty(finerMessage) && _saidThisHold.Add(finerId))
                 Notify(finerId, finerMessage!);
         }
@@ -1970,15 +1988,13 @@ namespace ExplorerNative
         /// Gets the player ready before anyone asks it for anything.
         ///
         /// Media Foundation is started on a worker, because loading it is a dozen
-        /// DLLs and none of that needs this thread. The engine itself is built on
-        /// the UI thread — it is the thread that will drive it, and an engine
-        /// created anywhere else has to be marshalled to from here on every
-        /// single call.
+        /// DLLs and none of that needs this thread.
         ///
-        /// Posted rather than called, so it runs once the window is up. This is
-        /// the shell's handler for every folder on the machine and it is started
-        /// afresh on every folder open; a hundred milliseconds spent here would
-        /// be a hundred milliseconds before the folder appears.
+        /// The warm itself runs on a worker too: it checks the file and opens and
+        /// decodes it, and on the UI thread that held the first folder back (a
+        /// sleeping disk or a CD for seconds). It uses no player state of its
+        /// own, only a decoder it makes and disposes, so it can run beside a
+        /// play. The setting is read on the UI thread, which owns the settings.
         /// </summary>
         private void WarmAudio()
         {
@@ -1986,16 +2002,16 @@ namespace ExplorerNative
 
             PostUi(() =>
             {
-                try
+                // The last track, if it is still there, gets Media Foundation
+                // to resolve a source of the right kind. That cost is
+                // per-process, not per-file, so this makes the *next* track
+                // start fast whichever one it turns out to be.
+                var preload = _settings.AudioLastPath;
+                System.Threading.Tasks.Task.Run(() =>
                 {
-                    // The last track, if it is still there, gets Media Foundation
-                    // to resolve a source of the right kind. That cost is
-                    // per-process, not per-file, so this makes the *next* track
-                    // start fast whichever one it turns out to be.
-                    var preload = _settings.AudioLastPath;
-                    _audio.Warm(string.IsNullOrEmpty(preload) ? null : preload);
-                }
-                catch { }
+                    try { _audio.Warm(string.IsNullOrEmpty(preload) ? null : preload); }
+                    catch { }
+                });
             });
         }
 
