@@ -877,9 +877,9 @@ namespace ExplorerNative
 
         /// <summary>
         /// Ends a wait for Google that is in progress. Patiently then asks again
-        /// at once, or stops the pair if it has been paused or removed. The wait
-        /// for a daily limit is an hour, and Sync now, Pause and closing the app
-        /// all have to be heard during it.
+        /// at once, or stops the pair if it has been paused, removed or edited.
+        /// The wait for a daily limit is an hour, and Sync now, Pause, Edit and
+        /// closing the app all have to be heard during it.
         /// </summary>
         private void CutWait()
         {
@@ -892,14 +892,25 @@ namespace ExplorerNative
             try { old.Cancel(); } catch { }
         }
 
-        /// <summary>Whether a pair has been paused or removed since its pass began.</summary>
+        /// <summary>The generation each running pass began with (see <see cref="Stopped"/>).</summary>
+        private readonly Dictionary<string, int> _passGeneration = new();
+
+        /// <summary>
+        /// Whether a pair has been paused, removed or edited since its pass
+        /// began. An edited pair's pass is of the old settings (Free up space
+        /// unticked, switched to download only), so it stops at its next action
+        /// as a paused one does, waits for Google and the end-of-pass steps
+        /// included, and the next pass runs with the new ones.
+        /// </summary>
         private bool Stopped(DriveSyncPair pair)
         {
             lock (_gate)
-                return _removed.Contains(pair.Id) || _pairs.Any(p => p.Id == pair.Id && p.Paused);
+                return _removed.Contains(pair.Id) || _pairs.Any(p => p.Id == pair.Id && p.Paused) ||
+                       (_passGeneration.TryGetValue(pair.Id, out var began) &&
+                        (_generation.TryGetValue(pair.Id, out var now) ? now : 0) != began);
         }
 
-        /// <summary>A pair paused or removed while its pass was waiting for Google.</summary>
+        /// <summary>A pair paused, removed or edited while its pass was waiting for Google.</summary>
         private sealed class PairStoppedException : OperationCanceledException
         {
             public PairStoppedException() : base("the pair was paused") { }
@@ -1380,7 +1391,12 @@ namespace ExplorerNative
                 }
                 finally
                 {
-                    lock (_gate) if (_running == pair.Id) _running = null;
+                    lock (_gate)
+                    {
+                        if (_running == pair.Id) _running = null;
+                        // Outside a pass (Keep on Drive only, Put back) only Pause and Remove are heard.
+                        _passGeneration.Remove(pair.Id);
+                    }
                     try { Changed?.Invoke(); } catch { }
                 }
             }
@@ -1489,8 +1505,8 @@ namespace ExplorerNative
                     }
                     catch (OperationCanceledException) when (!token.IsCancellationRequested)
                     {
-                        // Closing the app, pausing or removing the pair: stop.
-                        // Sync now: ask Google again straight away.
+                        // Closing the app, pausing, removing or editing the pair:
+                        // stop. Sync now: ask Google again straight away.
                         if (_stop.IsCancellationRequested) throw;
                         if (Stopped(pair)) throw new PairStoppedException();
                     }
@@ -2318,6 +2334,7 @@ namespace ExplorerNative
         private async Task SyncPairAsync(DriveClient client, DriveSyncPair pair, CancellationToken token, int? generationRead = null)
         {
             int generation = generationRead ?? GenerationOf(pair.Id);
+            lock (_gate) _passGeneration[pair.Id] = generation;
             var name = DisplayName(pair);
             var (state, read) = LoadState(pair);
 

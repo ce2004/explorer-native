@@ -38,6 +38,7 @@ namespace ExplorerNative
                 await DeadWatcherTests(sandbox);
                 await EditedWhileQueuedTests(sandbox);
                 await SharedLookOutOfStepTests(sandbox);
+                await EditDuringDailyLimitTests(sandbox);
             }
             finally
             {
@@ -364,6 +365,40 @@ namespace ExplorerNative
             await rig.Pass(a);
             await rig.Pass(b);
             Check("shared look out of step: both are quiet again afterwards", (await Due(10, a, b)).Count == 0);
+        }
+
+        // ---------------- 4. an edit during a wait for Google ----------------
+
+        /// <summary>
+        /// Under Google's daily limit a pass waits an hour at a time. Pause and
+        /// Remove ended the wait; an edit (switching to download only so the
+        /// downloads could go on) cut the wait, but the pass asked Google again
+        /// under the old settings, was refused, and waited another hour, with
+        /// every other pair held up behind it.
+        /// </summary>
+        private static async Task EditDuringDailyLimitTests(string sandbox)
+        {
+            using var rig = new Rig(sandbox);
+            rig.Monitor.WaitScale = 1;
+            rig.Monitor.Reload(new[] { rig.Pair });
+            rig.Write(rig.Pair, "a.txt", "a", T0);
+            rig.Drive.AddFault(new FakeDrive.Fault
+            {
+                Kind = "list", Times = 3, Status = 403, Body = FakeDrive.ErrorBody(403, "dailyLimitExceeded", "Daily Limit Exceeded"),
+            });
+            var pass = rig.Pass();
+            await Until(() => (rig.Monitor.StatusOf(rig.Pair.Id).Problem ?? "").Contains("daily", StringComparison.OrdinalIgnoreCase), 5000);
+            var edited = rig.Pair.Copy();
+            edited.Mode = SyncMode.DownloadOnly;
+            rig.Monitor.Reload(new[] { edited });
+            bool ended = await Task.WhenAny(pass, Task.Delay(5000)) == pass;
+            Check("edit while waiting: editing a pair ends its wait for the daily limit, without asking Google again under the old settings",
+                ended && rig.Drive.FaultsLeft == 2, $"ended {ended}, {rig.Drive.FaultsLeft} refusals left");
+            Check("edit while waiting: and it no longer says it is waiting",
+                ended && !(rig.Monitor.StatusOf(rig.Pair.Id).Problem ?? "").Contains("waiting", StringComparison.OrdinalIgnoreCase),
+                rig.Monitor.StatusOf(rig.Pair.Id).Problem);
+            if (!ended) rig.Monitor.Dispose();
+            try { await pass; } catch (OperationCanceledException) { }
         }
     }
 }
