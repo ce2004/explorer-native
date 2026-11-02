@@ -1048,7 +1048,7 @@ namespace ExplorerNative
                 // Not in the drives list either, where its items could only do nothing.
                 sortMenu.Visible = !IsDrivesView && (!apple || AppleMusic.SortsFor(Active.CurrentPath).Count > 0);
             };
-            var properties = Item("P&roperties (Alt+Enter)", Keys.None, ShowProperties);
+            var properties = Item("Proper&ties (Alt+Enter)", Keys.None, ShowProperties);
             file.DropDownItems.Add(properties);
             _archiveHidden.Add(properties);
             file.DropDownItems.Add(new ToolStripSeparator());
@@ -1073,7 +1073,7 @@ namespace ExplorerNative
             _archiveHidden.Add(cut);
             _archiveHidden.Add(paste);
             edit.DropDownItems.Add(new ToolStripSeparator());
-            edit.DropDownItems.Add(AppleHidden(Item("Copy &path", Keys.Alt | Keys.C, CopyPath)));
+            edit.DropDownItems.Add(AppleHidden(Item("Copy pat&h", Keys.Alt | Keys.C, CopyPath)));
             edit.DropDownItems.Add(DriveLinkItem("Copy Drive &link", Keys.Alt | Keys.L, makePublic: false));
             edit.DropDownItems.Add(DriveLinkItem("Copy p&ublic Drive link", Keys.Alt | Keys.Shift | Keys.L, makePublic: true));
             edit.DropDownItems.Add(Item("Select &all", Keys.Control | Keys.A, SelectAll));
@@ -1717,7 +1717,7 @@ namespace ExplorerNative
             _pasteItem = ArchiveHidden(Item("&Paste", Keys.None, PasteClipboard));
             _contextMenu.Items.Add(_cutItem);
             _contextMenu.Items.Add(_pasteItem);
-            _contextMenu.Items.Add(AppleHidden(Item("Copy &path", Keys.None, CopyPath)));
+            _contextMenu.Items.Add(AppleHidden(Item("Copy pat&h", Keys.None, CopyPath)));
             _contextMenu.Items.Add(DriveLinkItem("Copy Drive &link", Keys.None, makePublic: false));
             _contextMenu.Items.Add(DriveLinkItem("Copy p&ublic Drive link", Keys.None, makePublic: true));
 
@@ -1765,11 +1765,11 @@ namespace ExplorerNative
             // answer "that is not an archive" is a word heard on every single
             // opening of the menu to be useful on almost none of them. Compress
             // stays, because anything selected can be compressed.
-            _compressItem = ArchiveHidden(Item("&Compress…", Keys.None, CompressSelection));
+            _compressItem = ArchiveHidden(Item("Co&mpress…", Keys.None, CompressSelection));
             _contextMenu.Items.Add(_compressItem);
 
             _extractItem = Item("&Extract", Keys.None, () => ExtractFocused(intoNewFolder: true));
-            _extractHereItem = Item("Extract h&ere", Keys.None, () => ExtractFocused(intoNewFolder: false));
+            _extractHereItem = Item("E&xtract here", Keys.None, () => ExtractFocused(intoNewFolder: false));
 
             _contextMenu.Items.Add(_extractItem);
             _contextMenu.Items.Add(_extractHereItem);
@@ -1793,9 +1793,9 @@ namespace ExplorerNative
             // Windows' own Format window, on a drive row only (Conner, 3.0.14).
             _formatItem = Item("&Format…", Keys.None, FormatFocusedDrive);
             _contextMenu.Items.Add(_formatItem);
-            _contextMenu.Items.Add(ArchiveHidden(Item("P&roperties", Keys.None, ShowProperties)));
+            _contextMenu.Items.Add(ArchiveHidden(Item("Propert&ies", Keys.None, ShowProperties)));
             _contextMenu.Items.Add(new ToolStripSeparator());
-            _contextMenu.Items.Add(ArchiveHidden(Item("&More Windows options…", Keys.None, ShowShellMenuForSelection)));
+            _contextMenu.Items.Add(ArchiveHidden(Item("More &Windows options…", Keys.None, ShowShellMenuForSelection)));
         }
 
         private ToolStripMenuItem ArchiveHidden(ToolStripMenuItem item)

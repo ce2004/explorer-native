@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 
 namespace ExplorerNative
@@ -24,7 +26,69 @@ namespace ExplorerNative
             RestartAndUpdateAskAboutDriveUploads();
             DrivesListFollowsDrivesComingAndGoing();
             TagEditorAsksAboutThePlayingSongFirst();
+            MenuAccessKeysAreUnique();
             await Task.CompletedTask;
+        }
+
+        // Bug 8: two visible items sharing an access key make the letter cycle
+        // between them instead of running one (Shift+F10 then R did nothing).
+        private static void MenuAccessKeysAreUnique()
+        {
+            var main = Source("MainForm.cs");
+
+            static char? KeyOf(string label)
+            {
+                for (int i = 0; i < label.Length - 1; i++)
+                {
+                    if (label[i] != '&') continue;
+                    if (label[i + 1] == '&') { i++; continue; }
+                    return char.ToUpperInvariant(label[i + 1]);
+                }
+                return null;
+            }
+
+            static List<(string Label, char Key)> Labels(string slice, params string[] leaveOut)
+            {
+                var found = new List<(string, char)>();
+                foreach (var line in slice.Split('\n'))
+                {
+                    if (leaveOut.Any(f => line.Contains(f, StringComparison.Ordinal))) continue;
+                    foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(
+                                 line, "(?:Item|ToolStripMenuItem)\\(\"([^\"]*)\""))
+                        if (KeyOf(m.Groups[1].Value) is char k) found.Add((m.Groups[1].Value, k));
+                }
+                return found;
+            }
+
+            void Distinct(string what, List<(string Label, char Key)> items)
+            {
+                var clashes = items.GroupBy(i => i.Key).Where(g => g.Count() > 1)
+                    .Select(g => g.Key + ": " + string.Join(" / ", g.Select(i => i.Label))).ToList();
+                Check(what, items.Count > 3 && clashes.Count == 0, string.Join("; ", clashes));
+            }
+
+            string Slice(string from, string to)
+            {
+                int a = main.IndexOf(from, StringComparison.Ordinal);
+                int b = a < 0 ? -1 : main.IndexOf(to, a, StringComparison.Ordinal);
+                return a < 0 || b < 0 ? "" : main.Substring(a, b - a);
+            }
+
+            var context = Body(main, "private void BuildContextMenu()");
+            string[] appleOnly = { "_playNextItem", "_favoriteItem", "_addToPlaylistItem", "_goToArtistItem", "_goToAlbumItem",
+                                   "_libraryItem", "_appleShuffleItem", "_appleRepeatItem", "_appleUpNextItem" };
+            string[] trashOnly = { "_restoreItem", "_deleteForeverItem", "_emptyTrashItem" };
+            Distinct("the Shift+F10 menu's access keys are unique for files, archives and audio",
+                Labels(context, appleOnly.Concat(trashOnly).ToArray()));
+
+            var file = Slice("new ToolStripMenuItem(\"&File\")", "menu.Items.Add(file)");
+            var fileItems = Labels(file).Skip(1).ToList(); // the menu's own name is not one of its items
+            var sortLabel = Labels(Body(main, "private ToolStripMenuItem BuildSortMenu()")).FirstOrDefault();
+            if (sortLabel.Label != null && !file.Contains(sortLabel.Label, StringComparison.Ordinal)) fileItems.Add(sortLabel);
+            Distinct("the File menu's access keys are unique", fileItems);
+
+            Distinct("the Edit menu's access keys are unique",
+                Labels(Slice("new ToolStripMenuItem(\"&Edit\")", "menu.Items.Add(edit)")).Skip(1).ToList());
         }
 
         // Bug 7: Edit tags on the playing song let you type everything, then
