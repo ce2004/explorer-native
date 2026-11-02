@@ -9017,11 +9017,10 @@ namespace ExplorerNative
                     // One id for both verbs: a move that half succeeded is the
                     // same event as a copy that half succeeded, and the sentence
                     // already says which it was.
+                    // A move out of Drive with any failure trashed nothing, so
+                    // it is said as the copy it was.
                     AnnounceOperation("copy.partial",
-                        result.Copied == 0
-                            ? $"Nothing was {(move ? "moved" : "copied")}: {NameRules.Items(result.Failed)} failed"
-                            : $"{(move ? "Moved" : "Copied")} {NameRules.Items(result.Copied, "file")}, but " +
-                              $"{NameRules.Items(result.Failed)} could not be {(move ? "moved" : "copied")}");
+                        NameRules.PartialTransferSentence(result.Copied, result.Failed, move, fromDrive));
                     ShowErrors(result.Errors);
                 }
                 // Not "Move complete" over the warnings that some originals stayed.

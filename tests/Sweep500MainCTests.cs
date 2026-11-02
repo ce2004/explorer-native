@@ -29,7 +29,26 @@ namespace ExplorerNative
             DriveMenuHidesArchiveCommands(main);
             EmptyFolderMessageNeverCutsOffTheTab(main);
             PasteIntoDriveTrashRefusesOnce(main);
+            MoveOutOfDriveWithFailuresIsSaidAsACopy(main);
             await Task.CompletedTask;
+        }
+
+        // Bug 7: a move out of Drive with any failure trashes nothing, yet it
+        // said "Moved 119 files".
+        private static void MoveOutOfDriveWithFailuresIsSaidAsACopy(string main)
+        {
+            var drive = NameRules.PartialTransferSentence(119, 1, move: true, fromDrive: true);
+            Check("a move out of Google Drive with a failure is not said as moved, and says the originals stayed",
+                !drive.StartsWith("Moved", StringComparison.Ordinal) &&
+                drive.Contains("nothing was removed from Google Drive", StringComparison.Ordinal), drive);
+            Equal("a local move with a failure still says moved",
+                "Moved 119 files, but 1 item could not be moved", NameRules.PartialTransferSentence(119, 1, true, false));
+            Equal("nothing moved still says so",
+                "Nothing was moved: 3 items failed", NameRules.PartialTransferSentence(0, 3, true, true));
+            Equal("a copy with a failure is unchanged",
+                "Copied 2 files, but 1 item could not be copied", NameRules.PartialTransferSentence(2, 1, false, true));
+            Check("the paste's partial message knows whether the move came out of Drive",
+                main.Contains("PartialTransferSentence(result.Copied, result.Failed, move, fromDrive)", StringComparison.Ordinal));
         }
 
         // Bug 6: Ctrl+V in the Drive trash surveyed, opened a transfer window
