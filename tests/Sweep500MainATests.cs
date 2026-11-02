@@ -28,7 +28,38 @@ namespace ExplorerNative
             TagEditorAsksAboutThePlayingSongFirst();
             MenuAccessKeysAreUnique();
             StartupLoadsTheFrontTabFirst();
+            RestartComesBackToTheDriveFolder();
             await Task.CompletedTask;
+        }
+
+        // Bug 6: a restart probed the remembered Drive folder before the mount,
+        // opened home, and the next quit saved home over the Drive place.
+        private static void RestartComesBackToTheDriveFolder()
+        {
+            Check("a Drive folder before the mount is waited for",
+                NavigationHistory.WaitsForDrive(@"G:\Music", "G", letterShown: false));
+            Check("the letter in any case and with a colon",
+                NavigationHistory.WaitsForDrive(@"g:\Music", "G:", letterShown: false));
+            Check("once the letter is there it is probed like any folder",
+                !NavigationHistory.WaitsForDrive(@"G:\Music", "G", letterShown: true));
+            Check("with Drive off nothing is waited for",
+                !NavigationHistory.WaitsForDrive(@"G:\Music", null, letterShown: false));
+            Check("another drive's folder is not waited for",
+                !NavigationHistory.WaitsForDrive(@"C:\Users\x", "G", letterShown: false));
+            Check("a share is not waited for",
+                !NavigationHistory.WaitsForDrive(@"\\nas\share", "G", letterShown: false));
+            Equal("a place follows Drive to the letter it got", @"H:\Music\a.flac",
+                NavigationHistory.RebaseOnLetter(@"G:\Music\a.flac", "H") ?? "");
+
+            var main = Source("MainForm.cs");
+            Check("startup keeps a Drive folder to wait for instead of probing it",
+                Body(main, "FirstExistingFolderAsync(params").Contains("WaitsForDrive(", StringComparison.Ordinal));
+            Check("the mount takes a waiting tab to its Drive folder",
+                Body(main, "public void RefreshIfShowingDrive(").Contains("ResumeWaitingForDrive(", StringComparison.Ordinal));
+            Check("the resume leaves a tab alone once somebody has moved",
+                Body(main, "private void ResumeWaitingForDrive(").Contains("StillWaitingForDrive(", StringComparison.Ordinal));
+            Check("a quit before the mount saves the Drive folder, not the stand-in",
+                Body(main, "private void CaptureState()").Contains("StillWaitingForDrive(", StringComparison.Ordinal));
         }
 
         // Bug 3: startup loaded the hidden second tab first (both lists off screen

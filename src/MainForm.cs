@@ -384,6 +384,9 @@ namespace ExplorerNative
         public void RefreshIfShowingDrive(string? letter)
         {
             if (IsDisposed) return;
+            // A tab that opened elsewhere while waiting for a Drive folder goes
+            // there now, unless it has been moved since.
+            ResumeWaitingForDrive(letter);
             // The Drives list read before the mount has no row for the letter.
             RefreshDrivesList();
             if (string.IsNullOrEmpty(letter)) return;
@@ -505,7 +508,7 @@ namespace ExplorerNative
                 // gone to sleep costs a moment on a worker rather than a window
                 // that never appears.
                 _tabLoadStarted[front] = true;
-                var folder = await FirstExistingFolderAsync(_tabCandidates[front]);
+                var (folder, waitFor) = await FirstExistingFolderAsync(_tabCandidates[front]);
                 if (IsDisposed) return;
 
                 _activeIndex = front;
@@ -518,6 +521,7 @@ namespace ExplorerNative
                 // announcing the first one on the way past.
                 await NavigateAsync(folder, preferPath: NullIfBlank(RememberedRowOf(front)), onPane: _panes[front]);
                 if (IsDisposed) return;
+                NoteWaitingForDrive(front, waitFor);
 
                 // Used. A window built later in this session — closing to nothing
                 // rather than to the tray, then the window shortcut — reopened on
@@ -565,11 +569,12 @@ namespace ExplorerNative
             _tabLoadStarted[index] = true;
             try
             {
-                var folder = await FirstExistingFolderAsync(_tabCandidates[index]);
+                var (folder, waitFor) = await FirstExistingFolderAsync(_tabCandidates[index]);
                 // Gone somewhere meanwhile (a folder handed over): left there.
                 if (IsDisposed || !string.IsNullOrEmpty(_panes[index].CurrentPath)) return;
                 await NavigateAsync(folder, preferPath: NullIfBlank(RememberedRowOf(index)),
                     onPane: _panes[index], quiet: true);
+                if (!IsDisposed) NoteWaitingForDrive(index, waitFor);
             }
             catch (Exception ex) { System.Diagnostics.Debug.WriteLine("tab load: " + ex.Message); }
         }
@@ -586,15 +591,18 @@ namespace ExplorerNative
             // Only a tab that has loaded: one still loading (a close during
             // startup) or never loaded (one-tab mode) keeps what was saved, so
             // its place is still there next time instead of an empty one.
-            if (!string.IsNullOrEmpty(_panes[0].CurrentPath))
+            // A tab still waiting for its Drive folder (quit before the mount, or
+            // a mount that failed) saves that folder, not where it opened instead.
+            for (int i = 0; i < _panes.Length; i++)
             {
-                _settings.FocusedPathTab1 = RealFocusOf(_panes[0]) ?? "";
-                if (_settings.RememberLastFolder) _settings.LastFolder = RealFolderOf(_panes[0]);
-            }
-            if (!string.IsNullOrEmpty(_panes[1].CurrentPath))
-            {
-                _settings.FocusedPathTab2 = RealFocusOf(_panes[1]) ?? "";
-                if (_settings.RememberLastFolder) _settings.LastFolderTab2 = RealFolderOf(_panes[1]);
+                string folder, row;
+                if (StillWaitingForDrive(i) is { } waiting) { folder = waiting.Folder; row = waiting.Row ?? ""; }
+                else if (!string.IsNullOrEmpty(_panes[i].CurrentPath)) { folder = RealFolderOf(_panes[i]); row = RealFocusOf(_panes[i]) ?? ""; }
+                else continue;
+
+                if (i == 0) _settings.FocusedPathTab1 = row; else _settings.FocusedPathTab2 = row;
+                if (!_settings.RememberLastFolder) continue;
+                if (i == 0) _settings.LastFolder = folder; else _settings.LastFolderTab2 = folder;
             }
         }
 
@@ -809,18 +817,68 @@ namespace ExplorerNative
         /// Bounded and off the calling thread, which is the whole point — see the
         /// constructor. The synchronous version of this ran inside it.
         /// </summary>
-        private static async Task<string> FirstExistingFolderAsync(params string?[] candidates)
+        private async Task<(string Open, string? WaitFor)> FirstExistingFolderAsync(params string?[] candidates)
         {
+            // Google Drive mounts a second or two after the window. A folder on
+            // its letter before then is not missing, only not there yet: it is
+            // kept to go to once the mount arrives, and not probed.
+            string? letter = _settings.GoogleDriveEnabled ? Drive?.Letter ?? _settings.GoogleDriveLetter : null;
+            bool shown = Drive?.LetterShown == true;
+            string? waitFor = null;
             foreach (var c in candidates)
             {
                 if (string.IsNullOrWhiteSpace(c)) continue;
 
                 // The drive list is always there. Probed as a folder it was not,
                 // so a window closed on the drive list came back somewhere else.
-                if (c == DrivesPath) return c;
-                if (await ProbeDirectoryAsync(c, StartupProbeMs) == FolderProbe.Present) return c!;
+                if (c == DrivesPath) return (c, waitFor);
+                if (NavigationHistory.WaitsForDrive(c, letter, shown)) { waitFor ??= c; continue; }
+                if (await ProbeDirectoryAsync(c, StartupProbeMs) == FolderProbe.Present) return (c!, waitFor);
             }
-            return Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            return (Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), waitFor);
+        }
+
+        /// <summary>
+        /// Per tab: the Drive folder (and row) a tab opened somewhere else while
+        /// waiting for, and where it opened instead, so the mount can take it
+        /// there only if nobody has moved since.
+        /// </summary>
+        private readonly (string Folder, string? Row, string LandedFolder, string? LandedRow)?[] _waitingForDrive =
+            new (string, string?, string, string?)?[2];
+
+        private void NoteWaitingForDrive(int index, string? folder)
+        {
+            if (folder == null || IsDisposed) return;
+            var pane = _panes[index];
+            _waitingForDrive[index] = (folder, NullIfBlank(RememberedRowOf(index)), pane.CurrentPath, FocusedPathOf(pane));
+            // Mounted while this tab was loading: go now.
+            if (Drive is { LetterShown: true } drive) ResumeWaitingForDrive(drive.Letter);
+        }
+
+        /// <summary>The waiting slot, while the tab is still where it opened instead.</summary>
+        private (string Folder, string? Row, string LandedFolder, string? LandedRow)? StillWaitingForDrive(int index)
+        {
+            if (_waitingForDrive[index] is not { } w) return null;
+            var pane = _panes[index];
+            bool unmoved = string.Equals(pane.CurrentPath, w.LandedFolder, StringComparison.OrdinalIgnoreCase) &&
+                           string.Equals(FocusedPathOf(pane), w.LandedRow, StringComparison.OrdinalIgnoreCase);
+            return unmoved ? w : null;
+        }
+
+        private void ResumeWaitingForDrive(string? letter)
+        {
+            if (string.IsNullOrEmpty(letter) || IsDisposed) return;
+            for (int i = 0; i < _panes.Length; i++)
+            {
+                var waiting = StillWaitingForDrive(i);
+                _waitingForDrive[i] = null;
+                if (waiting is not { } w) continue;   // moved on: left where it is
+                var pane = _panes[i];
+                bool behind = pane != Active;
+                _ = NavigateAsync(NavigationHistory.RebaseOnLetter(w.Folder, letter)!,
+                    preferPath: NavigationHistory.RebaseOnLetter(w.Row, letter),
+                    onPane: pane, quiet: behind, keepFocus: behind);
+            }
         }
 
         /// <summary>
@@ -869,6 +927,9 @@ namespace ExplorerNative
             // Two tabs turned on after a start with one: the second is loaded
             // now, behind, as startup would have.
             if (settings.TwoTabs) _ = LoadTabAsync(1);
+
+            // Drive turned off: nothing to wait for any more.
+            if (!settings.GoogleDriveEnabled) Array.Clear(_waitingForDrive);
         }
 
         /// <summary>
