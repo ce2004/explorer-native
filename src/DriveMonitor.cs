@@ -3340,7 +3340,8 @@ namespace ExplorerNative
                     listMs = timing.ElapsedMilliseconds - scanMs - recordsMs;
                     allSkips.Include(skips);
                     var seenSoFar = Totals(localSeen, driveSeen, tally.Matched);
-                    Report(pair.Id, s => s with { LocalFound = seenSoFar.Pc, DriveFound = seenSoFar.Drive }, now: true);
+                    int driveSoFar = pair.FreesUpSpace && !full && header.DriveFileTotal is int savedTotal ? savedTotal : seenSoFar.Drive;
+                    Report(pair.Id, s => s with { LocalFound = seenSoFar.Pc, DriveFound = driveSoFar }, now: true);
 
                     // ---- the next batches: subfolders on either side, or in the records ----
                     if (pair.IncludeSubfolders)
@@ -3507,10 +3508,21 @@ namespace ExplorerNative
             LastFoldersVisited = visited.Count;
             var totals = Totals(localSeen, driveSeen, tally.Matched);
             // Kept as they stand once this pass is done: what it copied is in step now.
+            // Free up space: freed files have no records, so a listed folder's
+            // Drive files were added on top of the saved total and nothing taken
+            // off, and "On Google Drive" grew every pass. As the small path, the
+            // total is what a whole listing found, plus what went up since.
+            int driveTotal = totals.Drive + tally.Uploaded;
+            if (pair.FreesUpSpace)
+            {
+                if (!(full && tally.SpaceProblem == null) && header.DriveFileTotal is int before) driveTotal = before + tally.Uploaded;
+                header.DriveFileTotal = driveTotal;
+            }
             header.PcFiles = totals.Pc + tally.Downloaded;
-            header.DriveFiles = totals.Drive + tally.Uploaded;
+            header.DriveFiles = driveTotal;
             header.MatchedFiles = totals.Matched + tally.Uploaded + tally.Downloaded;     // a moved file is counted as matched already
-            Report(pair.Id, s => s with { LocalFound = totals.Pc, DriveFound = totals.Drive, Matched = totals.Matched }, now: true);
+            int driveFound = pair.FreesUpSpace ? driveTotal : totals.Drive;
+            Report(pair.Id, s => s with { LocalFound = totals.Pc, DriveFound = driveFound, Matched = totals.Matched }, now: true);
             // Stopped short for space: folders it never reached are still owed
             // the changes read for them, so the journal's place stays where it was.
             if (tally.SpaceProblem == null) PcPlanned(pair, header, look, walkedWhole: !partial, links);

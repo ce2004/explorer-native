@@ -41,6 +41,7 @@ namespace ExplorerNative
                 await TwinWithRecordsTests(sandbox, "disc");
                 await InBatches(() => FolderDeletedOnDriveTests(sandbox, "batched"));
                 await FolderDeletedOnDriveTests(sandbox, "small");
+                await InBatches(() => FreeUpDriveCountTests(sandbox));
             }
             finally
             {
@@ -234,6 +235,43 @@ namespace ExplorerNative
             Check($"folder deleted on Drive ({kind}): and the next whole walk does not bring it back", rig.Drive.Find(rig.FolderId, "Old") == null, problem);
             Check($"folder deleted on Drive ({kind}): folders Drive still has stay on the PC",
                 File.Exists(rig.LocalPath("Keep/k.txt")) && File.Exists(rig.LocalPath("Kept/Inner/edited.txt")));
+        }
+
+        // ---------------- free up: the Google Drive count ----------------
+
+        /// <summary>
+        /// A free up pair in batches: freed files have no records, so each time
+        /// a folder was listed again its Drive files were added to the saved
+        /// count and nothing taken off. "On Google Drive" grew every pass. Now
+        /// it is what the last whole listing found plus what went up since.
+        /// </summary>
+        private static async Task FreeUpDriveCountTests(string sandbox)
+        {
+            using var rig = new Rig(sandbox, SyncMode.UploadOnly);
+            rig.Pair.DeleteAfterUpload = true;
+            for (int f = 0; f < 6; f++)
+                for (int i = 0; i < 3; i++)
+                    rig.Write($"F{f:D2}/s{i}.txt", $"{f}-{i}", T0);
+            await rig.Pass();
+            await rig.Pass();
+            await rig.Pass();
+            Check("free up count: everything went up and was cleared off the PC",
+                rig.DriveTree().Count == 18 && !File.Exists(rig.LocalPath("F00/s0.txt")), $"{rig.DriveTree().Count} on Drive");
+            Equal("free up count: On Google Drive says 18", "18", rig.Monitor.StatusOf(rig.Pair.Id).DriveFound.ToString());
+
+            rig.Write("F00/new.txt", "new", T0);
+            await rig.Pass();
+            await rig.Pass();
+            await rig.Pass();
+            Check("free up count: the new file went up", rig.DriveTree().Count == 19, $"{rig.DriveTree().Count} on Drive");
+            Equal("free up count: and On Google Drive says 19, not the folder counted again", "19",
+                rig.Monitor.StatusOf(rig.Pair.Id).DriveFound.ToString());
+
+            var every = DriveMonitor.FullListEvery;
+            DriveMonitor.FullListEvery = TimeSpan.Zero;
+            try { await rig.Pass(); }
+            finally { DriveMonitor.FullListEvery = every; }
+            Equal("free up count: a whole listing agrees", "19", rig.Monitor.StatusOf(rig.Pair.Id).DriveFound.ToString());
         }
 
         // ---------------- a recorded folder that became a Drive twin ----------------
