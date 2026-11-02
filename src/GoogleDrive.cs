@@ -418,7 +418,14 @@ namespace ExplorerNative
         /// consent they declined.
         /// </summary>
         /// <param name="quietly">A retry after the network failed: "Connecting" is not said again.</param>
-        public async Task<bool> Mount(Settings settings, CancellationToken token = default, bool quietly = false)
+        /// <param name="mayConsent">
+        /// A deliberate connect (Connect, OK in Preferences), the only kind that
+        /// may open Google's sign-in page. The start-up mount and the retries
+        /// after a network failure pass false: with no saved sign-in they say so
+        /// instead of putting a browser in front of somebody who asked for nothing.
+        /// </param>
+        public async Task<bool> Mount(Settings settings, CancellationToken token = default, bool quietly = false,
+            bool mayConsent = true)
         {
             // One at a time. Two in parallel — OK pressed and a settings reload a
             // moment apart — both chose the same root, and the second tore the
@@ -426,9 +433,22 @@ namespace ExplorerNative
             var lifetime = _lifetime;
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, lifetime.Token);
 
+            // Connect pressed again while a sign-in waits in the browser (a tab
+            // closed by mistake, a page behind another window): the new press
+            // replaces the waiting one. It used to queue behind it silently for
+            // up to thirty minutes and then open a browser out of nowhere.
+            CancellationTokenSource? consent = null;
+            if (mayConsent)
+            {
+                consent = new CancellationTokenSource();
+                var waiting = Interlocked.Exchange(ref _consentWait, consent);
+                try { waiting?.Cancel(); } catch { }
+            }
+
             try { await _mountGate.WaitAsync(linked.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) { return false; }
 
+            var consentToken = consent?.Token ?? CancellationToken.None;
             try
             {
                 if (linked.IsCancellationRequested) return false;
@@ -442,7 +462,8 @@ namespace ExplorerNative
                 if (Mounted)
                 {
                     if (!NeedsSignIn) return true;
-                    var (renewed, otherAccount) = await RenewSignIn(linked.Token).ConfigureAwait(false);
+                    var (renewed, otherAccount) =
+                        await RenewSignIn(linked.Token, mayConsent, consentToken).ConfigureAwait(false);
                     if (!otherAccount) return renewed;
 
                     // Signed in again as somebody else. Every entry on the letter, the
@@ -460,15 +481,29 @@ namespace ExplorerNative
                     return await MountFresh(settings, linked.Token, quietly: true).ConfigureAwait(false);
                 }
 
-                return await MountFresh(settings, linked.Token, quietly).ConfigureAwait(false);
+                return await MountFresh(settings, linked.Token, quietly, mayConsent, consentToken).ConfigureAwait(false);
             }
             finally
             {
+                if (consent != null) Interlocked.CompareExchange(ref _consentWait, null, consent);
                 _mountGate.Release();
             }
         }
 
         private readonly SemaphoreSlim _mountGate = new(1, 1);
+
+        /// <summary>The deliberate connect whose browser sign-in a newer press may call off. Cancelled, never disposed.</summary>
+        private CancellationTokenSource? _consentWait;
+
+        /// <summary>
+        /// Whether a connect that failed is worth trying again by itself: the
+        /// network, and not a sign-in somebody left unfinished in the browser.
+        /// Retrying that one opened Google's page again every half hour.
+        /// </summary>
+        internal static bool RetryableConnectFailure(Exception ex, bool cancelled, bool consentStarted,
+            bool consentGranted) =>
+            !cancelled && ex is not GoogleSignInRequiredException && !(consentStarted && !consentGranted) &&
+            DriveHealth.LooksLikeNetwork(ex);
 
         /// <summary>The connection state last passed on to ConnectionChanged.</summary>
         private DriveState? _lastSaid;
@@ -489,7 +524,8 @@ namespace ExplorerNative
         /// account: the mount then belongs to nobody signed in, and the caller
         /// mounts again from scratch.
         /// </summary>
-        private async Task<(bool Ok, bool OtherAccount)> RenewSignIn(CancellationToken token)
+        private async Task<(bool Ok, bool OtherAccount)> RenewSignIn(CancellationToken token, bool mayConsent,
+            CancellationToken consentToken)
         {
             GoogleAuth? auth;
             DriveClient? client;
@@ -500,8 +536,9 @@ namespace ExplorerNative
             try
             {
                 string user;
-                using (GoogleAuth.ConsentScope())
-                    (user, _, _) = await client.Whoami(token).ConfigureAwait(false);
+                var asking = CancellationTokenSource.CreateLinkedTokenSource(token, consentToken);
+                using (mayConsent ? GoogleAuth.ConsentScope() : null)
+                    (user, _, _) = await client.Whoami(asking.Token).ConfigureAwait(false);
                 bool other;
                 lock (_gate)
                 {
@@ -520,7 +557,9 @@ namespace ExplorerNative
             }
             catch (Exception ex)
             {
-                Status = $"Could not sign in again: {GoogleNet.Reason(ex)}";
+                Status = consentToken.IsCancellationRequested && !token.IsCancellationRequested
+                    ? "Not connected."
+                    : $"Could not sign in again: {GoogleNet.Reason(ex)}";
                 return (false, false);
             }
         }
@@ -539,7 +578,8 @@ namespace ExplorerNative
             try { SignInRequired?.Invoke(); } catch { }
         }
 
-        private async Task<bool> MountFresh(Settings settings, CancellationToken token, bool quietly = false)
+        private async Task<bool> MountFresh(Settings settings, CancellationToken token, bool quietly = false,
+            bool mayConsent = true, CancellationToken consentToken = default)
         {
             _units = settings.SizeUnits;
             FailedOnNetwork = false;
@@ -570,12 +610,13 @@ namespace ExplorerNative
                 return false;
             }
 
+            GoogleAuth? auth = null;
             try
             {
                 // Consent is allowed here and nowhere else: this is somebody
                 // asking to connect, so a browser opening is the expected answer
                 // rather than an ambush from inside a directory listing.
-                var auth = new GoogleAuth(client.Value.ClientId, client.Value.ClientSecret,
+                auth = new GoogleAuth(client.Value.ClientId, client.Value.ClientSecret,
                     Path.Combine(SafeDirectory(), $"google-drive-token-v{GoogleAuth.ScopeVersion}.dat"))
                 { AllowConsent = false, Notify = Forward };
                 auth.SignInLapsed += OnSignInLapsed;
@@ -605,10 +646,14 @@ namespace ExplorerNative
                 // behind by a sign-in that then failed is worse than no mount.
                 // The one request allowed to open a browser: a deliberate
                 // connect. Nothing the mount does afterwards may.
+                // Not at start-up, nor on a retry: those never open a browser
+                // (with no saved sign-in they say it has expired instead). A newer
+                // Connect press calls the browser wait off (consentToken).
                 string user;
                 long used, limit;
-                using (GoogleAuth.ConsentScope())
-                    (user, used, limit) = await drive.Whoami(token);
+                var asking = CancellationTokenSource.CreateLinkedTokenSource(token, consentToken);
+                using (mayConsent ? GoogleAuth.ConsentScope() : null)
+                    (user, used, limit) = await drive.Whoami(asking.Token);
 
                 // Only when the browser was actually used. A mount that refreshed
                 // a stored token in silence is not a sign-in, and saying so on
@@ -719,11 +764,16 @@ namespace ExplorerNative
                 // TearDown first: it sets "Not connected.", and the reason must
                 // be the last word, because the tray and Preferences read it.
                 TearDown();
-                Status = token.IsCancellationRequested
+                // Called off by a newer Connect press: that one is connecting now.
+                bool cancelled = token.IsCancellationRequested || consentToken.IsCancellationRequested;
+                bool unfinished = auth?.ConsentStarted == true && !auth.ConsentGranted;
+                Status = cancelled
                     ? "Not connected."
-                    : $"Could not connect: {GoogleNet.Reason(ex)}";
-                FailedOnNetwork = !token.IsCancellationRequested && ex is not GoogleSignInRequiredException &&
-                                  DriveHealth.LooksLikeNetwork(ex);
+                    : unfinished
+                        ? "Google sign-in was not finished."
+                        : $"Could not connect: {GoogleNet.Reason(ex)}";
+                FailedOnNetwork = RetryableConnectFailure(ex, cancelled, auth?.ConsentStarted == true,
+                    auth?.ConsentGranted == true);
                 return false;
             }
         }

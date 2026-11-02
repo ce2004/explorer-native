@@ -29,6 +29,7 @@ namespace ExplorerNative
             await Guard("token offline", TokenRefreshFailuresCountAsOffline);
             await Guard("acknowledgeAbuse", RateLimitKeepsAcknowledgeAbuse);
             await Guard("offline said once", OfflineWaitSaidOncePerOutage);
+            await Guard("sign-in only when asked", SignInOnlyWhenAsked);
         }
 
         private static async Task Guard(string name, Func<Task> test)
@@ -222,6 +223,106 @@ namespace ExplorerNative
             Check("and the file keeps acknowledgeAbuse afterwards",
                 DriveClient.MediaUrl(file).EndsWith("&acknowledgeAbuse=true", StringComparison.Ordinal),
                 DriveClient.MediaUrl(file));
+        }
+
+        // ---- 5, 7, 8. Google's sign-in page opens only when somebody asked to connect ----
+
+        /// <summary>A scratch settings folder with a client file and no saved sign-in; the browser is never opened.</summary>
+        private static async Task WithNoSignIn(Func<GoogleDrive, System.Collections.Concurrent.ConcurrentQueue<string>,
+            List<string>, Task> body)
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "en-s500-signin-" + Guid.NewGuid().ToString("N")[..8]);
+            Directory.CreateDirectory(dir);
+            File.WriteAllText(Path.Combine(dir, GoogleAuth.ClientFileName),
+                "{\"installed\":{\"client_id\":\"s500.apps.googleusercontent.com\",\"client_secret\":\"s500-secret\"}}");
+            var opened = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            var was = Settings.OverrideAppDataDir;
+            Settings.OverrideAppDataDir = dir;
+            GoogleAuth.OpenBrowserForTests = url => opened.Enqueue(url);
+            var drive = new GoogleDrive();
+            var said = new List<string>();
+            drive.Notification += (id, message) => { lock (said) said.Add(id); };
+            try { await body(drive, opened, said); }
+            finally
+            {
+                try { drive.Dispose(); } catch { }
+                GoogleAuth.OpenBrowserForTests = null;
+                Settings.OverrideAppDataDir = was;
+                try { Directory.Delete(dir, true); } catch { }
+            }
+        }
+
+        private static async Task<bool> Until(Func<bool> done, int ms)
+        {
+            var clock = Stopwatch.StartNew();
+            while (!done() && clock.ElapsedMilliseconds < ms) await Task.Delay(20);
+            return done();
+        }
+
+        private static async Task SignInOnlyWhenAsked()
+        {
+            // 8: an unfinished browser sign-in is never retried on its own.
+            Check("an unanswered browser sign-in is not retried",
+                !GoogleDrive.RetryableConnectFailure(new TimeoutException(), false, true, false));
+            Check("nor a code exchange that timed out after the browser",
+                !GoogleDrive.RetryableConnectFailure(new TaskCanceledException("t", new TimeoutException()), false, true, false));
+            Check("a network failure with no browser opened is retried",
+                GoogleDrive.RetryableConnectFailure(new System.Net.Http.HttpRequestException("x"), false, false, false));
+            Check("and so is one after a finished sign-in",
+                GoogleDrive.RetryableConnectFailure(new TimeoutException(), false, true, true));
+            var drive = SourceText("GoogleDrive.cs");
+            var fresh = MethodText(drive, "private async Task<bool> MountFresh(");
+            Check("a failed connect decides on retrying with whether the browser sign-in was left unfinished",
+                fresh.Contains("RetryableConnectFailure(", StringComparison.Ordinal) &&
+                fresh.Contains("ConsentStarted", StringComparison.Ordinal));
+
+            // 7: start-up and retries never open the browser.
+            var tray = SourceText("TrayApplicationContext.cs");
+            Check("the start-up mount may not open Google's sign-in page",
+                tray.Contains("if (_settings.GoogleDriveEnabled) MountGoogleDrive(mayConsent: false);", StringComparison.Ordinal));
+            Check("nor may a retry after a network failure",
+                System.Text.RegularExpressions.Regex.IsMatch(tray, @"_drive\.Mount\(_settings, quietly: true, mayConsent: false\)"));
+            var form = SourceText("SettingsForm.cs");
+            var signOut = MethodText(form, "bool gone = GoogleDrive.ForgetSignIn();", 600);
+            Check("Sign out switches Drive off and saves it at once, so Cancel cannot leave it on",
+                signOut.Contains("DisconnectDrive?.Invoke()", StringComparison.Ordinal));
+
+            if (!WinFsp.TryLoad(out var problem))
+            {
+                Console.WriteLine("  (sign-in mounts skipped: WinFsp is not here: " + problem + ")");
+                return;
+            }
+
+            await WithNoSignIn(async (gd, opened, said) =>
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                var clock = Stopwatch.StartNew();
+                bool ok = await gd.Mount(new Settings(), cts.Token, mayConsent: false);
+                Check("a start-up mount with no saved sign-in gives up at once without a browser",
+                    !ok && opened.IsEmpty && clock.ElapsedMilliseconds < 15_000, $"{opened.Count} opened, {clock.ElapsedMilliseconds} ms");
+                Check("and says the sign-in is needed, not that it keeps trying", gd.NeedsSignIn && !gd.FailedOnNetwork);
+                lock (said) Check("and never says it is waiting for the browser", !said.Contains("drive.signin.opened"),
+                    string.Join(",", said));
+            });
+
+            // 5: Connect pressed again while the first sign-in waits in the browser.
+            await WithNoSignIn(async (gd, opened, said) =>
+            {
+                using var first = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                using var second = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                var one = Task.Run(() => gd.Mount(new Settings(), first.Token));
+                bool firstOpened = await Until(() => opened.Count >= 1, 10_000);
+                Check("a connect with no sign-in opens Google's page (in the test, the hook)", firstOpened);
+                var two = Task.Run(() => gd.Mount(new Settings(), second.Token));
+                bool secondOpened = await Until(() => opened.Count >= 2, 5_000);
+                Check("pressing Connect again opens a fresh sign-in at once instead of queueing behind the first",
+                    secondOpened, opened.Count + " opened");
+                bool oneDone = await Task.WhenAny(one, Task.Delay(5_000)) == one;
+                Check("and the first connect is called off", oneDone && !one.Result);
+                second.Cancel();
+                first.Cancel();
+                try { await Task.WhenAny(two, Task.Delay(10_000)); } catch { }
+            });
         }
 
         // ---- 4. Waiting for the internet is said once per outage ----

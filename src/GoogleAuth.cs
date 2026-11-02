@@ -137,6 +137,9 @@ namespace ExplorerNative
         /// </summary>
         public bool ConsentGranted { get; private set; }
 
+        /// <summary>True once the browser was opened for consent, finished or not.</summary>
+        public bool ConsentStarted { get; private set; }
+
         /// <summary>
         /// The access token and when it stops being good, as one value.
         ///
@@ -561,6 +564,10 @@ namespace ExplorerNative
                 // the last still works.
                 $"&access_type=offline&prompt=consent";
 
+            // A sign-in left unfinished from here (no answer in thirty minutes,
+            // or the code exchange failing) is not a network failure to retry:
+            // retrying opened the page again every half hour.
+            ConsentStarted = true;
             OpenBrowser(url);
 
             // Said here rather than by the caller, because this is the moment the
@@ -820,8 +827,12 @@ namespace ExplorerNative
             return port;
         }
 
+        /// <summary>For the suite: called in place of opening the browser, so no test ever opens one.</summary>
+        internal static Action<string>? OpenBrowserForTests;
+
         private static void OpenBrowser(string url)
         {
+            if (OpenBrowserForTests is { } instead) { instead(url); return; }
             System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
             {
                 FileName = url,
