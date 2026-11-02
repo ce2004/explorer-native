@@ -983,6 +983,9 @@ namespace ExplorerNative
         /// <summary>Ends this process so a replacement started by Ctrl+R can take over.</summary>
         public static void QuitForRestart() => _context?.QuitImmediately();
 
+        /// <summary>The tray Exit's "still on its way to Google Drive" question, for Restart and Update.</summary>
+        public static bool ConfirmUnsavedDrive(string verb) => _context?.ConfirmUnsavedDrive(verb) ?? true;
+
         /// <summary>
         /// Hands a file to the audio player, which the tray owns because it has to
         /// outlive the window — the whole point of it is that there is no window.

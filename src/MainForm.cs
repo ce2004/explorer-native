@@ -657,6 +657,9 @@ namespace ExplorerNative
                 // Asked again: a paste or move started during the download
                 // would be cut off by the installer's <exit>, which never asks.
                 if (!ConfirmAbandonTransfers("Update")) return;
+                // The installer's <exit> never asks, so files still on their
+                // way to Google Drive are asked about here.
+                if (!Program.ConfirmUnsavedDrive("Update")) return;
 
                 Announce("Installing update. Explorer Native will restart");
                 CaptureState();
@@ -707,6 +710,9 @@ namespace ExplorerNative
             // already coming up, and answering "no" there would leave two of
             // them fighting over the single-instance lock.
             if (!ConfirmAbandonTransfers("Restart")) return;
+            // Drive saves still in memory are lost by a quit that drains too
+            // short; the tray's Exit asks, and so must this.
+            if (!Program.ConfirmUnsavedDrive("Restart")) return;
 
             try
             {

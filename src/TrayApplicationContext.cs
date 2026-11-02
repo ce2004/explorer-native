@@ -637,7 +637,7 @@ namespace ExplorerNative
         /// for up to a minute, but a slow connection or a file still being
         /// written can leave one behind, so somebody quitting is told first.
         /// </summary>
-        private bool ConfirmUnsavedDrive()
+        public bool ConfirmUnsavedDrive(string verb = "Quit")
         {
             var names = _drive.UploadNames;
             if (names.Count == 0) return true;
@@ -645,7 +645,7 @@ namespace ExplorerNative
                 ? $"{names[0]} is still on its way to Google Drive."
                 : $"{names.Count} files are still on their way to Google Drive, including {string.Join(", ", names.Take(3))}.";
             var question = what + " Explorer Native finishes sending them before it closes, which can take up to a minute, " +
-                           "but anything still being written by another program will not be saved. Quit anyway?";
+                           $"but anything still being written by another program will not be saved. {verb} anyway?";
             if (ShowDriveMessage(question, MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.Yes) return true;
             if (_form is { IsDisposed: false, Visible: true } window) window.RestoreListFocusExternally();
             return false;
