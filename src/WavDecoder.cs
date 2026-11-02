@@ -363,7 +363,17 @@ namespace ExplorerNative
                     // Opus decodes at these rates only; anything else plays at 48k.
                     if (Channels is < 1 or > 2) return "Opus sound in CAF with more than two channels, which this player does not decode";
                     if (packetSizes.Count == 0 && bytesPerPacket > 0)
-                        for (long at = 0; at + bytesPerPacket <= _dataLength; at += bytesPerPacket) packetSizes.Add(bytesPerPacket);
+                    {
+                        // Fixed-size packets: counted from the bytes really in the file, not
+                        // the header's word for them, with the same cap as a 'pakt' entry (a
+                        // packet is read whole into memory). A damaged size built a list of
+                        // billions of entries and ran the PC out of memory.
+                        if (bytesPerPacket > 1 << 20) return "the CAF file's packet size is damaged";
+                        long have = Math.Max(0, Math.Min(_dataLength, s.Length - _dataStart));
+                        long count = have / bytesPerPacket;
+                        if (count > 1 << 24) return "the CAF file's packet size is damaged";   // over 90 hours at 20ms
+                        for (long i = 0; i < count; i++) packetSizes.Add(bytesPerPacket);
+                    }
                     if (packetSizes.Count == 0) return "the Opus sound has no packet table";
                     // Decoded at Opus's own 48kHz, whatever 'desc' says (an iPhone's
                     // says 24000): asked for 24kHz, the decoder gave Conner's message

@@ -206,7 +206,16 @@ namespace ExplorerNative
         private Stream? _inner;
         private long _position;
 
-        public ManagedIStream(Stream inner) { _inner = inner; }
+        public ManagedIStream(Stream inner)
+        {
+            _inner = inner;
+            // A rewrapped file is a finished MemoryStream nothing writes to again, so the
+            // exact seeker can search its bytes directly (ExactSeek.MemoryBytes).
+            if (inner is MemoryStream memory && memory.TryGetBuffer(out var bytes)) Buffer = bytes;
+        }
+
+        /// <summary>The bytes behind it, when it wraps a MemoryStream, for searches that need no shared position.</summary>
+        public ArraySegment<byte>? Buffer { get; }
 
         public void Read(byte[] buffer, int count, IntPtr bytesReadOut)
         {
