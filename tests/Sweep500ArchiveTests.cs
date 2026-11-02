@@ -28,6 +28,7 @@ namespace ExplorerNative
             Console.WriteLine("Sweep 5.0.0, archives:");
             await MarkOfTheWebTests();
             await SevenZipLineCapTests();
+            await ChosenLinkTests();
         }
 
         private static string NewDir(string what)
@@ -226,6 +227,78 @@ namespace ExplorerNative
             finally
             {
                 BsdTar.SevenZipLineCap = cap;
+            }
+        }
+
+        // ---------- 4: a chosen junction made into a 7z ----------
+
+        /// <summary>
+        /// 7-Zip runs with -snl, so a chosen junction or folder symlink went in
+        /// as one empty link, and "Created Projects.7z" was said for an archive
+        /// with no data. Now it holds the files or is refused in words; a link
+        /// inside a chosen folder is still stored as a link.
+        /// </summary>
+        private static async Task ChosenLinkTests()
+        {
+            if (BsdTar.SevenZipExecutable == null) return;
+            var dir = NewDir("link");
+            var link = Path.Combine(dir, "Projects");
+            var plain = Path.Combine(dir, "plain");
+            var nested = Path.Combine(plain, "nested");
+            try
+            {
+                var target = Path.Combine(dir, "target");
+                Directory.CreateDirectory(Path.Combine(target, "inner"));
+                File.WriteAllText(Path.Combine(target, "inner", "f.txt"), "data");
+                Directory.CreateDirectory(plain);
+                File.WriteAllText(Path.Combine(plain, "a.txt"), "a");
+                try
+                {
+                    ReparseLinks.CreateJunction(link, target);
+                    ReparseLinks.CreateJunction(nested, target);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine("  (chosen link skipped: no junction: " + ex.Message + ")");
+                    return;
+                }
+
+                foreach (var format in new[] { ArchiveFormats.SevenZip, ArchiveFormats.TarXz, ArchiveFormats.TarBz2 })
+                {
+                    var archive = Path.Combine(dir, "Projects." + format.Id);
+                    string outcome;
+                    bool holds = false, refused = false;
+                    try
+                    {
+                        var made = await ArchiveEngine.CompressAsync(new[] { link }, archive, format,
+                            ArchiveLevel.Fastest, 1, null, CancellationToken.None);
+                        var back = Path.Combine(dir, "back-" + format.Id);
+                        var got = await ArchiveEngine.ExtractAsync(archive, back, PasteConflictPolicy.AutoRename, null, 1,
+                            null, CancellationToken.None);
+                        holds = File.Exists(Path.Combine(back, "Projects", "inner", "f.txt"));
+                        outcome = "made: " + Said(made) + " / back: " + Said(got);
+                    }
+                    catch (NotSupportedException ex)
+                    {
+                        outcome = ex.Message;
+                        refused = ex.Message.Contains("link") && !File.Exists(archive);
+                    }
+                    Check($"chosen link: a {format.Id} of a junction holds its files or is refused in words",
+                        holds || refused, outcome);
+                }
+                Check("chosen link: what the junction leads to is untouched",
+                    File.Exists(Path.Combine(target, "inner", "f.txt")), null);
+
+                var made7z = await ArchiveEngine.CompressAsync(new[] { plain }, Path.Combine(dir, "plain.7z"),
+                    ArchiveFormats.SevenZip, ArchiveLevel.Fastest, 1, null, CancellationToken.None);
+                Check("chosen link: a chosen folder holding a junction still makes a 7z",
+                    made7z.Failed == 0 && File.Exists(Path.Combine(dir, "plain.7z")), Said(made7z));
+            }
+            finally
+            {
+                try { Directory.Delete(link); } catch { }
+                try { Directory.Delete(nested); } catch { }
+                try { Directory.Delete(dir, recursive: true); } catch { }
             }
         }
     }

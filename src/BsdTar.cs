@@ -304,6 +304,23 @@ namespace ExplorerNative
                     $"A {format.Extension} cannot be made from {Path.GetFileName(dotted.Source)}, whose name " +
                     "ends in a dot or a space. Zip and .tar.gz can.");
 
+            // 7-Zip stores links as links (-snl, so a junction to a parent
+            // folder cannot loop), and that holds for a chosen one too: a
+            // junction chosen on its own went in as one empty link, and
+            // "Created" was said for an archive with no data in it.
+            if (sevenZip)
+            {
+                var linked = tops.FirstOrDefault(p =>
+                    (p.Attributes & FileAttributes.ReparsePoint) != 0 &&
+                    NameRules.IsLink(p.IsDirectory
+                        ? new DirectoryInfo(NameRules.ExactPath(p.Source))
+                        : new FileInfo(NameRules.ExactPath(p.Source))));
+                if (linked != null)
+                    throw new NotSupportedException(
+                        $"A {format.Extension} cannot be made from {Path.GetFileName(linked.Source)}, which is a link " +
+                        "to somewhere else, so it would hold only the link. Zip and .tar.gz put in what it leads to.");
+            }
+
             if (sevenZip) return CreateWithSevenZip(plan, tops, archivePath, format, level, reporter, errors, token);
 
             var aliases = new List<Alias>();
