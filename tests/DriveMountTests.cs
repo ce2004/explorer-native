@@ -395,8 +395,9 @@ namespace ExplorerNative
             Check("moving onto a file that is there is refused", refused);
             var oldB = rig.Drive.Find(rig.Docs, "b.txt")!;
             File.Move(rig.P("Docs", "a.txt"), rig.P("Docs", "b.txt"), overwrite: true);
+            // Trashed just behind the rename (5.0.0), which Windows holds every open on the drive for.
             Check("unless asked to replace it, and then the one replaced is in the Drive trash",
-                rig.Drive.Get(oldB)!.Trashed && File.ReadAllText(rig.P("Docs", "b.txt")) == "a" &&
+                Eventually(() => rig.Drive.Get(oldB)!.Trashed, 10000) && File.ReadAllText(rig.P("Docs", "b.txt")) == "a" &&
                 Encoding.UTF8.GetString(rig.Drive.Get(rig.Drive.Find(rig.Docs, "b.txt")!)!.Data) == "a");
         }
 
