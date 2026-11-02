@@ -128,7 +128,7 @@ namespace ExplorerNative
             // change would be refused for most letters anyway.
             if ((shortcut.Modifiers & MOD_WIN) != 0)
             {
-                WinKeyHook.Add(_window.Handle, id, shortcut, onlyWhenInFront: true);
+                if (!WinKeyHook.Add(_window.Handle, id, shortcut, onlyWhenInFront: true)) return false;
                 _hooked.Add(id);
                 return true;
             }
@@ -185,7 +185,8 @@ namespace ExplorerNative
             if (!shortcut.CanRegister) return false;
 
             // While paused the key is only noted; Resume claims it.
-            if (_suspended > 0)
+            // (Windows key ones go on as usual: most fall to the hook, which is never paused.)
+            if (_suspended > 0 && (shortcut.Modifiers & MOD_WIN) == 0)
             {
                 _globalShortcuts[id] = shortcut;
                 _registered.Add(id);
@@ -198,7 +199,7 @@ namespace ExplorerNative
                 // refuses it here. The person chose it in Preferences, so it is
                 // caught at the keyboard instead. See WinKeyHook.
                 if ((shortcut.Modifiers & MOD_WIN) == 0) return false;
-                WinKeyHook.Add(_window.Handle, id, shortcut, onlyWhenInFront: false);
+                if (!WinKeyHook.Add(_window.Handle, id, shortcut, onlyWhenInFront: false)) return false;
                 _hooked.Add(id);
                 return true;
             }

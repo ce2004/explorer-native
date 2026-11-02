@@ -62,6 +62,22 @@ namespace ExplorerNative
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint process);
         [DllImport("kernel32.dll")] private static extern IntPtr GetModuleHandle(string? name);
         [DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+        [DllImport("user32.dll")] private static extern UIntPtr SetTimer(IntPtr hwnd, UIntPtr id, uint ms, IntPtr proc);
+
+        private const int WM_TIMER = 0x0113;
+        private const int WM_REHOOK = 0x8001;   // WM_APP + 1
+        private const int WM_DROPHOOK = 0x8002; // WM_APP + 2, tests only
+
+        /// <summary>
+        /// How often the hook is put back. Windows removes a low-level hook that
+        /// once kept it waiting past LowLevelHooksTimeout, silently: a blocking
+        /// compacting collection (MemoryGiveBack) can do that, and every Windows
+        /// key shortcut then did nothing until Preferences OK or a restart.
+        /// </summary>
+        internal const uint RehookEveryMs = 30000;
+
+        /// <summary>Tests only: how many coming installs fail, as SetWindowsHookEx can.</summary>
+        internal static int FailInstallsForTests;
 
         [StructLayout(LayoutKind.Sequential)]
         private struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam, lParam; public uint time; public int x, y; }
@@ -77,7 +93,6 @@ namespace ExplorerNative
 
         private static Thread? _thread;
         private static uint _threadId;
-        private static HookProc? _proc;
 
         /// <summary>Keys taken on the way down, so their repeats and the release are taken too.</summary>
         private static readonly bool[] _taken = new bool[256];
@@ -90,16 +105,41 @@ namespace ExplorerNative
         /// pressed. <paramref name="onlyWhenInFront"/> limits it to while one of
         /// this application's windows is in front.
         /// </summary>
-        public static void Add(IntPtr window, int id, Shortcut shortcut, bool onlyWhenInFront)
+        /// <returns>False if the hook could not be installed; the next Add tries again.</returns>
+        public static bool Add(IntPtr window, int id, Shortcut shortcut, bool onlyWhenInFront)
         {
             lock (Gate)
             {
+                var before = _entries;
                 var next = new Dictionary<(IntPtr, int), Entry>(_entries)
                 {
                     [(window, id)] = new Entry(window, id, shortcut, onlyWhenInFront)
                 };
                 _entries = next;
-                EnsureRunning();
+                if (EnsureRunning()) return true;
+                _entries = before;
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Puts the hook back, in case Windows removed it. Called after a
+        /// blocking collection, the likeliest thing to have kept it waiting.
+        /// </summary>
+        internal static void Refresh()
+        {
+            lock (Gate)
+            {
+                if (_thread != null) PostThreadMessage(_threadId, WM_REHOOK, IntPtr.Zero, IntPtr.Zero);
+            }
+        }
+
+        /// <summary>Tests only: takes the hook away the way a timeout does, and changes nothing else.</summary>
+        internal static void DropForTests()
+        {
+            lock (Gate)
+            {
+                if (_thread != null) PostThreadMessage(_threadId, WM_DROPHOOK, IntPtr.Zero, IntPtr.Zero);
             }
         }
 
@@ -158,28 +198,70 @@ namespace ExplorerNative
         /// <summary>For the tests: whether the hook is installed right now.</summary>
         internal static bool Running { get { lock (Gate) return _thread != null; } }
 
-        private static void EnsureRunning()
+        private static IntPtr Install(HookProc proc)
         {
-            if (_thread != null) return;
+            if (FailInstallsForTests > 0) { FailInstallsForTests--; return IntPtr.Zero; }
+            return SetWindowsHookEx(WH_KEYBOARD_LL, proc, GetModuleHandle(null), 0);
+        }
 
-            using var ready = new ManualResetEventSlim();
+        /// <summary>Starts the hook's thread. False if the hook could not be installed.</summary>
+        private static bool EnsureRunning()
+        {
+            if (_thread != null) return true;
+
+            var ready = new ManualResetEventSlim();
+            bool ok = false;
+            uint id = 0;
             var thread = new Thread(() =>
             {
-                _threadId = GetCurrentThreadId();
-                _proc = OnKey;
-                var hook = SetWindowsHookEx(WH_KEYBOARD_LL, _proc, GetModuleHandle(null), 0);
+                id = GetCurrentThreadId();
+                // A delegate of this thread's own, kept alive until its hook is
+                // gone: a static one was replaced by the next thread while this
+                // one's hook could still be installed.
+                HookProc proc = OnKey;
+                var hook = Install(proc);
+                ok = hook != IntPtr.Zero;
+                if (ok) SetTimer(IntPtr.Zero, UIntPtr.Zero, RehookEveryMs, IntPtr.Zero);
                 ready.Set();
-                if (hook == IntPtr.Zero) return;
+                if (!ok) return;
 
-                while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0) { }
+                while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
+                {
+                    if (msg.message is WM_TIMER or WM_REHOOK)
+                    {
+                        // The new one first, so no key slips past in a gap. Both
+                        // call OnKey; unhooking one Windows already removed is harmless.
+                        var fresh = Install(proc);
+                        if (fresh != IntPtr.Zero)
+                        {
+                            if (hook != IntPtr.Zero) UnhookWindowsHookEx(hook);
+                            hook = fresh;
+                        }
+                    }
+                    else if (msg.message == WM_DROPHOOK && hook != IntPtr.Zero)
+                    {
+                        UnhookWindowsHookEx(hook);
+                        hook = IntPtr.Zero;
+                    }
+                }
 
-                UnhookWindowsHookEx(hook);
+                if (hook != IntPtr.Zero) UnhookWindowsHookEx(hook);
+                GC.KeepAlive(proc);
                 Array.Clear(_taken);
             })
             { IsBackground = true, Name = "Windows key shortcuts" };
             thread.Start();
-            ready.Wait(2000);
+            if (!ready.Wait(2000))
+            {
+                // Never answered: stop it if it ever does, and try again next time.
+                if (id != 0) PostThreadMessage(id, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
+                return false;
+            }
+            ready.Dispose();
+            if (!ok) return false;
+            _threadId = id;
             _thread = thread;
+            return true;
         }
 
         private static void StopIfIdle()

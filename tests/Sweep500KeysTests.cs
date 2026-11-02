@@ -30,6 +30,7 @@ namespace ExplorerNative
             OwnHotkeysPauseWhileChoosingShortcuts();
             DatesFollowTheWindowsRegion();
             LettersTypedWhileLoadingWaitForTheRows();
+            WinKeyHookComesBackAfterWindowsDropsIt();
             await Task.CompletedTask;
         }
 
@@ -195,6 +196,104 @@ namespace ExplorerNative
             while (dir != null && !File.Exists(Path.Combine(dir, "src", "MainForm.cs")))
                 dir = Path.GetDirectoryName(dir.TrimEnd(Path.DirectorySeparatorChar));
             return Path.Combine(dir ?? ".", "src");
+        }
+
+        [DllImport("user32.dll")] private static extern void keybd_event(byte vk, byte scan, uint flags, UIntPtr extra);
+        [DllImport("user32.dll")] private static extern IntPtr OpenInputDesktop(uint flags, bool inherit, uint access);
+        [DllImport("user32.dll")] private static extern bool CloseDesktop(IntPtr desktop);
+
+        private sealed class HotkeyCounter : NativeWindow
+        {
+            public int Fired;
+            protected override void WndProc(ref Message m)
+            {
+                if (m.Msg == 0x0312) Fired++;
+                base.WndProc(ref m);
+            }
+        }
+
+        private static void PumpFor(int ms)
+        {
+            var until = Environment.TickCount64 + ms;
+            while (Environment.TickCount64 < until) { Application.DoEvents(); Thread.Sleep(10); }
+        }
+
+        /// <summary>
+        /// Windows silently removes a low-level hook that kept it waiting (a
+        /// blocking collection can), and a failed install used to count as
+        /// running for ever. The hook must come back, and a failed install must
+        /// say so and be tried again.
+        /// </summary>
+        private static void WinKeyHookComesBackAfterWindowsDropsIt()
+        {
+            string error = "";
+            bool failedSaysSo = true, notRunningAfterFail = false, retried = false, runningAfterRetry = false;
+            int firstPress = -1, afterDrop = -1, afterRefresh = -1;
+            bool skipped = false;
+            var thread = new Thread(() =>
+            {
+                try
+                {
+                    var winF24 = new Shortcut(HotkeyManager.MOD_WIN, 0x87);
+                    using (var hotkeys = new HotkeyManager())
+                    {
+                        WinKeyHook.FailInstallsForTests = 1;
+                        failedSaysSo = hotkeys.RegisterLocal(0x7E59, winF24);
+                        notRunningAfterFail = !WinKeyHook.Running;
+                        retried = hotkeys.RegisterLocal(0x7E59, winF24);
+                        runningAfterRetry = WinKeyHook.Running;
+                        hotkeys.Unregister(0x7E59);
+                    }
+                    WinKeyHook.FailInstallsForTests = 0;
+
+                    var desktop = OpenInputDesktop(0, false, 0x0100);
+                    if (desktop == IntPtr.Zero) { skipped = true; return; }
+                    CloseDesktop(desktop);
+
+                    var counter = new HotkeyCounter();
+                    counter.CreateHandle(new CreateParams());
+                    try
+                    {
+                        WinKeyHook.Add(counter.Handle, 0x7E5A, winF24, onlyWhenInFront: false);
+                        void Press()
+                        {
+                            keybd_event(0x5B, 0, 0x0001, UIntPtr.Zero);
+                            keybd_event(0x87, 0, 0, UIntPtr.Zero);
+                            keybd_event(0x87, 0, 0x0002, UIntPtr.Zero);
+                            keybd_event(0x5B, 0, 0x0001 | 0x0002, UIntPtr.Zero);
+                            PumpFor(400);
+                        }
+                        Press();
+                        firstPress = counter.Fired;
+                        WinKeyHook.DropForTests();
+                        PumpFor(100);
+                        Press();
+                        afterDrop = counter.Fired;
+                        WinKeyHook.Refresh();
+                        PumpFor(100);
+                        Press();
+                        afterRefresh = counter.Fired;
+                    }
+                    finally
+                    {
+                        WinKeyHook.Remove(counter.Handle, 0x7E5A);
+                        counter.DestroyHandle();
+                    }
+                }
+                catch (Exception ex) { error = ex.Message; }
+                finally { WinKeyHook.FailInstallsForTests = 0; }
+            });
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
+            thread.Join(20000);
+            Equal("the hook test ran", "", error);
+            Check("a Windows key shortcut whose hook could not be installed is reported as not registered", !failedSaysSo);
+            Check("...and the hook is not counted as running", notRunningAfterFail);
+            Check("the next registration tries the hook again", retried && runningAfterRetry);
+            if (skipped) { Console.WriteLine("  (skipped the live hook presses: the desktop is locked)"); return; }
+            Equal("Win+F24 fires through the hook", "1", firstPress.ToString());
+            Equal("with the hook taken away, as Windows does on a timeout, it does not", "1", afterDrop.ToString());
+            Equal("after a refresh the hook is back and it fires again", "2", afterRefresh.ToString());
         }
     }
 }
