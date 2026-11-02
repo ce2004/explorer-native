@@ -167,6 +167,13 @@ namespace ExplorerNative
             public bool Searching;
 
             /// <summary>
+            /// The term of the walk in flight when it is a quiet re-run of the
+            /// results on screen (after an operation in them), else null. Set by
+            /// every walk as it starts.
+            /// </summary>
+            public string? QuietSearchTerm;
+
+            /// <summary>
             /// A listing is on its way in. The folder watcher leaves its mark
             /// standing rather than cancel it and start again — on a slow share with
             /// a download growing in it, that was a reload that never finished.
@@ -6051,6 +6058,8 @@ namespace ExplorerNative
 
             SearchResult result;
             pane.Searching = true;
+            // Set by every walk, so it is never left over from an older one.
+            pane.QuietSearchTerm = quiet ? term : null;
             try
             {
                 var drive = Drive;
@@ -6289,7 +6298,23 @@ namespace ExplorerNative
                 if (pane.SearchTerm == null || !IsUnder(folder, pane.CurrentPath)) return false;
             }
 
-            if (pane.Searching) { pane.NeedsRefresh = true; return false; }
+            if (pane.Searching)
+            {
+                // A quiet re-run of the results on screen, after an earlier
+                // operation in them: a second one starts it again (BeginPaneWork
+                // cancels the old walk). Otherwise its rows were read before this
+                // change, and nothing ran the search again, so a deleted result
+                // stayed listed. Not a new search still gathering (restarting it
+                // would put the old term back), nor the watcher's quiet refresh.
+                if (!quiet && pane.SearchTerm is { } shown &&
+                    string.Equals(pane.QuietSearchTerm, shown, StringComparison.Ordinal))
+                {
+                    _ = RerunSearchAsync(shown, selectAfter ?? FocusedPath());
+                    return false;
+                }
+                pane.NeedsRefresh = true;
+                return false;
+            }
 
             if (pane.SearchTerm is { } term)
             {
