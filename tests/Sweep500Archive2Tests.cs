@@ -27,7 +27,93 @@ namespace ExplorerNative
             Console.WriteLine("Sweep 5.0.0, archives opened as folders and the tar reader:");
             TreeWithWriteFailuresIsPartialNotKept();
             IncrementalTarFoldersAreFolders();
+            ReadFailureIsNotDamage("tar");
+            ReadFailureIsNotDamage("tar.gz");
             await Task.CompletedTask;
+        }
+
+        /// <summary>Eight 300KB files, a 12MB one (past the inline limit, so it goes through a pipe), then four more.</summary>
+        private static void WriteMixedTar(string path, bool gzip)
+        {
+            var rng = new Random(500);
+            using var file = File.Create(path);
+            using Stream outer = gzip ? new System.IO.Compression.GZipStream(file, System.IO.Compression.CompressionLevel.Fastest) : file;
+            using var writer = new TarWriter(outer, TarEntryFormat.Pax, leaveOpen: true);
+            void Add(string name, int size)
+            {
+                var data = new byte[size];
+                rng.NextBytes(data);
+                writer.WriteEntry(new PaxTarEntry(TarEntryType.RegularFile, name) { DataStream = new MemoryStream(data) });
+            }
+            for (int i = 0; i < 8; i++) Add($"a{i}.bin", 300 * 1024);
+            Add("big.bin", 12 * 1024 * 1024);
+            for (int i = 0; i < 4; i++) Add($"z{i}.bin", 300 * 1024);
+        }
+
+        // Bug 3: a share that went away (here, a range another handle locked)
+        // was said as "This archive is damaged or incomplete".
+        private static void ReadFailureIsNotDamage(string id)
+        {
+            var dir = NewTemp("readfail");
+            try
+            {
+                var path = Path.Combine(dir, "backup." + id);
+                WriteMixedTar(path, gzip: id == "tar.gz");
+                long len = new FileInfo(path).Length;
+                using (var holder = new FileStream(path, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite))
+                {
+                    holder.Lock(len / 2, len - len / 2);
+
+                    var dest = Path.Combine(dir, "out");
+                    Directory.CreateDirectory(dest);
+                    var errors = new List<string>();
+                    int done = 0;
+                    try
+                    {
+                        done = TarEngine.Extract(path, Format(id), ExtractionRules.Selecting(dest, n => n), 2,
+                            new ArchiveEngine.Reporter(null), errors, CancellationToken.None);
+                    }
+                    catch (Exception ex) { errors.Add("threw " + ex.GetType().Name + ": " + ex.Message); }
+                    var said = string.Join(" | ", errors);
+                    Check($"archives2 read failure ({id}): extracting says the archive could not be read",
+                        errors.Any(e => e.Contains("could not be read", StringComparison.OrdinalIgnoreCase) &&
+                                        e.Contains("locked", StringComparison.OrdinalIgnoreCase)), said);
+                    Check($"archives2 read failure ({id}): the reason does not repeat the archive's path",
+                        !said.Contains(dir, StringComparison.OrdinalIgnoreCase), said);
+                    Check($"archives2 read failure ({id}): extracting does not call it damaged",
+                        !said.Contains("damaged", StringComparison.OrdinalIgnoreCase), said);
+                    Check($"archives2 read failure ({id}): what came before was saved", done > 0 && File.Exists(Path.Combine(dest, "a0.bin")),
+                        done.ToString());
+
+                    string opened;
+                    try
+                    {
+                        var listing = ArchiveBrowser.Open(path, null, CancellationToken.None);
+                        opened = listing.Damaged ? "listed as damaged" : "listed whole";
+                    }
+                    catch (InvalidDataException ex) { opened = "damaged: " + ex.Message; }
+                    catch (IOException ex) { opened = "io: " + ex.Message; }
+                    Check($"archives2 read failure ({id}): browsing says the read failed, not damage",
+                        opened.StartsWith("io: ", StringComparison.Ordinal) && opened.Contains("locked", StringComparison.OrdinalIgnoreCase),
+                        opened);
+
+                    holder.Unlock(len / 2, len - len / 2);
+                }
+
+                // The control: a truncated copy is still damage.
+                var cut = Path.Combine(dir, "cut." + id);
+                var bytes = File.ReadAllBytes(path);
+                File.WriteAllBytes(cut, bytes.AsSpan(0, bytes.Length / 2).ToArray());
+                var dest2 = Path.Combine(dir, "out2");
+                Directory.CreateDirectory(dest2);
+                var errors2 = new List<string>();
+                TarEngine.Extract(cut, Format(id), ExtractionRules.Selecting(dest2, n => n), 2,
+                    new ArchiveEngine.Reporter(null), errors2, CancellationToken.None);
+                Check($"archives2 read failure ({id}): a truncated archive is still damaged",
+                    errors2.Any(e => e.StartsWith("This archive is damaged or incomplete", StringComparison.Ordinal)),
+                    string.Join(" | ", errors2));
+            }
+            finally { try { Directory.Delete(dir, true); } catch { } }
         }
 
         private static ArchiveFormat Format(string id) => ArchiveFormats.All.First(f => f.Id == id);

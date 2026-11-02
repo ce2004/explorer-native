@@ -136,8 +136,75 @@ namespace ExplorerNative
             return ReadInto(counted, rules, threads, reporter, errors, token);
         }
 
-        private static FileStream OpenFile(string path) =>
-            new(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 20, FileOptions.SequentialScan);
+        private static Stream OpenFile(string path) =>
+            new SourceStream(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 1 << 20,
+                FileOptions.SequentialScan));
+
+        /// <summary>
+        /// The archive file could not be read: a share that went away, a USB
+        /// disk pulled, a range another program locked. Not damage: the archive
+        /// may be fine, and calling it damaged could have a good backup thrown away.
+        /// </summary>
+        internal sealed class ArchiveReadException : IOException
+        {
+            public ArchiveReadException(IOException inner)
+                : base("Could not read the archive: " + Plain(inner.Message) + ".", inner) => Reason = Plain(inner.Message);
+
+            /// <summary>Windows' own words for why.</summary>
+            public string Reason { get; }
+
+            // .NET adds " : 'C:\path\backup.tar'." to the end; the archive is already known.
+            private static string Plain(string said)
+            {
+                int at = said.IndexOf(" : '", StringComparison.Ordinal);
+                if (at > 0) said = said[..at];
+                return said.Trim().TrimEnd('.');
+            }
+        }
+
+        /// <summary>
+        /// The archive file, with a failed read marked as <see cref="ArchiveReadException"/>
+        /// where it happens, so the readers above can tell it from damage (zlib's
+        /// own errors are IOExceptions too). Seeks pass straight through.
+        /// </summary>
+        internal sealed class SourceStream : Stream
+        {
+            private readonly Stream _inner;
+
+            public SourceStream(Stream inner) => _inner = inner;
+
+            public override bool CanRead => true;
+            public override bool CanSeek => _inner.CanSeek;
+            public override bool CanWrite => false;
+            public override long Length => _inner.Length;
+            public override long Position
+            {
+                get => _inner.Position;
+                set => _inner.Position = value;
+            }
+
+            public override int Read(byte[] buffer, int offset, int count) => Read(buffer.AsSpan(offset, count));
+
+            public override int Read(Span<byte> buffer)
+            {
+                try { return _inner.Read(buffer); }
+                catch (IOException ex) when (ex is not EndOfStreamException and not ArchiveReadException)
+                {
+                    throw new ArchiveReadException(ex);
+                }
+            }
+
+            public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
+            public override void Flush() { }
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing) _inner.Dispose();
+                base.Dispose(disposing);
+            }
+        }
 
         private static int CompressOneFile(IReadOnlyList<ArchiveItem> plan, string archivePath,
             ArchiveLevel level, int threads, ArchiveEngine.Reporter reporter, CancellationToken token)
@@ -485,7 +552,11 @@ namespace ExplorerNative
                 // that follows saves what it can and says where it stopped.
                 TarEntry? entry;
                 try { entry = reader.GetNextEntry(copyData: false); }
-                catch (Exception ex) when (ex is not OperationCanceledException) { damaged = true; break; }
+                catch (Exception ex) when (ex is not OperationCanceledException and not ArchiveReadException)
+                {
+                    damaged = true;
+                    break;
+                }
                 if (entry == null) break;
 
                 // Not files, as ReadInto already knows: counted here, git
@@ -704,6 +775,10 @@ namespace ExplorerNative
             // much was saved.
             bool damaged = false;
 
+            // The archive file itself stopped answering (a share gone, a disk
+            // pulled): said as that, never as damage.
+            string? readFailure = null;
+
             // Where each file went, by its name in the archive, for the hard links
             // that name it; and the links, made once every file is written.
             var extracted = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
@@ -751,6 +826,11 @@ namespace ExplorerNative
 
                     TarEntry? entry;
                     try { entry = reader.GetNextEntry(copyData: false); }
+                    catch (ArchiveReadException ex)
+                    {
+                        readFailure = ex.Reason;
+                        break;
+                    }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {
                         damaged = true;
@@ -861,6 +941,13 @@ namespace ExplorerNative
                         var buffer = new byte[Math.Max(0, length)];
                         int filled;
                         try { filled = data == null ? 0 : ReadFully(data, buffer, token); }
+                        catch (ArchiveReadException ex)
+                        {
+                            rules.Withdraw(target);
+                            reporter.Finished(0);
+                            readFailure = ex.Reason;
+                            break;
+                        }
                         catch (Exception ex) when (ex is InvalidDataException or EndOfStreamException or IOException)
                         {
                             // A gzip stream that stops decompressing said
@@ -927,6 +1014,7 @@ namespace ExplorerNative
                         {
                             failure = "the archive is damaged at this point";
                         }
+                        catch (ArchiveReadException ex) { readFailure = ex.Reason; }
                         catch (IOException ex) { failure = ex.Message; }
                         finally { pipe.Close(); }
 
@@ -937,6 +1025,10 @@ namespace ExplorerNative
                             lock (errors) errors.Add($"{entry.Name}: {failure}");
                             if (failure.StartsWith("the archive", StringComparison.Ordinal)) damaged = true;
                         }
+
+                        // The file is gone from under us: the next header would
+                        // fail the same way and be taken for damage.
+                        if (readFailure != null) break;
                     }
                 }
 
@@ -994,6 +1086,10 @@ namespace ExplorerNative
             }
 
             if (damaged) lock (errors) errors.Add(ArchiveEngine.DamagedMessage(done));
+            if (readFailure != null)
+                lock (errors) errors.Add(done > 0
+                    ? $"The archive could not be read part way through: {readFailure}. {NameRules.Items(done)} {(done == 1 ? "was" : "were")} extracted before that."
+                    : $"The archive could not be read: {readFailure}.");
 
             return done;
         }

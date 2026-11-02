@@ -371,7 +371,9 @@ namespace ExplorerNative
                     // far through the file that has got.
                     var reporter = new ArchiveEngine.Reporter(progress);
                     reporter.Estimate(file.Length, () => file.Position);
-                    using var counted = new TickingStream(file, () => reporter.Advance(0));
+                    // A failed read is said as one (a share gone away), not as damage.
+                    using var source = new TarEngine.SourceStream(file);
+                    using var counted = new TickingStream(source, () => reporter.Advance(0));
 
                     IReadOnlyList<ArchiveEntryInfo> entries;
                     bool damaged;
