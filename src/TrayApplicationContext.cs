@@ -1253,6 +1253,10 @@ namespace ExplorerNative
 
         private void RunAudioActionCore(AudioAction action, int repeat)
         {
+            // A new press starts a new hold: every path below says its edge
+            // messages ("maximum", "Nothing is loaded") once per hold.
+            if (repeat == 0) _saidThisHold.Clear();
+
             // Apple Music's shuffle can be set before anything plays, like in Apple Music itself.
             if (action == AudioAction.ToggleShuffle)
             {
@@ -1330,7 +1334,12 @@ namespace ExplorerNative
                         if (m == "Nothing is playing") id = "audio.nothing";
                         break;
                 }
-                SayAudio(id, m);
+                // Held at an end, or with nothing loaded, the same sentence came
+                // back on every repeat; said once, then only shown.
+                if (id is "volume.max" or "volume.min" or "audio.nothing" && !_saidThisHold.Add(id))
+                    SayAudio(null, m, speak: false);
+                else
+                    SayAudio(id, m);
                 return;
             }
 
@@ -1378,7 +1387,12 @@ namespace ExplorerNative
 
             if (finerId != null && finerMessage == message)
             {
-                SayAudio(finerId, message);
+                // Once per hold, like the separate messages below: held at the
+                // top, "Volume 1000 percent, maximum" restarted itself fifty
+                // times a second. The repeats only update the status bar (a
+                // null id: no speech, no Windows notification).
+                if (_saidThisHold.Add(finerId)) SayAudio(finerId, message);
+                else SayAudio(null, message, speak: false);
                 return;
             }
 
@@ -1391,8 +1405,8 @@ namespace ExplorerNative
             // Once per hold, by id. Held at the end of a ladder, "Already at 400
             // percent" was raised on every repeat and started itself over eight
             // times a second — and a hold is also when most of these happen, so
-            // they are not simply dropped after the first press.
-            if (repeat == 0) _saidThisHold.Clear();
+            // they are not simply dropped after the first press. (Cleared at
+            // the top on repeat 0.)
             if (finerId != null && !string.IsNullOrEmpty(finerMessage) && _saidThisHold.Add(finerId))
                 Notify(finerId, finerMessage!);
         }

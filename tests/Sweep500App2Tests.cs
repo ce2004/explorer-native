@@ -29,6 +29,7 @@ namespace ExplorerNative
             SignOutTurnsDriveOffAtOnce();
             CheckBoxNamesHaveNoAccessKeyMarker();
             NewAppleMusicSignInReachesThePlayer();
+            HeldKeyAtAnEdgeSpeaksOncePerHold();
             await Task.CompletedTask;
         }
 
@@ -293,6 +294,34 @@ namespace ExplorerNative
             var signIn = Body(player, "public static void SignInChanged(");
             Check("apple sign-in: the player closes its page on a new sign-in", signIn.Contains("Reset()", StringComparison.Ordinal));
             Check("apple sign-in: and drops what was playing so a waiting start gives up", signIn.Contains("_generation++", StringComparison.Ordinal));
+        }
+
+        /// <summary>
+        /// Held at the top or bottom of the volume, or with nothing loaded, the
+        /// same sentence was spoken on every 20ms repeat, cutting itself off.
+        /// The once-per-hold set now covers the same-sentence path and Apple
+        /// Music's, and is cleared before either.
+        /// </summary>
+        private static void HeldKeyAtAnEdgeSpeaksOncePerHold()
+        {
+            var core = Body(Source("TrayApplicationContext.cs"), "private void RunAudioActionCore(");
+            Check("held edge: RunAudioActionCore found", core.Length > 0);
+
+            int clear = core.IndexOf("_saidThisHold.Clear()", StringComparison.Ordinal);
+            int apple = core.IndexOf("AppleMusicPlayer.IsActive", StringComparison.Ordinal);
+            int same = core.IndexOf("finerMessage == message", StringComparison.Ordinal);
+            Check("held edge: a new press clears the hold before Apple Music's branch", clear >= 0 && apple > clear);
+            Check("held edge: and before the same-sentence branch", clear >= 0 && same > clear);
+
+            // The same-sentence branch, up to its return, consults the set.
+            int sameEnd = same < 0 ? -1 : core.IndexOf("return;", same, StringComparison.Ordinal);
+            Check("held edge: the same-sentence branch speaks once per hold",
+                same >= 0 && sameEnd > same && core[same..sameEnd].Contains("_saidThisHold.Add(", StringComparison.Ordinal));
+
+            // Apple Music's branch, up to the file player's switch, does too.
+            int filePlayer = core.IndexOf("_audio.TogglePlayPause()", StringComparison.Ordinal);
+            Check("held edge: Apple Music's maximum and minimum are said once per hold",
+                apple >= 0 && filePlayer > apple && core[apple..filePlayer].Contains("_saidThisHold.Add(", StringComparison.Ordinal));
         }
     }
 }
