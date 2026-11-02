@@ -579,6 +579,9 @@ namespace ExplorerNative
             Check("its move shows on the letter", moved == "uploaded.flac" && File.Exists(rig.P("Docs", "uploaded.flac")) &&
                 !File.Exists(rig.P("Music", "uploaded.flac")));
 
+            // Removed from the letter once Drive has trashed it, as the file
+            // manager does: left on Drive, any listing after it brought it back.
+            rig.Drive.Trash(entry.Id);
             Check("and its removal", rig.Mount.RemoveOne(rig.P("Docs", "uploaded.flac")) && !File.Exists(rig.P("Docs", "uploaded.flac")));
             Check("the file manager's own listing agrees with the letter",
                 rig.Mount.TryListing(rig.P("Docs"), out var rows) &&
