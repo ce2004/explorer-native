@@ -43,6 +43,8 @@ namespace ExplorerNative
                 await FolderDeletedOnDriveTests(sandbox, "small");
                 await InBatches(() => FreeUpDriveCountTests(sandbox));
                 await SharedDriveQuotaTests(sandbox);
+                await InBatches(() => MovedOutOfPairTests(sandbox, files: 1));
+                await InBatches(() => MovedOutOfPairTests(sandbox, files: 70));
             }
             finally
             {
@@ -311,6 +313,46 @@ namespace ExplorerNative
             (problem, onDrive) = await Run("My Drive/Music", 1);
             Check("shared drive quota: a My Drive pair still stops when My Drive is full",
                 problem != null && problem.StartsWith("paused: Google Drive is full", StringComparison.Ordinal) && onDrive == 0, problem);
+        }
+
+        // ---------------- a file moved out of the pair on Drive, edited on the PC ----------------
+
+        /// <summary>
+        /// A batched pair on the feed. The person moves Music/t000.txt out of
+        /// the synced folder on drive.google.com; the feed marks only where it
+        /// went, so Music is not listed again. Then the PC copy is edited: the
+        /// edit was written into the file at its new home outside the pair,
+        /// and Music never got it. Now the in-place update checks the file's
+        /// folder first, as the trash does, and the edit goes up into Music.
+        /// With many files the fast lane makes the same check.
+        /// </summary>
+        private static async Task MovedOutOfPairTests(string sandbox, int files)
+        {
+            var label = $"moved out of the pair ({files} edited): ";
+            using var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true);
+            for (int i = 0; i < files; i++) rig.Write($"Music/t{i:D3}.txt", "old " + i, T0);
+            rig.Write("Other/o.txt", "o", T0);
+            var problem = await rig.Pass();
+            await rig.Pass();
+            Check(label + "the pair settled first", problem == null && rig.DriveTree().ContainsKey("Music/t000.txt"), problem);
+
+            var outside = rig.Drive.AddFolder("Elsewhere");
+            var id = rig.Drive.Find(rig.FolderId, "Music/t000.txt")!;
+            rig.Drive.MoveTo(id, outside);
+            rig.Drive.Changed(id);
+            await rig.Pass();
+
+            for (int i = 0; i < files; i++) rig.Write($"Music/t{i:D3}.txt", "new edit " + i, T0.AddHours(1));
+            await rig.Pass();
+            await rig.Pass();
+            await rig.Pass();
+
+            var moved = rig.Drive.Get(id)!;
+            Equal(label + "the file outside the pair keeps what it held", "old 0", Encoding.UTF8.GetString(moved.Data));
+            Check(label + "and stays where the person put it", moved.Parent == outside && !moved.Trashed);
+            Check(label + "the PC's edit is in Music on Drive",
+                rig.DriveTree().TryGetValue("Music/t000.txt", out var text) && text == "new edit 0", text);
+            Check(label + "and the PC copy is still there", File.Exists(rig.LocalPath("Music/t000.txt")));
         }
 
         // ---------------- a recorded folder that became a Drive twin ----------------

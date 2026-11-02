@@ -4140,6 +4140,19 @@ namespace ExplorerNative
                                             deferred++;
                                             break;
                                         }
+                                        // Moved out of this folder in Drive since the records
+                                        // (the feed only marks where it went): the PC's edit is
+                                        // not written into a file that lives elsewhere now. The
+                                        // folder is listed again next pass, and the file goes
+                                        // up there as a new one.
+                                        var recordedFolder = SyncMoves.Parent(path) is { Length: > 0 } up
+                                            ? folders.TryGetValue(up, out var upId) ? upId : null
+                                            : pair.DriveFolderId;
+                                        if (now?.Parent != null && recordedFolder != null && now.Parent != recordedFolder)
+                                        {
+                                            deferred++;
+                                            break;
+                                        }
                                         replaces = now?.Id;
                                     }
                                     // One-shot uploads finish once started (see Drain); a big one
@@ -5774,6 +5787,8 @@ namespace ExplorerNative
                             // conflict, and the slow path defers it for the next pass.
                             var now = await Patiently(pair, () => client.FileNow(replaces, ct), client, ct).ConfigureAwait(false);
                             if (now == null || !SameAsScanned(now, old)) return false;
+                            // Moved out of the folder in Drive: the careful loop defers it.
+                            if (now.Parent != null && now.Parent != parent) return false;
                             // An update cannot make a second file, so a resend is safe.
                             up = await Patiently(pair, () => client.UploadDetailed(localPath, Path.GetFileName(localPath), parent,
                                 Progress, ct, null, _ => { }, replaces), client, ct).ConfigureAwait(false);
