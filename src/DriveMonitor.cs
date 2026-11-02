@@ -630,6 +630,9 @@ namespace ExplorerNative
         /// <summary>Whether a PC folder is there, asked by the watcher's worker. The suite holds it to stand for a dead share.</summary>
         internal Func<string, bool> FolderThere { get; set; } = Directory.Exists;
 
+        /// <summary>Makes a pair's folder watcher. The suite swaps in one it can make fail, as a dropped share does.</summary>
+        internal Func<string, FileSystemWatcher> MakeWatcher { get; set; } = path => new FileSystemWatcher(path);
+
         /// <summary>
         /// Makes a pair's folder watcher, on a worker (see <see cref="Reload"/>),
         /// and puts it in place only while <paramref name="ticket"/> is still the
@@ -643,13 +646,11 @@ namespace ExplorerNative
                 if (!FolderThere(pair.LocalFolder)) return;
                 lock (_gate) if (_disposed || !_watchTickets.TryGetValue(pair.Id, out var now) || now != ticket) return;
 
-                watcher = new FileSystemWatcher(pair.LocalFolder)
-                {
-                    IncludeSubdirectories = pair.IncludeSubfolders,
-                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName |
-                                   NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.Attributes,
-                    InternalBufferSize = 64 * 1024,
-                };
+                watcher = MakeWatcher(pair.LocalFolder);
+                watcher.IncludeSubdirectories = pair.IncludeSubfolders;
+                watcher.NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName |
+                                       NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.Attributes;
+                watcher.InternalBufferSize = 64 * 1024;
 
                 // Events make a pass due, and say which folders to list
                 // again where the volume has no change journal (see
@@ -691,9 +692,18 @@ namespace ExplorerNative
                     if (!Ignored(e.FullPath)) Seen(e.FullPath, WatcherChangeTypes.Renamed);
                     else if (!Ignored(e.OldFullPath) && !IsMine(e.FullPath)) Soon(id);
                 };
-                watcher.Error += (_, _) =>
+                // An overflow loses events, but the watcher reads on. Any other
+                // failure (a share dropping, a USB drive pulled, the folder
+                // deleted) leaves it reading nothing for good, sometimes still
+                // saying it is on: it is retired, and the pair's next pass makes
+                // a new one (EnsureWatcher). Kept, its empty account was trusted
+                // again after one walk, and new PC files waited for the daily walk.
+                watcher.Error += (sender, e) =>
                 {
-                    journal.Lose();
+                    if (e.GetException() is InternalBufferOverflowException && sender is FileSystemWatcher { EnableRaisingEvents: true })
+                        journal.Lose();
+                    else
+                        RetireWatcher(id, sender as FileSystemWatcher, journal);
                     Soon(id);
                 };
                 watcher.EnableRaisingEvents = true;
@@ -714,6 +724,62 @@ namespace ExplorerNative
             {
                 try { watcher?.Dispose(); } catch { }
             }
+        }
+
+        /// <summary>
+        /// Lets go of a pair's watcher that has stopped for good, or of any it
+        /// has when <paramref name="watcher"/> is null (its folder has gone).
+        /// Its account dies with it, so nothing seen before the gap is trusted
+        /// after it. Only the watcher and journal named go: a newer pair's are kept.
+        /// </summary>
+        private void RetireWatcher(string pairId, FileSystemWatcher? watcher = null, PcWatchJournal? journal = null)
+        {
+            journal?.Die();
+            FileSystemWatcher? retired = null;
+            lock (_gate)
+            {
+                if (_watchers.TryGetValue(pairId, out var now) && (watcher == null || ReferenceEquals(now, watcher)))
+                {
+                    retired = now;
+                    _watchers.Remove(pairId);
+                }
+                if (_watchJournals.TryGetValue(pairId, out var held) && (journal == null || ReferenceEquals(held, journal)))
+                {
+                    held.Die();
+                    _watchJournals.Remove(pairId);
+                }
+            }
+            retired ??= watcher;
+            if (retired != null) _ = Task.Run(() => { try { retired.Dispose(); } catch { } });
+        }
+
+        /// <summary>
+        /// Makes a pair's watcher if it has none, or only a dead one: its PC
+        /// folder was missing when the pair was loaded (a USB drive not plugged
+        /// in yet, a share not up), or the watcher failed. Called by the pass,
+        /// on its worker, once the folder has answered, and before the PC side
+        /// is looked at, so this pass's whole walk is the one the new watcher
+        /// is trusted after.
+        /// </summary>
+        private void EnsureWatcher(string pairId)
+        {
+            DriveSyncPair copy;
+            long ticket;
+            FileSystemWatcher? dead = null;
+            lock (_gate)
+            {
+                if (_disposed || _removed.Contains(pairId)) return;
+                var live = _pairs.FirstOrDefault(p => p.Id == pairId);
+                if (live == null || live.Paused) return;
+                if (_watchers.ContainsKey(pairId) && _watchJournals.TryGetValue(pairId, out var journal) && !journal.Dead) return;
+                if (_watchers.Remove(pairId, out var old)) dead = old;
+                _watchJournals.Remove(pairId);
+                ticket = ++_lastTicket;
+                _watchTickets[pairId] = ticket;
+                copy = live.Copy();
+            }
+            if (dead != null) _ = Task.Run(() => { try { dead.Dispose(); } catch { } });
+            WatchAsWanted(copy, ticket);
         }
 
         /// <summary>Saves an edited list of pairs at once (through settings) and syncs.</summary>
@@ -811,9 +877,9 @@ namespace ExplorerNative
 
         /// <summary>
         /// Ends a wait for Google that is in progress. Patiently then asks again
-        /// at once, or stops the pair if it has been paused or removed. The wait
-        /// for a daily limit is an hour, and Sync now, Pause and closing the app
-        /// all have to be heard during it.
+        /// at once, or stops the pair if it has been paused, removed or edited.
+        /// The wait for a daily limit is an hour, and Sync now, Pause, Edit and
+        /// closing the app all have to be heard during it.
         /// </summary>
         private void CutWait()
         {
@@ -826,14 +892,25 @@ namespace ExplorerNative
             try { old.Cancel(); } catch { }
         }
 
-        /// <summary>Whether a pair has been paused or removed since its pass began.</summary>
+        /// <summary>The generation each running pass began with (see <see cref="Stopped"/>).</summary>
+        private readonly Dictionary<string, int> _passGeneration = new();
+
+        /// <summary>
+        /// Whether a pair has been paused, removed or edited since its pass
+        /// began. An edited pair's pass is of the old settings (Free up space
+        /// unticked, switched to download only), so it stops at its next action
+        /// as a paused one does, waits for Google and the end-of-pass steps
+        /// included, and the next pass runs with the new ones.
+        /// </summary>
         private bool Stopped(DriveSyncPair pair)
         {
             lock (_gate)
-                return _removed.Contains(pair.Id) || _pairs.Any(p => p.Id == pair.Id && p.Paused);
+                return _removed.Contains(pair.Id) || _pairs.Any(p => p.Id == pair.Id && p.Paused) ||
+                       (_passGeneration.TryGetValue(pair.Id, out var began) &&
+                        (_generation.TryGetValue(pair.Id, out var now) ? now : 0) != began);
         }
 
-        /// <summary>A pair paused or removed while its pass was waiting for Google.</summary>
+        /// <summary>A pair paused, removed or edited while its pass was waiting for Google.</summary>
         private sealed class PairStoppedException : OperationCanceledException
         {
             public PairStoppedException() : base("the pair was paused") { }
@@ -916,11 +993,13 @@ namespace ExplorerNative
 
         /// <summary>
         /// The shared look at each drive's feed (keyed by drive id, "" for My
-        /// Drive): where it has read up to, and since when it has been unbroken.
-        /// A pair is skipped only if it began its last pass after that, so no
-        /// change between its own read of the feed and the shared one is missed.
+        /// Drive): where it has read up to, since when it has been unbroken, and
+        /// when it last found (and so used up) any change. A pair is skipped
+        /// only if it began its last pass after both, so no change between its
+        /// own read of the feed and the shared one is missed: a pair not due in
+        /// the minute whose look used up a change missed it until QuietMost.
         /// </summary>
-        private readonly Dictionary<string, (string Token, DateTime Since)> _shared = new();
+        private readonly Dictionary<string, (string Token, DateTime Since, DateTime Found)> _shared = new();
 
         /// <summary>However quiet Drive is, a pair runs at least this often (a missed PC event, the daily walk).</summary>
         internal static TimeSpan QuietMost { get; set; } = TimeSpan.FromMinutes(15);
@@ -975,7 +1054,7 @@ namespace ExplorerNative
             foreach (var (key, group) in groups)
             {
                 string? driveId = key.Length == 0 ? null : key;
-                (string Token, DateTime Since) look;
+                (string Token, DateTime Since, DateTime Found) look;
                 bool have;
                 lock (_gate) have = _shared.TryGetValue(key, out look);
                 try
@@ -986,18 +1065,20 @@ namespace ExplorerNative
                         // run, and from their next minute the look decides.
                         var since = DateTime.UtcNow;
                         var start = await client.ChangesStartToken(driveId, token).ConfigureAwait(false);
-                        lock (_gate) _shared[key] = (start, since);
+                        lock (_gate) _shared[key] = (start, since, DateTime.MinValue);
                         run.AddRange(group);
                         continue;
                     }
 
                     var (changes, next) = await client.SyncChangesSince(look.Token, driveId, token).ConfigureAwait(false);
                     Interlocked.Increment(ref SharedLooks);
-                    lock (_gate) _shared[key] = (next, look.Since);
+                    // Taken once the read is in: a pass that began after this saw the change itself.
+                    var found = changes.Count > 0 ? DateTime.UtcNow : look.Found;
+                    lock (_gate) _shared[key] = (next, look.Since, found);
                     foreach (var pair in group)
                     {
                         bool unbroken;
-                        lock (_gate) unbroken = _ranFrom.TryGetValue(pair.Id, out var ran) && ran >= look.Since;
+                        lock (_gate) unbroken = _ranFrom.TryGetValue(pair.Id, out var ran) && ran >= look.Since && ran >= found;
                         if (changes.Count > 0 || !unbroken) run.Add(pair);
                         else lock (_gate) _lastChecked[pair.Id] = now;
                     }
@@ -1115,12 +1196,25 @@ namespace ExplorerNative
                 all = _allDue;
                 _allDue = false;
             }
-            var now = DateTime.UtcNow;
+            await RunDueAsync(client, all, DateTime.UtcNow, token).ConfigureAwait(false);
+        }
 
-            foreach (var pair in await DuePairsAsync(client, Pairs, all, now, token).ConfigureAwait(false))
+        /// <summary>
+        /// The pairs due now, one after another, each with its settings as they
+        /// are when its turn comes. A pair edited while an earlier pair's pass
+        /// ran (Free up space unticked, deletes turned off, switched to download
+        /// only) was run with the copy listed before the edit, under the rules
+        /// just switched off; one paused or removed meanwhile is skipped.
+        /// </summary>
+        internal async Task RunDueAsync(DriveClient client, bool all, DateTime now, CancellationToken token)
+        {
+            foreach (var listed in await DuePairsAsync(client, Pairs, all, now, token).ConfigureAwait(false))
             {
                 if (token.IsCancellationRequested) return;
-                if (!await SyncOneAsync(client, pair, token).ConfigureAwait(false)) return;
+                bool gone;
+                lock (_gate) gone = !_pairs.Any(p => p.Id == listed.Id && !p.Paused) || _removed.Contains(listed.Id);
+                if (gone) continue;
+                if (!await SyncOneAsync(client, listed, token, fromLive: true).ConfigureAwait(false)) return;
             }
         }
 
@@ -1184,7 +1278,12 @@ namespace ExplorerNative
             MemoryGiveBack.Collect();
         }
 
-        internal async Task<bool> SyncOneAsync(DriveClient client, DriveSyncPair pair, CancellationToken token)
+        /// <remarks>
+        /// <paramref name="fromLive"/>: run the pair as settings hold it once the
+        /// records are its own (see <see cref="RunDueAsync"/>). The suite passes
+        /// pairs of its own, and keeps the one it gave.
+        /// </remarks>
+        internal async Task<bool> SyncOneAsync(DriveClient client, DriveSyncPair pair, CancellationToken token, bool fromLive = false)
         {
             {
                 lock (_gate)
@@ -1205,17 +1304,33 @@ namespace ExplorerNative
                     try
                     {
                         await records.WaitAsync(token).ConfigureAwait(false);
-                        // Kept on Drive only as it is now: Put back changes it while
-                        // holding the lock, and a pass that waited for it with the
-                        // old list listed Drive afresh and skipped the folder for good.
-                        DriveSyncPair? live;
-                        lock (_gate) live = _pairs.FirstOrDefault(p => p.Id == pair.Id);
-                        if (live != null)
+                        try
                         {
-                            pair = pair.Copy();
-                            pair.DriveOnlyFolders = new List<string>(live.DriveOnlyFolders ?? new());
+                            // Kept on Drive only as it is now: Put back changes it while
+                            // holding the lock, and a pass that waited for it with the
+                            // old list listed Drive afresh and skipped the folder for good.
+                            // From the loop, every setting as it is now, read with the
+                            // generation it goes with: an edit after this stops the pass
+                            // at its next action (see Stopped); one before it is this pass.
+                            DriveSyncPair? live;
+                            int generation;
+                            lock (_gate)
+                            {
+                                live = _removed.Contains(pair.Id) ? null : _pairs.FirstOrDefault(p => p.Id == pair.Id);
+                                generation = _generation.TryGetValue(pair.Id, out var g) ? g : 0;
+                            }
+                            if (fromLive)
+                            {
+                                if (live == null || live.Paused || string.IsNullOrEmpty(live.DriveFolderId)) return true;
+                                pair = live.Copy();
+                            }
+                            else if (live != null)
+                            {
+                                pair = pair.Copy();
+                                pair.DriveOnlyFolders = new List<string>(live.DriveOnlyFolders ?? new());
+                            }
+                            await SyncPairAsync(client, pair, token, fromLive ? generation : null).ConfigureAwait(false);
                         }
-                        try { await SyncPairAsync(client, pair, token).ConfigureAwait(false); }
                         finally { records.Release(); }
                     }
                     finally
@@ -1276,7 +1391,12 @@ namespace ExplorerNative
                 }
                 finally
                 {
-                    lock (_gate) if (_running == pair.Id) _running = null;
+                    lock (_gate)
+                    {
+                        if (_running == pair.Id) _running = null;
+                        // Outside a pass (Keep on Drive only, Put back) only Pause and Remove are heard.
+                        _passGeneration.Remove(pair.Id);
+                    }
                     try { Changed?.Invoke(); } catch { }
                 }
             }
@@ -1385,8 +1505,8 @@ namespace ExplorerNative
                     }
                     catch (OperationCanceledException) when (!token.IsCancellationRequested)
                     {
-                        // Closing the app, pausing or removing the pair: stop.
-                        // Sync now: ask Google again straight away.
+                        // Closing the app, pausing, removing or editing the pair:
+                        // stop. Sync now: ask Google again straight away.
                         if (_stop.IsCancellationRequested) throw;
                         if (Stopped(pair)) throw new PairStoppedException();
                     }
@@ -1912,6 +2032,9 @@ namespace ExplorerNative
         /// <summary>The watchers' account of what changed, per pair, for PC folders with no change journal.</summary>
         private readonly Dictionary<string, PcWatchJournal> _watchJournals = new();
 
+        /// <summary>Where a PC folder's change journal is, or null with none. The suite answers null to stand for exFAT or a share.</summary>
+        internal Func<string, UsnJournal.Position?> JournalOf { get; set; } = UsnJournal.Where;
+
         /// <summary>
         /// The settings a whole walk of the PC folder was for: change any and the
         /// next pass walks it again. Walk is raised when a walk starts finding
@@ -1960,7 +2083,7 @@ namespace ExplorerNative
 
         private PcLook LookAtPc(DriveSyncPair pair, PairState state, bool hasRecords)
         {
-            var look = new PcLook { Journal = UsnJournal.Where(pair.LocalFolder) };
+            var look = new PcLook { Journal = JournalOf(pair.LocalFolder) };
             lock (_gate) _watchJournals.TryGetValue(pair.Id, out look.Watch);
             look.FromWatch = look.Watch?.Take(out look.Epoch);
 
@@ -2208,9 +2331,10 @@ namespace ExplorerNative
             public OfflineException(Exception inner) : base("Google Drive could not be reached", inner) { }
         }
 
-        private async Task SyncPairAsync(DriveClient client, DriveSyncPair pair, CancellationToken token)
+        private async Task SyncPairAsync(DriveClient client, DriveSyncPair pair, CancellationToken token, int? generationRead = null)
         {
-            int generation = GenerationOf(pair.Id);
+            int generation = generationRead ?? GenerationOf(pair.Id);
+            lock (_gate) _passGeneration[pair.Id] = generation;
             var name = DisplayName(pair);
             var (state, read) = LoadState(pair);
 
@@ -2246,6 +2370,9 @@ namespace ExplorerNative
                 .ConfigureAwait(false);
             if (SyncSafety.RootProblem(localThere, driveThere) is string gone)
             {
+                // A watcher on a folder that has gone watches nothing (or the
+                // old folder, moved away); a new one is made once it is back.
+                if (!localThere) RetireWatcher(pair.Id);
                 bool newProblem = gone != state.Problem;
                 state.Problem = gone;
                 SaveState(pair.Id, state);
@@ -2260,6 +2387,7 @@ namespace ExplorerNative
                 Finish(pair, state, refuse, announce: true);
                 return;
             }
+            EnsureWatcher(pair.Id);
 
             // Old Drive copies an earlier replace could not trash, before Drive
             // is listed, so the listing does not hold them as well.
@@ -2433,7 +2561,8 @@ namespace ExplorerNative
         private bool ClearEmptyFolders(DriveSyncPair pair, PairState state, SyncRules rules, SyncSkips skips,
             IEnumerable<string> seen, IReadOnlyDictionary<string, string> onDrive)
         {
-            if (!pair.FreesUpSpace || rules.Mode != SyncMode.UploadOnly || rules.CopyDeletes || !rules.IncludeSubfolders)
+            if (!pair.FreesUpSpace || rules.Mode != SyncMode.UploadOnly || rules.CopyDeletes || !rules.IncludeSubfolders ||
+                Stopped(pair))
                 return false;
             var before = state.EmptyLater ?? new List<string>();
             var candidates = new HashSet<string>(seen, SyncNameComparer.Instance);
@@ -2445,7 +2574,13 @@ namespace ExplorerNative
 
             foreach (var folder in candidates.OrderByDescending(f => f.Count(c => c == '/')))
             {
-                if (Stopped(pair)) break;
+                // Paused, removed or edited (Free up space unticked): no more
+                // folders go, and those waiting their turn keep it.
+                if (Stopped(pair))
+                {
+                    later.UnionWith(before);
+                    break;
+                }
                 for (var at = folder; at.Length > 0; at = SyncMoves.Parent(at))
                 {
                     if (!onDrive.ContainsKey(at) || IsLeftOutFolder(at, rules, skips) ||
@@ -2487,10 +2622,26 @@ namespace ExplorerNative
             SyncSkips skips, PassTally tally, CancellationToken token)
         {
             if (rules.Mode == SyncMode.DownloadOnly || !rules.IncludeSubfolders) return;
+
+            // The walk was before the moves. A folder renamed or moved on Drive
+            // has been renamed on the PC since (so it is no longer there), or its
+            // files moved one by one (so Drive still has the folder this pair
+            // had there, under its new path): made again, the old tree stood
+            // empty in Drive beside the renamed one, for good.
+            var nowOnDrive = new HashSet<string>(folders.Values, StringComparer.Ordinal);
+            bool MovedOnDrive(string folder) =>
+                state.Remembered != null && state.Remembered.TryGetValue(folder, out var was) && nowOnDrive.Contains(was);
+            bool StillOnPc(string folder)
+            {
+                try { return Directory.Exists(LocalPathFor(pair.LocalFolder, folder)); }
+                catch { return false; }
+            }
+
             var wanted = new HashSet<string>(SyncNameComparer.Instance);
             foreach (var pcFolder in pcFolders)
                 if (pcFolder.Length > 0 && !folders.ContainsKey(pcFolder) && !IsLeftOutFolder(pcFolder, rules, skips) &&
-                    !(rules.Mode == SyncMode.TwoWay && rules.CopyDeletes && driveFoldersBefore.Contains(pcFolder)))
+                    !(rules.Mode == SyncMode.TwoWay && rules.CopyDeletes && driveFoldersBefore.Contains(pcFolder)) &&
+                    !MovedOnDrive(pcFolder) && StillOnPc(pcFolder))
                     for (var at = pcFolder; at.Length > 0 && !folders.ContainsKey(at) && wanted.Add(at); at = SyncMoves.Parent(at)) { }
             foreach (var level in wanted.GroupBy(f => f.Count(c => c == '/')).OrderBy(g => g.Key))
             {
@@ -2586,21 +2737,29 @@ namespace ExplorerNative
             // the fact held the pass (and every new file behind it) for an hour.
             var freed = new System.Collections.Concurrent.ConcurrentQueue<string>();
             using var gate = new SemaphoreSlim(FreeUpLanes);
-            await Task.WhenAll(state.Files.Where(f => local.ContainsKey(f.Key)).ToList().Select(async f =>
+            try
             {
-                await gate.WaitAsync(token).ConfigureAwait(false);
-                try
+                await Task.WhenAll(state.Files.Where(f => local.ContainsKey(f.Key)).ToList().Select(async f =>
                 {
-                    if (Stopped(pair)) return;
-                    if (await TryFreeUpOneAsync(client, pair, rules, skips, f.Key, f.Value, token).ConfigureAwait(false))
-                        freed.Enqueue(f.Key);
-                }
-                finally { gate.Release(); }
-            })).ConfigureAwait(false);
-
-            // The records go with their files, whether or not the pair was stopped meanwhile.
-            foreach (var path in freed) Forget(state, path);
-            tally.FreedUp += freed.Count;
+                    await gate.WaitAsync(token).ConfigureAwait(false);
+                    try
+                    {
+                        if (Stopped(pair)) return;
+                        if (await TryFreeUpOneAsync(client, pair, rules, skips, f.Key, f.Value, token).ConfigureAwait(false))
+                            freed.Enqueue(f.Key);
+                    }
+                    finally { gate.Release(); }
+                })).ConfigureAwait(false);
+            }
+            finally
+            {
+                // The records go with their files, whether the pair was stopped or
+                // the app closed meanwhile (FreeUpAsync saves them): one that
+                // outlived its file, with deletes turned on later, sent Drive's
+                // copy to the trash.
+                foreach (var path in freed) Forget(state, path);
+                tally.FreedUp += freed.Count;
+            }
             if (Stopped(pair)) throw new PairStoppedException();
         }
 

@@ -1,4 +1,10 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace ExplorerNative
@@ -14,13 +20,505 @@ namespace ExplorerNative
         internal static void Check(string what, bool ok, string? detail = null) => _check(what, ok, detail);
         internal static void Equal(string what, string expected, string actual) => _equal(what, expected, actual);
 
+        private const double Fast = 0.0005;
+        private static readonly DateTime T0 = new(2026, 9, 1, 12, 0, 0, DateTimeKind.Utc);
+
         public static async Task RunAll(Action<string, bool, string?> check, Action<string, string, string> equal)
         {
             _check = check;
             _equal = equal;
 
             Console.WriteLine("Sweep 5.0.0, the folder sync:");
-            await Task.CompletedTask;
+            var previous = Settings.OverrideAppDataDir;
+            var sandbox = Path.Combine(Path.GetTempPath(), "en-sweep500-sync-" + Guid.NewGuid().ToString("N")[..8]);
+            Directory.CreateDirectory(sandbox);
+            Settings.OverrideAppDataDir = Path.Combine(sandbox, "appdata");
+            try
+            {
+                await DeadWatcherTests(sandbox);
+                await EditedWhileQueuedTests(sandbox);
+                await SharedLookOutOfStepTests(sandbox);
+                await EditDuringDailyLimitTests(sandbox);
+                await RenamedOnDriveTests(sandbox);
+                await FreeUpSweepStopsTests(sandbox);
+            }
+            finally
+            {
+                Settings.OverrideAppDataDir = previous;
+                try { Directory.Delete(sandbox, true); } catch { }
+            }
+            Console.WriteLine();
+        }
+
+        // ---------------- a rig: one Drive, one monitor, as many pairs as a test wants ----------------
+
+        private sealed class Rig : IDisposable
+        {
+            public readonly FakeDrive Drive = new();
+            public readonly string Top;
+            public readonly DriveClient Client;
+            public readonly DriveMonitor Monitor;
+            public readonly List<string> Said = new();
+            public readonly DriveSyncPair Pair;
+
+            public Rig(string sandbox, SyncMode mode = SyncMode.TwoWay, bool deletes = false)
+            {
+                Top = Path.Combine(sandbox, Guid.NewGuid().ToString("N")[..8]);
+                Client = new DriveClient(Drive, Fast);
+                Monitor = new DriveMonitor(new GoogleDrive(), (id, message) => { lock (Said) Said.Add(id + ": " + message); }, _ => { })
+                {
+                    WaitScale = Fast,
+                    DiskOfRoot = _ => (1L << 42, 1L << 43, "T:"),
+                    RecycleLocal = path => { File.Delete(path); return null; },
+                    PatienceLimit = TimeSpan.FromSeconds(5),
+                    SettleTime = TimeSpan.Zero,
+                };
+                Pair = AddPair("A", mode, deletes);
+            }
+
+            /// <summary>Another pair on the same Drive and monitor, not yet given to the monitor.</summary>
+            public DriveSyncPair AddPair(string name, SyncMode mode, bool deletes = false)
+            {
+                var local = Path.Combine(Top, name);
+                Directory.CreateDirectory(local);
+                return new DriveSyncPair
+                {
+                    Name = name, LocalFolder = local, DriveFolderId = Drive.AddFolder(name), DriveFolderPath = "My Drive/" + name,
+                    Mode = mode, CopyDeletes = deletes, CheckMinutes = 0,
+                };
+            }
+
+            public async Task<string?> Pass(DriveSyncPair? pair = null)
+            {
+                pair ??= Pair;
+                await Monitor.SyncOneAsync(Client, pair, CancellationToken.None);
+                return Monitor.StatusOf(pair.Id).Problem;
+            }
+
+            public string Write(DriveSyncPair pair, string relative, string text, DateTime when)
+            {
+                var path = Path.Combine(pair.LocalFolder, relative.Replace('/', '\\'));
+                Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+                File.WriteAllText(path, text);
+                File.SetLastWriteTimeUtc(path, when);
+                return path;
+            }
+
+            public string Put(DriveSyncPair pair, string relative, string text, DateTime when)
+            {
+                var parent = pair.DriveFolderId;
+                var parts = relative.Split('/');
+                foreach (var folder in parts[..^1])
+                    parent = Drive.Find(parent, folder) ?? Drive.AddFolder(folder, parent);
+                return Drive.AddFile(parts[^1], Encoding.UTF8.GetBytes(text), when, parent);
+            }
+
+            public Dictionary<string, string> DriveTree(DriveSyncPair pair) =>
+                Drive.Tree(pair.DriveFolderId).ToDictionary(kv => kv.Key, kv => Encoding.UTF8.GetString(kv.Value), StringComparer.OrdinalIgnoreCase);
+
+            public List<string> PcFiles(DriveSyncPair pair) =>
+                !Directory.Exists(pair.LocalFolder)
+                    ? new List<string>()
+                    : Directory.EnumerateFiles(pair.LocalFolder, "*", SearchOption.AllDirectories)
+                        .Select(f => Path.GetRelativePath(pair.LocalFolder, f).Replace('\\', '/'))
+                        .OrderBy(f => f, StringComparer.OrdinalIgnoreCase).ToList();
+
+            public void Dispose()
+            {
+                Monitor.Dispose();
+                try { Directory.Delete(Top, true); } catch { }
+            }
+        }
+
+        private static string Names(IEnumerable<string> names) => string.Join(",", names.OrderBy(n => n, StringComparer.OrdinalIgnoreCase));
+
+        /// <summary>Waits up to <paramref name="ms"/> for something to come true.</summary>
+        private static async Task<bool> Until(Func<bool> ok, int ms)
+        {
+            var clock = Stopwatch.StartNew();
+            while (clock.ElapsedMilliseconds < ms)
+            {
+                if (ok()) return true;
+                await Task.Delay(50);
+            }
+            return ok();
+        }
+
+        // ---------------- 1. a watcher that died, or was never made ----------------
+
+        /// <summary>A real watcher that can be made to fail the way a dropped share or a pulled USB drive makes it.</summary>
+        private sealed class DyingWatcher : FileSystemWatcher
+        {
+            public DyingWatcher(string path) : base(path) { }
+
+            public void Die()
+            {
+                EnableRaisingEvents = false;
+                OnError(new ErrorEventArgs(new System.ComponentModel.Win32Exception(64)));   // the network name is no longer available
+            }
+        }
+
+        /// <summary>
+        /// On a PC folder with no change journal (exFAT, a share) the watcher
+        /// says what changed. When it failed (a share dropping, a USB drive
+        /// pulled), it was never replaced: one whole walk later its empty
+        /// account was trusted again, so new PC files waited for the daily walk
+        /// while Status said all was synced. And a folder missing when the app
+        /// started never got a watcher at all, so PC changes waited for the
+        /// minute's check or longer.
+        /// </summary>
+        private static async Task DeadWatcherTests(string sandbox)
+        {
+            var made = new List<DyingWatcher>();
+            DyingWatcher? Newest() { lock (made) return made.Count > 0 ? made[^1] : null; }
+
+            // A watcher that fails.
+            using (var rig = new Rig(sandbox))
+            {
+                rig.Monitor.JournalOf = _ => null;
+                rig.Monitor.MakeWatcher = path => { var w = new DyingWatcher(path); lock (made) made.Add(w); return w; };
+                rig.Write(rig.Pair, "a.txt", "one", T0);
+                rig.Monitor.Reload(new[] { rig.Pair });
+                await Until(() => Newest()?.EnableRaisingEvents == true, 5000);
+                await Task.Delay(200);
+                await rig.Pass();
+                await rig.Pass();
+                Check("dead watcher: with no change journal, a pass goes by the watcher once it has watched a walk",
+                    rig.Monitor.LastPcSide.EndsWith("folders changed", StringComparison.Ordinal), rig.Monitor.LastPcSide);
+
+                Newest()!.Die();
+                await rig.Pass();
+                rig.Monitor.TakeDueForTests(rig.Pair.Id);
+                rig.Write(rig.Pair, "late.txt", "two", T0);
+                Check("dead watcher: a PC change after the watcher failed still makes the pair due within seconds",
+                    await Until(() => rig.Monitor.TakeDueForTests(rig.Pair.Id), 5000));
+                await rig.Pass();
+                Check("dead watcher: and the new PC file goes up, not a day later", rig.DriveTree(rig.Pair).ContainsKey("late.txt"),
+                    $"{rig.Monitor.LastPcSide}; Drive holds {Names(rig.DriveTree(rig.Pair).Keys)}");
+            }
+
+            // A PC folder that vanished and was made again: the old watcher went with the old folder.
+            using (var rig = new Rig(sandbox))
+            {
+                rig.Monitor.JournalOf = _ => null;
+                rig.Write(rig.Pair, "a.txt", "one", T0);
+                rig.Monitor.Reload(new[] { rig.Pair });
+                await Task.Delay(500);
+                await rig.Pass();
+                await rig.Pass();
+                var away = rig.Pair.LocalFolder + " away";
+                Directory.Move(rig.Pair.LocalFolder, away);
+                await rig.Pass();
+                Directory.CreateDirectory(rig.Pair.LocalFolder);
+                File.Copy(Path.Combine(away, "a.txt"), Path.Combine(rig.Pair.LocalFolder, "a.txt"));
+                File.SetLastWriteTimeUtc(Path.Combine(rig.Pair.LocalFolder, "a.txt"), T0);
+                await rig.Pass();
+                rig.Monitor.TakeDueForTests(rig.Pair.Id);
+                rig.Write(rig.Pair, "late.txt", "two", T0);
+                bool due = await Until(() => rig.Monitor.TakeDueForTests(rig.Pair.Id), 5000);
+                await rig.Pass();
+                Check("dead watcher: a PC folder made again is watched again, and its new file goes up",
+                    due && rig.DriveTree(rig.Pair).ContainsKey("late.txt"),
+                    $"due {due}; {rig.Monitor.LastPcSide}; Drive holds {Names(rig.DriveTree(rig.Pair).Keys)}");
+            }
+
+            // A PC folder missing when the app started (a USB drive not yet plugged in).
+            using (var rig = new Rig(sandbox))
+            {
+                using var there = new ManualResetEventSlim(false);
+                rig.Monitor.FolderThere = path => there.IsSet && Directory.Exists(path);
+                rig.Write(rig.Pair, "a.txt", "one", T0);
+                rig.Monitor.Reload(new[] { rig.Pair });
+                await Task.Delay(500);
+                there.Set();
+                await rig.Pass();
+                rig.Monitor.TakeDueForTests(rig.Pair.Id);
+                rig.Write(rig.Pair, "b.txt", "two", T0);
+                Check("missing at start: once the PC folder is there, a change in it makes the pair due within seconds",
+                    await Until(() => rig.Monitor.TakeDueForTests(rig.Pair.Id), 5000));
+            }
+
+            // The watcher's own account, once it has failed.
+            JournalDiesTests();
+        }
+
+        private static void JournalDiesTests()
+        {
+            var journal = new PcWatchJournal();
+            journal.Take(out int epoch);
+            journal.Walked(epoch);
+            journal.Note("x/y.txt", WatcherChangeTypes.Created);
+            Check("watch journal: trusted after a whole walk", journal.Take(out _) != null);
+            journal.Die();
+            journal.Take(out epoch);
+            journal.Walked(epoch);
+            Check("watch journal: a watcher that failed for good is never trusted again, however many walks follow",
+                journal.Dead && journal.Take(out _) == null);
+        }
+
+        // ---------------- 2. a pair edited while another pair's pass runs ----------------
+
+        /// <summary>
+        /// The minute's loop listed the pairs due, then ran them one after
+        /// another from that list. A pair edited while an earlier pair's pass
+        /// ran was then synced with the copy from before the edit: Free up
+        /// space just unticked still cleared its files off the PC. Its pass now
+        /// takes the pair as settings hold it when its turn comes, and reads
+        /// the generation with it, so an edit during its own wait for an
+        /// unfinished pass counts too.
+        /// </summary>
+        private static async Task EditedWhileQueuedTests(string sandbox)
+        {
+            async Task<(bool OnPc, bool OnDrive)> Run(bool edit)
+            {
+                using var rig = new Rig(sandbox, SyncMode.UploadOnly);
+                var b = rig.AddPair("B", SyncMode.UploadOnly);
+                b.DeleteAfterUpload = true;
+                rig.Write(rig.Pair, "a.txt", "for A", T0);
+                var bFile = rig.Write(b, "b.txt", "for B", T0);
+                rig.Monitor.Reload(new[] { rig.Pair, b });
+                int edits = 0;
+                if (edit)
+                    rig.Monitor.KillPoint = what =>
+                    {
+                        if (what != "uploaded a.txt" || Interlocked.Exchange(ref edits, 1) != 0) return;
+                        var kept = b.Copy();
+                        kept.DeleteAfterUpload = false;
+                        rig.Monitor.Reload(new[] { rig.Pair, kept });
+                    };
+                await rig.Monitor.RunDueAsync(rig.Client, all: true, DateTime.UtcNow, CancellationToken.None);
+                rig.Monitor.KillPoint = null;
+                return (File.Exists(bFile), rig.DriveTree(b).ContainsKey("b.txt"));
+            }
+
+            var control = await Run(edit: false);
+            Check("queued edit: the control frees B's file once it is on Drive", !control.OnPc && control.OnDrive,
+                $"on PC {control.OnPc}, on Drive {control.OnDrive}");
+            var edited = await Run(edit: true);
+            Check("queued edit: Free up space unticked while another pair's pass ran is honoured: B's file stays on the PC",
+                edited.OnPc && edited.OnDrive, $"on PC {edited.OnPc}, on Drive {edited.OnDrive}");
+
+            // The edit lands while B's pass waits after an unfinished one.
+            var crashWait = DriveMonitor.AfterCrashWait;
+            DriveMonitor.AfterCrashWait = TimeSpan.FromSeconds(1.5);
+            try
+            {
+                using var rig = new Rig(sandbox, SyncMode.UploadOnly);
+                var b = rig.Pair;
+                b.DeleteAfterUpload = true;
+                var bFile = rig.Write(b, "b.txt", "for B", T0);
+                rig.Monitor.Reload(new[] { b });
+                Directory.CreateDirectory(DriveMonitor.StateDirectory);
+                File.WriteAllText(Path.Combine(DriveMonitor.StateDirectory, b.Id + ".running"),
+                    DateTime.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture));
+                var editLater = Task.Run(async () =>
+                {
+                    await Task.Delay(400);
+                    var kept = b.Copy();
+                    kept.DeleteAfterUpload = false;
+                    rig.Monitor.Reload(new[] { kept });
+                });
+                await rig.Monitor.RunDueAsync(rig.Client, all: true, DateTime.UtcNow, CancellationToken.None);
+                await editLater;
+                Check("queued edit: an edit while the pass waits after an unfinished one is honoured too",
+                    File.Exists(bFile) && rig.DriveTree(b).ContainsKey("b.txt"),
+                    $"on PC {File.Exists(bFile)}, Drive holds {Names(rig.DriveTree(b).Keys)}");
+            }
+            finally { DriveMonitor.AfterCrashWait = crashWait; }
+        }
+
+        // ---------------- 3. the shared look using up a change for a pair not due that minute ----------------
+
+        /// <summary>
+        /// Clean pairs on one drive share a look at its feed each minute. A pair
+        /// that ran early (a PC change) is out of step with the others; when
+        /// another pair's minute came first, its look read the change made in
+        /// the first pair's folder and moved the feed past it, and the first
+        /// pair was skipped every minute after, until QuietMost (15 minutes).
+        /// </summary>
+        private static async Task SharedLookOutOfStepTests(string sandbox)
+        {
+            using var rig = new Rig(sandbox);
+            var a = rig.Pair;
+            var b = rig.AddPair("B", SyncMode.TwoWay);
+            a.CheckMinutes = b.CheckMinutes = 1;
+            rig.Write(a, "a.txt", "for A", T0);
+            rig.Write(b, "b.txt", "for B", T0);
+            var t = DateTime.UtcNow;
+            Task<List<DriveSyncPair>> Due(int minutes, params DriveSyncPair[] pairs) =>
+                rig.Monitor.DuePairsAsync(rig.Client, pairs, false, t.AddMinutes(minutes), default);
+
+            foreach (var pair in new[] { a, b }) { await rig.Pass(pair); await rig.Pass(pair); }
+            await Due(2, a, b);                         // the first look finds where the feed is
+            await rig.Pass(a);
+            await rig.Pass(b);
+            Check("shared look out of step: both pairs are quiet on a quiet minute", (await Due(4, a, b)).Count == 0);
+
+            await rig.Pass(a);                          // A runs early, as a PC change makes it
+            rig.Put(a, "new.txt", "made on the phone", T0);
+            var onlyB = await Due(6, b);                // only B's minute is up, and its look reads the change
+            Check("shared look out of step: the look on B's minute sees the change", onlyB.Count == 1);
+
+            var later = await Due(8, a, b);
+            Check("shared look out of step: A, not due when B's look used up its change, still runs on its next minute",
+                later.Contains(a), $"due: {string.Join(",", later.Select(p => p.Name))}");
+            await rig.Pass(a);
+            Check("shared look out of step: and the new Drive file comes down", File.Exists(Path.Combine(a.LocalFolder, "new.txt")));
+            await rig.Pass(a);
+            await rig.Pass(b);
+            Check("shared look out of step: both are quiet again afterwards", (await Due(10, a, b)).Count == 0);
+        }
+
+        // ---------------- 4. an edit during a wait for Google ----------------
+
+        /// <summary>
+        /// Under Google's daily limit a pass waits an hour at a time. Pause and
+        /// Remove ended the wait; an edit (switching to download only so the
+        /// downloads could go on) cut the wait, but the pass asked Google again
+        /// under the old settings, was refused, and waited another hour, with
+        /// every other pair held up behind it.
+        /// </summary>
+        private static async Task EditDuringDailyLimitTests(string sandbox)
+        {
+            using var rig = new Rig(sandbox);
+            rig.Monitor.WaitScale = 1;
+            rig.Monitor.Reload(new[] { rig.Pair });
+            rig.Write(rig.Pair, "a.txt", "a", T0);
+            rig.Drive.AddFault(new FakeDrive.Fault
+            {
+                Kind = "list", Times = 3, Status = 403, Body = FakeDrive.ErrorBody(403, "dailyLimitExceeded", "Daily Limit Exceeded"),
+            });
+            var pass = rig.Pass();
+            await Until(() => (rig.Monitor.StatusOf(rig.Pair.Id).Problem ?? "").Contains("daily", StringComparison.OrdinalIgnoreCase), 5000);
+            var edited = rig.Pair.Copy();
+            edited.Mode = SyncMode.DownloadOnly;
+            rig.Monitor.Reload(new[] { edited });
+            bool ended = await Task.WhenAny(pass, Task.Delay(5000)) == pass;
+            Check("edit while waiting: editing a pair ends its wait for the daily limit, without asking Google again under the old settings",
+                ended && rig.Drive.FaultsLeft == 2, $"ended {ended}, {rig.Drive.FaultsLeft} refusals left");
+            Check("edit while waiting: and it no longer says it is waiting",
+                ended && !(rig.Monitor.StatusOf(rig.Pair.Id).Problem ?? "").Contains("waiting", StringComparison.OrdinalIgnoreCase),
+                rig.Monitor.StatusOf(rig.Pair.Id).Problem);
+            if (!ended) rig.Monitor.Dispose();
+            try { await pass; } catch (OperationCanceledException) { }
+        }
+
+        // ---------------- 5. a folder renamed on Drive ----------------
+
+        /// <summary>
+        /// A folder renamed on Drive is renamed on the PC too. But the PC walk
+        /// had already listed the old name, and the empty-folder step then made
+        /// the whole old tree in Drive again, empty, beside the renamed one, for
+        /// good. Also when the PC folder could not be renamed whole and its files
+        /// were moved one by one, leaving the old folders empty on the PC.
+        /// </summary>
+        private static async Task RenamedOnDriveTests(string sandbox)
+        {
+            async Task<Rig> Synced(bool newFileUnder)
+            {
+                var rig = new Rig(sandbox);
+                rig.Write(rig.Pair, "Music/album 000/a.txt", "a song", T0);
+                rig.Write(rig.Pair, "Music/album 001/b.txt", "another", T0);
+                await rig.Pass();
+                await rig.Pass();
+                var music = rig.Drive.Find(rig.Pair.DriveFolderId, "Music")!;
+                rig.Drive.Get(music)!.Name = "Library";
+                rig.Drive.Changed(music);
+                if (newFileUnder) rig.Write(rig.Pair, "Music/new.txt", "new on the PC", T0);
+                return rig;
+            }
+
+            using (var rig = await Synced(newFileUnder: false))
+            {
+                int creates = rig.Drive.Creates;
+                var problem = await rig.Pass();
+                Equal("renamed on Drive: the PC folder is renamed too", "Library/album 000/a.txt,Library/album 001/b.txt", Names(rig.PcFiles(rig.Pair)));
+                Check("renamed on Drive: and no empty copy of the old folder is made in Drive",
+                    rig.Drive.Find(rig.Pair.DriveFolderId, "Music") == null && rig.Drive.Creates == creates,
+                    $"{problem}; {rig.Drive.Creates - creates} folders made; Music there: {rig.Drive.Find(rig.Pair.DriveFolderId, "Music") != null}");
+            }
+
+            using (var rig = await Synced(newFileUnder: true))
+            {
+                var problem = await rig.Pass();
+                Check("renamed on Drive, moved file by file: the old folders left empty on the PC are not made in Drive again",
+                    rig.Drive.Find(rig.Pair.DriveFolderId, "Music/album 000") == null &&
+                    rig.Drive.Find(rig.Pair.DriveFolderId, "Music/album 001") == null &&
+                    rig.Drive.Find(rig.Pair.DriveFolderId, "Library/album 000/a.txt") != null,
+                    $"{problem}; Drive holds {Names(rig.DriveTree(rig.Pair).Keys)}; PC holds {Names(rig.PcFiles(rig.Pair))}");
+            }
+        }
+
+        // ---------------- 6. Free up's end sweep after an edit, or when the app closes ----------------
+
+        /// <summary>
+        /// Free up space's sweep at the end of a pass can take an hour on a big
+        /// library. It heard Pause and Remove but not an edit, so unticking Free
+        /// up space during it still cleared files off the PC. And closing the app
+        /// during it kept the records of files already cleared: turned to
+        /// deletes on later, the next pass took them as deleted on the PC and
+        /// sent Drive's copies to the trash.
+        /// </summary>
+        private static async Task FreeUpSweepStopsTests(string sandbox)
+        {
+            async Task<Rig> Synced()
+            {
+                var rig = new Rig(sandbox, SyncMode.UploadOnly);
+                for (int i = 0; i < 12; i++) rig.Write(rig.Pair, $"book {i:00}.txt", $"book {i}", T0);
+                rig.Monitor.Reload(new[] { rig.Pair });
+                await rig.Pass();
+                rig.Pair.DeleteAfterUpload = true;
+                rig.Monitor.Reload(new[] { rig.Pair });
+                return rig;
+            }
+
+            // The trash is what a record that outlived its file would cost.
+            async Task<int> TrashesWithDeletesOn(Rig rig)
+            {
+                rig.Pair.DeleteAfterUpload = false;
+                rig.Pair.CopyDeletes = true;
+                rig.Monitor.Reload(new[] { rig.Pair });
+                await rig.Pass();
+                return rig.Drive.Trashes;
+            }
+
+            using (var rig = await Synced())
+            {
+                int edits = 0;
+                rig.Monitor.KillPoint = what =>
+                {
+                    if (!what.StartsWith("free up: checked, not yet deleted", StringComparison.Ordinal) ||
+                        Interlocked.Exchange(ref edits, 1) != 0) return;
+                    var kept = rig.Pair.Copy();
+                    kept.DeleteAfterUpload = false;
+                    rig.Monitor.Reload(new[] { kept });
+                };
+                await rig.Pass();
+                rig.Monitor.KillPoint = null;
+                int left = rig.PcFiles(rig.Pair).Count;
+                Check("free up sweep: unticking Free up space during the sweep stops it, past the files already in hand",
+                    left >= 12 - DriveMonitor.FreeUpLanes && left < 12, $"{left} of 12 left on the PC");
+                int trashes = await TrashesWithDeletesOn(rig);
+                Check("free up sweep: and the files it did clear leave no records behind", trashes == 0 && rig.DriveTree(rig.Pair).Count == 12,
+                    $"{trashes} trashed, Drive holds {rig.DriveTree(rig.Pair).Count}");
+            }
+
+            using (var rig = await Synced())
+            {
+                using var quit = new CancellationTokenSource();
+                rig.Monitor.KillPoint = what =>
+                {
+                    if (what.StartsWith("free up: checked, not yet deleted", StringComparison.Ordinal)) quit.Cancel();
+                };
+                try { await rig.Monitor.SyncOneAsync(rig.Client, rig.Pair, quit.Token); }
+                catch (OperationCanceledException) { }
+                rig.Monitor.KillPoint = null;
+                int left = rig.PcFiles(rig.Pair).Count;
+                int trashes = await TrashesWithDeletesOn(rig);
+                Check("free up sweep: closing the app during the sweep keeps no record of a file it cleared",
+                    left < 12 && trashes == 0 && rig.DriveTree(rig.Pair).Count == 12,
+                    $"{left} of 12 left on the PC, {trashes} trashed, Drive holds {rig.DriveTree(rig.Pair).Count}");
+            }
         }
     }
 }
