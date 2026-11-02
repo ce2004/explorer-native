@@ -1378,7 +1378,7 @@ namespace ExplorerNative
                         if (response.StatusCode != HttpStatusCode.PartialContent && response.StatusCode != HttpStatusCode.OK)
                         {
                             var body = await response.Content.ReadAsStringAsync(attempt.Token);
-                            if (RefusedAcknowledge(fileId, (int)response.StatusCode, url))
+                            if (RefusedAcknowledge(fileId, (int)response.StatusCode, url, body))
                                 throw new RetryableReadException("refused with acknowledgeAbuse; asking plain");
                             throw ReadRefused((int)response.StatusCode, body);
                         }
@@ -1500,9 +1500,15 @@ namespace ExplorerNative
         /// <summary>
         /// A 400 or 403 to a request that carried acknowledgeAbuse: true the first
         /// time, and the file is asked plain from then on, so the caller retries.
+        /// A rate limit or a download quota is not about the flag: counted, one
+        /// busy moment left a big unscanned file asked plain until restart, and
+        /// every read of it then waited out Google's 25-second hold and failed.
         /// </summary>
-        internal static bool RefusedAcknowledge(string fileId, int status, string url) =>
+        internal static bool RefusedAcknowledge(string fileId, int status, string url, string? body = null) =>
             (status == 400 || status == 403) &&
+            !WorthRetrying(status, body) &&
+            ErrorReason(body) is not ("downloadQuotaExceeded" or "dailyLimitExceeded" or "quotaExceeded"
+                or "sharingRateLimitExceeded") &&
             url.Contains("acknowledgeAbuse=true", StringComparison.Ordinal) &&
             NoAcknowledge.TryAdd(fileId, true);
 
@@ -1547,7 +1553,7 @@ namespace ExplorerNative
                 response.StatusCode != HttpStatusCode.OK)
             {
                 var body = await response.Content.ReadAsStringAsync(token);
-                if (RefusedAcknowledge(fileId, (int)response.StatusCode, url))
+                if (RefusedAcknowledge(fileId, (int)response.StatusCode, url, body))
                     throw new RetryableReadException("refused with acknowledgeAbuse; asking plain");
                 throw ReadRefused((int)response.StatusCode, body);
             }

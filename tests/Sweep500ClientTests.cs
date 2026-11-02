@@ -27,6 +27,7 @@ namespace ExplorerNative
             Console.WriteLine("Sweep 5.0.0, the Google Drive client:");
             await Guard("disconnect", DisconnectDoesNotWaitForUploads);
             await Guard("token offline", TokenRefreshFailuresCountAsOffline);
+            await Guard("acknowledgeAbuse", RateLimitKeepsAcknowledgeAbuse);
         }
 
         private static async Task Guard(string name, Func<Task> test)
@@ -184,6 +185,42 @@ namespace ExplorerNative
             catch (Exception ex) { error = ex.GetType().Name + ": " + ex.Message; }
             Check("a small file sent while the token cannot be refreshed waits and lands once",
                 up != null && fake.Count(FakeDrive.Root, "woken.txt") == 1, error);
+        }
+
+        // ---- 3. A rate limit on a read does not take acknowledgeAbuse away ----
+
+        private static async Task RateLimitKeepsAcknowledgeAbuse()
+        {
+            foreach (var reason in new[] { "userRateLimitExceeded", "rateLimitExceeded", "downloadQuotaExceeded" })
+            {
+                var id = "s500-ack-" + reason;
+                var body = FakeDrive.ErrorBody(403, reason, "Slow down.");
+                Check($"a 403 {reason} is not Google refusing acknowledgeAbuse",
+                    !DriveClient.RefusedAcknowledge(id, 403, DriveClient.MediaUrl(id), body));
+                Check($"and the file is still asked with the flag after a {reason}",
+                    DriveClient.MediaUrl(id).EndsWith("&acknowledgeAbuse=true", StringComparison.Ordinal),
+                    DriveClient.MediaUrl(id));
+            }
+
+            var fake = new FakeDrive();
+            var client = new DriveClient(fake, 0.0005);
+            var data = Enumerable.Range(0, 64).Select(i => (byte)i).ToArray();
+            var file = fake.AddFile("big.7z", data, When, FakeDrive.Root);
+            fake.AddFault(new FakeDrive.Fault
+            {
+                Kind = "media", Times = 1, Status = 403,
+                Body = FakeDrive.ErrorBody(403, "userRateLimitExceeded", "User rate limit exceeded."),
+                Subject = s => s == file,
+            });
+            byte[]? got = null;
+            string? error = null;
+            try { got = await client.ReadRange(file, 8, 16, CancellationToken.None); }
+            catch (Exception ex) { error = ex.Message; }
+            Check("a read refused once for a rate limit arrives on the retry",
+                got != null && got.SequenceEqual(data.Skip(8).Take(16)), error);
+            Check("and the file keeps acknowledgeAbuse afterwards",
+                DriveClient.MediaUrl(file).EndsWith("&acknowledgeAbuse=true", StringComparison.Ordinal),
+                DriveClient.MediaUrl(file));
         }
     }
 }
