@@ -172,7 +172,7 @@ namespace ExplorerNative
 
             var onBox = new SpokenCheckBox
             {
-                Text = "Equaliser &on",
+                Text = "&Equaliser on",
                 Checked = enabled,
                 AutoSize = true,
                 Location = new Point(14, _readout.Bottom + 8),
