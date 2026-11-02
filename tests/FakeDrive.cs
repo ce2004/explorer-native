@@ -968,7 +968,11 @@ namespace ExplorerNative
                 if (json.TryGetProperty("modifiedTime", out var m)) item.Modified = ParseTime(m.GetString()) ?? item.Modified;
                 if (query["addParents"] is { Length: > 0 } to) { item.Parent = RealParent(to); _byParent = null; Moves++; }
                 _changed.Add(item.Id);
-                return Json(200, Describe(item));
+                var described = Describe(item);
+                // As Google does when parents are asked for (a restore asks where the item went back to).
+                if ((query["fields"] ?? "").Contains("parents", StringComparison.Ordinal) && item.Id != Root)
+                    described["parents"] = new[] { item.Parent };
+                return Json(200, described);
             }
         }
 

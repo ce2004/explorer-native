@@ -3032,7 +3032,8 @@ namespace ExplorerNative
         {
             var (mount, client, id, name) = await TrashItem(path, "restore", token).ConfigureAwait(false);
             if (mount == null || client == null || id == null) return false;
-            try { await client.Untrash(id, token).ConfigureAwait(false); }
+            IReadOnlyList<string> backIn;
+            try { backIn = await client.Untrash(id, token).ConfigureAwait(false); }
             catch (Exception ex)
             {
                 Say("drive.restore.failed", $"Could not restore {name}: {ex.Message}");
@@ -3040,6 +3041,19 @@ namespace ExplorerNative
             }
             mount.RemoveOne(path);
             lock (_gate) _folders = null;
+
+            // The folder it went back to shows it on the next visit, listed
+            // already or not. Drive has agreed by now, so nothing here may make
+            // the restore read as failed.
+            try
+            {
+                foreach (var parent in backIn)
+                {
+                    if (parent == await client.RootId(token).ConfigureAwait(false)) mount.ForgetKey("");
+                    mount.ForgetFolderId(parent);
+                }
+            }
+            catch (Exception ex) { Note($"restore {name}: could not refresh its folder: {ex.Message}"); }
             Say("drive.restored", $"Restored {name}");
             return true;
         }

@@ -724,6 +724,32 @@ namespace ExplorerNative
             _sweep = new WorkTimer(SweepIdle, () => !_caches.IsEmpty && IdleRelease > TimeSpan.Zero);
             _probe = new Probe(this);
             _drive.Health.Changed += OnHealthChanged;
+            _drive.TrashEdited += OnTrashEdited;
+        }
+
+        /// <summary>
+        /// Something was trashed, restored or deleted for good through this
+        /// client: the Trash folder is listed again on its next visit, from the
+        /// kept copy, so a file just deleted is there to restore.
+        /// </summary>
+        private void OnTrashEdited()
+        {
+            if (TrashKey() is { } key) ForgetKey(key);
+        }
+
+        /// <summary>The key of the Trash folder on the letter, or null while it has not been listed.</summary>
+        internal string? TrashKey()
+        {
+            foreach (var pair in _folders)
+                if (pair.Value == DriveClient.TrashId) return pair.Key;
+            return null;
+        }
+
+        /// <summary>Forgets the listing of every folder on the letter that is the Drive folder <paramref name="id"/>.</summary>
+        internal void ForgetFolderId(string id)
+        {
+            foreach (var pair in _folders)
+                if (pair.Value == id) ForgetKey(pair.Key);
         }
 
 
@@ -2304,6 +2330,7 @@ namespace ExplorerNative
             try { _sweep.Dispose(); } catch { }
             try { _probe.Dispose(); } catch { }
             try { _drive.Health.Changed -= OnHealthChanged; } catch { }
+            try { _drive.TrashEdited -= OnTrashEdited; } catch { }
 
             // Every request still being answered is failed rather than left to
             // run out its deadline.

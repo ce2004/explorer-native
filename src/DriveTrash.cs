@@ -129,7 +129,13 @@ namespace ExplorerNative
                 if (_trashHeld != null) edit(_trashHeld);
                 _trashEditsDuring?.Add(edit);
             }
+            // Outside the lock: the mount forgets its Trash folder's listing, so
+            // the next visit shows the edit (the kept copy answers, no request).
+            try { TrashEdited?.Invoke(); } catch { }
         }
+
+        /// <summary>Raised after our own change to the kept trash listing: something trashed, restored or deleted.</summary>
+        internal event Action? TrashEdited;
 
         /// <summary>
         /// Something we just trashed, from the answer to the trash request, put
@@ -196,19 +202,31 @@ namespace ExplorerNative
             return results;
         }
 
-        /// <summary>Takes something out of the trash, back to the folder it was in.</summary>
-        public async Task Untrash(string fileId, CancellationToken token)
+        /// <summary>
+        /// Takes something out of the trash, back to the folder it was in, and
+        /// gives back the ids of the folders it went back to (none when Drive did not say).
+        /// </summary>
+        public async Task<IReadOnlyList<string>> Untrash(string fileId, CancellationToken token)
         {
-            using var request = await Request(HttpMethod.Patch, $"{Files}/{Uri.EscapeDataString(fileId)}?fields=id", token);
+            using var request = await Request(HttpMethod.Patch, $"{Files}/{Uri.EscapeDataString(fileId)}?fields=id,parents", token);
             request.Content = new StringContent("{\"trashed\":false}", Encoding.UTF8, "application/json");
             using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token);
+            var body = await response.Content.ReadAsStringAsync(token);
             if (!response.IsSuccessStatusCode)
-            {
-                var body = await response.Content.ReadAsStringAsync(token);
                 throw new DriveStatusException((int)response.StatusCode, body,
                     $"restore failed {(int)response.StatusCode}: " + Explain((int)response.StatusCode, body));
-            }
             EditHeldTrash(l => l.RemoveAll(e => e.Id == fileId));
+
+            var parents = new List<string>();
+            try
+            {
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.TryGetProperty("parents", out var ps) && ps.ValueKind == JsonValueKind.Array)
+                    foreach (var p in ps.EnumerateArray())
+                        if (p.GetString() is { Length: > 0 } id) parents.Add(id);
+            }
+            catch (Exception) { }
+            return parents;
         }
 
         /// <summary>

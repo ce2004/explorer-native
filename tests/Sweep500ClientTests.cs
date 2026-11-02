@@ -34,6 +34,7 @@ namespace ExplorerNative
             await Guard("search part of a word", SearchFindsPartOfAWord);
             await Guard("cut listing", CutListingIsNotWhole);
             await Guard("still uploading", StillUploadingFile);
+            await Guard("trash current", TrashAndRestoreShowAtOnce);
         }
 
         private static async Task Guard(string name, Func<Task> test)
@@ -482,6 +483,30 @@ namespace ExplorerNative
                 refused && rig.SaidText().Contains("another program is still saving it", StringComparison.Ordinal) &&
                 rig.Mount.PendingAt("music\\open.wav") != null, rig.SaidText());
             lock (open.Gate) open.Handles = 0;
+        }
+
+        // ---- 12. Trash and the folder a file goes back to are current without F5 ----
+
+        private static async Task TrashAndRestoreShowAtOnce()
+        {
+            using var rig = new Rig();
+            var music = rig.Fake.AddFolder("Music");
+            var song = rig.Fake.AddFile("song.flac", new byte[] { 3, 4, 5 }, When, music);
+            var keep = rig.Fake.AddFile("keep.flac", new byte[] { 1, 2 }, When, music);
+            rig.Fake.Trash(song);
+            rig.Mount.Forget(rig.Root);
+            rig.Listed(rig.Root);
+            var trash = rig.P("Trash");
+            Equal("Trash lists what was put in it", "song.flac", Names(rig.Listed(trash)));
+            Equal("and Music what is left", "keep.flac", Names(rig.Listed(rig.P("Music"))));
+
+            bool deleted = await rig.Drive.TrashPath(rig.P("Music", "keep.flac"));
+            Check("a file is deleted from Music", deleted && rig.Fake.Get(keep) is { Trashed: true });
+            Equal("and Trash, already listed, shows it at once", "keep.flac,song.flac", Names(rig.Listed(trash)));
+
+            bool restored = await rig.Drive.RestoreFromTrash(rig.P("Trash", "song.flac"));
+            Check("a file is restored", restored && rig.Fake.Get(song) is { Trashed: false });
+            Equal("and Music, already listed, shows it back at once", "song.flac", Names(rig.Listed(rig.P("Music"))));
         }
 
         // ---- 4. Waiting for the internet is said once per outage ----
