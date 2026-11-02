@@ -2561,7 +2561,8 @@ namespace ExplorerNative
         private bool ClearEmptyFolders(DriveSyncPair pair, PairState state, SyncRules rules, SyncSkips skips,
             IEnumerable<string> seen, IReadOnlyDictionary<string, string> onDrive)
         {
-            if (!pair.FreesUpSpace || rules.Mode != SyncMode.UploadOnly || rules.CopyDeletes || !rules.IncludeSubfolders)
+            if (!pair.FreesUpSpace || rules.Mode != SyncMode.UploadOnly || rules.CopyDeletes || !rules.IncludeSubfolders ||
+                Stopped(pair))
                 return false;
             var before = state.EmptyLater ?? new List<string>();
             var candidates = new HashSet<string>(seen, SyncNameComparer.Instance);
@@ -2573,7 +2574,13 @@ namespace ExplorerNative
 
             foreach (var folder in candidates.OrderByDescending(f => f.Count(c => c == '/')))
             {
-                if (Stopped(pair)) break;
+                // Paused, removed or edited (Free up space unticked): no more
+                // folders go, and those waiting their turn keep it.
+                if (Stopped(pair))
+                {
+                    later.UnionWith(before);
+                    break;
+                }
                 for (var at = folder; at.Length > 0; at = SyncMoves.Parent(at))
                 {
                     if (!onDrive.ContainsKey(at) || IsLeftOutFolder(at, rules, skips) ||
@@ -2730,21 +2737,29 @@ namespace ExplorerNative
             // the fact held the pass (and every new file behind it) for an hour.
             var freed = new System.Collections.Concurrent.ConcurrentQueue<string>();
             using var gate = new SemaphoreSlim(FreeUpLanes);
-            await Task.WhenAll(state.Files.Where(f => local.ContainsKey(f.Key)).ToList().Select(async f =>
+            try
             {
-                await gate.WaitAsync(token).ConfigureAwait(false);
-                try
+                await Task.WhenAll(state.Files.Where(f => local.ContainsKey(f.Key)).ToList().Select(async f =>
                 {
-                    if (Stopped(pair)) return;
-                    if (await TryFreeUpOneAsync(client, pair, rules, skips, f.Key, f.Value, token).ConfigureAwait(false))
-                        freed.Enqueue(f.Key);
-                }
-                finally { gate.Release(); }
-            })).ConfigureAwait(false);
-
-            // The records go with their files, whether or not the pair was stopped meanwhile.
-            foreach (var path in freed) Forget(state, path);
-            tally.FreedUp += freed.Count;
+                    await gate.WaitAsync(token).ConfigureAwait(false);
+                    try
+                    {
+                        if (Stopped(pair)) return;
+                        if (await TryFreeUpOneAsync(client, pair, rules, skips, f.Key, f.Value, token).ConfigureAwait(false))
+                            freed.Enqueue(f.Key);
+                    }
+                    finally { gate.Release(); }
+                })).ConfigureAwait(false);
+            }
+            finally
+            {
+                // The records go with their files, whether the pair was stopped or
+                // the app closed meanwhile (FreeUpAsync saves them): one that
+                // outlived its file, with deletes turned on later, sent Drive's
+                // copy to the trash.
+                foreach (var path in freed) Forget(state, path);
+                tally.FreedUp += freed.Count;
+            }
             if (Stopped(pair)) throw new PairStoppedException();
         }
 

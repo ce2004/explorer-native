@@ -40,6 +40,7 @@ namespace ExplorerNative
                 await SharedLookOutOfStepTests(sandbox);
                 await EditDuringDailyLimitTests(sandbox);
                 await RenamedOnDriveTests(sandbox);
+                await FreeUpSweepStopsTests(sandbox);
             }
             finally
             {
@@ -445,6 +446,78 @@ namespace ExplorerNative
                     rig.Drive.Find(rig.Pair.DriveFolderId, "Music/album 001") == null &&
                     rig.Drive.Find(rig.Pair.DriveFolderId, "Library/album 000/a.txt") != null,
                     $"{problem}; Drive holds {Names(rig.DriveTree(rig.Pair).Keys)}; PC holds {Names(rig.PcFiles(rig.Pair))}");
+            }
+        }
+
+        // ---------------- 6. Free up's end sweep after an edit, or when the app closes ----------------
+
+        /// <summary>
+        /// Free up space's sweep at the end of a pass can take an hour on a big
+        /// library. It heard Pause and Remove but not an edit, so unticking Free
+        /// up space during it still cleared files off the PC. And closing the app
+        /// during it kept the records of files already cleared: turned to
+        /// deletes on later, the next pass took them as deleted on the PC and
+        /// sent Drive's copies to the trash.
+        /// </summary>
+        private static async Task FreeUpSweepStopsTests(string sandbox)
+        {
+            async Task<Rig> Synced()
+            {
+                var rig = new Rig(sandbox, SyncMode.UploadOnly);
+                for (int i = 0; i < 12; i++) rig.Write(rig.Pair, $"book {i:00}.txt", $"book {i}", T0);
+                rig.Monitor.Reload(new[] { rig.Pair });
+                await rig.Pass();
+                rig.Pair.DeleteAfterUpload = true;
+                rig.Monitor.Reload(new[] { rig.Pair });
+                return rig;
+            }
+
+            // The trash is what a record that outlived its file would cost.
+            async Task<int> TrashesWithDeletesOn(Rig rig)
+            {
+                rig.Pair.DeleteAfterUpload = false;
+                rig.Pair.CopyDeletes = true;
+                rig.Monitor.Reload(new[] { rig.Pair });
+                await rig.Pass();
+                return rig.Drive.Trashes;
+            }
+
+            using (var rig = await Synced())
+            {
+                int edits = 0;
+                rig.Monitor.KillPoint = what =>
+                {
+                    if (!what.StartsWith("free up: checked, not yet deleted", StringComparison.Ordinal) ||
+                        Interlocked.Exchange(ref edits, 1) != 0) return;
+                    var kept = rig.Pair.Copy();
+                    kept.DeleteAfterUpload = false;
+                    rig.Monitor.Reload(new[] { kept });
+                };
+                await rig.Pass();
+                rig.Monitor.KillPoint = null;
+                int left = rig.PcFiles(rig.Pair).Count;
+                Check("free up sweep: unticking Free up space during the sweep stops it, past the files already in hand",
+                    left >= 12 - DriveMonitor.FreeUpLanes && left < 12, $"{left} of 12 left on the PC");
+                int trashes = await TrashesWithDeletesOn(rig);
+                Check("free up sweep: and the files it did clear leave no records behind", trashes == 0 && rig.DriveTree(rig.Pair).Count == 12,
+                    $"{trashes} trashed, Drive holds {rig.DriveTree(rig.Pair).Count}");
+            }
+
+            using (var rig = await Synced())
+            {
+                using var quit = new CancellationTokenSource();
+                rig.Monitor.KillPoint = what =>
+                {
+                    if (what.StartsWith("free up: checked, not yet deleted", StringComparison.Ordinal)) quit.Cancel();
+                };
+                try { await rig.Monitor.SyncOneAsync(rig.Client, rig.Pair, quit.Token); }
+                catch (OperationCanceledException) { }
+                rig.Monitor.KillPoint = null;
+                int left = rig.PcFiles(rig.Pair).Count;
+                int trashes = await TrashesWithDeletesOn(rig);
+                Check("free up sweep: closing the app during the sweep keeps no record of a file it cleared",
+                    left < 12 && trashes == 0 && rig.DriveTree(rig.Pair).Count == 12,
+                    $"{left} of 12 left on the PC, {trashes} trashed, Drive holds {rig.DriveTree(rig.Pair).Count}");
             }
         }
     }
