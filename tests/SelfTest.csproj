@@ -54,6 +54,7 @@
     <Compile Include="..\src\ArchiveFormats.cs" />
     <Compile Include="..\src\ParallelGZip.cs" />
     <Compile Include="..\src\ArchiveEngine.cs" />
+    <Compile Include="..\src\ExtractTurns.cs" />
     <Compile Include="..\src\ExtractionRules.cs" />
     <Compile Include="..\src\ZipEngine.cs" />
     <Compile Include="..\src\TarEngine.cs" />

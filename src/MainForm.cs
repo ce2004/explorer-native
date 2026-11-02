@@ -9637,9 +9637,12 @@ namespace ExplorerNative
             {
                 AnnounceOperation("extract.start", $"Extracting {Path.GetFileName(archive)}");
 
-                var task = ArchiveEngine.ExtractAsync(archive, destination,
-                    intoNewFolder ? PasteConflictPolicy.AutoRename : _settings.PasteConflict,
-                    ask, ArchiveEngine.RecommendedThreads, progress, cts.Token);
+                // Extracts into one folder take turns (ExtractTurns): two Extract
+                // here at once each checked for clashes before the other wrote
+                // anything, and the last to finish replaced the other's files.
+                var policy = intoNewFolder ? PasteConflictPolicy.AutoRename : _settings.PasteConflict;
+                var task = ExtractTurns.InTurn(destination, () => ArchiveEngine.ExtractAsync(archive, destination,
+                    policy, ask, ArchiveEngine.RecommendedThreads, progress, cts.Token), cts.Token);
 
                 window.Show();
 
