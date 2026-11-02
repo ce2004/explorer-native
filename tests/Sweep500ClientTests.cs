@@ -28,6 +28,7 @@ namespace ExplorerNative
             await Guard("disconnect", DisconnectDoesNotWaitForUploads);
             await Guard("token offline", TokenRefreshFailuresCountAsOffline);
             await Guard("acknowledgeAbuse", RateLimitKeepsAcknowledgeAbuse);
+            await Guard("offline said once", OfflineWaitSaidOncePerOutage);
         }
 
         private static async Task Guard(string name, Func<Task> test)
@@ -221,6 +222,49 @@ namespace ExplorerNative
             Check("and the file keeps acknowledgeAbuse afterwards",
                 DriveClient.MediaUrl(file).EndsWith("&acknowledgeAbuse=true", StringComparison.Ordinal),
                 DriveClient.MediaUrl(file));
+        }
+
+        // ---- 4. Waiting for the internet is said once per outage ----
+
+        private static async Task OfflineWaitSaidOncePerOutage()
+        {
+            var fake = new FakeDrive();
+            bool down = false;
+            var client = new DriveClient(fake, _ => Volatile.Read(ref down)
+                ? throw new System.Net.Http.HttpRequestException("down", new System.Net.Sockets.SocketException(10051))
+                : Task.FromResult("fake-drive-token"), 0.0005);
+            var said = new System.Collections.Concurrent.ConcurrentQueue<string>();
+            client.Notify = (id, _) => said.Enqueue(id);
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+
+            async Task Outage(int files, string prefix)
+            {
+                Volatile.Write(ref down, true);
+                for (int i = 0; i < 3; i++) client.Health.Failed(new System.Net.Sockets.SocketException(10051));
+                var all = Enumerable.Range(0, files)
+                    .Select(i => client.CreateFolder($"{prefix}{i}", "root", cts.Token)).ToArray();
+                await Task.Delay(150);
+                Volatile.Write(ref down, false);
+                try { await Task.WhenAll(all); } catch { }
+            }
+
+            await Outage(8, "first");
+            int waiting = said.Count(s => s == "drive.offline.waiting"), back = said.Count(s => s == "drive.offline.back");
+            Check("eight requests waiting out one outage say they are waiting once", waiting == 1, waiting + " times");
+            Check("and say they are back once", back == 1, back + " times");
+            Check("and every one of them still goes through",
+                Enumerable.Range(0, 8).All(i => fake.Count(FakeDrive.Root, "first" + i) == 1));
+
+            await Outage(4, "second");
+            waiting = said.Count(s => s == "drive.offline.waiting");
+            back = said.Count(s => s == "drive.offline.back");
+            Check("a second outage is said again", waiting == 2 && back == 2, $"{waiting} waiting, {back} back");
+
+            var example = Notifications.All.FirstOrDefault(n => n.Id == "drive.offline.waiting");
+            Check("the catalogue's example names no one file",
+                example != null && example.Preview() ==
+                "Waiting for the internet to come back before sending anything more to Google Drive",
+                example?.Preview());
         }
     }
 }

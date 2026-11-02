@@ -303,33 +303,57 @@ namespace ExplorerNative
         {
             if (!DriveHealth.LooksLikeNetwork(error) || !Health.IsOffline) return false;
 
-            Say("drive.offline.waiting",
-                $"Waiting for the internet to come back before {what}");
-
-            for (int waited = 0; waited < MostNetworkWaits && Health.IsOffline; waited++)
+            // Said once per outage, not once per request waiting: a paste has
+            // sixteen files in flight, and each used to say its own sentence
+            // going in and another coming back, cutting NVDA off every time.
+            // So the sentence names no file (what is waiting is everything).
+            Interlocked.Increment(ref _networkWaiters);
+            try
             {
-                token.ThrowIfCancellationRequested();
-                await Pause(TimeSpan.FromMilliseconds(NetworkWaitMilliseconds), token);
+                if (Interlocked.Exchange(ref _saidOffline, 1) == 0)
+                    Say("drive.offline.waiting",
+                        "Waiting for the internet to come back before sending anything more to Google Drive");
 
-                // Cheap, and the only thing that can put Health back online.
-                try { await Whoami(token); }
-                catch { /* still away; the loop asks again */ }
+                for (int waited = 0; waited < MostNetworkWaits && Health.IsOffline; waited++)
+                {
+                    token.ThrowIfCancellationRequested();
+                    await Pause(TimeSpan.FromMilliseconds(NetworkWaitMilliseconds), token);
+
+                    // Cheap, and the only thing that can put Health back online.
+                    try { await Whoami(token); }
+                    catch { /* still away; the loop asks again */ }
+                }
+
+                if (!Health.IsOffline)
+                {
+                    // The first waiter to see it come back says so; the rest carry on quietly.
+                    if (Interlocked.Exchange(ref _saidOffline, 0) == 1)
+                        Say("drive.offline.back", "Back online, carrying on");
+                    return true;
+                }
+
+                // Still away after the whole allowance, and saying "true" here is
+                // what made that allowance meaningless: both callers read true as
+                // "it came back" and un-spend the attempt, so the request was tried
+                // again, failed again, and waited another two hours — for ever, on
+                // one file, with a progress window that never moved and no way out
+                // but Cancel. The documented ceiling has to be able to end.
+                return false;
             }
-
-            if (!Health.IsOffline)
+            finally
             {
-                Say("drive.offline.back", "Back online, carrying on");
-                return true;
+                // Every waiter gave up (cancelled, or the two hours ran out): the
+                // next outage is a new one and is said again.
+                if (Interlocked.Decrement(ref _networkWaiters) == 0 && Health.IsOffline)
+                    Interlocked.Exchange(ref _saidOffline, 0);
             }
-
-            // Still away after the whole allowance, and saying "true" here is
-            // what made that allowance meaningless: both callers read true as
-            // "it came back" and un-spend the attempt, so the request was tried
-            // again, failed again, and waited another two hours — for ever, on
-            // one file, with a progress window that never moved and no way out
-            // but Cancel. The documented ceiling has to be able to end.
-            return false;
         }
+
+        /// <summary>1 once "waiting for the internet" has been said for the outage now under way.</summary>
+        private int _saidOffline;
+
+        /// <summary>Requests inside <see cref="WaitOutNetwork"/> now.</summary>
+        private int _networkWaiters;
 
         /// <summary>
         /// How long Google asked us to wait, when it said.
