@@ -371,7 +371,9 @@ namespace ExplorerNative
                     // far through the file that has got.
                     var reporter = new ArchiveEngine.Reporter(progress);
                     reporter.Estimate(file.Length, () => file.Position);
-                    using var counted = new TickingStream(file, () => reporter.Advance(0));
+                    // A failed read is said as one (a share gone away), not as damage.
+                    using var source = new TarEngine.SourceStream(file);
+                    using var counted = new TickingStream(source, () => reporter.Advance(0));
 
                     IReadOnlyList<ArchiveEntryInfo> entries;
                     bool damaged;
@@ -445,7 +447,8 @@ namespace ExplorerNative
                                  errors.FirstOrDefault();
                     if (done == 0 && reason != null)
                         throw new InvalidDataException(reason.TrimEnd('.') + ".");
-                    damaged = errors.Any(e => e.Contains("damaged", StringComparison.OrdinalIgnoreCase));
+                    var judged = JudgeTree(errors);
+                    damaged = judged.Damaged;
 
                     // Only an extraction tar did not finish is partial. A link
                     // left out, a repeated name or a withheld unsafe name is a
@@ -453,6 +456,11 @@ namespace ExplorerNative
                     // kept, and not extracted again on every open (4.1.7 read
                     // any such note as "only part of this archive is shown").
                     if (!damaged && stoppedShort) partial = reason ?? "the system tar stopped before the end";
+
+                    // Files that could not be written (a full disk, a path too
+                    // long) are missing from the tree, not a note: shown as
+                    // partial, so it is not kept and is taken out again next time.
+                    if (!damaged && partial == null && judged.Lost != null) partial = judged.Lost;
                 }
                 catch
                 {
@@ -474,6 +482,40 @@ namespace ExplorerNative
             listing.Partial = partial;
             return listing;
         }
+
+        /// <summary>
+        /// What a tree extraction's error lines mean for the tree. Damaged only
+        /// when the extractor said so in its own archive-level sentence (a
+        /// member called "Damaged photos" is not damage). Lost when files did
+        /// not reach the disk for a reason that is not damage: a write that
+        /// failed, a full disk, or a file 7-Zip named without the damage behind it.
+        /// </summary>
+        internal static (bool Damaged, string? Lost) JudgeTree(IReadOnlyList<string> errors)
+        {
+            bool damaged = errors.Any(e => e.StartsWith(DamagedLead, StringComparison.Ordinal));
+            if (damaged) return (true, null);
+
+            bool NoSpace(string e) =>
+                e.Contains("enough space", StringComparison.OrdinalIgnoreCase) ||
+                e.Contains("No space left", StringComparison.OrdinalIgnoreCase) ||
+                e.Contains("disk is full", StringComparison.OrdinalIgnoreCase);
+
+            var lost = errors.Where(e =>
+                NoSpace(e) ||
+                e.EndsWith(": Write failed", StringComparison.OrdinalIgnoreCase) ||
+                e.EndsWith(": Seek failed", StringComparison.OrdinalIgnoreCase) ||
+                e.EndsWith(": the archive is damaged at this point", StringComparison.Ordinal)).ToList();
+            if (lost.Count == 0) return (false, null);
+            if (lost.Any(NoSpace)) return (false, "There isn't enough space on the disk");
+
+            int items = lost.Count(e => e.Contains(": ", StringComparison.Ordinal));
+            return (false, items > 0
+                ? $"{NameRules.Items(items)} could not be written to the disk"
+                : "Some files could not be written to the disk");
+        }
+
+        /// <summary>The start of <see cref="ArchiveEngine.DamagedMessage"/>, whatever the count.</summary>
+        private static readonly string DamagedLead = ArchiveEngine.DamagedMessage(0).Split(',')[0];
 
         /// <summary>A folder on disk as archive entries, names straight from the disk. Links are not followed.</summary>
         internal static IEnumerable<ArchiveEntryInfo> WalkTree(string root, CancellationToken token)
