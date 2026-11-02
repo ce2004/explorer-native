@@ -545,8 +545,8 @@ async function remove(paths) {
   const gone = new Set(paths.map(leaf));
   const index = state.entries.findIndex((e) => gone.has(e.name));
   try {
-    // Drive trashes one item at a time, most of a second each: many take longer than the usual wait.
-    const r = await api('/api/delete', { method: 'POST', body: { paths }, timeout: 120000 });
+    // Drive trashes one item at a time, most of a second each: the wait grows with the count.
+    const r = await api('/api/delete', { method: 'POST', body: { paths }, timeout: 120000 + paths.length * 2000 });
     const failed = (r.failed || []).length;
     announce(failed ? `Deleted ${r.deleted}. ${plural(failed, 'item', 'items')} could not be deleted: ${r.failed[0].error}` : `Deleted ${what}`, failed > 0);
     state.selectMode = false;
@@ -554,7 +554,16 @@ async function remove(paths) {
     // A row that could not be deleted is still there, and is where it was.
     const kept = (r.failed || []).map((f) => leaf(f.path)).find((n) => gone.has(n));
     focusRow(kept != null ? kept : null, index < 0 ? 0 : index);
-  } catch (err) { announce(err.message, true); return false; }
+  } catch (err) {
+    if (err.status !== 0) { announce(err.message, true); return false; }
+    // No answer: the PC may still be deleting. Show the folder as it is now rather than the old rows.
+    state.selectMode = false;
+    state.selected.clear();
+    const shown = await openFolder(state.path, { push: false, quiet: true }).catch(() => false);
+    if (!shown) { renderFiles(); announce(err.message, true); return false; }
+    focusRow(null, index < 0 ? 0 : index);
+    announce('The PC did not answer in time, so it may still be deleting. The folder has been refreshed, so check what is left.', true);
+  }
   return true;
 }
 
