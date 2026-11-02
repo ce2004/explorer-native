@@ -630,6 +630,9 @@ namespace ExplorerNative
         /// <summary>Whether a PC folder is there, asked by the watcher's worker. The suite holds it to stand for a dead share.</summary>
         internal Func<string, bool> FolderThere { get; set; } = Directory.Exists;
 
+        /// <summary>Makes a pair's folder watcher. The suite swaps in one it can make fail, as a dropped share does.</summary>
+        internal Func<string, FileSystemWatcher> MakeWatcher { get; set; } = path => new FileSystemWatcher(path);
+
         /// <summary>
         /// Makes a pair's folder watcher, on a worker (see <see cref="Reload"/>),
         /// and puts it in place only while <paramref name="ticket"/> is still the
@@ -643,13 +646,11 @@ namespace ExplorerNative
                 if (!FolderThere(pair.LocalFolder)) return;
                 lock (_gate) if (_disposed || !_watchTickets.TryGetValue(pair.Id, out var now) || now != ticket) return;
 
-                watcher = new FileSystemWatcher(pair.LocalFolder)
-                {
-                    IncludeSubdirectories = pair.IncludeSubfolders,
-                    NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName |
-                                   NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.Attributes,
-                    InternalBufferSize = 64 * 1024,
-                };
+                watcher = MakeWatcher(pair.LocalFolder);
+                watcher.IncludeSubdirectories = pair.IncludeSubfolders;
+                watcher.NotifyFilter = NotifyFilters.FileName | NotifyFilters.DirectoryName |
+                                       NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.Attributes;
+                watcher.InternalBufferSize = 64 * 1024;
 
                 // Events make a pass due, and say which folders to list
                 // again where the volume has no change journal (see
@@ -691,9 +692,18 @@ namespace ExplorerNative
                     if (!Ignored(e.FullPath)) Seen(e.FullPath, WatcherChangeTypes.Renamed);
                     else if (!Ignored(e.OldFullPath) && !IsMine(e.FullPath)) Soon(id);
                 };
-                watcher.Error += (_, _) =>
+                // An overflow loses events, but the watcher reads on. Any other
+                // failure (a share dropping, a USB drive pulled, the folder
+                // deleted) leaves it reading nothing for good, sometimes still
+                // saying it is on: it is retired, and the pair's next pass makes
+                // a new one (EnsureWatcher). Kept, its empty account was trusted
+                // again after one walk, and new PC files waited for the daily walk.
+                watcher.Error += (sender, e) =>
                 {
-                    journal.Lose();
+                    if (e.GetException() is InternalBufferOverflowException && sender is FileSystemWatcher { EnableRaisingEvents: true })
+                        journal.Lose();
+                    else
+                        RetireWatcher(id, sender as FileSystemWatcher, journal);
                     Soon(id);
                 };
                 watcher.EnableRaisingEvents = true;
@@ -714,6 +724,62 @@ namespace ExplorerNative
             {
                 try { watcher?.Dispose(); } catch { }
             }
+        }
+
+        /// <summary>
+        /// Lets go of a pair's watcher that has stopped for good, or of any it
+        /// has when <paramref name="watcher"/> is null (its folder has gone).
+        /// Its account dies with it, so nothing seen before the gap is trusted
+        /// after it. Only the watcher and journal named go: a newer pair's are kept.
+        /// </summary>
+        private void RetireWatcher(string pairId, FileSystemWatcher? watcher = null, PcWatchJournal? journal = null)
+        {
+            journal?.Die();
+            FileSystemWatcher? retired = null;
+            lock (_gate)
+            {
+                if (_watchers.TryGetValue(pairId, out var now) && (watcher == null || ReferenceEquals(now, watcher)))
+                {
+                    retired = now;
+                    _watchers.Remove(pairId);
+                }
+                if (_watchJournals.TryGetValue(pairId, out var held) && (journal == null || ReferenceEquals(held, journal)))
+                {
+                    held.Die();
+                    _watchJournals.Remove(pairId);
+                }
+            }
+            retired ??= watcher;
+            if (retired != null) _ = Task.Run(() => { try { retired.Dispose(); } catch { } });
+        }
+
+        /// <summary>
+        /// Makes a pair's watcher if it has none, or only a dead one: its PC
+        /// folder was missing when the pair was loaded (a USB drive not plugged
+        /// in yet, a share not up), or the watcher failed. Called by the pass,
+        /// on its worker, once the folder has answered, and before the PC side
+        /// is looked at, so this pass's whole walk is the one the new watcher
+        /// is trusted after.
+        /// </summary>
+        private void EnsureWatcher(string pairId)
+        {
+            DriveSyncPair copy;
+            long ticket;
+            FileSystemWatcher? dead = null;
+            lock (_gate)
+            {
+                if (_disposed || _removed.Contains(pairId)) return;
+                var live = _pairs.FirstOrDefault(p => p.Id == pairId);
+                if (live == null || live.Paused) return;
+                if (_watchers.ContainsKey(pairId) && _watchJournals.TryGetValue(pairId, out var journal) && !journal.Dead) return;
+                if (_watchers.Remove(pairId, out var old)) dead = old;
+                _watchJournals.Remove(pairId);
+                ticket = ++_lastTicket;
+                _watchTickets[pairId] = ticket;
+                copy = live.Copy();
+            }
+            if (dead != null) _ = Task.Run(() => { try { dead.Dispose(); } catch { } });
+            WatchAsWanted(copy, ticket);
         }
 
         /// <summary>Saves an edited list of pairs at once (through settings) and syncs.</summary>
@@ -1912,6 +1978,9 @@ namespace ExplorerNative
         /// <summary>The watchers' account of what changed, per pair, for PC folders with no change journal.</summary>
         private readonly Dictionary<string, PcWatchJournal> _watchJournals = new();
 
+        /// <summary>Where a PC folder's change journal is, or null with none. The suite answers null to stand for exFAT or a share.</summary>
+        internal Func<string, UsnJournal.Position?> JournalOf { get; set; } = UsnJournal.Where;
+
         /// <summary>
         /// The settings a whole walk of the PC folder was for: change any and the
         /// next pass walks it again. Walk is raised when a walk starts finding
@@ -1960,7 +2029,7 @@ namespace ExplorerNative
 
         private PcLook LookAtPc(DriveSyncPair pair, PairState state, bool hasRecords)
         {
-            var look = new PcLook { Journal = UsnJournal.Where(pair.LocalFolder) };
+            var look = new PcLook { Journal = JournalOf(pair.LocalFolder) };
             lock (_gate) _watchJournals.TryGetValue(pair.Id, out look.Watch);
             look.FromWatch = look.Watch?.Take(out look.Epoch);
 
@@ -2246,6 +2315,9 @@ namespace ExplorerNative
                 .ConfigureAwait(false);
             if (SyncSafety.RootProblem(localThere, driveThere) is string gone)
             {
+                // A watcher on a folder that has gone watches nothing (or the
+                // old folder, moved away); a new one is made once it is back.
+                if (!localThere) RetireWatcher(pair.Id);
                 bool newProblem = gone != state.Problem;
                 state.Problem = gone;
                 SaveState(pair.Id, state);
@@ -2260,6 +2332,7 @@ namespace ExplorerNative
                 Finish(pair, state, refuse, announce: true);
                 return;
             }
+            EnsureWatcher(pair.Id);
 
             // Old Drive copies an earlier replace could not trash, before Drive
             // is listed, so the listing does not hold them as well.

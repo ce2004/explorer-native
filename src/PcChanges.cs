@@ -39,7 +39,27 @@ namespace ExplorerNative
         private readonly object _gate = new();
         private PcMarks _marks = new();
         private bool _trusted;
+        private bool _dead;
         private int _epoch;
+
+        /// <summary>
+        /// The watcher stopped for good (a share dropped, a USB drive pulled,
+        /// the folder deleted): it reads nothing more, so its empty account is
+        /// never trusted again, and the monitor makes the pair a new watcher.
+        /// </summary>
+        public void Die()
+        {
+            lock (_gate)
+            {
+                _dead = true;
+                _trusted = false;
+                _epoch++;
+                _marks = new PcMarks();
+            }
+        }
+
+        /// <summary>See <see cref="Die"/>.</summary>
+        public bool Dead { get { lock (_gate) return _dead; } }
 
         /// <summary>A path the watcher reported, relative to the pair's folder, and what happened to it.</summary>
         public void Note(string relative, WatcherChangeTypes kind)
@@ -78,7 +98,7 @@ namespace ExplorerNative
                 epoch = _epoch;
                 var taken = _marks;
                 _marks = new PcMarks();
-                return _trusted ? taken : null;
+                return _trusted && !_dead ? taken : null;
             }
         }
 
@@ -92,7 +112,7 @@ namespace ExplorerNative
         /// <summary>A whole walk finished; trusted from here on if nothing was lost while it ran.</summary>
         public void Walked(int epoch)
         {
-            lock (_gate) if (epoch == _epoch) _trusted = true;
+            lock (_gate) if (epoch == _epoch && !_dead) _trusted = true;
         }
     }
 
