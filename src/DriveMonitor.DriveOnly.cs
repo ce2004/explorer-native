@@ -336,7 +336,12 @@ namespace ExplorerNative
             if (DriveOnlyFolders.Covers(pair.DriveOnlyFolders, relative))
                 return new(false, $"{name} is already kept on Google Drive only");
             var pcFolder = Path.Combine(pair.LocalFolder, relative.Replace('/', '\\'));
-            if (!Directory.Exists(pcFolder)) return new(false, $"{name} is not on this PC");
+            // Off the UI thread, with a limit: a share or disk that stopped answering
+            // would otherwise freeze the window.
+            var there = Task.Run(() => Directory.Exists(pcFolder));
+            if (await Task.WhenAny(there, Task.Delay(5000, token)).ConfigureAwait(false) != there)
+                return new(false, $"This PC's folder is not answering, so {name} was not changed");
+            if (!there.Result) return new(false, $"{name} is not on this PC");
             client ??= _drive.Client;
             if (client == null) return new(false, "Google Drive is not connected, so nothing was changed");
 
@@ -584,6 +589,10 @@ namespace ExplorerNative
             var entry = pair.DriveOnlyFolders.FirstOrDefault(f => DriveOnlyFolders.Covers(new[] { f }, relative));
             if (entry == null) return new(false, $"{Leaf(relative)} is not kept on Google Drive only");
             entry = DriveOnlyFolders.Normal(entry);
+
+            // An upload-only pass never downloads, so nothing would come back.
+            if (pair.Mode == SyncMode.UploadOnly)
+                return new(false, $"{DisplayName(pair)} only uploads, so {Leaf(entry)} cannot be put back on this PC. Change its direction to bring it down");
 
             // No records may be left from before it went to Drive only: with
             // deletes copied, one would read as "deleted on the PC" and Drive's
