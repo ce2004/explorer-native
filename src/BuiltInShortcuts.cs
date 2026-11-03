@@ -72,6 +72,9 @@ namespace ExplorerNative
                 new("Quotes", "keep words together: \"i love\" finds I Love You, not Love I"),
                 new("Star and question mark", "patterns: *.flac finds every FLAC file, t??.mp3 finds t07.mp3"),
                 new("Minus", "leave things out: love -remix skips anything with remix in its name or folder"),
+                new("Size", "size>100mb or size<1mb finds files bigger or smaller than that; kb and gb work too"),
+                new("Date", "modified:today, modified:yesterday, modified:thisweek, modified:thismonth, modified:7d for the last 7 days, or modified:2025 for a year"),
+                new("Kind", "kind:folder, kind:file, kind:audio, kind:video, kind:image, kind:document or kind:archive"),
             }),
             ("The app", new Line[]
             {

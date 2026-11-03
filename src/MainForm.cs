@@ -6139,7 +6139,7 @@ namespace ExplorerNative
             }
 
             var term = PromptForm.Ask(this, "Search",
-                $"Search in {FolderDisplayName(where)} and below:", _lastSearch);
+                $"Search in {FolderDisplayName(where)} and below (size, modified and kind words work too, see Ctrl+F1):", _lastSearch);
             if (term == null) { RestoreListFocus(); return; }
 
             _lastSearch = term;

@@ -198,17 +198,20 @@ namespace ExplorerNative
         {
             bool isDir = entry.IsDirectory;
             bool hit = query.MatchesFolded(entry.FileName, below);
+            DateTime modified = default;
+            long size = isDir ? -1 : entry.Length;
+            if (hit)
+            {
+                try { modified = entry.LastWriteTimeUtc.UtcDateTime.ToLocalTime(); }
+                catch { modified = default; }
+                // Size, date and kind words, only once the name has answered.
+                if (query.HasFacts && !query.Facts.Fits(entry.FileName, isDir, size, modified)) hit = false;
+            }
             if (!hit && !isDir) return default;
 
             string path = NameRules.PlainPath(entry.ToFullPath());
             SearchHit? found = null;
-            if (hit)
-            {
-                DateTime modified;
-                try { modified = entry.LastWriteTimeUtc.UtcDateTime.ToLocalTime(); }
-                catch { modified = default; }
-                found = new SearchHit(path, entry.FileName.ToString(), isDir, isDir ? -1 : entry.Length, modified);
-            }
+            if (hit) found = new SearchHit(path, entry.FileName.ToString(), isDir, size, modified);
 
             // A junction is somebody else's tree wearing this one's name:
             // following one can circle for ever, and at best it searches a whole
@@ -236,6 +239,8 @@ namespace ExplorerNative
     /// - A word with * or ? is a pattern for the whole name: "*.flac",
     ///   "t??.mp3" (in quotes when it has a space: "track ??.mp3").
     /// - -word leaves out anything with that word in its name or its folders.
+    /// - size>100mb, modified:today, kind:audio and the rest narrow by the
+    ///   item's own facts (<see cref="SearchFacts"/>).
     ///
     /// Nothing at all typed (F5 re-runs a search) matches everything.
     /// </summary>
@@ -245,6 +250,12 @@ namespace ExplorerNative
         private readonly string[] _patterns;   // folded; each must fit the whole name
         private readonly string[] _without;    // folded; none may be found
 
+        /// <summary>The size, date and kind words, if any were typed.</summary>
+        public SearchFacts Facts { get; }
+
+        /// <summary>Whether anything beyond the name has to be checked.</summary>
+        public bool HasFacts => Facts.Any;
+
         /// <summary>
         /// What to ask Google for (any one of them, as "name contains"): every
         /// item the query can match holds at least one of these in its name. Empty
@@ -252,16 +263,21 @@ namespace ExplorerNative
         /// </summary>
         public IReadOnlyList<string> DriveHints { get; }
 
-        private SearchQuery(string[] words, string[] patterns, string[] without, string[] hints)
+        private SearchQuery(string[] words, string[] patterns, string[] without, string[] hints, SearchFacts facts)
         {
+            Facts = facts;
             _words = words;
             _patterns = patterns;
             _without = without;
             DriveHints = hints;
         }
 
-        public static SearchQuery Parse(string? text)
+        public static SearchQuery Parse(string? text) => Parse(text, DateTime.Now);
+
+        /// <summary>The same, with "today" and the rest counted from <paramref name="now"/> (local time).</summary>
+        public static SearchQuery Parse(string? text, DateTime now)
         {
+            var facts = new SearchFacts();
             var words = new List<string>();
             var typedWords = new List<string>();
             var patterns = new List<string>();
@@ -275,6 +291,9 @@ namespace ExplorerNative
                     without.Add(FoldName(token[1..]));
                     continue;
                 }
+                // Typed plainly, size>1mb and the like are about the item,
+                // not its name; one that does not parse is an ordinary word.
+                if (!quoted && facts.TryTake(token, now)) continue;
                 // Even quoted: no Windows name holds * or ?, so they can only
                 // be meant as a pattern ("track ??.mp3" needs the quotes).
                 if (token.AsSpan().IndexOfAny('*', '?') >= 0)
@@ -298,7 +317,7 @@ namespace ExplorerNative
                 ? (patternPiece.Length > 0 ? [patternPiece] : [])
                 : typedWords.ToArray();
 
-            return new SearchQuery(words.ToArray(), patterns.ToArray(), without.ToArray(), hints);
+            return new SearchQuery(words.ToArray(), patterns.ToArray(), without.ToArray(), hints, facts);
         }
 
         /// <summary>Split on spaces, keeping "quoted words" as one.</summary>
@@ -332,6 +351,17 @@ namespace ExplorerNative
         /// searched folder itself).
         /// </summary>
         public bool Matches(string name, string folders) => MatchesFolded(name, FoldName(folders));
+
+        /// <summary>
+        /// Whether an item answers on everything: its name and folders, and its
+        /// size, date and kind when those were asked about.
+        /// <paramref name="modified"/> is local time.
+        /// </summary>
+        public bool Matches(string name, string folders, bool isDir, long size, DateTime modified) =>
+            MatchesFolded(name, FoldName(folders)) && (!HasFacts || Facts.Fits(name, isDir, size, modified));
+
+        /// <summary>Google query clauses for the size, date and kind words (empty when none).</summary>
+        public string DriveClauses => Facts.DriveClauses();
 
         /// <summary>
         /// The same, with the folders already through <see cref="FoldName"/>: the

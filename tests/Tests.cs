@@ -651,6 +651,7 @@ namespace ExplorerNative
                 ("applemusic", () => Release510AppleMusicTests.RunAll(Check, Equal)),
                 ("web", () => Release510WebTests.RunAll(Check, Equal)),
                 ("files", () => Release510FilesTests.RunAll(Check, Equal)),
+                ("search", () => Release510SearchTests.RunAll(Check, Equal)),
             };
             foreach (var (key, run) in areas)
                 if (only.Length == 0 || only == key) await Guard("Release510-" + key, run);
