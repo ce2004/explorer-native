@@ -414,6 +414,8 @@ namespace ExplorerNative
             // delete the folder the first was still writing into.
             var gate = TreeGates.GetOrAdd(tree, new SemaphoreSlim(1, 1));
             gate.Wait(token);
+            Used(tree);
+            SweepIdleSoon();
             try { return OpenThroughTreeLocked(archivePath, format, key, tree, finished, progress, token); }
             finally { gate.Release(); }
         }
@@ -562,6 +564,7 @@ namespace ExplorerNative
 
             if (listing.Tree != null)
             {
+                Used(listing.Tree);
                 var onDisk = ArchiveEngine.SafeTarget(listing.Tree, inner, out var reason)
                              ?? throw new IOException(reason ?? "it cannot be reached");
                 if (!File.Exists(onDisk)) throw new FileNotFoundException("it is no longer in the archive");
@@ -569,7 +572,11 @@ namespace ExplorerNative
             }
 
             var key = listing.Key + "|" + inner;
-            if (_opened.TryGetValue(key, out var earlier) && File.Exists(earlier)) return earlier;
+            if (_opened.TryGetValue(key, out var earlier) && File.Exists(earlier))
+            {
+                if (Path.GetDirectoryName(earlier) is { } kept) Used(kept);
+                return earlier;
+            }
 
             var folder = NewCacheFolder("open");
             var errors = new List<string>();
@@ -880,7 +887,7 @@ namespace ExplorerNative
         /// <summary>
         /// Where members taken out of archives are put: %TEMP%\ExplorerNative\archives.
         /// "open-" folders hold files being played or opened, "tree-" folders
-        /// whole bsdtar archives, both cleared on exit. "copy-" folders are what
+        /// whole bsdtar archives, both cleared on exit or after a day unused. "copy-" folders are what
         /// a Copy put on the clipboard, kept a day, because a paste can come
         /// after the application has closed.
         /// </summary>
@@ -893,7 +900,64 @@ namespace ExplorerNative
         {
             var folder = Path.Combine(CacheRoot, kind + "-" + Guid.NewGuid().ToString("N")[..12]);
             Directory.CreateDirectory(folder);
+            Used(folder);
+            SweepIdleSoon();
             return folder;
+        }
+
+        /// <summary>How long an "open-" or "tree-" folder made this run is kept once nothing uses it.</summary>
+        internal static readonly TimeSpan IdleKeptFor = TimeSpan.FromDays(1);
+
+        // When each cache folder made this run was last used. The app can stay
+        // in the tray for weeks, so waiting for Quit filled the disk.
+        private static readonly ConcurrentDictionary<string, DateTime> _used = new(StringComparer.OrdinalIgnoreCase);
+        private static long _lastIdleSweep;
+
+        internal static void Used(string folder, DateTime? whenUtc = null) => _used[folder] = whenUtc ?? DateTime.UtcNow;
+
+        private static void SweepIdleSoon()
+        {
+            long now = Environment.TickCount64, last = Interlocked.Read(ref _lastIdleSweep);
+            if (last != 0 && now - last < 3_600_000) return;
+            if (Interlocked.CompareExchange(ref _lastIdleSweep, now, last) != last) return;
+            ArchiveWorkers.Run(() => { try { SweepIdle(CacheRoot, DateTime.UtcNow); } catch { } });
+        }
+
+        /// <summary>
+        /// Clears, while the app runs, copies older than a day and "open-" and
+        /// "tree-" folders made this run and unused for <see cref="IdleKeptFor"/>.
+        /// </summary>
+        internal static void SweepIdle(string root, DateTime nowUtc)
+        {
+            if (!Directory.Exists(root)) return;
+            foreach (var folder in Directory.EnumerateDirectories(root))
+            {
+                try
+                {
+                    var name = Path.GetFileName(folder);
+                    if (name.StartsWith("copy-", StringComparison.OrdinalIgnoreCase))
+                    {
+                        if (nowUtc - Directory.GetLastWriteTimeUtc(folder) > CopyKeptFor) DeleteTree(folder);
+                        continue;
+                    }
+                    if (!_used.TryGetValue(folder, out var used) || nowUtc - used <= IdleKeptFor) continue;
+
+                    // A tree being extracted or read right now is left alone.
+                    var gate = TreeGates.GetOrAdd(folder, new SemaphoreSlim(1, 1));
+                    if (!gate.Wait(0)) continue;
+                    try
+                    {
+                        try { File.Delete(folder + ".done"); } catch { }
+                        DeleteTree(folder);
+                        _used.TryRemove(folder, out _);
+                        foreach (var opened in _opened)
+                            if (opened.Value.StartsWith(folder + "\\", StringComparison.OrdinalIgnoreCase))
+                                _opened.TryRemove(opened.Key, out _);
+                    }
+                    finally { gate.Release(); }
+                }
+                catch { }
+            }
         }
 
         /// <summary>
