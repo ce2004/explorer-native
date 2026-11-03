@@ -247,6 +247,15 @@ namespace ExplorerNative
                 leave.Value = 150;
                 fadeOut.Value = 20;
                 fadeIn.Value = 20;
+
+                // Not one row's words: each change above started the clock.
+                _settle.Stop();
+                _spoke = null;
+                if (MaySpeak())
+                {
+                    try { Speech.Speak("Back to the defaults", interrupt: false); }
+                    catch { }
+                }
             };
 
             var ok = new Button

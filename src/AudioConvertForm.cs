@@ -99,6 +99,11 @@ namespace ExplorerNative
             var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true };
             var ok = new Button { Text = acceptText, AutoSize = true };
             ok.Click += (_, _) => Accept();
+
+            // The panel runs right to left, so Cancel is added first to sit on
+            // the right; Tab still reaches the main button first.
+            ok.TabIndex = 0;
+            cancel.TabIndex = 1;
             buttons.Controls.Add(cancel);
             buttons.Controls.Add(ok);
             layout.Controls.Add(buttons);
