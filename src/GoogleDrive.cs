@@ -727,6 +727,11 @@ namespace ExplorerNative
                 var mount = new DriveMount(drive, root, budget, Note)
                 {
                     Notify = Forward,
+                    OnLetterMoved = (from, to) =>
+                    {
+                        Status = Status.Replace(from, to, StringComparison.OrdinalIgnoreCase);
+                        LetterMoved?.Invoke(from, to);
+                    },
                     IdleRelease = TimeSpan.FromSeconds(CacheIdleSeconds),
                     ShowTrash = () => ShowTrash,
                     QuotaUsed = used,
@@ -846,6 +851,8 @@ namespace ExplorerNative
         /// unmounting. Returns the old and new letters when it moved, otherwise
         /// null — not mounted, already there, or no letter free.
         /// </summary>
+        public event Action<string, string>? LetterMoved;
+
         public (string From, string To)? MoveLetter(string configured)
         {
             DriveMount? mount;

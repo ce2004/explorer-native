@@ -179,6 +179,13 @@ namespace ExplorerNative
             _browsePrefetch.Notify = OnPlayerNotification;
             AudioTags.Notify = OnPlayerNotification;
             _drive.Notification += OnDriveNotification;
+            // Back online on another letter: panes follow and it is said, as when
+            // Preferences moves the letter.
+            _drive.LetterMoved += (from, to) => PostUi(() =>
+            {
+                _form?.DriveLetterMoved(from, to);
+                Notify("drive.mounted", $"Google Drive is on {to}");
+            });
 
             // Preferences' account button says Connect, Disconnect or Reconnect
             // from the drive itself, and Disconnect acts on it directly.

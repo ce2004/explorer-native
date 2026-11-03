@@ -1074,6 +1074,9 @@ namespace ExplorerNative
         /// </summary>
         public Action<string, string>? Notify { get; set; }
 
+        /// <summary>Told (old letter, new letter) when coming back online had to use another letter.</summary>
+        public Action<string, string>? OnLetterMoved { get; set; }
+
         private void Say(string id, string message)
         {
             var notify = Notify;
