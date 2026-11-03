@@ -61,7 +61,7 @@ namespace ExplorerNative
                 new("Ctrl+Shift+S", "work out the size of a folder"),
                 new("Shift+F10 or the Applications key", "the menu for the item you are on: compress, extract, convert audio and more"),
                 new("Ctrl+Shift+Y", "sync all Google Drive folders now"),
-                new("Ctrl+Shift+T", "running transfers: every copy, move, compress, extract and convert still going; Enter shows its window, P pauses or resumes it, Delete cancels it"),
+                new("Ctrl+Alt+Shift+T", "running transfers: every copy, move, compress, extract and convert still going; Enter shows its window, P pauses or resumes it, Delete cancels it"),
                 new("Ctrl+Alt+T", "say how far every running transfer has got, without leaving the list"),
                 new("P in a transfer window", "pause or resume a copy, move or Google Drive upload"),
             }),

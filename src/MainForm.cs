@@ -672,7 +672,7 @@ namespace ExplorerNative
         }
 
         /// <summary>Help, Keyboard shortcuts (Ctrl+F1): the built-in keys, as a list.</summary>
-        /// <summary>Ctrl+Shift+T: the running transfers list (RunningTransfersForm).</summary>
+        /// <summary>Ctrl+Alt+Shift+T: the running transfers list (RunningTransfersForm).</summary>
         private void ShowRunningTransfers()
         {
             if (!RunningTransfersForm.ShowFor(this)) Announce(TransferText.NothingRunning);
@@ -1267,7 +1267,7 @@ namespace ExplorerNative
             // menu is three keystrokes and a different mental place. See
             // BuildContextMenu.
             tools.DropDownItems.Add(Item("&Announce current folder", Keys.Control | Keys.Shift | Keys.A, AnnounceFolder));
-            tools.DropDownItems.Add(Item("&Running transfers", Keys.Control | Keys.Shift | Keys.T, ShowRunningTransfers));
+            tools.DropDownItems.Add(Item("&Running transfers", Keys.Control | Keys.Alt | Keys.Shift | Keys.T, ShowRunningTransfers));
             tools.DropDownItems.Add(Item("Say transfer &progress", Keys.Control | Keys.Alt | Keys.T, SayTransferProgress));
             menu.Items.Add(tools);
 

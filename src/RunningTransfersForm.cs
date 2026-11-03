@@ -7,7 +7,7 @@ using System.Windows.Forms;
 namespace ExplorerNative
 {
     /// <summary>
-    /// Tools, Running transfers (Ctrl+Shift+T): every copy, move, compress,
+    /// Tools, Running transfers (Ctrl+Alt+Shift+T): every copy, move, compress,
     /// extract, convert and editor save still running, one line each. The
     /// first line says everything at once. Enter brings a transfer's own window
     /// forward, P pauses or resumes it, Delete asks to cancel it. The lines
