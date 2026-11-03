@@ -1128,7 +1128,9 @@ namespace ExplorerNative
                 {
                     WriteLog("Updated", updated);
                     System.Threading.Thread.Sleep(1500);
-                    Speech.Speak(updated);
+                    bool mayAnnounce = true;
+                    try { mayAnnounce = loading.GetAwaiter().GetResult().SpeakEnabled; } catch { }
+                    if (mayAnnounce) Speech.Speak(updated);
                 }
             });
 
