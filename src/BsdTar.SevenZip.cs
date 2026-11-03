@@ -532,6 +532,111 @@ namespace ExplorerNative
             }
         }
 
+        // ---------- Testing ----------
+
+        /// <summary>
+        /// Test archive through "7za t": every member decompressed and checked,
+        /// nothing written. A tar.xz or tar.bz2 is decompressed by one 7-Zip
+        /// and its tar read by a second, so the files inside are counted.
+        /// </summary>
+        internal static ArchiveTestResult TestWithSevenZip(string archivePath, string name, bool compressedTar,
+            ArchiveEngine.Reporter reporter, CancellationToken token)
+        {
+            var exe = SevenZipExecutable ?? throw new NotSupportedException("7-Zip is missing from this copy of Explorer Native.");
+            long archiveBytes = 0;
+            try { archiveBytes = new FileInfo(archivePath).Length; } catch { }
+            long percentNow = 0;
+            reporter.Estimate(archiveBytes, () => Math.Max(1, archiveBytes) * Interlocked.Read(ref percentNow) / 100);
+
+            string? password = compressedTar ? null : ArchivePasswords.Known(archivePath);
+            while (true)
+            {
+                var start = SevenZipStart(exe);
+                foreach (var a in compressedTar
+                             ? new[] { "t", "-si", "-ttar", "-y", "-bso1", "-bse1", "-bsp0", "-bb1", "-sccUTF-8" }
+                             : new[] { "t", "-y", $"-mmt{SevenZipThreads}", SevenZipMemory, "-bso1", "-bse1", "-bsp1", "-bb1", "-sccUTF-8", "--" })
+                    start.ArgumentList.Add(a);
+                if (!compressedTar && password == null) start.ArgumentList.Insert(1, "-pExplorerNative");
+                if (!compressedTar) start.ArgumentList.Add(SevenZipPath(archivePath));
+                RoboCopyEngine.Trace($"7-Zip test: {string.Join(" ", start.ArgumentList)}");
+
+                var tested = new List<string>();
+                var bad = new List<string>();
+                Feeder? feeding = compressedTar
+                    ? new Feeder(exe, new[]
+                    {
+                        "x", "-so", "-y", $"-mmt{SevenZipThreads}", SevenZipMemory,
+                        "-bse2", "-bsp2", "-sccUTF-8", "--", SevenZipPath(archivePath),
+                    }, (p, _, _) => Interlocked.Exchange(ref percentNow, p), token)
+                    : null;
+                int exit;
+                List<string> lines;
+                try
+                {
+                    (exit, lines) = RunSevenZip(start, token, (percent, _, current) =>
+                    {
+                        if (feeding == null) Interlocked.Exchange(ref percentNow, percent);
+                        if (current != null) reporter.Starting(current);
+                    }, onLine: line =>
+                    {
+                        if (line.StartsWith("T ", StringComparison.Ordinal))
+                        {
+                            lock (tested) tested.Add(line[2..].TrimEnd());
+                            reporter.Finished(0);
+                        }
+                        else if (line.StartsWith("ERROR: ", StringComparison.Ordinal))
+                        {
+                            int at = line.LastIndexOf(" : ", StringComparison.Ordinal);
+                            if (at > 0) lock (bad) bad.Add(line[(at + 3)..].Trim());
+                        }
+                    }, feed: feeding != null ? feeding.CopyTo : password != null ? PasswordFeed(password) : null);
+                }
+                finally { feeding?.Finish(); }
+                if (feeding != null)
+                {
+                    lines.AddRange(feeding.Lines);
+                    exit = Math.Max(exit, feeding.ExitCode);
+                }
+                token.ThrowIfCancellationRequested();
+
+                bool locked = lines.Any(l => l.Contains("Wrong password", StringComparison.OrdinalIgnoreCase) ||
+                                             l.Contains("Cannot open encrypted archive", StringComparison.OrdinalIgnoreCase));
+                if (locked && !compressedTar)
+                {
+                    var next = ArchivePasswords.Next(archivePath, password);
+                    if (next == null) throw new NotSupportedException("it is protected with a password");
+                    password = next;
+                    Interlocked.Exchange(ref percentNow, 0);
+                    continue;
+                }
+                if (password != null) ArchivePasswords.Remember(archivePath, password);
+
+                // Folders are listed too: a name another one sits under is a folder.
+                var names = tested.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                var folders = new HashSet<string>(names.SelectMany(n =>
+                {
+                    var parents = new List<string>();
+                    for (int at = n.IndexOf('\\'); at > 0; at = n.IndexOf('\\', at + 1)) parents.Add(n[..at]);
+                    return parents;
+                }), StringComparer.OrdinalIgnoreCase);
+                var files = names.Where(n => !folders.Contains(n) && !n.EndsWith('\\') && !n.EndsWith('/')).ToList();
+                var archiveName = Path.GetFileName(archivePath);
+                // The decompressing half of a tar.xz names the inner tar, not a file:
+                // the file being read when it failed is the bad one.
+                var badFiles = bad.Where(b => files.Contains(b, StringComparer.OrdinalIgnoreCase))
+                    .Distinct(StringComparer.OrdinalIgnoreCase).Select(b => b.Replace('\\', '/')).ToList();
+                bool damaged = exit >= 2 && (lines.Any(LooksDamagedTo7Zip) || bad.Count > 0);
+                if (damaged && badFiles.Count == 0)
+                {
+                    if (files.Count == 0) return new ArchiveTestResult(name, 0, badFiles, ReadToEnd: false);
+                    return new ArchiveTestResult(name, files.Count, new[] { files[^1].Replace('\\', '/') }, ReadToEnd: false);
+                }
+                if (exit >= 2 && !damaged)
+                    throw new IOException(SevenZipProblem(exit, lines, extracting: true).Replace(archiveName, name));
+                return new ArchiveTestResult(name, files.Count, badFiles, ReadToEnd: true);
+            }
+        }
+
         /// <summary>
         /// Gives 7-Zip a password on its standard input, which it reads when it
         /// needs one, so it is never on a command line another program can see.

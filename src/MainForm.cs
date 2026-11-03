@@ -1711,6 +1711,7 @@ namespace ExplorerNative
         /// <summary>Kept so the popup can decide whether they belong on it.</summary>
         private ToolStripMenuItem _extractItem = null!;
         private ToolStripMenuItem _extractHereItem = null!;
+        private ToolStripMenuItem _testArchiveItem = null!;
         private ToolStripMenuItem _shortcutItem = null!;
         private ToolStripMenuItem _convertAudioItem = null!;
         private ToolStripMenuItem _editAudioItem = null!;
@@ -1899,6 +1900,11 @@ namespace ExplorerNative
 
             _contextMenu.Items.Add(_extractItem);
             _contextMenu.Items.Add(_extractHereItem);
+
+            // Shown on archives it can test, by name only. A is free on an
+            // archive's menu: Edit audio and the Apple Music items are never there.
+            _testArchiveItem = Item("Test &archive", Keys.None, TestFocusedArchive);
+            _contextMenu.Items.Add(_testArchiveItem);
 
             // Audio, on the same terms as Extract: shown only when the row is
             // something they can work on, decided from the name alone. Convert
@@ -6941,6 +6947,7 @@ namespace ExplorerNative
 
             _extractItem.Visible = looksLikeArchive;
             _extractHereItem.Visible = looksLikeArchive;
+            _testArchiveItem.Visible = looksLikeArchive && ArchiveTester.CanTest(focused);
 
             _editTagsItem.Visible = focused != null && !inArchive &&
                                     !IsDirectoryInView(focused) &&
@@ -9944,6 +9951,50 @@ namespace ExplorerNative
         /// that is where the paste conflict setting comes in, asked once about
         /// the top-level names exactly as a paste asks it.
         /// </summary>
+        /// <summary>
+        /// Test archive (Shift+F10): reads every file in the archive and checks
+        /// it, writing nothing, then says in one sentence whether it is whole.
+        /// </summary>
+        private async void TestFocusedArchive()
+        {
+            try
+            {
+                if (RefuseInArchive()) return;
+                var archive = FocusedPath();
+                if (archive == null) { AnnounceOperation("clip.nothing", "Nothing selected"); return; }
+                var name = Path.GetFileName(archive);
+
+                var (done, result) = await RunArchiveWork($"Testing {name}",
+                    (progress, token) => ArchiveTester.Test(archive, progress, token),
+                    "archive.test.cancelled", "Testing cancelled",
+                    "archive.test.failed", $"Could not test {name}");
+                if (IsDisposed || !done || result == null) { RestoreListFocus(); return; }
+
+                if (result.Fine)
+                {
+                    AnnounceOperation("archive.test.done", result.Sentence);
+                    RestoreListFocus();
+                    return;
+                }
+
+                AnnounceOperation("archive.test.damaged", result.Sentence);
+                if (result.Bad.Count > 0)
+                {
+                    const int most = 40;
+                    var text = result.Sentence + Environment.NewLine + Environment.NewLine +
+                               (result.ReadToEnd ? "The bad files:" : "Where it stopped:") + Environment.NewLine +
+                               string.Join(Environment.NewLine, result.Bad.Take(most));
+                    if (result.Bad.Count > most) text += $"{Environment.NewLine}and {result.Bad.Count - most:N0} more";
+                    MessageBox.Show(this, text, $"{name} is damaged", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                RestoreListFocus();
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) AnnounceOperation("archive.test.failed", $"Could not test the archive: {ex.Message.TrimEnd('.')}");
+            }
+        }
+
         private async void ExtractFocused(bool intoNewFolder)
         {
             if (IsDrivesView) { Announce("Cannot extract from the drive list", isError: true); return; }

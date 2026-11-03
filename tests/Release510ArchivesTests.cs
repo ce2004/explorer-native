@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Compression;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -32,6 +33,129 @@ namespace ExplorerNative
             IdleCacheSwept();
             HardLinkSizes();
             await ProtectedArchives();
+            TestArchive();
+        }
+
+        // ---------- Feature B: Test archive ----------
+
+        private static void Flip(string path, long at)
+        {
+            var bytes = File.ReadAllBytes(path);
+            bytes[at] ^= 0xFF;
+            File.WriteAllBytes(path, bytes);
+        }
+
+        private static void TestArchive()
+        {
+            var dir = Scratch();
+            var before = ArchivePasswords.Asker;
+            try
+            {
+                var src = Path.Combine(dir, "src");
+                Directory.CreateDirectory(Path.Combine(src, "sub"));
+                var random = new Random(5);
+                var files = new List<string>();
+                for (int i = 1; i <= 4; i++)
+                {
+                    var data = new byte[200_000];
+                    random.NextBytes(data);
+                    var f = Path.Combine(src, i == 4 ? "sub" : "", $"f{i}.bin");
+                    File.WriteAllBytes(f, data);
+                    files.Add(f);
+                }
+
+                ArchiveTestResult Run(string path) => ArchiveTester.Test(path, null, CancellationToken.None);
+
+                // Zip, stored so a flipped byte lands inside one file.
+                var zip = Path.Combine(dir, "photos.zip");
+                using (var z = ZipFile.Open(zip, ZipArchiveMode.Create))
+                    for (int i = 0; i < files.Count; i++)
+                        z.CreateEntryFromFile(files[i], i == 3 ? "sub/f4.bin" : $"f{i + 1}.bin", CompressionLevel.NoCompression);
+                Check("Test archive is offered for a zip", ArchiveTester.CanTest(zip));
+                Check("but not for a text file", !ArchiveTester.CanTest(Path.Combine(dir, "notes.txt")));
+                Equal("a good zip is fine", "photos.zip is fine: all 4 files are intact.", Run(zip).Sentence);
+                var badZip = Path.Combine(dir, "bad.zip");
+                File.Copy(zip, badZip);
+                Flip(badZip, 300_000);
+                var r = Run(badZip);
+                Equal("a zip with a flipped byte is damaged", "bad.zip is damaged: 1 of 4 files is bad.", r.Sentence);
+                Equal("and names the bad file", "f2.bin", string.Join(",", r.Bad));
+
+                // tar.gz through the gzip reader.
+                var tgz = Path.Combine(dir, "backup.tar.gz");
+                using (var gz = new GZipStream(File.Create(tgz), CompressionLevel.Fastest))
+                using (var writer = new System.Formats.Tar.TarWriter(gz, System.Formats.Tar.TarEntryFormat.Pax))
+                    for (int i = 0; i < files.Count; i++) writer.WriteEntry(files[i], $"f{i + 1}.bin");
+                Equal("a good tar.gz is fine", "backup.tar.gz is fine: all 4 files are intact.", Run(tgz).Sentence);
+                var badTgz = Path.Combine(dir, "badbackup.tar.gz");
+                File.Copy(tgz, badTgz);
+                Flip(badTgz, 300_000);
+                r = Run(badTgz);
+                Check("a tar.gz with a flipped byte is damaged", !r.Fine, r.Sentence);
+                Check("and says where", r.Bad.Count == 1 && r.Bad[0].StartsWith("f", StringComparison.Ordinal), r.Sentence);
+
+                if (BsdTar.SevenZipExecutable == null) { Check("7-Zip is bundled for Test archive", false); return; }
+
+                // 7z through 7za t.
+                var sz = Path.Combine(dir, "photos.7z");
+                Check("7za makes a 7z", Make7za(sz, new[] { "-t7z", "-ms=off", "-mx=1" }, src + "\\*"));
+                Equal("a good 7z is fine", "photos.7z is fine: all 4 files are intact.", Run(sz).Sentence);
+                var badSz = Path.Combine(dir, "bad.7z");
+                File.Copy(sz, badSz);
+                Flip(badSz, 300_000);
+                r = Run(badSz);
+                Equal("a 7z with a flipped byte is damaged", "bad.7z is damaged: 1 of 4 files is bad.", r.Sentence);
+
+                // tar.xz counts the files inside the tar.
+                var txz = Path.Combine(dir, "backup.tar.xz");
+                var plainTar = Path.Combine(dir, "backup.tar");
+                using (var t = File.Create(plainTar))
+                using (var writer = new System.Formats.Tar.TarWriter(t, System.Formats.Tar.TarEntryFormat.Pax))
+                    for (int i = 0; i < files.Count; i++) writer.WriteEntry(files[i], $"f{i + 1}.bin");
+                Equal("a plain tar is fine", "backup.tar is fine: all 4 files are intact.", Run(plainTar).Sentence);
+                Check("7za makes a tar.xz", Make7za(txz, new[] { "-txz" }, plainTar));
+                Equal("a good tar.xz is fine", "backup.tar.xz is fine: all 4 files are intact.", Run(txz).Sentence);
+                var badTxz = Path.Combine(dir, "bad.tar.xz");
+                File.Copy(txz, badTxz);
+                Flip(badTxz, 300_000);
+                Check("a tar.xz with a flipped byte is damaged", !Run(badTxz).Fine);
+
+                // A protected archive asks for the password first.
+                var locked = Path.Combine(dir, "locked.7z");
+                Check("7za makes a protected 7z", Make7za(locked, new[] { "-t7z", "-psesame", "-mhe=on" }, files[0]));
+                ArchivePasswords.ForgetAll();
+                var asked = FakeAsker("sesame");
+                Equal("a protected 7z is tested with its password", "locked.7z is fine: its one file is intact.", Run(locked).Sentence);
+                Equal("after one question", "locked.7z needs a password", string.Join(" | ", asked));
+
+                // Cancelling stops it.
+                bool cancelled = false;
+                using (var cts = new CancellationTokenSource())
+                {
+                    cts.Cancel();
+                    try { ArchiveTester.Test(zip, null, cts.Token); }
+                    catch (OperationCanceledException) { cancelled = true; }
+                }
+                Check("Test archive can be cancelled", cancelled);
+
+                Check("the menu item has its own access key",
+                    SourceText("MainForm.cs").Contains("Item(\"Test &archive\"", StringComparison.Ordinal));
+            }
+            finally
+            {
+                ArchivePasswords.Asker = before;
+                ArchivePasswords.ForgetAll();
+                Clean(dir);
+            }
+        }
+
+        private static string SourceText(string name)
+        {
+            var at = new DirectoryInfo(AppContext.BaseDirectory);
+            while (at != null && !Directory.Exists(Path.Combine(at.FullName, "src"))) at = at.Parent;
+            if (at == null) return "";
+            var path = Path.Combine(at.FullName, "src", name);
+            return File.Exists(path) ? File.ReadAllText(path) : "";
         }
 
         // ---------- Feature A: password-protected archives ----------
