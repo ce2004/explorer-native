@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Threading;
 using System.Windows.Forms;
@@ -128,7 +129,12 @@ namespace ExplorerNative
             var cancel = new Button { Text = "&Cancel", Dock = DockStyle.Bottom, Height = 36 };
             cancel.Click += (_, _) => RequestCancel();
 
+            // Shown only for transfers that can pause (see Pause).
+            _pauseButton = new Button { Text = "&Pause", Dock = DockStyle.Bottom, Height = 36, Visible = false };
+            _pauseButton.Click += (_, _) => TogglePause();
+
             Controls.Add(layout);
+            Controls.Add(_pauseButton);
             Controls.Add(cancel);
             CancelButton = cancel;
 
@@ -154,6 +160,98 @@ namespace ExplorerNative
                 area.Top + Math.Max(0, (area.Height - Height) / 3) + step);
 
             FormClosed += (_, _) => Uncount();
+
+            // Listed in Running transfers until the transfer is over.
+            lock (RunningGate) RunningForms.Add(this);
+        }
+
+        // ---- Running transfers and pause ----
+
+        private static readonly object RunningGate = new();
+        private static readonly List<ProgressForm> RunningForms = new();
+        private readonly Button _pauseButton;
+        private TransferProgress? _last;
+        private TransferPause? _pause;
+
+        /// <summary>Every transfer window whose transfer is still running, oldest first.</summary>
+        internal static IReadOnlyList<ProgressForm> Running
+        {
+            get { lock (RunningGate) return RunningForms.ToArray(); }
+        }
+
+        private void Unlist()
+        {
+            lock (RunningGate) RunningForms.Remove(this);
+        }
+
+        /// <summary>
+        /// Set before Show for a transfer that can pause: it adds the Pause
+        /// button. Left null, there is no button and P does nothing.
+        /// </summary>
+        internal TransferPause? Pause
+        {
+            get => _pause;
+            set
+            {
+                if (_pause != null) _pause.Changed -= PauseChanged;
+                _pause = value;
+                if (value != null) value.Changed += PauseChanged;
+                _pauseButton.Visible = value != null;
+                ShowPaused();
+            }
+        }
+
+        internal bool IsPaused => _pause?.IsPaused == true;
+
+        /// <summary>This transfer as one line, for the running transfers list.</summary>
+        internal string Describe() => TransferText.Line(Text, _last, IsPaused);
+
+        internal TransferProgress? LastProgress => _last;
+
+        /// <summary>Pause or Resume, from the button, P, or the running transfers list.</summary>
+        internal void TogglePause()
+        {
+            if (_pause == null || _cancelling || _finished) return;
+            bool paused = _pause.Toggle();
+            Speak(paused ? "Paused" : "Resumed");
+        }
+
+        /// <summary>Asks the transfer to stop, as Cancel does.</summary>
+        internal void CancelTransfer() => RequestCancel();
+
+        /// <summary>Brings this window to the front, showing it if it has not opened yet.</summary>
+        internal void BringForward()
+        {
+            if (IsDisposed) return;
+            if (!Visible) Show();
+            if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+            Activate();
+        }
+
+        private void PauseChanged(bool paused)
+        {
+            if (IsDisposed || !IsHandleCreated) return;
+            try { BeginInvoke(ShowPaused); } catch { }
+        }
+
+        private void ShowPaused()
+        {
+            if (IsDisposed) return;
+            bool paused = IsPaused;
+            _pauseButton.Text = paused ? "&Resume" : "&Pause";
+            _pauseButton.AccessibleName = paused ? "Resume" : "Pause";
+            if (!_cancelling && _status != null) _status.Text = paused ? "Paused" : _last == null ? "Starting" : "Working";
+        }
+
+        /// <summary>P pauses or resumes, without Alt, from anywhere in the window.</summary>
+        protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+        {
+            if (keyData == Keys.P && _pause != null)
+            {
+                TogglePause();
+                return true;
+            }
+            return base.ProcessCmdKey(ref msg, keyData);
         }
 
         private bool _counted = true;
@@ -165,6 +263,7 @@ namespace ExplorerNative
         /// </summary>
         private void Uncount()
         {
+            Unlist();
             if (!_counted) return;
             _counted = false;
             if (_open > 0) _open--;
@@ -173,6 +272,7 @@ namespace ExplorerNative
         protected override void Dispose(bool disposing)
         {
             Uncount();
+            if (_pause != null) _pause.Changed -= PauseChanged;
             base.Dispose(disposing);
         }
 
@@ -188,6 +288,7 @@ namespace ExplorerNative
             if (_cancelling) return;
 
             _cancel.Enabled = false;
+            _pauseButton.Enabled = false;
             _cancelling = true;
             _status.Text = "Cancelling";
             Speak("Cancelling");
@@ -225,6 +326,7 @@ namespace ExplorerNative
         public void Finish()
         {
             _finished = true;
+            Unlist();
             if (!IsDisposed) Close();
         }
 
@@ -248,7 +350,8 @@ namespace ExplorerNative
         {
             base.OnLoad(e);
 
-            int wanted = _layout.PreferredSize.Height + _cancel.Height + Padding.Vertical + 12;
+            int wanted = _layout.PreferredSize.Height + _cancel.Height +
+                         (_pause != null ? _pauseButton.Height : 0) + Padding.Vertical + 12;
             if (ClientSize.Height < wanted)
                 ClientSize = new Size(ClientSize.Width, wanted);
         }
@@ -317,6 +420,7 @@ namespace ExplorerNative
                                  $"done={p.BytesDone} total={p.BytesTotal} known={p.TotalKnown} " +
                                  $"disposed={IsDisposed} handle={IsHandleCreated}");
 
+            _last = p;
             if (IsDisposed) return;
 
             // Kept rather than dropped. The transfer is already running when the
@@ -324,7 +428,7 @@ namespace ExplorerNative
             // one that knows how many items there are and how big they add up to.
             if (!IsHandleCreated) { _pending = p; return; }
 
-            if (!_cancelling) _status.Text = "Working";
+            if (!_cancelling) _status.Text = IsPaused ? "Paused" : "Working";
             _item.Text = string.IsNullOrEmpty(p.CurrentItem) ? "(preparing)" : p.CurrentItem;
 
             var done = SizeFormatter.Format(p.BytesDone, _settings.SizeUnits);

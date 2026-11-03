@@ -1418,9 +1418,14 @@ namespace ExplorerNative
             var slow = new SlowDown();
             var busy = new ServerBusy();
             bool waited = false;
+
+            // A paused window's upload (TransferPause.Ambient) waits at the top
+            // of the loop, then asks Google how much it holds and carries on.
+            var pause = TransferPause.Ambient.Value;
             for (int attempt = 0; attempt < MaxUploadAttempts; attempt++)
             {
                 token.ThrowIfCancellationRequested();
+                if (pause != null) await pause.WaitAsync(token);
 
                 // Spaced out. Going straight back into a connection that has just
                 // broken is how five resumes are spent in a second.
@@ -1545,11 +1550,14 @@ namespace ExplorerNative
                 if (Resized(source, total) is { } resizedBefore)
                     return await HeldWhole(session, total, progress, token) ?? throw resizedBefore;
 
+                // A press of Pause stops the piece in flight; see the top of the loop.
+                using var piece = pause?.Until(token);
+
                 long before = sent;
                 try
                 {
                     var (finished, id, confirmed) =
-                        await SendRange(session, source, sent, total, progress, token);
+                        await SendRange(session, source, sent, total, progress, piece?.Token ?? token);
 
                     if (finished)
                     {
@@ -1564,6 +1572,16 @@ namespace ExplorerNative
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
                 {
                     throw;
+                }
+                catch (Exception) when (piece is { PausedIt: true })
+                {
+                    // Paused, not failed: Google is asked how much it holds
+                    // once resumed, and no attempt is spent.
+                    sent = before;
+                    askFirst = true;
+                    waited = true;
+                    attempt--;
+                    continue;
                 }
                 catch (UploadRefusedException refused) when (refused.SessionGone)
                 {

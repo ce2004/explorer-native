@@ -665,6 +665,15 @@ namespace ExplorerNative
         }
 
         /// <summary>Help, Keyboard shortcuts (Ctrl+F1): the built-in keys, as a list.</summary>
+        /// <summary>Ctrl+Shift+T: the running transfers list (RunningTransfersForm).</summary>
+        private void ShowRunningTransfers()
+        {
+            if (!RunningTransfersForm.ShowFor(this)) Announce(TransferText.NothingRunning);
+        }
+
+        /// <summary>Ctrl+Alt+T: every running transfer in one sentence, staying in the list.</summary>
+        private void SayTransferProgress() => Announce(RunningTransfersForm.Overall());
+
         private void ShowKeyboardShortcuts()
         {
             using (var keys = new KeyboardShortcutsForm()) keys.ShowDialog(this);
@@ -1242,6 +1251,8 @@ namespace ExplorerNative
             // menu is three keystrokes and a different mental place. See
             // BuildContextMenu.
             tools.DropDownItems.Add(Item("&Announce current folder", Keys.Control | Keys.Shift | Keys.A, AnnounceFolder));
+            tools.DropDownItems.Add(Item("&Running transfers", Keys.Control | Keys.Shift | Keys.T, ShowRunningTransfers));
+            tools.DropDownItems.Add(Item("Say transfer &progress", Keys.Control | Keys.Alt | Keys.T, SayTransferProgress));
             menu.Items.Add(tools);
 
             // Updates are only ever checked from here, when asked. There is no
@@ -8398,6 +8409,7 @@ namespace ExplorerNative
             // was creating it here, or be stored just after Shown had looked.
             _ = window.Handle;
 
+            upload.Pause = window.Pause = new TransferPause();
             var running = Task.Run(() => upload.Run(work, cts.Token));
 
             BeginTransferTo(destination);
@@ -9284,7 +9296,8 @@ namespace ExplorerNative
                     // A move within one volume is a rename now, and never to or
                     // from the Drive letter, where a rename is not a move in
                     // the account.
-                    onCloudLetter: Drive == null ? null : Drive.Owns);
+                    onCloudLetter: Drive == null ? null : Drive.Owns,
+                    pause: window.Pause = new TransferPause());
 
                 // Show, not ShowDialog. The window is its own top-level window
                 // now and the file manager stays live behind it — which is the

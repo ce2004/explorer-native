@@ -63,6 +63,7 @@
     <Compile Include="..\src\ArchiveBrowser.cs" />
     <Compile Include="..\src\ArchiveForm.cs" />
     <Compile Include="..\src\ProgressForm.cs" />
+    <Compile Include="..\src\TransferPause.cs" />
     <Compile Include="..\src\ConflictForm.cs" />
     <Compile Include="..\src\ShellContextMenu.cs" /><Compile Include="..\src\ShellDelete.cs" />
     <Compile Include="..\src\FolderSizeCalculator.cs" />

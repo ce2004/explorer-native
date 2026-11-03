@@ -164,7 +164,8 @@ namespace ExplorerNative
             IProgress<FileOpProgress>? progress,
             Func<string, ConflictChoice>? askConflict,
             CancellationToken token,
-            IEnumerable<string>? reserved = null)
+            IEnumerable<string>? reserved = null,
+            TransferPause? pause = null)
         {
             var errors = new ConcurrentBag<string>();
             int succeeded = 0, skipped = 0, failed = 0;
@@ -373,6 +374,8 @@ namespace ExplorerNative
                         for (int i = run.Start; i < run.End; i++)
                         {
                             ct.ThrowIfCancellationRequested();
+                            // Paused: no new file starts until Resume.
+                            if (pause != null) await pause.WaitAsync(ct);
                             await CopyOne(plan[i], ct);
                         }
                     }).ConfigureAwait(false);
@@ -412,7 +415,7 @@ namespace ExplorerNative
                     {
                         landed = await CopyFileAsync(item.Source, item.Destination, bufferSize, item.Size,
                             copied => { Interlocked.Add(ref bytesDone, copied); Report(item.Source); }, ct,
-                            item.OnClash);
+                            item.OnClash, pause);
                     }
 
                     // Something arrived at the destination after the plan, and
@@ -1000,7 +1003,7 @@ namespace ExplorerNative
         /// </returns>
         private static async Task<string?> CopyFileAsync(
             string source, string destination, int bufferSize, long sizeHint,
-            Action<long> onChunk, CancellationToken token, ClashRule onClash)
+            Action<long> onChunk, CancellationToken token, ClashRule onClash, TransferPause? pause = null)
         {
             // Exact, so "report." is read and written as itself.
             var from = NameRules.ExactPath(source);
@@ -1091,6 +1094,8 @@ namespace ExplorerNative
                     read = await next;
                     (current, spare) = (spare, current);
                     onChunk(wrote);
+                    // Paused mid-file: it waits here, at the next chunk.
+                    if (pause != null) await pause.WaitAsync(token);
                 }
 
                 // Written out before it is called complete: the last piece sits in
