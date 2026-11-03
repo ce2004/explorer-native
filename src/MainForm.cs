@@ -1815,6 +1815,17 @@ namespace ExplorerNative
             _addToPlaylistItem.DropDownItems.Add(new ToolStripMenuItem("(none)"));
             _playNextItem.Visible = _favoriteItem.Visible = _addToPlaylistItem.Visible = false;
             _contextMenu.Items.Add(_playNextItem);
+
+            // 5.1.0: a whole album, playlist or artist from its row, and a station from a song.
+            _playAllItem = Item("&Play all", Keys.None, () => PlayFocusedAppleList("play"));
+            _shuffleAllItem = Item("S&huffle all", Keys.None, () => PlayFocusedAppleList("shuffle"));
+            _playAllNextItem = Item("Play all ne&xt", Keys.None, () => PlayFocusedAppleList("next"));
+            _startStationItem = Item("Start s&tation", Keys.None, StartFocusedAppleStation);
+            foreach (var item in new[] { _playAllItem, _shuffleAllItem, _playAllNextItem, _startStationItem })
+            {
+                item.Visible = false;
+                _contextMenu.Items.Add(item);
+            }
             _contextMenu.Items.Add(_favoriteItem);
             _contextMenu.Items.Add(_addToPlaylistItem);
 
@@ -6869,7 +6880,10 @@ namespace ExplorerNative
             bool appleSong = focused != null && AppleMusic.ItemAt(focused) is { IsSong: true };
             _contextOpenItem.Text = appleSong ? "&Play" : "&Open";
             _playNextItem.Visible = appleSong;
-            var favorite = appleSong ? AppleMusic.IsFavorite(focused!) : null;
+            _startStationItem.Visible = appleSong;
+            bool appleList = AppleMusic.CanPlayAll(focused);
+            _playAllItem.Visible = _shuffleAllItem.Visible = _playAllNextItem.Visible = appleList;
+            var favorite =appleSong ? AppleMusic.IsFavorite(focused!) : null;
             _favoriteItem.Visible = favorite != null;
             _favoriteItem.Text = favorite == true ? "Unfa&vorite" : "Fa&vorite";
             // Not the playlist you are in: the song is already there.
@@ -7001,6 +7015,10 @@ namespace ExplorerNative
         private ToolStripMenuItem _appleShuffleItem = null!;
         private ToolStripMenuItem _appleRepeatItem = null!;
         private ToolStripMenuItem _appleUpNextItem = null!;
+        private ToolStripMenuItem _playAllItem = null!;
+        private ToolStripMenuItem _shuffleAllItem = null!;
+        private ToolStripMenuItem _playAllNextItem = null!;
+        private ToolStripMenuItem _startStationItem = null!;
 
         /// <summary>Go to album or Go to artist on the focused Apple Music song: asks Apple which, then opens it.</summary>
         private async void GoToFocusedApple(bool album)
@@ -7167,6 +7185,43 @@ namespace ExplorerNative
         {
             if (FocusedPath() is { } path && AppleMusic.ItemAt(path) is { IsSong: true })
                 Program.PlayAppleMusicNext(path);
+        }
+
+        /// <summary>Play all, Shuffle all or Play all next on an album, playlist or artist row, without opening it.</summary>
+        private async void PlayFocusedAppleList(string how)
+        {
+            try
+            {
+                if (FocusedPath() is not { } path || !AppleMusic.CanPlayAll(path)) return;
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+                var (name, songs, folder) = await AppleMusic.SongsOfAsync(path, cts.Token);
+                if (IsDisposed) return;
+                var said = AppleMusic.PlayAllSaid(how, name, songs.Count);
+                if (how == "next")
+                    Program.PlayAppleMusicListNext(songs, folder, said, AppleMusic.PlayAllSaid("play", name, songs.Count));
+                else
+                    Program.PlayAppleMusicList(songs, folder, shuffle: how == "shuffle", said);
+            }
+            catch (AppleMusicException ex) { AnnounceAfterMenu("applemusic.failed", ex.Message); }
+            catch (OperationCanceledException) { AnnounceAfterMenu("applemusic.failed", "Apple Music took too long to answer."); }
+            catch (Exception ex) { AnnounceAfterMenu("applemusic.failed", "Apple Music couldn't play that: " + ex.Message); }
+        }
+
+        /// <summary>Start station on a song: Apple's station made from it plays, and plays on.</summary>
+        private async void StartFocusedAppleStation()
+        {
+            try
+            {
+                if (FocusedPath() is not { } path || AppleMusic.ItemAt(path) is not { IsSong: true } song) return;
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                var rows = await AppleMusic.StartSongStationAsync(path, cts.Token);
+                if (IsDisposed) return;
+                Program.PlayAppleMusic(rows[0].Path);
+                AnnounceAfterMenu("applemusic.station", "Playing a station from " + song.Name);
+            }
+            catch (AppleMusicException ex) { AnnounceAfterMenu("applemusic.failed", ex.Message); }
+            catch (OperationCanceledException) { AnnounceAfterMenu("applemusic.failed", "Apple Music took too long to answer."); }
+            catch (Exception ex) { AnnounceAfterMenu("applemusic.failed", "Apple Music couldn't start the station: " + ex.Message); }
         }
 
         /// <summary>Favorite or Unfavorite on the focused Apple Music song: changed at Apple, then said, and the row renamed quietly.</summary>

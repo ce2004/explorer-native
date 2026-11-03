@@ -30,6 +30,8 @@ namespace ExplorerNative
                 await PlaylistGoneMakesNewList();
                 LoadingSongIsNotPaused();
                 LateErrorIsQuiet();
+                await PlayAllFromRow();
+                await StationFromSong();
             }
             finally
             {
@@ -51,6 +53,82 @@ namespace ExplorerNative
 
         private static AppleMusicItem Song(string name, string id, string artist = "Someone") =>
             new() { Kind = "song", Id = id, CatalogId = id, Name = name, Subtitle = artist };
+
+        private static string SongsJson(string type, params (string Id, string Name)[] songs) =>
+            "{\"data\":[" + string.Join(",", songs.Select(s =>
+                $"{{\"id\":\"{s.Id}\",\"type\":\"{type}\",\"attributes\":{{\"name\":\"{s.Name}\",\"artistName\":\"The Beatles\",\"playParams\":{{\"catalogId\":\"c{s.Id}\"}}}}}}")) + "]}";
+
+        /// <summary>A fake Apple: the account, then whatever <paramref name="answer"/> gives for a path ("{}" otherwise).</summary>
+        private static void FakeApple(Func<string, string?> answer, List<string>? asked = null) =>
+            AppleMusicClient.FakeForTests = req =>
+            {
+                var path = req.RequestUri!.AbsolutePath;
+                lock (asked ?? new List<string>()) asked?.Add(req.Method + " " + path);
+                if (path.Contains("/me/account")) return Answer(HttpStatusCode.OK, "{\"meta\":{\"subscription\":{\"active\":true,\"storefront\":\"us\"}}}");
+                return Answer(HttpStatusCode.OK, answer(path) ?? "{}");
+            };
+
+        /// <summary>Feature A: an album, playlist or artist's songs from its row, without opening it.</summary>
+        private static async Task PlayAllFromRow()
+        {
+            AppleMusic.ResetForTests();
+            AppleMusic.ConfigureForTests();
+            FakeApple(path => path switch
+            {
+                _ when path.EndsWith("/albums/l.ab/tracks") => SongsJson("library-songs", ("i.1", "Come Together"), ("i.2", "Something"), ("i.3", "Oh! Darling")),
+                _ when path.EndsWith("/artists/r.1/albums") =>
+                    "{\"data\":[{\"id\":\"l.a1\",\"type\":\"library-albums\",\"attributes\":{\"name\":\"Help!\",\"artistName\":\"The Beatles\"}}," +
+                    "{\"id\":\"l.a2\",\"type\":\"library-albums\",\"attributes\":{\"name\":\"Revolver\",\"artistName\":\"The Beatles\"}}]}",
+                _ when path.EndsWith("/albums/l.a1/tracks") => SongsJson("library-songs", ("i.4", "Help"), ("i.5", "Yesterday")),
+                _ when path.EndsWith("/albums/l.a2/tracks") => SongsJson("library-songs", ("i.6", "Taxman")),
+                _ => null,
+            });
+            var albums = AppleMusic.SeedForTests("::applemusic\\Library\\Albums", new List<AppleMusicItem>
+                { new() { Kind = "album", Id = "l.ab", Name = "Abbey Road", Subtitle = "The Beatles", IsLibrary = true } });
+            var artists = AppleMusic.SeedForTests("::applemusic\\Library\\Artists", new List<AppleMusicItem>
+                { new() { Kind = "artist", Id = "r.1", Name = "The Beatles", IsLibrary = true } });
+            var songRow = AppleMusic.SeedForTests("::applemusic\\Library\\Songs", new List<AppleMusicItem> { Song("Yesterday", "y1") })[0].Path;
+
+            Check("an album row can be played whole", AppleMusic.CanPlayAll(albums[0].Path), albums[0].Path);
+            Check("an artist row can be played whole", AppleMusic.CanPlayAll(artists[0].Path), null);
+            Check("a song row is not offered Play all", !AppleMusic.CanPlayAll(songRow), null);
+
+            var (name, songs, folder) = await AppleMusic.SongsOfAsync(albums[0].Path, CancellationToken.None);
+            Equal("an album's name is said", "Abbey Road", name);
+            Equal("an album's songs come in its order", "Come Together, Something, Oh! Darling",
+                string.Join(", ", songs.Select(s => AppleMusic.ItemAt(s)!.Name)));
+            Equal("an album's songs refill from the album", albums[0].Path, folder ?? "(none)");
+
+            var artist = await AppleMusic.SongsOfAsync(artists[0].Path, CancellationToken.None);
+            Equal("an artist's songs are every album's, album by album", "Help, Yesterday, Taxman",
+                string.Join(", ", artist.Songs.Select(s => AppleMusic.ItemAt(s)!.Name)));
+            Check("an artist's songs have no one folder to refill from", artist.Folder == null, artist.Folder);
+
+            Equal("Play all says what is playing", "Playing Abbey Road, 17 songs", AppleMusic.PlayAllSaid("play", "Abbey Road", 17));
+            Equal("Shuffle all says so", "Shuffling Abbey Road, 1 song", AppleMusic.PlayAllSaid("shuffle", "Abbey Road", 1));
+            Equal("Play all next says so", "Abbey Road plays next, 3 songs", AppleMusic.PlayAllSaid("next", "Abbey Road", 3));
+
+            // Menu access keys stay unique among what an album row and a song row show in Apple Music.
+            var main = SourceText("MainForm.cs");
+            Check("the menu has Play all, Shuffle all and Play all next",
+                main.Contains("\"&Play all\"") && main.Contains("\"S&huffle all\"") && main.Contains("\"Play all ne&xt\""), null);
+        }
+
+        /// <summary>Feature C: Start station on a song plays Apple's "ra." station made from it.</summary>
+        private static async Task StationFromSong()
+        {
+            AppleMusic.ResetForTests();
+            AppleMusic.ConfigureForTests();
+            var asked = new List<string>();
+            FakeApple(path => path.Contains("/stations/next-tracks/")
+                ? SongsJson("songs", ("s1", "Let It Be"), ("s2", "Hey Jude")) : null, asked);
+            var song = AppleMusic.SeedForTests("::applemusic\\Library\\Songs", new List<AppleMusicItem> { Song("Yesterday", "y1") })[0].Path;
+            var rows = await AppleMusic.StartSongStationAsync(song, CancellationToken.None);
+            Check("the station is made from the song's catalogue id", asked.Any(a => a.Contains("/stations/next-tracks/ra.y1")), string.Join("; ", asked));
+            Equal("the station's first songs are ready to play", "2", rows.Count.ToString());
+            Check("its songs play on as a station", AppleMusic.InStation(rows[0].Path), rows[0].Path);
+            Check("a station is never refreshed under the player", !AppleMusic.CanRefresh(AppleMusic.SongStationFolder), null);
+        }
 
         /// <summary>Bug 3: after Stop or a failure, a late page error with no play number was still spoken.</summary>
         private static void LateErrorIsQuiet()

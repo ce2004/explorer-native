@@ -406,6 +406,65 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// Play or Shuffle on an album, playlist or artist row (5.1.0): the first
+        /// song now, the rest as the queue, all of them shuffled for Shuffle.
+        /// <paramref name="folder"/> is where Repeat all refills from (null: no refill).
+        /// </summary>
+        public static bool PlayList(List<string> songs, string? folder, bool shuffle, int volumePercent = -1)
+        {
+            var order = songs.ToList();
+            if (order.Count == 0) return false;
+            if (shuffle) Shuffled(order);
+            var first = order[0];
+            string id, name;
+            try
+            {
+                id = AppleMusic.CatalogIdForPlaying(first);
+                name = AppleMusic.SpokenName(first) ?? Path.GetFileName(first);
+            }
+            catch (AppleMusicException ex) { Say?.Invoke("applemusic.failed", ex.Message); return false; }
+            lock (Gate)
+            {
+                _upNext.RemoveAll(p => string.Equals(p, first, StringComparison.OrdinalIgnoreCase));
+                _anchor = first;
+                _history.Clear(); _history.Add(first);
+                _listFolder = folder;
+                _listQueue = order.Skip(1).ToList();
+            }
+            Start(first, id, name, volumePercent, startAt: 0, retried: false, how: StartKind.Back);
+            return true;
+        }
+
+        /// <summary>
+        /// Play next on an album, playlist or artist row: all its songs after the
+        /// one playing, in order, ahead of anything chosen before. False when
+        /// nothing is playing (they should play now instead).
+        /// </summary>
+        public static bool PlayListAfterCurrent(List<string> songs)
+        {
+            if (songs.Count == 0) return true;
+            string id, name; int gen;
+            try
+            {
+                id = AppleMusic.CatalogIdForPlaying(songs[0]);
+                name = AppleMusic.SpokenName(songs[0]) ?? Path.GetFileName(songs[0]);
+            }
+            catch (AppleMusicException) { return false; }
+            lock (Gate)
+            {
+                if (_currentPath.Length == 0 || _ended) return false;
+                _upNext.RemoveAll(p => songs.Contains(p, StringComparer.OrdinalIgnoreCase));
+                _upNext.InsertRange(0, songs);
+                if (_queuedPath != null && _queuedId != id) { _displacedPath = _queuedPath; _displacedId = _queuedId; }
+                _queuedPath = songs[0]; _queuedId = id; _queuedName = name;
+                gen = _generation;
+            }
+            Log("play next, " + songs.Count + " songs");
+            OnUi(() => _ = CallAsync("requeue", id, gen));
+            return true;
+        }
+
+        /// <summary>
         /// Next track: the song that would play on after this one (a Play next
         /// choice first), now. Returns what to say: the song's name, or why not.
         /// </summary>

@@ -404,6 +404,77 @@ namespace ExplorerNative
             return rows;
         }
 
+        /// <summary>Where a station started from a song (Start station) is kept: a folder no list shows.</summary>
+        public static string SongStationFolder => Root + "\\Song station";
+
+        /// <summary>
+        /// Start station on a song (5.1.0): Apple's station made from it, the
+        /// same "ra." one Autoplay uses. Returns its first songs, which play on
+        /// and top themselves up like any station.
+        /// </summary>
+        public static async Task<List<Row>> StartSongStationAsync(string songPath, CancellationToken token)
+        {
+            var song = ItemAt(songPath);
+            if (song == null || !song.IsSong) throw new AppleMusicException("That isn't a song.");
+            var catalogId = CatalogIdForPlaying(songPath);
+            var station = new AppleMusicItem { Kind = "station", Id = "ra." + catalogId, Name = "Station from " + song.Name };
+            var tracks = await Client().StationTracksAsync(station, token).ConfigureAwait(false);
+            var folder = SongStationFolder;
+            List<Row> rows;
+            lock (Gate)
+            {
+                Items[folder] = station;
+                Listings.Remove(folder);
+                Displayed.Remove(folder);
+                rows = RowsFor(folder, tracks, sort: false, numbered: false);
+                Listings[folder] = rows;
+            }
+            if (rows.Count == 0) throw new AppleMusicException($"Apple Music has no station for {song.Name} right now.");
+            Grew?.Invoke(folder); _ = RateAsync(folder);
+            return rows;
+        }
+
+        /// <summary>True for a row that Play all can play: an album, a playlist or an artist.</summary>
+        public static bool CanPlayAll(string? path) =>
+            path != null && ItemAt(path) is { Kind: "album" or "playlist" or "artist" };
+
+        /// <summary>
+        /// Every song of an album, playlist or artist row, without opening it:
+        /// its name, its songs in Apple's order, and the folder they are in (null
+        /// for an artist, whose songs are spread over its albums).
+        /// </summary>
+        public static async Task<(string Name, List<string> Songs, string? Folder)> SongsOfAsync(string path, CancellationToken token)
+        {
+            path = path.TrimEnd('\\');
+            var item = ItemAt(path);
+            if (item == null || !CanPlayAll(path)) throw new AppleMusicException("That isn't an album, a playlist or an artist.");
+            var rows = await ListAsync(path, fresh: false, token).ConfigureAwait(false);
+            var songs = new List<string>();
+            if (item.Kind == "artist")
+            {
+                foreach (var album in rows.Where(r => r.IsFolder && ItemAt(r.Path) is { Kind: "album" }))
+                {
+                    var tracks = await ListAsync(album.Path, fresh: false, token).ConfigureAwait(false);
+                    songs.AddRange(tracks.Where(r => !r.IsFolder).Select(r => r.Path));
+                }
+            }
+            else songs.AddRange(rows.Where(r => !r.IsFolder).Select(r => r.Path));
+            if (songs.Count == 0) throw new AppleMusicException($"There are no songs in {item.Name}.");
+            return (item.Name, songs, item.Kind == "artist" ? null : path);
+        }
+
+        /// <summary>"Playing Abbey Road, 17 songs", and the like for Shuffle and Play next.</summary>
+        public static string PlayAllSaid(string how, string name, int count)
+        {
+            var songs = count == 1 ? "1 song" : $"{count} songs";
+            return how switch
+            {
+                "shuffle" => $"Shuffling {name}, {songs}",
+                "next" => $"{name} plays next, {songs}",
+                _ => $"Playing {name}, {songs}",
+            };
+        }
+
         /// <summary>
         /// A folder's rows in memory grew without anyone opening it (a station
         /// playing on past its end), so a pane showing it can put them on screen.

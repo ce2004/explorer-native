@@ -2206,6 +2206,29 @@ namespace ExplorerNative
             Notify("applemusic.repeat", said);
         }
 
+        /// <summary>Play or Shuffle on an album, playlist or artist row (5.1.0): its songs, the first now.</summary>
+        public void PlayAppleMusicList(List<string> songs, string? folder, bool shuffle, string said)
+        {
+            if (!_settings.AudioPlayerEnabled)
+            {
+                Notify("applemusic.failed", "Turn the audio player on in Preferences to play Apple Music");
+                return;
+            }
+            _playRequest = System.Threading.Interlocked.Increment(ref _playRequest);
+            _audio.CancelOpening();
+            if (_audio.HasTrack) _audio.Stop();
+            AppleMusicPlayer.SetOutputDevice(OutputDeviceName(_settings.AudioOutputDeviceId));
+            if (AppleMusicPlayer.PlayList(songs, folder, shuffle, Math.Min(100, _settings.AudioVolumePercent)))
+                Notify("applemusic.playall", said);
+        }
+
+        /// <summary>Play next on an album, playlist or artist row: after the song playing, or now when nothing is.</summary>
+        public void PlayAppleMusicListNext(List<string> songs, string? folder, string said, string saidIfNow)
+        {
+            if (AppleMusicPlayer.PlayListAfterCurrent(songs)) Notify("applemusic.playall", said);
+            else PlayAppleMusicList(songs, folder, shuffle: false, saidIfNow);
+        }
+
         public void PlayAppleMusicNext(string path)
         {
             var said = AppleMusicPlayer.PlayAfterCurrent(path);

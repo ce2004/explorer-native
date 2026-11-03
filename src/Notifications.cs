@@ -136,7 +136,8 @@ namespace ExplorerNative
             Live("applemusic.shuffle", "Apple Music shuffle turned on or off", AudioTransport, Say, "{0}", "Shuffle on"),
             Live("applemusic.repeat", "Apple Music repeat changed", AudioTransport, Say, "{0}", "Repeat all"),
             Live("applemusic.upnext", "Apple Music's Up next", AudioTransport, Say, "{0}", "Nothing is up next"),
-
+            Live("applemusic.playall", "Apple Music album, playlist or artist played", AudioTransport, Say, "{0}", "Playing Abbey Road, 17 songs"),
+            Live("applemusic.station", "Apple Music station started from a song", AudioTransport, Say, "{0}", "Playing a station from Yesterday"),
             // ---- Audio: playing ----------------------------------------------
             Live("audio.play", "Started playing", AudioTransport, Bar, "Playing {0}", "Ashley Cooke - your place.flac"),
             Live("audio.pause", "Paused", AudioTransport, Bar, "Paused"),
