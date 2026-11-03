@@ -502,8 +502,8 @@ namespace ExplorerNative
                     try
                     {
                         var exact = NameRules.ExactPath(src);
-                        if (Directory.Exists(exact) && !IsLinkAt(exact) && IsEffectivelyEmpty(exact))
-                            Directory.Delete(exact, recursive: true);
+                        if (Directory.Exists(exact) && !IsLinkAt(exact) && IsEffectivelyEmpty(exact, out var folders))
+                            DeleteDeepestFirst(folders);
                     }
                     catch (Exception ex) { errors.Add($"{src}: {ex.Message}"); }
                 }
@@ -1345,19 +1345,37 @@ namespace ExplorerNative
             }
         }
 
-        private static bool IsEffectivelyEmpty(string dir)
+        /// <summary>
+        /// Deletes the folders a walk found empty, deepest first and never
+        /// recursive: one that something was written into since stays.
+        /// </summary>
+        internal static void DeleteDeepestFirst(List<string> folders)
+        {
+            for (int i = folders.Count - 1; i >= 0; i--)
+            {
+                var folder = folders[i];
+                try { Directory.Delete(folder, recursive: false); }
+                catch (DirectoryNotFoundException) { }
+                catch (IOException) when (Directory.Exists(folder) && System.Linq.Enumerable.Any(Directory.EnumerateFileSystemEntries(folder))) { }
+            }
+        }
+
+        private static bool IsEffectivelyEmpty(string dir, out List<string> folders)
         {
             // Walked by hand, never through a link: AllDirectories went through
             // junctions, and one pointing back up the tree recursed until the
             // path was too long. A link is something in the folder, so a folder
-            // holding one is not empty.
+            // holding one is not empty. Folders come out parents first.
+            folders = new List<string>();
             try
             {
                 var stack = new Stack<string>();
                 stack.Push(dir);
                 while (stack.Count > 0)
                 {
-                    foreach (var entry in new DirectoryInfo(stack.Pop()).EnumerateFileSystemInfos())
+                    var current = stack.Pop();
+                    folders.Add(current);
+                    foreach (var entry in new DirectoryInfo(current).EnumerateFileSystemInfos())
                     {
                         if (entry is not DirectoryInfo sub || NameRules.IsLink(sub)) return false;
                         stack.Push(sub.FullName);
