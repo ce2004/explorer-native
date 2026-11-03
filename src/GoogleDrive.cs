@@ -614,13 +614,19 @@ namespace ExplorerNative
 
             // The drive is a WinFsp volume (4.3.0), so WinFsp has to be there
             // before anything else is worth doing. The tray offers to install it.
-            NeedsWinFsp = !WinFsp.TryLoad(out var winFspProblem);
-            if (NeedsWinFsp)
+            bool winFspLoads = WinFsp.TryLoad(out var winFspProblem);
+            // Installed but not loading: installing again would change nothing, so
+            // say what is wrong instead of asking to install.
+            NeedsWinFsp = !winFspLoads && !WinFsp.Installed;
+            if (!winFspLoads)
             {
-                Status = "Google Drive needs WinFsp, a free driver that lets it show as a real drive. " +
-                         "Explorer Native can install it for you.";
+                Status = NeedsWinFsp
+                    ? "Google Drive needs WinFsp, a free driver that lets it show as a real drive. " +
+                      "Explorer Native can install it for you."
+                    : "WinFsp is installed but would not load" +
+                      (string.IsNullOrWhiteSpace(winFspProblem) ? "." : ": " + winFspProblem.TrimEnd('.') + ".");
                 Note("WinFsp: " + winFspProblem);
-                Say("drive.winfsp.missing", "Google Drive needs WinFsp, a free driver. Explorer Native can install it for you");
+                if (NeedsWinFsp) Say("drive.winfsp.missing", "Google Drive needs WinFsp, a free driver. Explorer Native can install it for you");
                 return false;
             }
 
