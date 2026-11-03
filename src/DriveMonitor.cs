@@ -1544,7 +1544,7 @@ namespace ExplorerNative
         private static string Seconds(TimeSpan wait)
         {
             int s = Math.Max(1, (int)Math.Round(wait.TotalSeconds));
-            return s < 90 ? $"{s} seconds" : $"{(int)Math.Round(s / 60.0)} minutes";
+            return s == 1 ? "1 second" : s < 90 ? $"{s} seconds" : $"{(int)Math.Round(s / 60.0)} minutes";
         }
 
         /// <summary>
