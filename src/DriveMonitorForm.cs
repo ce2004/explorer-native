@@ -1520,7 +1520,7 @@ namespace ExplorerNative
             catch (Exception ex)
             {
                 if (IsDisposed) return;
-                _where.Text = "Could not read " + FolderPath + ": " + ex.Message;
+                _where.Text = "Could not read " + (AtTop ? "Google Drive" : FolderPath) + ": " + ex.Message;
                 Say(_where.Text);
                 return;
             }
