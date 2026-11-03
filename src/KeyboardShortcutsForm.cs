@@ -85,8 +85,11 @@ namespace ExplorerNative
             Speak(step > 0 ? "This is the last section" : "This is the first section");
         }
 
-        private static void Speak(string text)
+        internal bool MaySpeak { get; init; } = true;
+
+        private void Speak(string text)
         {
+            if (!MaySpeak) return;
             try { Speech.Speak(text, interrupt: true); } catch { }
         }
     }

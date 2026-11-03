@@ -17,6 +17,9 @@ namespace ExplorerNative
     /// </summary>
     internal sealed class DriveMonitorForm : Form
     {
+        /// <summary>False when Preferences has spoken announcements off.</summary>
+        internal bool MaySpeak { get; init; } = true;
+
         private readonly List<DriveSyncPair> _working;
         private readonly List<DriveSyncPair> _pairs;
         private readonly LineList _list;
@@ -588,7 +591,7 @@ namespace ExplorerNative
             try
             {
                 var name = DriveMonitor.DisplayName(_pairs[at]);
-                Speech.Speak(_pairs[at].Paused
+                if (MaySpeak) Speech.Speak(_pairs[at].Paused
                     ? $"Saved {name}, paused. Press Resume to start it."
                     : $"Saved {name}. Syncing has started, and Status shows how it is going.");
             }
@@ -685,8 +688,9 @@ namespace ExplorerNative
             Fill(all: true);
         }
 
-        private static void Say(string text)
+        private void Say(string text)
         {
+            if (!MaySpeak) return;
             try { Speech.Speak(text, interrupt: true); } catch { }
         }
     }
@@ -1190,7 +1194,7 @@ namespace ExplorerNative
                     return;
                 }
 
-                using var picker = new DriveFolderPicker(client);
+                using var picker = new DriveFolderPicker(client) { MaySpeak = MaySpeak };
                 if (picker.ShowDialog(this) == DialogResult.OK)
                 {
                     if (picker.Everything && !_adding)
@@ -1328,6 +1332,8 @@ namespace ExplorerNative
     /// </summary>
     internal sealed class DriveFolderPicker : Form
     {
+        internal bool MaySpeak { get; init; } = true;
+
         private readonly DriveClient _client;
         private readonly ListBox _list;
         private readonly Label _where;
@@ -1556,8 +1562,9 @@ namespace ExplorerNative
 
         private static string Plural(int n) => n == 1 ? "1 folder" : $"{n} folders";
 
-        private static void Say(string text)
+        private void Say(string text)
         {
+            if (!MaySpeak) return;
             try { Speech.Speak(text, interrupt: true); } catch { }
         }
     }
