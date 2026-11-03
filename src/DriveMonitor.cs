@@ -1999,7 +1999,7 @@ namespace ExplorerNative
                     if (changed != null)
                         return (changed.Value.Remote, changed.Value.Folders, changed.Value.Token, false, changed.Value.Skips);
                 }
-                catch (Exception) when (!token.IsCancellationRequested)
+                catch (Exception ex) when (!token.IsCancellationRequested && ex is not PairStoppedException)
                 {
                     // Anything at all: listed whole instead.
                 }
@@ -2455,7 +2455,7 @@ namespace ExplorerNative
                         changedOnPc.Folders.UnionWith(onDrive);
                     }
                 }
-                catch (Exception) when (!token.IsCancellationRequested) { }
+                catch (Exception ex) when (!token.IsCancellationRequested && ex is not PairStoppedException) { }
             }
 
             bool links = false;
@@ -3650,7 +3650,12 @@ namespace ExplorerNative
             // Stopped short for space: the changes read for folders it never
             // reached are read again next pass, not used up.
             if (tally.SpaceProblem == null) header.ChangesToken = nextToken;
-            header.FolderIds = folders;
+            // A whole listing stopped for space reached only part of the tree: add what
+            // it found to the old map instead of replacing it.
+            if (full && tally.SpaceProblem != null)
+                foreach (var (path, id) in folders) header.FolderIds[path] = id;
+            else
+                header.FolderIds = folders;
             header.DirtyFolders = nextDirty.ToList();
             if (full && tally.SpaceProblem == null)
             {
