@@ -490,7 +490,7 @@ namespace ExplorerNative
           try
           {
             var pair = new DriveSyncPair();
-            using var dialog = new DrivePairForm(pair, "Add a synced folder") { Others = _pairs.ToList() };
+            using var dialog = new DrivePairForm(pair, "Add a synced folder") { Others = _pairs.ToList(), MaySpeak = MaySpeak };
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
             if (dialog.Pair.DriveFolderId == DriveFolderPicker.EverythingId)
@@ -608,7 +608,7 @@ namespace ExplorerNative
             TakeLive();
             if (at >= _pairs.Count) return;
             using var dialog = new DrivePairForm(_pairs[at].Copy(), "Change a synced folder")
-                { Others = _pairs.Where((_, i) => i != at).ToList() };
+                { Others = _pairs.Where((_, i) => i != at).ToList(), MaySpeak = MaySpeak };
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
             // Onto the pairs as they are now: the tray or the sync itself may have
             // paused others meanwhile, and Drive-only folders are the monitor's
@@ -743,6 +743,8 @@ namespace ExplorerNative
     /// </summary>
     internal sealed class DrivePairForm : Form
     {
+        internal bool MaySpeak { get; init; } = true;
+
         private readonly TextBox _name, _local, _drive, _skipTypes, _example;
         private readonly ComboBox _mode, _maxSize, _clash;
         private readonly CheckBox _deletes, _freeUp, _paused, _subfolders;
