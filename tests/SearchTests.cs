@@ -81,7 +81,7 @@ namespace ExplorerNative
             Check("every key on the menu is in Help, Keyboard shortcuts", missing.Count == 0, string.Join(", ", missing));
             Check("and so are the keys the menu does not show",
                 listed.Contains("Shift+F10") && listed.Contains("Alt+Enter") && listed.Contains("Backspace") &&
-                listed.Contains("Ctrl+Shift+N") && listed.Contains("Escape"));
+                listed.Contains("F8") && listed.Contains("Escape"));
             Check("the list opens on Ctrl+F1, which no audio shortcut may take",
                 main.Contains("Keys.Control | Keys.F1, ShowKeyboardShortcuts", StringComparison.Ordinal) &&
                 System.Linq.Enumerable.Contains(ReservedShortcuts.Combinations(),

@@ -285,6 +285,25 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            // 5.1.1: Ctrl+N makes a new folder, and Apple Music offers WebView2.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "fix511")
+            {
+                var main = SourceFile("MainForm.cs") ?? "";
+                var setup = SourceFile("WebView2Setup.cs") ?? "";
+                Check("the sources were read", main.Length > 0 && setup.Length > 0);
+                Check("New folder is Ctrl+N on the menu", main.Contains("Item(\"New &folder\", Keys.Control | Keys.N, CreateNewFolder)", StringComparison.Ordinal));
+                Check("F8 still makes a new folder", main.Contains("if (keyData == Keys.F8)", StringComparison.Ordinal));
+                Check("Ctrl+Shift+N no longer does", !main.Contains("Keys.Control | Keys.Shift | Keys.N", StringComparison.Ordinal));
+                Check("going into Apple Music offers WebView2", main.Contains("WebView2Setup.OfferAsync(this", StringComparison.Ordinal) &&
+                    main.IndexOf("WebView2Setup.OfferAsync(this", StringComparison.Ordinal) < main.IndexOf("return await ShowAppleMusicFolderAsync(", StringComparison.Ordinal));
+                Check("the offer asks before downloading", setup.IndexOf("MessageBox.Show", StringComparison.Ordinal) < setup.IndexOf("GetByteArrayAsync", StringComparison.Ordinal));
+                Check("the download goes through the app's network handler", setup.Contains("new HttpClient(GoogleNet.Handler", StringComparison.Ordinal));
+                ReservedShortcutTests();
+                SearchTests.RunAll(Check, Equal);
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             // Just searching, the shortcuts list and the 4.2.0 fixes.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "search")
             {
@@ -11990,7 +12009,7 @@ namespace ExplorerNative
                 "Ctrl+P", "Ctrl+L", "Ctrl+R", "Ctrl+F", "Ctrl+N", "Ctrl+O", "Ctrl+W",
                 "Alt+C", "Alt+Up", "Alt+D", "Alt+Home", "Alt+Enter", "Alt+F4",
                 "F2", "F5", "F7", "F8", "Shift+Delete",
-                "Ctrl+Shift+S", "Ctrl+Shift+A", "Ctrl+Shift+N", "Ctrl+Tab",
+                "Ctrl+Shift+S", "Ctrl+Shift+A", "Ctrl+Tab",
                 "Ctrl+Space", "Shift+Down", "Shift+Up", "Shift+Home", "Shift+End",
                 "Shift+F10",
             })

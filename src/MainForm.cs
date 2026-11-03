@@ -1143,7 +1143,7 @@ namespace ExplorerNative
             var changesFolder = new[]
             {
                 Item("New f&ile", Keys.F7, CreateNewFile),
-                Item("New &folder", Keys.F8, CreateNewFolder),
+                Item("New &folder", Keys.Control | Keys.N, CreateNewFolder),
                 Item("&Rename", Keys.F2, RenameSelected),
                 Item("&Delete", Keys.Delete, () => DeleteSelected(false)),
                 Item("Delete &permanently", Keys.Shift | Keys.Delete, () => DeleteSelected(true)),
@@ -2547,6 +2547,14 @@ namespace ExplorerNative
             // Apple Music: folders listed by Apple, nothing on disk to probe or watch.
             if (AppleMusic.Is(path))
             {
+                // Coming in from outside: playing needs WebView2, so offer it now
+                // rather than letting the first song fail with Microsoft's words.
+                if (!quiet && !AppleMusic.Is(cameFrom))
+                {
+                    try { await WebView2Setup.OfferAsync(this, (m, e) => Announce(m, isError: e)); }
+                    catch (Exception ex) { Announce("WebView2 couldn't be installed: " + ex.Message, isError: true); }
+                    RestoreListFocus();
+                }
                 try
                 {
                     return await ShowAppleMusicFolderAsync(pane, path, preferPath, cameFrom, mine, quiet, keepFocus);
@@ -6943,9 +6951,8 @@ namespace ExplorerNative
                 return true;
             }
 
-            // The old binding for a new folder, kept working alongside F8 so
-            // fingers that already know it are not retrained for nothing.
-            if (keyData == (Keys.Control | Keys.Shift | Keys.N))
+            // F8 still makes a new folder too, beside Ctrl+N on the menu.
+            if (keyData == Keys.F8)
             {
                 CreateNewFolder();
                 return true;

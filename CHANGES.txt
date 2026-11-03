@@ -1,3 +1,8 @@
+5.1.1
+Bug fixed: if Microsoft WebView2 wasn't installed, every Apple Music song failed with "a compatible WebView2 Runtime installation could not be found". Now going into Apple Music asks whether to download and install it, and does it for you.
+Bug fixed: New folder was on Ctrl+Shift+N. Now it is Ctrl+N, like other programs. F8 still works too.
+Bug fixed: if you gave a global audio shortcut Ctrl+Alt+T or Ctrl+Alt+Shift+T, it took the key from Say transfer progress or Running transfers. Now those keys are kept for them.
+
 5.1.0
 New feature: you can now see everything that is copying, moving, compressing, extracting or converting in one list. Press Ctrl+Alt+Shift+T, or choose Running transfers on the Tools menu. Press Enter on a transfer to go to its window, P to pause or resume it, or Delete to cancel it. Press Ctrl+Alt+T to hear how far everything has got without leaving your folder.
 New feature: you can now pause a copy, a move or a Google Drive upload and carry on later. Press P or the Pause button in its progress window, and press it again to resume. Nothing already copied is sent again.

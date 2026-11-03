@@ -1335,6 +1335,11 @@ namespace ExplorerNative
             {
                 ready?.TrySetException(ex);
             }
+            catch (WebView2RuntimeNotFoundException)
+            {
+                ready?.TrySetException(new AppleMusicException(
+                    "Songs can't play because Microsoft WebView2 isn't installed. Go back into Apple Music to install it."));
+            }
             catch (Exception ex)
             {
                 ready?.TrySetException(new AppleMusicException("Apple Music's player couldn't start: " + ex.Message));

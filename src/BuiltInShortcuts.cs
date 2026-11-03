@@ -47,7 +47,7 @@ namespace ExplorerNative
             ("Files and folders", new Line[]
             {
                 new("F7", "new file"),
-                new("F8 or Ctrl+Shift+N", "new folder"),
+                new("Ctrl+N or F8", "new folder"),
                 new("F2", "rename"),
                 new("Delete", "move to the Recycle Bin (Google Drive: to its trash)"),
                 new("Shift+Delete", "delete permanently"),
