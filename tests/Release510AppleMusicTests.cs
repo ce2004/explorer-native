@@ -28,6 +28,7 @@ namespace ExplorerNative
             try
             {
                 await PlaylistGoneMakesNewList();
+                LoadingSongIsNotPaused();
             }
             finally
             {
@@ -41,6 +42,23 @@ namespace ExplorerNative
 
         private static AppleMusicItem Song(string name, string id, string artist = "Someone") =>
             new() { Kind = "song", Id = id, CatalogId = id, Name = name, Subtitle = artist };
+
+        /// <summary>Bug 2: a song still loading was said as "Paused" with no length.</summary>
+        private static void LoadingSongIsNotPaused()
+        {
+            AppleMusic.ResetForTests();
+            AppleMusic.ConfigureForTests();
+            var song = Song("Yesterday", "y1", "The Beatles");
+            song.DurationMs = 125_000;
+            var path = AppleMusic.SeedForTests("::applemusic\\Library\\Songs", new List<AppleMusicItem> { song })[0].Path;
+            var said = AppleMusicPlayState.DescribeNow(path, "Yesterday by The Beatles", 0, 0, playing: true);
+            Check("a loading song asked to play is not said as paused", !said.StartsWith("Paused", StringComparison.Ordinal), said);
+            Check("a loading song's length comes from the catalogue", said.Contains(" of "), said);
+            Equal("the catalogue length is used until the page says", "125", AppleMusicPlayState.LengthOf(path, 0).ToString());
+            Equal("the page's own length wins once known", "130", AppleMusicPlayState.LengthOf(path, 130).ToString());
+            Check("a real pause still says Paused",
+                AppleMusicPlayState.DescribeNow(path, "Yesterday", 10, 125, playing: false).StartsWith("Paused, ", StringComparison.Ordinal), null);
+        }
 
         /// <summary>Bug 1: a playlist deleted elsewhere left the shared list changed in place while the menu read it.</summary>
         private static async Task PlaylistGoneMakesNewList()

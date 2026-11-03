@@ -28,5 +28,22 @@ namespace ExplorerNative
                 _ => null,
             };
         }
+
+        /// <summary>
+        /// What is playing, in words. A song still loading counts as playing
+        /// when that was asked for, and its length is the catalogue's until
+        /// the page says.
+        /// </summary>
+        internal static string DescribeNow(string path, string name, double at, double length, bool playing)
+        {
+            if (path.Length == 0) return "Nothing is playing";
+            length = LengthOf(path, length);
+            var where = length > 0 ? $", {AudioPlayer.SpokenTime(at)} of {AudioPlayer.SpokenTime(length)}" : "";
+            return (playing ? "" : "Paused, ") + name + where;
+        }
+
+        /// <summary>The page's length, or the catalogue's while the page has not said yet.</summary>
+        internal static double LengthOf(string path, double reported) =>
+            reported > 0 || path.Length == 0 ? reported : (AppleMusic.ItemAt(path)?.DurationMs ?? 0) / 1000.0;
     }
 }

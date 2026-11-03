@@ -145,7 +145,8 @@ namespace ExplorerNative
 
         public static bool IsPlaying
         {
-            get { lock (Gate) return _playing; }
+            // A song still loading that was asked to play is not "Paused".
+            get { lock (Gate) return _playing || _wantPlaying; }
         }
 
         /// <summary>Must be called once on the UI thread (the tray does this) so the host can live there.</summary>
@@ -888,15 +889,12 @@ namespace ExplorerNative
         /// <summary>"Title by Artist, 1 minute 20 of 3 minutes 5", like the built-in player's.</summary>
         public static string Describe()
         {
-            lock (Gate)
-            {
-                if (_currentPath.Length == 0) return "Nothing is playing";
-                var where = _durationSeconds > 0
-                    ? $", {AudioPlayer.SpokenTime(_positionSeconds)} of {AudioPlayer.SpokenTime(_durationSeconds)}"
-                    : "";
-                return (_playing ? "" : "Paused, ") + _currentName + where;
-            }
+            string path, name; double at, length; bool playing;
+            lock (Gate) { path = _currentPath; name = _currentName; at = _positionSeconds; length = _durationSeconds; playing = _playing || _wantPlaying; }
+            return AppleMusicPlayState.DescribeNow(path, name, at, length, playing);
         }
+
+        private static double LengthOf(string path, double reported) => AppleMusicPlayState.LengthOf(path, reported);
 
         public static string DescribeElapsed()
         {
@@ -905,14 +903,19 @@ namespace ExplorerNative
 
         public static string DescribeRemaining()
         {
-            lock (Gate) return _currentPath.Length == 0 || _durationSeconds <= 0 ? "Nothing is playing"
-                : AudioPlayer.SpokenTime(Math.Max(0, _durationSeconds - _positionSeconds)) + " left";
+            string path; double at, length;
+            lock (Gate) { path = _currentPath; at = _positionSeconds; length = _durationSeconds; }
+            length = LengthOf(path, length);
+            return path.Length == 0 || length <= 0 ? "Nothing is playing"
+                : AudioPlayer.SpokenTime(Math.Max(0, length - at)) + " left";
         }
 
         public static string DescribeTotal()
         {
-            lock (Gate) return _currentPath.Length == 0 || _durationSeconds <= 0 ? "Nothing is playing"
-                : AudioPlayer.SpokenTime(_durationSeconds) + " in all";
+            string path; double length;
+            lock (Gate) { path = _currentPath; length = _durationSeconds; }
+            length = LengthOf(path, length);
+            return path.Length == 0 || length <= 0 ? "Nothing is playing" : AudioPlayer.SpokenTime(length) + " in all";
         }
 
         // ---- Play-on ----
