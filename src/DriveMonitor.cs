@@ -5820,6 +5820,28 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// MakeFoldersAsync for a fast lane: a refusal (no right to add here, a parent
+        /// deleted on the web) returns false, so the careful loop fails only those
+        /// files and the rest of the pass, downloads included, still runs.
+        /// </summary>
+        private async Task<bool> TryMakeFoldersAsync(DriveClient client, DriveSyncPair pair, PairState state,
+            Dictionary<string, string> folders, IEnumerable<string> wanted, int generation,
+            CancellationToken drainToken, CancellationToken token)
+        {
+            try
+            {
+                await MakeFoldersAsync(client, pair, state, folders, wanted, generation, drainToken, token).ConfigureAwait(false);
+                return true;
+            }
+            catch (Exception ex) when (!token.IsCancellationRequested &&
+                ex is not (PairStoppedException or OperationCanceledException or OfflineException or GaveUpException))
+            {
+                GoogleDrive.Trace($"sync {DisplayName(pair)}: fast lane could not make folders ({ex.Message}); careful loop takes over");
+                return false;
+            }
+        }
+
+        /// <summary>
         /// One Drive folder in a parent that is there. A folder this pair had at
         /// that path before the pass is asked about by its id first, as
         /// <see cref="EnsureFolderAsync"/> does, so a folder made a moment ago is
@@ -5898,11 +5920,13 @@ namespace ExplorerNative
             // is a lookup. A create already sent is let finish if the pass
             // stops (see Drain).
             using var drain = new Drain(token);
-            await MakeFoldersAsync(client, pair, state, folders, batch.Select(SyncMoves.Parent), generation, drain.Token, token)
-                .ConfigureAwait(false);
+            if (!await TryMakeFoldersAsync(client, pair, state, folders, batch.Select(SyncMoves.Parent), generation, drain.Token, token)
+                    .ConfigureAwait(false))
+                return sent;
 
             // Every parent is in `folders` now, so the lanes only read it.
             int done = 0;
+            int upBefore = StatusOf(pair.Id).Uploaded;   // earlier batches and lanes count too
             var lanes = new AdaptiveLanes(FastLanes, FastLanesMin, FastLanesMax);
             var live = LiveFor(pair.Id);
             await Parallel.ForEachAsync(batch,
@@ -6006,7 +6030,7 @@ namespace ExplorerNative
                         done++;
                         SaveSoon(pair.Id, state);
                         int count = done;
-                        Report(pair.Id, s => s with { Uploaded = count, StepDone = count });
+                        Report(pair.Id, s => s with { Uploaded = upBefore + count, StepDone = count });
                     }
                     Kill("uploaded " + path);
                     return true;
@@ -6049,10 +6073,12 @@ namespace ExplorerNative
             if (batch.Count < FastDownloadMinimum) return sent;
 
             using (var drain = new Drain(token))
-                await MakeFoldersAsync(client, pair, state, folders, batch.Select(SyncMoves.Parent), generation, drain.Token, token)
-                    .ConfigureAwait(false);
+                if (!await TryMakeFoldersAsync(client, pair, state, folders, batch.Select(SyncMoves.Parent), generation, drain.Token, token)
+                        .ConfigureAwait(false))
+                    return sent;
 
             int done = 0;
+            int upBefore = StatusOf(pair.Id).Uploaded;
             var lanes = new AdaptiveLanes(FastLanes, FastLanesMin, FastLanesMax);
             await Parallel.ForEachAsync(batch,
                 new ParallelOptions { MaxDegreeOfParallelism = FastLanesMax, CancellationToken = token },
@@ -6094,7 +6120,7 @@ namespace ExplorerNative
                     done++;
                     SaveSoon(pair.Id, state);
                     int count = done;
-                    Report(pair.Id, s => s with { Uploaded = count, StepDone = count });
+                    Report(pair.Id, s => s with { Uploaded = upBefore + count, StepDone = count });
                 }
                 Kill("uploaded " + path);
                 return true;
@@ -6143,6 +6169,7 @@ namespace ExplorerNative
             if (batch.Count < FastDownloadMinimum) return got;
 
             int done = 0;
+            int downBefore = StatusOf(pair.Id).Downloaded;
             var lanes = new AdaptiveLanes(FastLanes, FastLanesMin, FastLanesMax);
             await Parallel.ForEachAsync(batch,
                 new ParallelOptions { MaxDegreeOfParallelism = FastLanesMax, CancellationToken = token },
@@ -6175,7 +6202,7 @@ namespace ExplorerNative
                     done++;
                     SaveSoon(pair.Id, state);
                     int count = done;
-                    Report(pair.Id, s => s with { Downloaded = count, StepDone = count });
+                    Report(pair.Id, s => s with { Downloaded = downBefore + count, StepDone = count });
                 }
                 SyncHistory.Add(pair.Id, "Downloaded", path);
                 Kill("downloaded " + path);
