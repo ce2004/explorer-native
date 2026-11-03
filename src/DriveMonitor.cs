@@ -1564,7 +1564,7 @@ namespace ExplorerNative
         private async Task<Dictionary<string, string>> CheckWhatIsThereAsync(
             DriveSyncPair pair, PairState state, SyncRules rules,
             Dictionary<string, SyncFile> local, Dictionary<string, SyncFile> remote, int generation,
-            CancellationToken token)
+            CancellationToken token, HashSet<string>? unread = null)
         {
             var wanted = SyncPlanner.NeedingHash(rules, local, remote, state.Files);
             var (known, toHash) = SyncHashes.Split(wanted, local, state.Hashes);
@@ -1636,7 +1636,8 @@ namespace ExplorerNative
                         {
                             // Unreadable now (open in another program): not adopted,
                             // and not copied this pass either, since its hash is unknown.
-                            lock (gate) done++;
+                            // Its folder is looked at again next pass (see the caller).
+                            lock (gate) { done++; unread?.Add(path); }
                         }
                     }).ConfigureAwait(false);
             }
@@ -1671,7 +1672,7 @@ namespace ExplorerNative
         private async Task<(List<SyncAction> Plan, int Moved)> MoveWhatMovedAsync(
             DriveClient client, DriveSyncPair pair, PairState state, SyncRules rules, List<SyncAction> plan,
             Dictionary<string, SyncFile> local, Dictionary<string, SyncFile> remote, Dictionary<string, string> folders,
-            SyncSkips skips, string root, int generation, HashSet<string> notMade, CancellationToken token)
+            SyncSkips skips, string root, int generation, HashSet<string> notMade, PassTally tally, CancellationToken token)
         {
             // Free up space: files leave the PC as they go up, so a recorded file
             // gone from the PC is that and nothing more. A record that outlived
@@ -1918,7 +1919,20 @@ namespace ExplorerNative
                         return true;
                     }, client, ct).ConfigureAwait(false);
                 }
-                catch (Exception) when (!ct.IsCancellationRequested) { return false; }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    // Refused or failed: said, counted and in History, not retried in silence.
+                    if (ex is not PairStoppedException)
+                    {
+                        lock (_fastGate)
+                        {
+                            tally.Failed++;
+                            tally.LastError = $"{move.To}: {ex.Message}";
+                        }
+                        SyncHistory.Add(pair.Id, "Could not sync", move.To, ex.Message);
+                    }
+                    return false;
+                }
                 lock (_fastGate)
                 {
                     remote.Remove(move.From);
@@ -4000,7 +4014,8 @@ namespace ExplorerNative
             var name = DisplayName(pair);
             var root = pair.LocalFolder;
             await AdoptMatchingDuplicateAsync(root, state, local, remote, shadowed, token).ConfigureAwait(false);
-            var md5 = await CheckWhatIsThereAsync(pair, state, rules, local, remote, generation, token).ConfigureAwait(false);
+            var unread = new HashSet<string>(SyncNameComparer.Instance);
+            var md5 = await CheckWhatIsThereAsync(pair, state, rules, local, remote, generation, token, unread).ConfigureAwait(false);
             var plan = SyncPlanner.Ordered(SyncPlanner.Plan(rules, local, remote, state.Files, md5, skips), local, remote);
             if (scope != null) plan = plan.Where(a => scope.Contains(a.Path)).ToList();
             var asPlanned = plan;
@@ -4010,7 +4025,7 @@ namespace ExplorerNative
             int movedFiles;
             var notMade = new HashSet<string>(SyncNameComparer.Instance);
             (plan, movedFiles) = await MoveWhatMovedAsync(client, pair, state, rules, plan, local, remote, folders, skips,
-                root, generation, notMade, token).ConfigureAwait(false);
+                root, generation, notMade, tally, token).ConfigureAwait(false);
             tally.Moved += movedFiles;
 
             // Held back for the end of the pass (see SyncInBatchesAsync): what
@@ -4032,7 +4047,10 @@ namespace ExplorerNative
             // With the halves of any move tried and not made: they leave the pass,
             // and their folders must still be looked at again next time, since
             // the change that started it has been read.
-            onPlan?.Invoke(plan.Concat(asPlanned.Where(a => notMade.Contains(a.Path))).ToList());
+            // A file whose checksum could not be read is in no action, but its folder
+            // must be listed again too, or it is invisible until the daily walk.
+            onPlan?.Invoke(plan.Concat(asPlanned.Where(a => notMade.Contains(a.Path)))
+                .Concat(unread.Select(p => new SyncAction(SyncActionKind.Upload, p))).ToList());
             if (stale.Count > 0)
             {
                 plan = plan.Where(a => !stale.Contains(a.Path)).ToList();
