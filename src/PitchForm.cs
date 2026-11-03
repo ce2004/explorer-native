@@ -130,6 +130,14 @@ namespace ExplorerNative
             AcceptButton = ok;
             CancelButton = cancel;
 
+            // Tab follows the screen: the list, the box under it, then the buttons.
+            label.TabIndex = 0;
+            list.TabIndex = 1;
+            tempoBox.TabIndex = 2;
+            reset.TabIndex = 3;
+            ok.TabIndex = 4;
+            cancel.TabIndex = 5;
+
             Controls.Add(label);
             Controls.Add(list);
             Controls.Add(reset);

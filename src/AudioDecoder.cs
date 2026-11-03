@@ -692,6 +692,27 @@ namespace ExplorerNative
             finally { try { Marshal.ReleaseComObject(wanted); } catch { } }
         }
 
+        /// <summary>Whether the reader already produces the rate and channels the pump runs at.</summary>
+        private bool OutputMatches(IMFSourceReader reader)
+        {
+            IntPtr typePtr = IntPtr.Zero;
+            try
+            {
+                if (reader.GetCurrentMediaType(FirstAudioStream, out typePtr) != 0 || typePtr == IntPtr.Zero)
+                    return false;
+                var type = (IMFMediaType)Marshal.GetObjectForIUnknown(typePtr);
+                try
+                {
+                    return type.GetUINT32(ref MF_MT_AUDIO_SAMPLES_PER_SECOND, out uint rate) == 0 &&
+                           type.GetUINT32(ref MF_MT_AUDIO_NUM_CHANNELS, out uint ch) == 0 &&
+                           rate == (uint)SampleRate && ch == (uint)Channels;
+                }
+                finally { try { Marshal.ReleaseComObject(type); } catch { } }
+            }
+            catch { return false; }
+            finally { if (typePtr != IntPtr.Zero) Marshal.Release(typePtr); }
+        }
+
         /// <summary>The rate and channel count the reader is really producing.</summary>
         private bool ReadBackFormat(IMFSourceReader reader)
         {
@@ -795,6 +816,20 @@ namespace ExplorerNative
             }
         }
 
+        private const uint StreamFlagTypeChanged = 0x20;   // MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED
+        private const int MfTransformStreamChange = unchecked((int)0xC00D6D61);
+
+        /// <summary>Whether a read says the media type changed mid-stream.</summary>
+        internal static bool TypeChanged(int hr, uint flags) =>
+            (flags & StreamFlagTypeChanged) != 0 || hr == MfTransformStreamChange;
+
+        /// <summary>
+        /// Asks for float output at the running rate and channel count again,
+        /// then at the channel count alone. False when the reader refuses both.
+        /// </summary>
+        internal static bool Renegotiate(Func<int, int, int> tryType, int rate, int channels) =>
+            tryType(rate, channels) == 0 || tryType(0, channels) == 0;
+
         private bool ReadOneSample()
         {
             var reader = _reader;
@@ -802,6 +837,23 @@ namespace ExplorerNative
 
             int hr = reader.ReadSample(FirstAudioStream, 0, out _, out uint flags,
                 out long timestamp, out IntPtr samplePtr);
+
+            // The file's own format changed part way (a new rate or channel
+            // count). Our output type is put back to what the pump runs at, so
+            // the reader converts and the track carries on.
+            if (TypeChanged(hr, flags))
+            {
+                if (!OutputMatches(reader) &&
+                    !Renegotiate((rate, channels) => TryType(reader, rate, channels), SampleRate, Channels))
+                {
+                    if (samplePtr != IntPtr.Zero) Marshal.Release(samplePtr);
+                    _finished = true;
+                    return false;
+                }
+
+                // A bare notice has no sample; try again, bounded like any empty read.
+                if (hr != 0) return ++_emptySamples < EmptySamplesPerRead;
+            }
 
             if (hr != 0) { _finished = true; return false; }
 

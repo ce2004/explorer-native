@@ -139,6 +139,9 @@ namespace ExplorerNative
             var cancel = new Button { Text = "&Cancel", DialogResult = DialogResult.Cancel, AutoSize = true };
             ok.Click += (_, _) => Apply();
 
+            // Right to left on screen, and Tab goes the same way: OK first.
+            ok.TabIndex = 0;
+            cancel.TabIndex = 1;
             buttons.Controls.Add(cancel);
             buttons.Controls.Add(ok);
 

@@ -506,6 +506,8 @@ namespace ExplorerNative
             if (name.EndsWith(".partial", StringComparison.OrdinalIgnoreCase)) return true;
             // Resilio Sync's download in progress, renamed to the real name when done.
             if (name.EndsWith(".!sync", StringComparison.OrdinalIgnoreCase)) return true;
+            // The audio converter's half-written output (AudioConvert.TempMarker).
+            if (name.StartsWith(".converting-", StringComparison.Ordinal)) return true;
             // The small link files Google Drive for desktop leaves for Docs,
             // Sheets and the rest. The documents themselves are not files (the
             // Drive scan leaves them out), so these would go up as junk copies.

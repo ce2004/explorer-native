@@ -130,6 +130,14 @@ namespace ExplorerNative
             defaults.Click += (_, _) => SetCategory(n => n.Default);
             ok.Click += (_, _) => Apply();
 
+            // Tab runs in the order they sit on screen, left to right.
+            preview.TabIndex = 0;
+            allOn.TabIndex = 1;
+            allOff.TabIndex = 2;
+            defaults.TabIndex = 3;
+            ok.TabIndex = 4;
+            cancel.TabIndex = 5;
+
             buttons.Controls.Add(cancel);
             buttons.Controls.Add(ok);
             buttons.Controls.Add(defaults);

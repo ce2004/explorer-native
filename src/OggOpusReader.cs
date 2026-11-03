@@ -42,8 +42,8 @@ namespace ExplorerNative
         public const int Rate = 48000;
 
         /// <summary>
-        /// The decoder's output: stereo for an ordinary stream (Concentus mixes
-        /// mono up to it), and every channel of a surround one, which
+        /// The decoder's output: the stream's own channels, mono or stereo for an
+        /// ordinary stream, and every channel of a surround one, which
         /// <see cref="OggDecoder"/> folds down to the device.
         /// </summary>
         public int Channels { get; private set; } = 2;
@@ -159,9 +159,11 @@ namespace ExplorerNative
             int family = body[18];
             if (family == 0 || channels < 1)
             {
-                _codec = OpusCodecFactory.CreateDecoder(Rate, 2, null);
+                // Mono stays mono; anything odd in a family 0 header plays as stereo.
+                int count = channels == 1 ? 1 : 2;
+                _codec = OpusCodecFactory.CreateDecoder(Rate, count, null);
                 _codec.Gain = gain;
-                Channels = 2;
+                Channels = count;
             }
             else
             {

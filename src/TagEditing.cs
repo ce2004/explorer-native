@@ -166,7 +166,11 @@ namespace ExplorerNative
             if (failed.Count == 0)
                 return results.Count == 1 ? "Tags saved" : $"Tags saved for {results.Count} files";
 
-            var reasons = string.Join(" ", failed.Select(r => $"{SafeName(r.Path)}, {r.Error}"));
+            // Three are named, like the converter's summary, so a screen reader
+            // is not left reading dozens of the same sentence.
+            const int Named = 3;
+            var reasons = string.Join(" ", failed.Take(Named).Select(r => $"{SafeName(r.Path)}, {r.Error}"));
+            if (failed.Count > Named) reasons += $" And {failed.Count - Named} more.";
 
             if (results.Count == 1) return "Tags not saved: " + reasons;
             if (saved == 0) return $"Tags not saved for any of the {results.Count} files: " + reasons;
