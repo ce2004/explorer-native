@@ -959,12 +959,16 @@ namespace ExplorerNative
         {
             if (!NeedsConflictCheck) return (NameState.Free, false);
 
-            var taken = Taken(folder);
+            var lazy = _taken.GetOrAdd(folder, new Lazy<HashSet<string>?>(
+                () => _drive.NamesIn(folder),
+                LazyThreadSafetyMode.ExecutionAndPublication));
+            var taken = lazy.Value;
             if (taken == null)
             {
                 // Asked again for the next file rather than remembered as
-                // unanswerable for the rest of the upload.
-                _taken.TryRemove(folder, out _);
+                // unanswerable for the rest of the upload. Only this failed answer
+                // goes: another thread may already have put a fresh listing there.
+                _taken.TryRemove(new KeyValuePair<string, Lazy<HashSet<string>?>>(folder, lazy));
                 return (NameState.Unknown, false);
             }
 

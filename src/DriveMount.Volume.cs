@@ -187,6 +187,7 @@ namespace ExplorerNative
                 // online. Every change queues one of these after it happens, so
                 // the last to run sees the last state.
                 DriveState state;
+                (string From, string To)? moved = null;
                 lock (_letterGate)
                 {
                     state = _drive.Health.State;
@@ -206,9 +207,15 @@ namespace ExplorerNative
                             // Taken while it was away: the next free one, said.
                             try { _letterName = DriveLetter.Take(host, letter[0], Notify); }
                             catch (Exception ex) { _log($"online, but no letter: {ex.Message} (0x{status:X8})"); return; }
+                            if (_letterName != null && !string.Equals(_letterName, letter, StringComparison.OrdinalIgnoreCase))
+                                moved = (letter, _letterName);
                         }
                         _log($"online: back on {_letterName}");
                     }
+                }
+                if (moved is { } m)
+                {
+                    try { OnLetterMoved?.Invoke(m.From, m.To); } catch { }
                 }
                 _probe.Pace();
                 if (state == DriveState.Online) KickUploads();

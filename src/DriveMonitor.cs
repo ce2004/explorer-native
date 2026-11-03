@@ -990,6 +990,7 @@ namespace ExplorerNative
 
         /// <summary>Each pair's drive (null for My Drive), asked once: a folder's drive does not change.</summary>
         private readonly Dictionary<string, string?> _driveOf = new();
+        private readonly Dictionary<string, string?> _driveOfFolder = new();
 
         /// <summary>
         /// The shared look at each drive's feed (keyed by drive id, "" for My
@@ -1038,13 +1039,16 @@ namespace ExplorerNative
             {
                 string? driveId;
                 bool known;
-                lock (_gate) known = _driveOf.TryGetValue(pair.Id, out driveId);
+                // Known only for the Drive folder it was read for: a pair's folder can change.
+                lock (_gate)
+                    known = _driveOf.TryGetValue(pair.Id, out driveId) &&
+                            _driveOfFolder.TryGetValue(pair.Id, out var forFolder) && forFolder == pair.DriveFolderId;
                 if (!known)
                 {
                     try { driveId = await client.DriveOf(pair.DriveFolderId, token).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
                     catch { run.Add(pair); continue; }
-                    lock (_gate) _driveOf[pair.Id] = driveId;
+                    lock (_gate) { _driveOf[pair.Id] = driveId; _driveOfFolder[pair.Id] = pair.DriveFolderId; }
                 }
                 var key = driveId ?? "";
                 if (!groups.TryGetValue(key, out var list)) groups[key] = list = new();
@@ -1544,7 +1548,7 @@ namespace ExplorerNative
         private static string Seconds(TimeSpan wait)
         {
             int s = Math.Max(1, (int)Math.Round(wait.TotalSeconds));
-            return s < 90 ? $"{s} seconds" : $"{(int)Math.Round(s / 60.0)} minutes";
+            return s == 1 ? "1 second" : s < 90 ? $"{s} seconds" : $"{(int)Math.Round(s / 60.0)} minutes";
         }
 
         /// <summary>
@@ -1560,7 +1564,7 @@ namespace ExplorerNative
         private async Task<Dictionary<string, string>> CheckWhatIsThereAsync(
             DriveSyncPair pair, PairState state, SyncRules rules,
             Dictionary<string, SyncFile> local, Dictionary<string, SyncFile> remote, int generation,
-            CancellationToken token)
+            CancellationToken token, HashSet<string>? unread = null)
         {
             var wanted = SyncPlanner.NeedingHash(rules, local, remote, state.Files);
             var (known, toHash) = SyncHashes.Split(wanted, local, state.Hashes);
@@ -1632,7 +1636,8 @@ namespace ExplorerNative
                         {
                             // Unreadable now (open in another program): not adopted,
                             // and not copied this pass either, since its hash is unknown.
-                            lock (gate) done++;
+                            // Its folder is looked at again next pass (see the caller).
+                            lock (gate) { done++; unread?.Add(path); }
                         }
                     }).ConfigureAwait(false);
             }
@@ -1667,7 +1672,7 @@ namespace ExplorerNative
         private async Task<(List<SyncAction> Plan, int Moved)> MoveWhatMovedAsync(
             DriveClient client, DriveSyncPair pair, PairState state, SyncRules rules, List<SyncAction> plan,
             Dictionary<string, SyncFile> local, Dictionary<string, SyncFile> remote, Dictionary<string, string> folders,
-            SyncSkips skips, string root, int generation, HashSet<string> notMade, CancellationToken token)
+            SyncSkips skips, string root, int generation, HashSet<string> notMade, PassTally tally, CancellationToken token)
         {
             // Free up space: files leave the PC as they go up, so a recorded file
             // gone from the PC is that and nothing more. A record that outlived
@@ -1914,7 +1919,20 @@ namespace ExplorerNative
                         return true;
                     }, client, ct).ConfigureAwait(false);
                 }
-                catch (Exception) when (!ct.IsCancellationRequested) { return false; }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
+                {
+                    // Refused or failed: said, counted and in History, not retried in silence.
+                    if (ex is not PairStoppedException)
+                    {
+                        lock (_fastGate)
+                        {
+                            tally.Failed++;
+                            tally.LastError = $"{move.To}: {ex.Message}";
+                        }
+                        SyncHistory.Add(pair.Id, "Could not sync", move.To, ex.Message);
+                    }
+                    return false;
+                }
                 lock (_fastGate)
                 {
                     remote.Remove(move.From);
@@ -1995,7 +2013,7 @@ namespace ExplorerNative
                     if (changed != null)
                         return (changed.Value.Remote, changed.Value.Folders, changed.Value.Token, false, changed.Value.Skips);
                 }
-                catch (Exception) when (!token.IsCancellationRequested)
+                catch (Exception ex) when (!token.IsCancellationRequested && ex is not PairStoppedException)
                 {
                     // Anything at all: listed whole instead.
                 }
@@ -2451,7 +2469,7 @@ namespace ExplorerNative
                         changedOnPc.Folders.UnionWith(onDrive);
                     }
                 }
-                catch (Exception) when (!token.IsCancellationRequested) { }
+                catch (Exception ex) when (!token.IsCancellationRequested && ex is not PairStoppedException) { }
             }
 
             bool links = false;
@@ -3258,7 +3276,7 @@ namespace ExplorerNative
             bool driveKnown = true;
             try { driveId = await Patiently(pair, () => client.DriveOf(pair.DriveFolderId, token), client, token).ConfigureAwait(false); }
             catch (Exception) when (!token.IsCancellationRequested) { driveKnown = false; }
-            if (driveKnown) lock (_gate) _driveOf[pair.Id] = driveId;
+            if (driveKnown) lock (_gate) { _driveOf[pair.Id] = driveId; _driveOfFolder[pair.Id] = pair.DriveFolderId; }
 
             // The retry after FullListingNeededException comes here with the feed
             // still usable and every recorded folder known: First() then threw
@@ -3646,7 +3664,12 @@ namespace ExplorerNative
             // Stopped short for space: the changes read for folders it never
             // reached are read again next pass, not used up.
             if (tally.SpaceProblem == null) header.ChangesToken = nextToken;
-            header.FolderIds = folders;
+            // A whole listing stopped for space reached only part of the tree: add what
+            // it found to the old map instead of replacing it.
+            if (full && tally.SpaceProblem != null)
+                foreach (var (path, id) in folders) header.FolderIds[path] = id;
+            else
+                header.FolderIds = folders;
             header.DirtyFolders = nextDirty.ToList();
             if (full && tally.SpaceProblem == null)
             {
@@ -3991,7 +4014,8 @@ namespace ExplorerNative
             var name = DisplayName(pair);
             var root = pair.LocalFolder;
             await AdoptMatchingDuplicateAsync(root, state, local, remote, shadowed, token).ConfigureAwait(false);
-            var md5 = await CheckWhatIsThereAsync(pair, state, rules, local, remote, generation, token).ConfigureAwait(false);
+            var unread = new HashSet<string>(SyncNameComparer.Instance);
+            var md5 = await CheckWhatIsThereAsync(pair, state, rules, local, remote, generation, token, unread).ConfigureAwait(false);
             var plan = SyncPlanner.Ordered(SyncPlanner.Plan(rules, local, remote, state.Files, md5, skips), local, remote);
             if (scope != null) plan = plan.Where(a => scope.Contains(a.Path)).ToList();
             var asPlanned = plan;
@@ -4001,7 +4025,7 @@ namespace ExplorerNative
             int movedFiles;
             var notMade = new HashSet<string>(SyncNameComparer.Instance);
             (plan, movedFiles) = await MoveWhatMovedAsync(client, pair, state, rules, plan, local, remote, folders, skips,
-                root, generation, notMade, token).ConfigureAwait(false);
+                root, generation, notMade, tally, token).ConfigureAwait(false);
             tally.Moved += movedFiles;
 
             // Held back for the end of the pass (see SyncInBatchesAsync): what
@@ -4023,7 +4047,10 @@ namespace ExplorerNative
             // With the halves of any move tried and not made: they leave the pass,
             // and their folders must still be looked at again next time, since
             // the change that started it has been read.
-            onPlan?.Invoke(plan.Concat(asPlanned.Where(a => notMade.Contains(a.Path))).ToList());
+            // A file whose checksum could not be read is in no action, but its folder
+            // must be listed again too, or it is invisible until the daily walk.
+            onPlan?.Invoke(plan.Concat(asPlanned.Where(a => notMade.Contains(a.Path)))
+                .Concat(unread.Select(p => new SyncAction(SyncActionKind.Upload, p))).ToList());
             if (stale.Count > 0)
             {
                 plan = plan.Where(a => !stale.Contains(a.Path)).ToList();
@@ -5811,6 +5838,28 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// MakeFoldersAsync for a fast lane: a refusal (no right to add here, a parent
+        /// deleted on the web) returns false, so the careful loop fails only those
+        /// files and the rest of the pass, downloads included, still runs.
+        /// </summary>
+        private async Task<bool> TryMakeFoldersAsync(DriveClient client, DriveSyncPair pair, PairState state,
+            Dictionary<string, string> folders, IEnumerable<string> wanted, int generation,
+            CancellationToken drainToken, CancellationToken token)
+        {
+            try
+            {
+                await MakeFoldersAsync(client, pair, state, folders, wanted, generation, drainToken, token).ConfigureAwait(false);
+                return true;
+            }
+            catch (Exception ex) when (!token.IsCancellationRequested &&
+                ex is not (PairStoppedException or OperationCanceledException or OfflineException or GaveUpException))
+            {
+                GoogleDrive.Trace($"sync {DisplayName(pair)}: fast lane could not make folders ({ex.Message}); careful loop takes over");
+                return false;
+            }
+        }
+
+        /// <summary>
         /// One Drive folder in a parent that is there. A folder this pair had at
         /// that path before the pass is asked about by its id first, as
         /// <see cref="EnsureFolderAsync"/> does, so a folder made a moment ago is
@@ -5889,11 +5938,13 @@ namespace ExplorerNative
             // is a lookup. A create already sent is let finish if the pass
             // stops (see Drain).
             using var drain = new Drain(token);
-            await MakeFoldersAsync(client, pair, state, folders, batch.Select(SyncMoves.Parent), generation, drain.Token, token)
-                .ConfigureAwait(false);
+            if (!await TryMakeFoldersAsync(client, pair, state, folders, batch.Select(SyncMoves.Parent), generation, drain.Token, token)
+                    .ConfigureAwait(false))
+                return sent;
 
             // Every parent is in `folders` now, so the lanes only read it.
             int done = 0;
+            int upBefore = StatusOf(pair.Id).Uploaded;   // earlier batches and lanes count too
             var lanes = new AdaptiveLanes(FastLanes, FastLanesMin, FastLanesMax);
             var live = LiveFor(pair.Id);
             await Parallel.ForEachAsync(batch,
@@ -5997,7 +6048,7 @@ namespace ExplorerNative
                         done++;
                         SaveSoon(pair.Id, state);
                         int count = done;
-                        Report(pair.Id, s => s with { Uploaded = count, StepDone = count });
+                        Report(pair.Id, s => s with { Uploaded = upBefore + count, StepDone = count });
                     }
                     Kill("uploaded " + path);
                     return true;
@@ -6040,10 +6091,12 @@ namespace ExplorerNative
             if (batch.Count < FastDownloadMinimum) return sent;
 
             using (var drain = new Drain(token))
-                await MakeFoldersAsync(client, pair, state, folders, batch.Select(SyncMoves.Parent), generation, drain.Token, token)
-                    .ConfigureAwait(false);
+                if (!await TryMakeFoldersAsync(client, pair, state, folders, batch.Select(SyncMoves.Parent), generation, drain.Token, token)
+                        .ConfigureAwait(false))
+                    return sent;
 
             int done = 0;
+            int upBefore = StatusOf(pair.Id).Uploaded;
             var lanes = new AdaptiveLanes(FastLanes, FastLanesMin, FastLanesMax);
             await Parallel.ForEachAsync(batch,
                 new ParallelOptions { MaxDegreeOfParallelism = FastLanesMax, CancellationToken = token },
@@ -6085,7 +6138,7 @@ namespace ExplorerNative
                     done++;
                     SaveSoon(pair.Id, state);
                     int count = done;
-                    Report(pair.Id, s => s with { Uploaded = count, StepDone = count });
+                    Report(pair.Id, s => s with { Uploaded = upBefore + count, StepDone = count });
                 }
                 Kill("uploaded " + path);
                 return true;
@@ -6134,6 +6187,7 @@ namespace ExplorerNative
             if (batch.Count < FastDownloadMinimum) return got;
 
             int done = 0;
+            int downBefore = StatusOf(pair.Id).Downloaded;
             var lanes = new AdaptiveLanes(FastLanes, FastLanesMin, FastLanesMax);
             await Parallel.ForEachAsync(batch,
                 new ParallelOptions { MaxDegreeOfParallelism = FastLanesMax, CancellationToken = token },
@@ -6166,7 +6220,7 @@ namespace ExplorerNative
                     done++;
                     SaveSoon(pair.Id, state);
                     int count = done;
-                    Report(pair.Id, s => s with { Downloaded = count, StepDone = count });
+                    Report(pair.Id, s => s with { Downloaded = downBefore + count, StepDone = count });
                 }
                 SyncHistory.Add(pair.Id, "Downloaded", path);
                 Kill("downloaded " + path);

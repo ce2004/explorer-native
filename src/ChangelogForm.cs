@@ -92,8 +92,11 @@ namespace ExplorerNative
             Speak(step > 0 ? "No more versions" : "This is the newest version");
         }
 
-        private static void Speak(string text)
+        internal bool MaySpeak { get; init; } = true;
+
+        private void Speak(string text)
         {
+            if (!MaySpeak) return;
             try { Speech.Speak(text, interrupt: true); } catch { }
         }
     }

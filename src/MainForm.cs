@@ -660,14 +660,14 @@ namespace ExplorerNative
         /// <summary>Help, Changelog (Shift+F1): the built-in CHANGES.txt, no network.</summary>
         private void ShowChangelog()
         {
-            using (var log = new ChangelogForm()) log.ShowDialog(this);
+            using (var log = new ChangelogForm { MaySpeak = _settings.SpeakEnabled }) log.ShowDialog(this);
             RestoreListFocus();
         }
 
         /// <summary>Help, Keyboard shortcuts (Ctrl+F1): the built-in keys, as a list.</summary>
         private void ShowKeyboardShortcuts()
         {
-            using (var keys = new KeyboardShortcutsForm(_settings.TwoTabs)) keys.ShowDialog(this);
+            using (var keys = new KeyboardShortcutsForm(_settings.TwoTabs) { MaySpeak = _settings.SpeakEnabled }) keys.ShowDialog(this);
             RestoreListFocus();
         }
 
@@ -1086,7 +1086,7 @@ namespace ExplorerNative
         /// <summary>File, Google Drive sync configurator: the folder pairs, saved as they change.</summary>
         private void OpenSyncConfigurator()
         {
-            using (var dialog = new DriveMonitorForm(_settings.DriveSyncPairs)) dialog.ShowDialog(this);
+            using (var dialog = new DriveMonitorForm(_settings.DriveSyncPairs) { MaySpeak = _settings.SpeakEnabled }) dialog.ShowDialog(this);
             RestoreListFocus();
         }
 

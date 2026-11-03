@@ -179,6 +179,13 @@ namespace ExplorerNative
             _browsePrefetch.Notify = OnPlayerNotification;
             AudioTags.Notify = OnPlayerNotification;
             _drive.Notification += OnDriveNotification;
+            // Back online on another letter: panes follow and it is said, as when
+            // Preferences moves the letter.
+            _drive.LetterMoved += (from, to) => PostUi(() =>
+            {
+                _form?.DriveLetterMoved(from, to);
+                Notify("drive.mounted", $"Google Drive is on {to}");
+            });
 
             // Preferences' account button says Connect, Disconnect or Reconnect
             // from the drive itself, and Disconnect acts on it directly.
@@ -659,6 +666,7 @@ namespace ExplorerNative
         {
             if (_offeringWinFsp || _quitting) return;
             _offeringWinFsp = true;
+            bool installing = false;
             try
             {
                 var body = "Google Drive needs WinFsp, a free driver that lets Explorer Native show Google Drive " +
@@ -681,17 +689,23 @@ namespace ExplorerNative
                 }
 
                 Notify("drive.winfsp.installing", "Installing WinFsp");
+                // Stays set until the install ends, so pressing Connect during a
+                // slow download cannot start a second install on the same file.
+                installing = true;
                 _ = System.Threading.Tasks.Task.Run(async () =>
                 {
-                    var problem = await WinFspSetup.InstallAsync(GoogleDrive.Trace, CancellationToken.None);
+                    string? problem;
+                    try { problem = await WinFspSetup.InstallAsync(GoogleDrive.Trace, CancellationToken.None); }
+                    catch (Exception ex) { problem = ex.Message; }
                     PostUi(() =>
                     {
+                        _offeringWinFsp = false;
                         if (problem != null) TurnOffDriveWithoutWinFsp(problem);
                         else if (_settings.GoogleDriveEnabled && !_quitting) MountGoogleDrive();
                     });
                 });
             }
-            finally { _offeringWinFsp = false; }
+            finally { if (!installing) _offeringWinFsp = false; }
         }
 
         /// <summary>
@@ -1680,6 +1694,7 @@ namespace ExplorerNative
             // player still names the missing device — so OK kept it pinned there.
             if (outcome == DialogResult.OK) _audio.OutputDeviceId = dialog.SelectedId;
             _settings.AudioOutputDeviceId = _audio.OutputDeviceId;
+            if (outcome == DialogResult.OK) _settings.Save();
             AppleMusicPlayer.SetOutputDevice(NameOf(_audio.OutputDeviceId));
 
             _form?.RestoreListFocusExternally();

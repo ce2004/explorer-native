@@ -614,13 +614,19 @@ namespace ExplorerNative
 
             // The drive is a WinFsp volume (4.3.0), so WinFsp has to be there
             // before anything else is worth doing. The tray offers to install it.
-            NeedsWinFsp = !WinFsp.TryLoad(out var winFspProblem);
-            if (NeedsWinFsp)
+            bool winFspLoads = WinFsp.TryLoad(out var winFspProblem);
+            // Installed but not loading: installing again would change nothing, so
+            // say what is wrong instead of asking to install.
+            NeedsWinFsp = !winFspLoads && !WinFsp.Installed;
+            if (!winFspLoads)
             {
-                Status = "Google Drive needs WinFsp, a free driver that lets it show as a real drive. " +
-                         "Explorer Native can install it for you.";
+                Status = NeedsWinFsp
+                    ? "Google Drive needs WinFsp, a free driver that lets it show as a real drive. " +
+                      "Explorer Native can install it for you."
+                    : "WinFsp is installed but would not load" +
+                      (string.IsNullOrWhiteSpace(winFspProblem) ? "." : ": " + winFspProblem.TrimEnd('.') + ".");
                 Note("WinFsp: " + winFspProblem);
-                Say("drive.winfsp.missing", "Google Drive needs WinFsp, a free driver. Explorer Native can install it for you");
+                if (NeedsWinFsp) Say("drive.winfsp.missing", "Google Drive needs WinFsp, a free driver. Explorer Native can install it for you");
                 return false;
             }
 
@@ -721,6 +727,11 @@ namespace ExplorerNative
                 var mount = new DriveMount(drive, root, budget, Note)
                 {
                     Notify = Forward,
+                    OnLetterMoved = (from, to) =>
+                    {
+                        Status = Status.Replace(from, to, StringComparison.OrdinalIgnoreCase);
+                        LetterMoved?.Invoke(from, to);
+                    },
                     IdleRelease = TimeSpan.FromSeconds(CacheIdleSeconds),
                     ShowTrash = () => ShowTrash,
                     QuotaUsed = used,
@@ -840,6 +851,8 @@ namespace ExplorerNative
         /// unmounting. Returns the old and new letters when it moved, otherwise
         /// null — not mounted, already there, or no letter free.
         /// </summary>
+        public event Action<string, string>? LetterMoved;
+
         public (string From, string To)? MoveLetter(string configured)
         {
             DriveMount? mount;
@@ -998,7 +1011,9 @@ namespace ExplorerNative
                 // is a worse folder, not a broken application — but an empty
                 // folder that is not empty is exactly the thing nobody can tell
                 // by looking, so it is worth one sentence.
-                Say("drive.folder.failed", $"Could not read {Path.GetFileName(path)}: {ex.Message}");
+                // A deadline is "took too long", not the framework's "operation was canceled".
+                Say("drive.folder.failed", $"Could not read {Path.GetFileName(path)}: " +
+                    (ex is OperationCanceledException ? "Google Drive took too long to answer" : ex.Message));
                 return false;
             }
         }

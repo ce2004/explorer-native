@@ -17,6 +17,9 @@ namespace ExplorerNative
     /// </summary>
     internal sealed class DriveMonitorForm : Form
     {
+        /// <summary>False when Preferences has spoken announcements off.</summary>
+        internal bool MaySpeak { get; init; } = true;
+
         private readonly List<DriveSyncPair> _working;
         private readonly List<DriveSyncPair> _pairs;
         private readonly LineList _list;
@@ -115,7 +118,17 @@ namespace ExplorerNative
             _list.KeyDown += (_, e) =>
             {
                 if (e.KeyCode == Keys.Enter && _pairs.Count > 0) { EditPair(); e.Handled = e.SuppressKeyPress = true; }
-                else if (e.KeyCode == Keys.Delete && _pairs.Count > 0) { RemovePair(); e.Handled = e.SuppressKeyPress = true; }
+                else if (e.KeyCode == Keys.Delete && _pairs.Count > 0)
+                {
+                    e.Handled = e.SuppressKeyPress = true;
+                    // One stray Delete must not forget a folder's records and its kept-on-Drive list.
+                    int at = _list.SelectedIndex;
+                    if (at < 0 || at >= _pairs.Count) return;
+                    var ask = $"Stop syncing {DriveMonitor.DisplayName(_pairs[at])}? No files are deleted, but Explorer Native forgets what it knew about this folder.";
+                    if (MessageBox.Show(this, ask, "Explorer Native", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                            MessageBoxDefaultButton.Button2) == DialogResult.Yes)
+                        RemovePair();
+                }
             };
 
             _list.SelectedIndexChanged += (_, _) => { if (_list.SelectedIndex >= 0) { FillDetails(); ShowButtons(); } };
@@ -487,7 +500,7 @@ namespace ExplorerNative
           try
           {
             var pair = new DriveSyncPair();
-            using var dialog = new DrivePairForm(pair, "Add a synced folder") { Others = _pairs.ToList() };
+            using var dialog = new DrivePairForm(pair, "Add a synced folder") { Others = _pairs.ToList(), MaySpeak = MaySpeak };
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
 
             if (dialog.Pair.DriveFolderId == DriveFolderPicker.EverythingId)
@@ -588,7 +601,7 @@ namespace ExplorerNative
             try
             {
                 var name = DriveMonitor.DisplayName(_pairs[at]);
-                Speech.Speak(_pairs[at].Paused
+                if (MaySpeak) Speech.Speak(_pairs[at].Paused
                     ? $"Saved {name}, paused. Press Resume to start it."
                     : $"Saved {name}. Syncing has started, and Status shows how it is going.");
             }
@@ -605,7 +618,7 @@ namespace ExplorerNative
             TakeLive();
             if (at >= _pairs.Count) return;
             using var dialog = new DrivePairForm(_pairs[at].Copy(), "Change a synced folder")
-                { Others = _pairs.Where((_, i) => i != at).ToList() };
+                { Others = _pairs.Where((_, i) => i != at).ToList(), MaySpeak = MaySpeak };
             if (dialog.ShowDialog(this) != DialogResult.OK) return;
             // Onto the pairs as they are now: the tray or the sync itself may have
             // paused others meanwhile, and Drive-only folders are the monitor's
@@ -685,8 +698,9 @@ namespace ExplorerNative
             Fill(all: true);
         }
 
-        private static void Say(string text)
+        private void Say(string text)
         {
+            if (!MaySpeak) return;
             try { Speech.Speak(text, interrupt: true); } catch { }
         }
     }
@@ -739,6 +753,8 @@ namespace ExplorerNative
     /// </summary>
     internal sealed class DrivePairForm : Form
     {
+        internal bool MaySpeak { get; init; } = true;
+
         private readonly TextBox _name, _local, _drive, _skipTypes, _example;
         private readonly ComboBox _mode, _maxSize, _clash;
         private readonly CheckBox _deletes, _freeUp, _paused, _subfolders;
@@ -754,6 +770,7 @@ namespace ExplorerNative
 
         /// <summary>The list as it stands in the window: each folder, and whether it was added just now.</summary>
         private readonly List<(string Relative, bool New)> _driveOnly = new();
+        private readonly Dictionary<string, List<(string Relative, bool New)>> _absorbed = new();
         private ListBox _driveOnlyList = null!;
         private Button _putBack = null!;
 
@@ -1069,6 +1086,8 @@ namespace ExplorerNative
                             return;
                         }
                         // A folder inside it that was on the list becomes part of it.
+                        // Remembered, so taking this one back out brings them back.
+                        _absorbed[relative] = _driveOnly.Where(d => DriveOnlyFolders.Covers(new[] { relative }, d.Relative)).ToList();
                         _driveOnly.RemoveAll(d => DriveOnlyFolders.Covers(new[] { relative }, d.Relative));
                         _driveOnly.Add((relative, true));
                         ShowDriveOnly(relative);
@@ -1081,7 +1100,10 @@ namespace ExplorerNative
                 {
                     int at = _driveOnlyList.SelectedIndex;
                     if (_driveOnly.Count == 0 || at < 0 || at >= _driveOnly.Count) return;
+                    var gone = _driveOnly[at];
                     _driveOnly.RemoveAt(at);
+                    if (gone.New && _absorbed.Remove(gone.Relative, out var back))
+                        _driveOnly.AddRange(back);
                     ShowDriveOnly();
                     if (_driveOnly.Count > 0) _driveOnlyList.SelectedIndex = Math.Min(at, _driveOnly.Count - 1);
                     _driveOnlyList.Focus();
@@ -1190,7 +1212,7 @@ namespace ExplorerNative
                     return;
                 }
 
-                using var picker = new DriveFolderPicker(client);
+                using var picker = new DriveFolderPicker(client) { MaySpeak = MaySpeak };
                 if (picker.ShowDialog(this) == DialogResult.OK)
                 {
                     if (picker.Everything && !_adding)
@@ -1328,6 +1350,8 @@ namespace ExplorerNative
     /// </summary>
     internal sealed class DriveFolderPicker : Form
     {
+        internal bool MaySpeak { get; init; } = true;
+
         private readonly DriveClient _client;
         private readonly ListBox _list;
         private readonly Label _where;
@@ -1520,7 +1544,7 @@ namespace ExplorerNative
             catch (Exception ex)
             {
                 if (IsDisposed) return;
-                _where.Text = "Could not read " + FolderPath + ": " + ex.Message;
+                _where.Text = "Could not read " + (AtTop ? "Google Drive" : FolderPath) + ": " + ex.Message;
                 Say(_where.Text);
                 return;
             }
@@ -1556,8 +1580,9 @@ namespace ExplorerNative
 
         private static string Plural(int n) => n == 1 ? "1 folder" : $"{n} folders";
 
-        private static void Say(string text)
+        private void Say(string text)
         {
+            if (!MaySpeak) return;
             try { Speech.Speak(text, interrupt: true); } catch { }
         }
     }
