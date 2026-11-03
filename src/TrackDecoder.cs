@@ -78,6 +78,7 @@ namespace ExplorerNative
             // it: an Ogg file that is genuinely corrupt should be reported by
             // something that got far enough to look inside it, rather than by
             // the layer that could not identify the container at all.
+            bool oggTried = false;
             if (OggDecoder.Handles(extension) && !AudioFiles.WindowsHasHandlerFor(extension))
             {
                 var ogg = new OggDecoder();
@@ -86,9 +87,14 @@ namespace ExplorerNative
                 var flac = Rewrapped(path, stream, sampleRate, channels, out _);
                 if (flac != null) { ogg.Dispose(); why = "ready"; return flac; }
 
-                why = ogg.Diagnostic;
+                string oggSaid = ogg.Diagnostic;
                 ogg.Dispose();
-                return null;
+
+                // Really an Ogg file that will not play: say why. Anything else
+                // named .ogg or .opus (an MP3, a WAV) goes on to the other
+                // decoders below.
+                if (StartsWithOggS(path, stream)) { why = oggSaid; return null; }
+                oggTried = true;
             }
 
             // A WAV over 4GB whose 32-bit size wrapped: Windows plays it only
@@ -118,7 +124,7 @@ namespace ExplorerNative
             // Ogg file named .mp3 — a download given the wrong name, a rip tool's
             // idea of a default — failed with "Windows cannot decode .mp3",
             // because this used to ask the extension and nothing else.
-            if (OggDecoder.Handles(extension) || StartsWithOggS(path, stream))
+            if ((!oggTried && OggDecoder.Handles(extension)) || StartsWithOggS(path, stream))
             {
                 var ogg = new OggDecoder();
                 if (ogg.Open(path, stream, sampleRate, channels)) { why = ogg.Diagnostic; return ogg; }
