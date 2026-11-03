@@ -1444,9 +1444,9 @@ namespace ExplorerNative
                 var waitFor = allowed - claimClock.Elapsed;
                 if (waitFor > TimeSpan.Zero)
                 {
-                    try { running.Wait(waitFor); } catch { }
+                    try { running.Wait(waitFor, _closing.Token); } catch { }
                 }
-                if (interactive || _populated.ContainsKey(relative) ||
+                if (_closing.IsCancellationRequested || interactive || _populated.ContainsKey(relative) ||
                     allowed - claimClock.Elapsed < TimeSpan.FromSeconds(5))
                     return false;
             }
@@ -1501,7 +1501,9 @@ namespace ExplorerNative
             // A deadline of its own. Without one this waited out an offline spell
             // for as long as it lasted — holding a navigation, a paste's conflict
             // check or a search, with nothing able to call it off.
-            using var deadline = new CancellationTokenSource(listFor);
+            // Linked to the unmount, so Quit and Disconnect do not wait out a listing.
+            using var deadline = CancellationTokenSource.CreateLinkedTokenSource(_closing.Token);
+            deadline.CancelAfter(listFor < TimeSpan.Zero ? TimeSpan.Zero : listFor);
 
             // A page at a time, kept and handed on as it arrives. A folder of a
             // few thousand is several pages at more than a second each, and the
