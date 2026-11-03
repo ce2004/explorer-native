@@ -1091,11 +1091,16 @@ namespace ExplorerNative
             // second and more on the NAS, up to fifteen on a cold Drive file —
             // said "Nothing is loaded", and the track started a moment later.
             int generation;
+            StreamingSource? keep = null;
             lock (_gate)
             {
                 generation = ++_openGeneration;
                 _startingPath = path;
                 _pauseOnStart = false;
+
+                // The same remote track again, fully downloaded: play it from
+                // the download already held, not a new one from byte zero.
+                keep = KeepableDownload(path);
 
                 // The track before is stopped as this one opens, so it is no
                 // longer what is playing. Left named, a second Next track during
@@ -1107,7 +1112,7 @@ namespace ExplorerNative
 
             try
             {
-                return StartDirectCore(path, generation, out abandoned);
+                return StartDirectCore(path, generation, keep, out abandoned);
             }
             finally
             {
@@ -1158,11 +1163,26 @@ namespace ExplorerNative
         /// <summary>Play/pause pressed while the track was opening.</summary>
         private bool _pauseOnStart;
 
-        private bool StartDirectCore(string path, int generation, out bool abandoned)
+        /// <summary>
+        /// The playing track's download when it is this path and every byte is
+        /// held, else null. Called under the gate, before the path is cleared.
+        /// </summary>
+        internal StreamingSource? KeepableDownload(string path)
+        {
+            var held = _streaming;
+            if (held == null || _path.Length == 0) return null;
+            if (!string.Equals(_path, path, StringComparison.OrdinalIgnoreCase)) return null;
+            return held.Complete ? held : null;
+        }
+
+        private bool StartDirectCore(string path, int generation, StreamingSource? keep, out bool abandoned)
         {
             abandoned = false;
             StopDirect();
-            StopStreaming();
+            if (keep == null) StopStreaming();
+
+            // The last track's release clock must not run on this one.
+            CancelRelease();
             CancelFade();
             ForgetSeekTarget();
             OpenHeldForTests?.Invoke();
@@ -1197,7 +1217,7 @@ namespace ExplorerNative
             // trip. Null for a local file, and null if it could not be set up —
             // in which case the decoder simply opens the path, which is what
             // always happened before this existed.
-            var streaming = OpenStreaming(path, generation);
+            var streaming = keep ?? OpenStreaming(path, generation);
 
             // Called off while the download was opening: nothing to start.
             lock (_gate)
@@ -1307,7 +1327,11 @@ namespace ExplorerNative
 
             bool pause;
             lock (_gate) pause = _pauseOnStart;
-            if (pause) direct.Pause();
+            if (pause)
+            {
+                direct.Pause();
+                ArmRelease();
+            }
 
             // Kept past the end of the track, because the question it answers —
             // did the device grant the effects bypass — is one somebody asks in
@@ -1900,10 +1924,15 @@ namespace ExplorerNative
             try
             {
                 double duration = DurationSeconds;
-                if (double.IsNaN(duration) || double.IsInfinity(duration) || duration <= 0)
+                bool unknownLength = double.IsNaN(duration) || double.IsInfinity(duration) || duration <= 0;
+
+                // The start needs no length; anything else does.
+                if (unknownLength && fraction > 0)
                     return "This track has no length to move through";
 
-                double target = Math.Min(Math.Clamp(fraction, 0, 1) * duration, Math.Max(0, duration - 0.25));
+                double target = unknownLength
+                    ? 0
+                    : Math.Min(Math.Clamp(fraction, 0, 1) * duration, Math.Max(0, duration - 0.25));
 
                 // An absolute jump ends any burst of relative steps: the next
                 // "skip forward" counts from here, not from where they were going.
@@ -2155,6 +2184,7 @@ namespace ExplorerNative
             if (!StreamWhilePlaying || !AudioPrefetch.LooksRemote(path)) { CancelPrepare(); return; }
 
             int mine;
+            bool onThisTrack;
             lock (_gate)
             {
                 if (_disposed) return;
@@ -2163,11 +2193,15 @@ namespace ExplorerNative
                 // Already playing it, already opening it, or already getting
                 // ready for it. Opening counts: Enter right after the cursor
                 // settled used to start a second full download of the same track.
-                if (string.Equals(_path, path, StringComparison.OrdinalIgnoreCase)) return;
-                if (string.Equals(_openingPath, path, StringComparison.OrdinalIgnoreCase)) return;
-                if (_pending != null &&
+                onThisTrack = string.Equals(_path, path, StringComparison.OrdinalIgnoreCase) ||
+                    string.Equals(_openingPath, path, StringComparison.OrdinalIgnoreCase);
+                if (!onThisTrack && _pending != null &&
                     string.Equals(_pendingPath, path, StringComparison.OrdinalIgnoreCase)) return;
             }
+
+            // The cursor is back on the track that plays: a download readied
+            // for another row will not be used, so it is let go.
+            if (onThisTrack) { DropPending(); return; }
 
             StreamingSource? fresh;
             try { fresh = NewStreaming(path); }
@@ -2192,9 +2226,24 @@ namespace ExplorerNative
                 going = _pending;
                 _pending = fresh;
                 _pendingPath = path;
+
+                // Not held for ever if nobody plays it.
+                if (ReleaseAfter > TimeSpan.Zero)
+                {
+                    _pendingTimer ??= new Timer(_ => DropPendingIfIdle(), null,
+                        Timeout.Infinite, Timeout.Infinite);
+                    _pendingTimer.Change((int)ReleaseAfter.TotalMilliseconds, Timeout.Infinite);
+                }
             }
 
             try { going?.Dispose(); } catch { }
+        }
+
+        private Timer? _pendingTimer;
+
+        private void DropPendingIfIdle()
+        {
+            try { DropPending(); } catch { }
         }
 
         /// <summary>
@@ -2419,8 +2468,16 @@ namespace ExplorerNative
 
             if (wasHolding)
                 Raise("audiofile.cache.released",
-                    $"Released {SizeFormatter.Format(held, SizeUnitStyle.FullWords)} " +
-                    $"after {(int)ReleaseAfter.TotalMinutes} minutes paused");
+                    ReleaseMessage(SizeFormatter.Format(held, SizeUnitStyle.FullWords),
+                        (int)ReleaseAfter.TotalMinutes, _direct is { Ended: true }));
+        }
+
+        internal static string ReleaseMessage(string size, int minutes, bool finished)
+        {
+            string span = minutes == 1 ? "1 minute" : minutes + " minutes";
+            return finished
+                ? $"Released {size}, {span} after the track finished"
+                : $"Released {size} after {span} paused";
         }
 
         /// <summary>Downloading starts again when a released track is played.</summary>
@@ -2853,6 +2910,8 @@ namespace ExplorerNative
                 _fadeTimer = null;
                 try { _releaseTimer?.Dispose(); } catch { }
                 _releaseTimer = null;
+                try { _pendingTimer?.Dispose(); } catch { }
+                _pendingTimer = null;
 
                 _path = "";
             }
