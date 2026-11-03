@@ -382,14 +382,23 @@ namespace ExplorerNative
             public required StreamingSource Stream;
             public int Leases;
             public DateTime LastUsed;
+            public string? Stamp;
         }
+
+        private readonly Func<string, string?>? _stamp;
+
+        /// <summary>Downloads replaced by a newer one while still leased: let go when their last lease returns.</summary>
+        private readonly List<Entry> _retired = new();
 
         /// <param name="open">The remote source for a path, or null when it is not remote.</param>
         /// <param name="budget">Memory per file; a file within it is downloaded whole.</param>
-        public ConnectStreams(Func<string, IRangeSource?> open, long budget = 256L << 20)
+        /// <param name="stamp">What the file is now (id, size, date), or null; a held download whose stamp
+        /// differs is the old file and is not handed out again.</param>
+        public ConnectStreams(Func<string, IRangeSource?> open, long budget = 256L << 20, Func<string, string?>? stamp = null)
         {
             _open = open;
             _budget = budget;
+            _stamp = stamp;
             // Disarmed until a stream is opened, and disarmed again when the last one goes: a timer waking every
             // ten seconds to find nothing, for as long as the application runs, is battery spent on nothing.
             _sweep = new Timer(_ => Sweep(DateTime.UtcNow), null, Timeout.Infinite, Timeout.Infinite);
@@ -421,16 +430,26 @@ namespace ExplorerNative
         /// Disposing the lease does not stop the download.</summary>
         public IRangeSource? Lease(string path)
         {
+            var stamp = _stamp?.Invoke(path);
+            StreamingSource? stale = null;
             lock (_gate)
             {
                 if (_disposed) throw Closing();
                 if (_streams.TryGetValue(path, out var held))
                 {
-                    held.Leases++;
-                    held.LastUsed = DateTime.UtcNow;
-                    return new Leased(this, path, held.Stream);
+                    if (_stamp == null || held.Stamp == stamp)
+                    {
+                        held.Leases++;
+                        held.LastUsed = DateTime.UtcNow;
+                        return new Leased(this, path, held.Stream);
+                    }
+                    // The file changed since this was downloaded: a new one is opened below.
+                    _streams.Remove(path);
+                    if (held.Leases == 0) stale = held.Stream;
+                    else _retired.Add(held);
                 }
             }
+            stale?.Dispose();
 
             var source = _open(path);
             if (source == null) return null;
@@ -452,7 +471,7 @@ namespace ExplorerNative
                         var idle = _streams.Where(e => e.Value.Leases == 0).OrderBy(e => e.Value.LastUsed).FirstOrDefault();
                         if (idle.Value != null) { evicted = idle.Value.Stream; _streams.Remove(idle.Key); }
                     }
-                    _streams[path] = new Entry { Stream = stream, Leases = 1, LastUsed = DateTime.UtcNow };
+                    _streams[path] = new Entry { Stream = stream, Leases = 1, LastUsed = DateTime.UtcNow, Stamp = stamp };
                     ArmSweep();
                 }
                 if (!_disposed) lease = new Leased(this, path, stream);
@@ -470,12 +489,21 @@ namespace ExplorerNative
 
         private void Return(string path, StreamingSource stream)
         {
+            StreamingSource? done = null;
             lock (_gate)
+            {
                 if (_streams.TryGetValue(path, out var e) && ReferenceEquals(e.Stream, stream))
                 {
                     e.Leases = Math.Max(0, e.Leases - 1);
                     e.LastUsed = DateTime.UtcNow;
                 }
+                else if (_retired.FirstOrDefault(r => ReferenceEquals(r.Stream, stream)) is { } old && --old.Leases <= 0)
+                {
+                    _retired.Remove(old);
+                    done = old.Stream;
+                }
+            }
+            done?.Dispose();
         }
 
         /// <summary>Lets go of anything nobody has read for <see cref="IdleFor"/>.</summary>
@@ -498,8 +526,9 @@ namespace ExplorerNative
             lock (_gate)
             {
                 _disposed = true;
-                all = _streams.Values.Select(e => e.Stream).ToList();
+                all = _streams.Values.Concat(_retired).Select(e => e.Stream).ToList();
                 _streams.Clear();
+                _retired.Clear();
                 ArmSweep();
             }
             _sweep.Dispose();
@@ -862,8 +891,14 @@ namespace ExplorerNative
 
             // Only under a name this server has, and anything that changes something only from its own page:
             // a site that points its own name at 127.0.0.1 is otherwise this server's own origin to a browser.
+            // Tailscale Serve marks requests that came in from the public internet through Funnel. Never ours.
+            if (r.Headers.ContainsKey("tailscale-funnel-request"))
+            {
+                await Error(s, 403, "The web app is only for your own tailnet, not the public internet.", head, token);
+                return;
+            }
             var host = r.Headers.GetValueOrDefault("host");
-            if (!HostAllowed(host, ListenPort, Volatile.Read(ref _ownDnsName)))
+            if (!HostAllowed(host, ListenPort, Volatile.Read(ref _ownDnsName)) && !await HostAllowedAfterRefresh(host))
             {
                 await Error(s, 421, "This server only answers to this PC's own names.", head, token);
                 return;
@@ -1238,6 +1273,20 @@ namespace ExplorerNative
 
         /// <summary>How long this PC's Tailscale login is believed before it is asked again.</summary>
         public static readonly TimeSpan LoginFor = TimeSpan.FromSeconds(30);
+
+        /// <summary>
+        /// A ts.net name that is not the one remembered: the PC may have been renamed in Tailscale. Asks Tailscale
+        /// again (at most every <see cref="LoginFor"/>) and checks the name once more.
+        /// </summary>
+        private async Task<bool> HostAllowedAfterRefresh(string? host)
+        {
+            if (host == null || !SplitHost(host, out var name, out _) ||
+                !name.EndsWith(".ts.net", StringComparison.OrdinalIgnoreCase) || DateTime.UtcNow - _loginAt <= LoginFor)
+                return false;
+            RefreshOwnLogin();
+            await LoginSettled();
+            return HostAllowed(host, ListenPort, Volatile.Read(ref _ownDnsName));
+        }
 
         /// <summary>For tests: waits for a login refresh already under way.</summary>
         internal async Task LoginSettled()

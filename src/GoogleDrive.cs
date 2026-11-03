@@ -177,8 +177,31 @@ namespace ExplorerNative
         private Action<string, string>? Forward =>
             _notification == null ? null : Say;
 
+        private static readonly AsyncLocal<Action<string, string>?> _sayTo = new();
+
+        /// <summary>
+        /// Until disposed, what this call flow would say on the PC goes to <paramref name="to"/> instead (the web
+        /// app: the phone hears the real reason, and the PC stays quiet).
+        /// </summary>
+        public static IDisposable SayingTo(Action<string, string> to)
+        {
+            var before = _sayTo.Value;
+            _sayTo.Value = to;
+            return new SayRestore(before);
+        }
+
+        private sealed class SayRestore(Action<string, string>? before) : IDisposable
+        {
+            public void Dispose() => _sayTo.Value = before;
+        }
+
         private void Say(string id, string message)
         {
+            if (_sayTo.Value is { } to)
+            {
+                try { to(id, message); } catch { }
+                return;
+            }
             var handler = _notification;
             if (handler == null) return;
             try { handler(id, message); } catch { }
@@ -1853,6 +1876,17 @@ namespace ExplorerNative
             DriveMount? mount;
             lock (_gate) mount = _mount;
             return mount?.IdFor(path);
+        }
+
+        /// <summary>What a file on the letter is now (id, size, date), from the mount's map only; null if unknown.
+        /// A download held under an older stamp is of a file since replaced or changed.</summary>
+        internal string? StampOf(string path)
+        {
+            DriveMount? mount;
+            lock (_gate) mount = _mount;
+            if (mount == null) return null;
+            var known = mount.Describe(path);
+            return $"{mount.IdFor(path)}|{known?.Size}|{known?.ModifiedUtc.Ticks}";
         }
 
         private static async Task<string?> IdOrRelist(DriveMount mount, string path, CancellationToken token)

@@ -2586,7 +2586,7 @@ namespace ExplorerNative
                 ConnectServer? server = null;
                 try
                 {
-                    streams = new ConnectStreams(path => _drive.OpenRange(path));
+                    streams = new ConnectStreams(path => _drive.OpenRange(path), stamp: path => _drive.StampOf(path));
                     var leased = streams;
                     // Its own STA thread and message-only window: never the UI thread.
                     clipboard = new ConnectClipboard();
