@@ -667,7 +667,7 @@ namespace ExplorerNative
         /// <summary>Help, Keyboard shortcuts (Ctrl+F1): the built-in keys, as a list.</summary>
         private void ShowKeyboardShortcuts()
         {
-            using (var keys = new KeyboardShortcutsForm()) keys.ShowDialog(this);
+            using (var keys = new KeyboardShortcutsForm(_settings.TwoTabs)) keys.ShowDialog(this);
             RestoreListFocus();
         }
 
@@ -776,9 +776,9 @@ namespace ExplorerNative
                     if (installer.ExitCode != 0 && !IsDisposed)
                     {
                         MessageBox.Show(this,
-                            "The update could not be installed. The details are in " +
-                            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-                                "ExplorerNative", "install.log") + ".",
+                            "The update could not be installed. The details are in the install log, which is " +
+                            "locked to this account. To read it, run Explorer Native from a command prompt " +
+                            "with the option --read-log.",
                             "Update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     }
                 }
@@ -1061,6 +1061,8 @@ namespace ExplorerNative
                 // the new folder's name back while the keyboard is in here; this
                 // is where it gets put on.
                 list.Leave += (_, _) => ApplyPendingName(_panes[index]);
+                // Ctrl let go elsewhere (another tab, a prompt) says no total.
+                list.LostFocus += (_, _) => _selectedWithCtrl = false;
 
                 // An empty list says nothing when focus lands on it: switching to
                 // a tab showing an empty folder, or Tab coming back round to it,
@@ -1132,6 +1134,7 @@ namespace ExplorerNative
             };
             foreach (var item in changesFolder) file.DropDownItems.Add(item);
             _archiveHidden.AddRange(changesFolder);
+            _drivesHidden.AddRange(changesFolder);
 
             // Only while Google Drive is switched on (Connect and Disconnect
             // switch it), decided as the menu opens and after Preferences.
@@ -1177,7 +1180,7 @@ namespace ExplorerNative
             file.DropDownItems.Add(Item("&Export settings...", Keys.None, () => ExportSettings(this)));
             file.DropDownItems.Add(Item("I&mport settings...", Keys.None, () => ImportSettings(this, null)));
             file.DropDownItems.Add(new ToolStripSeparator());
-            file.DropDownItems.Add(Item("E&xit", Keys.None, Close));
+            file.DropDownItems.Add(Item("E&xit", Keys.None, () => { if (!Program.QuitAsked()) Close(); }));
 
             // Always on the menu, drive or no drive, at Conner's request: a USB
             // drive comes and goes, and an entry that appears only while it is
@@ -1193,6 +1196,8 @@ namespace ExplorerNative
             edit.DropDownItems.Add(paste);
             _archiveHidden.Add(cut);
             _archiveHidden.Add(paste);
+            _drivesHidden.Add(cut);
+            _drivesHidden.Add(paste);
             edit.DropDownItems.Add(new ToolStripSeparator());
             edit.DropDownItems.Add(AppleHidden(Item("Copy pat&h", Keys.Alt | Keys.C, CopyPath)));
             edit.DropDownItems.Add(DriveLinkItem("Copy Drive &link", Keys.Alt | Keys.L, makePublic: false));
@@ -1221,6 +1226,7 @@ namespace ExplorerNative
             var search = _searchHereItem = Item("&Search here…", Keys.F1, SearchHere);
             go.DropDownItems.Add(search);
             _archiveHidden.Add(search);
+            _drivesHidden.Add(search);
             go.DropDownOpening += (_, _) => ShowArchiveHidden();
             go.DropDownItems.Add(Item("&Refresh", Keys.F5, Refresh_));
             go.DropDownItems.Add(Item("Res&tart application", Keys.Control | Keys.R, RestartApp));
@@ -1229,7 +1235,9 @@ namespace ExplorerNative
             menu.Items.Add(BuildAudioMenu());
 
             var tools = new ToolStripMenuItem("T&ools");
-            tools.DropDownItems.Add(AppleHidden(Item("Calculate folder &size", Keys.Control | Keys.Shift | Keys.S, CalculateFocusedFolderSize)));
+            var calcSize = AppleHidden(Item("Calculate folder &size", Keys.Control | Keys.Shift | Keys.S, CalculateFocusedFolderSize));
+            tools.DropDownItems.Add(calcSize);
+            _drivesHidden.Add(calcSize);
             var windowsMenu = Item("&Windows context menu", Keys.None, ShowShellMenuForSelection);
             tools.DropDownItems.Add(windowsMenu);
             _archiveHidden.Add(windowsMenu);
@@ -1758,7 +1766,13 @@ namespace ExplorerNative
             foreach (var item in _archiveHidden)
                 item.Visible = item == _searchHereItem ? Active.Archive == null : outside;
             foreach (var item in _appleHidden) item.Visible = !appleRow;
+            // The drive list: these only refuse there.
+            if (IsDrivesView && Active.Archive == null)
+                foreach (var item in _drivesHidden) item.Visible = false;
         }
+
+        private readonly List<ToolStripMenuItem> _drivesHidden = new();
+        private ToolStripMenuItem _contextCopyItem = null!, _contextCopyPathItem = null!;
 
         private ToolStripMenuItem DriveLinkItem(string text, Keys shortcut, bool makePublic)
         {
@@ -1833,12 +1847,14 @@ namespace ExplorerNative
                 _contextMenu.Items.Add(item);
             }
             _contextMenu.Items.Add(new ToolStripSeparator());
-            _contextMenu.Items.Add(AppleHidden(Item("&Copy", Keys.None, () => CopyToClipboard(false))));
-            _cutItem = ArchiveHidden(Item("Cu&t", Keys.None, () => CopyToClipboard(true)));
+            _contextCopyItem = AppleHidden(Item("&Copy", Keys.None, () => CopyToClipboard(false)));
+            _contextMenu.Items.Add(_contextCopyItem);
+            _cutItem =ArchiveHidden(Item("Cu&t", Keys.None, () => CopyToClipboard(true)));
             _pasteItem = ArchiveHidden(Item("&Paste", Keys.None, PasteClipboard));
             _contextMenu.Items.Add(_cutItem);
             _contextMenu.Items.Add(_pasteItem);
-            _contextMenu.Items.Add(AppleHidden(Item("Copy pat&h", Keys.None, CopyPath)));
+            _contextCopyPathItem = AppleHidden(Item("Copy pat&h", Keys.None, CopyPath));
+            _contextMenu.Items.Add(_contextCopyPathItem);
             _contextMenu.Items.Add(DriveLinkItem("Copy Drive &link", Keys.None, makePublic: false));
             _contextMenu.Items.Add(DriveLinkItem("Copy p&ublic Drive link", Keys.None, makePublic: true));
 
@@ -1889,8 +1905,9 @@ namespace ExplorerNative
             // Drive letter, where no archive can be written (ShowOurContextMenu).
             _compressItem = ArchiveHidden(Item("Co&mpress…", Keys.None, CompressSelection));
             _contextMenu.Items.Add(_compressItem);
+            _drivesHidden.AddRange(new[] { _cutItem, _pasteItem, _renameItem, _deleteItem, _compressItem });
 
-            _extractItem = Item("&Extract", Keys.None, () => ExtractFocused(intoNewFolder: true));
+            _extractItem =Item("&Extract", Keys.None, () => ExtractFocused(intoNewFolder: true));
             _extractHereItem = Item("E&xtract here", Keys.None, () => ExtractFocused(intoNewFolder: false));
 
             _contextMenu.Items.Add(_extractItem);
@@ -2073,6 +2090,13 @@ namespace ExplorerNative
             if (index < 0 || index >= pane.Entries.Count)
                 return new ListViewItem(string.Empty);
 
+            // "Today" and "yesterday" in cached rows are wrong after midnight.
+            if (DateTime.Today != _cachedOnDay)
+            {
+                _cachedOnDay = DateTime.Today;
+                foreach (var p in _panes) ClearItemCache(p);
+            }
+
             if (index < pane.ItemCache.Length && pane.ItemCache[index] is { } cached)
             {
                 PerfCounters.CacheHit();
@@ -2123,6 +2147,7 @@ namespace ExplorerNative
         /// evicts something about to be asked for again.
         /// </summary>
         private const int MaxCachedItems = 4096;
+        private DateTime _cachedOnDay = DateTime.Today;
 
         private static void ClearItemCache(Pane pane)
         {
@@ -3302,7 +3327,10 @@ namespace ExplorerNative
             {
                 foreach (var (path, keep, size, modified) in facts)
                 {
-                    if (!keep || !pane.IndexByPath.TryGetValue(path, out var i) || i >= pane.Entries.Count)
+                    bool known = pane.IndexByPath.TryGetValue(path, out var i) && i < pane.Entries.Count;
+                    // Not shown and not on screen: nothing to change, so no reload.
+                    if (!known && !keep) continue;
+                    if (!keep || !known)
                     {
                         reload = true;
                         continue;
@@ -6184,7 +6212,20 @@ namespace ExplorerNative
         private void ReloadIfUnfinished(Pane pane)
         {
             if (IsDisposed || pane.SearchTerm != null) return;
-            if (string.Equals(pane.LastLoadedPath, pane.CurrentPath, StringComparison.OrdinalIgnoreCase)) return;
+            if (string.Equals(pane.LastLoadedPath, pane.CurrentPath, StringComparison.OrdinalIgnoreCase))
+            {
+                // The folder is whole, but the search cancelled the pane's work:
+                // give it a live token again so sizes carry on and keep updating.
+                if (pane.EnumCts is { IsCancellationRequested: true } && pane.Archive == null && !pane.Loading &&
+                    _settings.FolderSizes == FolderSizeMode.Automatic &&
+                    !string.IsNullOrEmpty(pane.CurrentPath) && pane.CurrentPath != DrivesPath &&
+                    !AppleMusic.Is(pane.CurrentPath))
+                {
+                    var fresh = BeginPaneWork(pane);
+                    _ = CalculateAllFolderSizesAsync(pane, fresh);
+                }
+                return;
+            }
             _ = NavigateAsync(pane.CurrentPath, onPane: pane);
         }
 
@@ -6690,7 +6731,7 @@ namespace ExplorerNative
             if (_selectionSpeechTimer is { Enabled: true } pending)
             {
                 pending.Stop();
-                AnnounceSelectionChange();
+                AnnounceSelectionChange(ctrlHeld: true);
             }
             int selected = Active.List.SelectedIndices.Count;
             AnnounceOperation("select.count", selected == 0 ? "Nothing selected" : $"{NameRules.Items(selected)} selected");
@@ -6963,6 +7004,13 @@ namespace ExplorerNative
             _emptyTrashItem.Visible = trashHere || onTrashFolder;
             if (trashHere || onTrashFolder)
                 foreach (var item in new[] { _cutItem, _pasteItem, _renameItem, _deleteItem, _compressItem })
+                    item.Visible = false;
+            // Paste goes into the folder on screen, not into the Trash row.
+            if (onTrashFolder && !trashHere && !IsDrivesView && !inArchive)
+                _pasteItem.Visible = true;
+            // Nothing under the cursor: these have nothing to act on.
+            if (focused == null)
+                foreach (var item in new[] { _contextOpenItem, _contextCopyItem, _contextCopyPathItem, _cutItem, _renameItem, _deleteItem, _compressItem })
                     item.Visible = false;
 
             _contextMenu.Show(where);
@@ -7266,7 +7314,8 @@ namespace ExplorerNative
             {
                 if (Drive is not { } drive) return;
                 var paths = SelectedPaths();
-                if (paths.Length == 0 || !paths.All(drive.IsInTrash)) return;
+                if (paths.Length == 0) { Announce("Nothing selected"); return; }
+                if (!paths.All(drive.IsInTrash)) return;
                 var outcome = await EachInDriveTrash(paths, p => drive.RestoreFromTrash(p));
                 if (IsDisposed) return;
                 if (outcome.Done > 1) AnnounceOperation("drive.restored", $"Restored {NameRules.Items(outcome.Done)}");
@@ -7295,7 +7344,8 @@ namespace ExplorerNative
             {
                 if (Drive is not { } drive) return;
                 var paths = SelectedPaths();
-                if (paths.Length == 0 || !paths.All(drive.IsInTrash)) return;
+                if (paths.Length == 0) { Announce("Nothing selected"); return; }
+                if (!paths.All(drive.IsInTrash)) return;
                 var what = paths.Length == 1 ? $"\"{Path.GetFileName(paths[0].TrimEnd('\\'))}\"" : $"{paths.Length:N0} items";
                 if (MessageBox.Show(this, $"Permanently delete {what} from Google Drive? This cannot be undone.",
                         "Delete permanently", MessageBoxButtons.YesNo, MessageBoxIcon.Warning,
@@ -7344,13 +7394,16 @@ namespace ExplorerNative
                 var land = origin;
                 while (drive.IsInTrash(land) && SafeParent(land) is { } up) land = up;
 
+                var pane = Active;
                 RunningTransfers++;
                 try { await drive.EmptyTrash(); }
                 catch (Exception) { /* said by the Drive layer */ }
                 finally { RunningTransfers--; }
                 if (IsDisposed) return;
-                if (drive.IsTrashFolder(land)) await NavigateAsync(land);
-                else await RefreshAsync(null, folder: origin);
+                // Only the pane that asked, and only if it is still where it was.
+                bool stillThere = string.Equals(pane.CurrentPath, origin, StringComparison.OrdinalIgnoreCase);
+                if (drive.IsTrashFolder(land) && stillThere) await NavigateAsync(land, onPane: pane);
+                else if (stillThere) await RefreshAsync(null, folder: origin);
             }
             catch (Exception ex)
             {
@@ -7549,7 +7602,7 @@ namespace ExplorerNative
             _selectionSpeechTimer.Start();
         }
 
-        private void AnnounceSelectionChange()
+        private void AnnounceSelectionChange(bool ctrlHeld = false)
         {
             var pane = Active;
             if (!pane.List.Focused) return;
@@ -7565,7 +7618,7 @@ namespace ExplorerNative
             // selected" said the same thing twice. Nor while Ctrl is held: the
             // total is said once, when it is let go (List_KeyUp).
             AnnounceOperation("select.count",
-                (isIn && selected == 1) || (ModifierKeys & Keys.Control) != 0
+                (isIn && selected == 1) || ctrlHeld || (ModifierKeys & Keys.Control) != 0
                     ? $"{(isIn ? "Selected" : "Not selected")} {name}"
                 : selected == 0 ? $"Not selected {name}"
                 : $"{(isIn ? "Selected" : "Not selected")} {name}, {selected:N0} selected in all");
@@ -8479,8 +8532,10 @@ namespace ExplorerNative
             }
 
             // One file is just the verb, as everywhere (NameRules.SayCount).
-            AnnounceOperation("drive.upload.done", work.Folders.Count > 0
-                ? $"Uploaded {NameRules.Items(done, "file")} in " +
+            AnnounceOperation("drive.upload.done", done == 0 && work.Folders.Count == 0
+                ? "Nothing was uploaded. The files were already there and left alone"
+                : work.Folders.Count > 0
+                ?$"Uploaded {NameRules.Items(done, "file")} in " +
                   $"{(work.Folders.Count == 1 ? "one folder" : $"{work.Folders.Count:N0} folders")} to Google Drive"
                 : done == 1 ? "Uploaded to Google Drive"
                 : $"Uploaded {done:N0} files to Google Drive");
@@ -8839,6 +8894,14 @@ namespace ExplorerNative
 
                     if (move)
                     {
+                        // Into itself or one of its own subfolders: refused here,
+                        // not left for Google to answer.
+                        var into = destination.TrimEnd('\\') + "\\";
+                        if (into.StartsWith(path.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase))
+                        {
+                            errors.Add($"{wanted}: a folder cannot be moved into itself");
+                            continue;
+                        }
                         // Drive's own name unless a clash chose another: the name
                         // here may be the letter's cleaned-up one — "Q1: x" shows
                         // as "Q1_ x" — and passing that renamed the file.
@@ -9365,6 +9428,11 @@ namespace ExplorerNative
                     AnnounceOperation(move ? "move.done" : "copy.done",
                         $"Copied. {NameRules.Items(result.AlreadyThere, "file")} " +
                         $"{(result.AlreadyThere == 1 ? "was" : "were")} already there");
+                else if (result.Copied == 0 && result.Collisions.SkippedCount > 0)
+                    AnnounceOperation(move ? "move.done" : "copy.done",
+                        $"Nothing was {(move ? "moved" : "copied")}. " +
+                        $"{NameRules.Items(result.Collisions.SkippedCount, "file")} " +
+                        $"{(result.Collisions.SkippedCount == 1 ? "was" : "were")} already there and left alone");
                 else AnnounceOperation(move ? "move.done" : "copy.done", move ? "Move complete" : "Copy complete");
 
                 // Last, and after the outcome, because it is the more specific
@@ -9555,9 +9623,12 @@ namespace ExplorerNative
         /// then a modeless progress window and a one-sentence summary. The
         /// sources are only ever read. Async void and guarded throughout.
         /// </summary>
+        private bool _convertPlanning;
+
         private async void ConvertAudio()
         {
             if (RefuseInArchive()) return;
+            if (_convertPlanning) { Announce("Still looking for audio to convert."); return; }
             try
             {
                 if (IsDrivesView) { Announce("Cannot convert the drive list", isError: true); return; }
@@ -9612,9 +9683,18 @@ namespace ExplorerNative
                 var choice = request.Choice;
                 var here = Active.CurrentPath;
 
-                // The walk and every existence check happen on a worker.
-                var plan = await Task.Run(() => AudioConverter.Plan(
-                    AudioConverter.Gather(selected, request.Subfolders, extensions, CancellationToken.None), choice));
+                // The walk and every existence check happen on a worker. It can
+                // take a while on a big folder: say so, and don't start a second.
+                if (_convertPlanning) return;
+                _convertPlanning = true;
+                Announce("Looking for audio to convert. This may take a moment.");
+                ConvertPlan plan;
+                try
+                {
+                    plan = await Task.Run(() => AudioConverter.Plan(
+                        AudioConverter.Gather(selected, request.Subfolders, extensions, CancellationToken.None), choice));
+                }
+                finally { _convertPlanning = false; }
                 if (IsDisposed) return;
 
                 if (plan.Jobs.Count == 0)
@@ -9710,6 +9790,8 @@ namespace ExplorerNative
         /// file manager stays usable behind it. Saving there never replaces the
         /// original unless that is the command chosen.
         /// </summary>
+        private readonly Dictionary<string, AudioEditorForm> _openEditors = new(StringComparer.OrdinalIgnoreCase);
+
         private async void EditAudio()
         {
             if (RefuseInArchive()) return;
@@ -9739,7 +9821,17 @@ namespace ExplorerNative
                 }
                 if (IsDisposed) return;
 
+                // One editor per file: a second one would edit a file the first
+                // has changed, or is about to.
+                if (_openEditors.TryGetValue(path, out var already) && !already.IsDisposed)
+                {
+                    already.Activate();
+                    Announce("This file is already open in the audio editor.");
+                    return;
+                }
                 var editor = new AudioEditorForm(path, _settings);
+                _openEditors[path] = editor;
+                editor.FormClosed += (_, _) => _openEditors.Remove(path);
                 editor.Saved += saved =>
                 {
                     var folder = SafeParent(saved);
@@ -9940,6 +10032,9 @@ namespace ExplorerNative
                     return;
                 }
 
+                // The folder is read now, not after the awaits below.
+                var startedIn = Active.CurrentPath;
+                var startedInSearch = Active.SearchTerm != null;
                 try
                 {
                     var archives = await Task.Run(() => chosen
@@ -9956,7 +10051,8 @@ namespace ExplorerNative
                     // One set of claimed folder names for the batch: photos.zip and
                     // photos.7z extracted at once each get a folder of their own.
                     var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    await Task.WhenAll(archives.Select(a => ExtractOneAsync(a, intoNewFolder, claimed)));
+                    await Task.WhenAll(archives.Select(a => ExtractOneAsync(a, intoNewFolder, claimed,
+                        startedInSearch ? SafeParent(a) ?? startedIn : startedIn)));
                 }
                 catch (Exception ex)
                 {
@@ -9981,11 +10077,12 @@ namespace ExplorerNative
         private readonly SemaphoreSlim _extractAskGate = new(1, 1);
 
         /// <summary>One archive extracted, with its own progress window.</summary>
-        private async Task ExtractOneAsync(string archive, bool intoNewFolder, HashSet<string>? claimed = null)
+        private async Task ExtractOneAsync(string archive, bool intoNewFolder, HashSet<string>? claimed = null,
+            string? folderHint = null)
         {
             // The folder the archive is in: in search results that is not the
             // folder the search started from.
-            var here = Active.SearchTerm != null ? SafeParent(archive) ?? Active.CurrentPath : Active.CurrentPath;
+            var here = folderHint ?? (Active.SearchTerm != null ? SafeParent(archive) ?? Active.CurrentPath : Active.CurrentPath);
 
             if (Drive != null && (Drive.Owns(here) || Drive.Owns(archive)))
             {
@@ -10709,6 +10806,12 @@ namespace ExplorerNative
             // permanently, which always asks.
             if (Drive is { } trashDrive && paths.All(trashDrive.IsInTrash))
             {
+                // Only what sits directly in Trash can be deleted for good.
+                if (!paths.All(p => SafeParent(p) is { } up && trashDrive.IsTrashFolder(up)))
+                {
+                    Announce("Items inside a trashed folder can't be deleted one by one. Restore the folder first.");
+                    return;
+                }
                 DeleteFromDriveTrash();
                 return;
             }
@@ -11148,7 +11251,13 @@ namespace ExplorerNative
             // async void from a key: anything escaping takes the window with it.
             try
             {
-                if (!await DirectoryExistsAsync(path)) { Announce("Select a folder first"); return; }
+                var probe = await ProbeDirectoryAsync(path);
+                if (probe == FolderProbe.NotResponding)
+                {
+                    Announce($"{Path.GetFileName(path.TrimEnd('\\'))} is not answering, so its size can't be measured now", isError: true);
+                    return;
+                }
+                if (probe != FolderProbe.Present) { Announce("Select a folder first"); return; }
 
                 AnnounceOperation("size.calculating", $"Measuring {Path.GetFileName(path)}");
 
@@ -11505,6 +11614,12 @@ namespace ExplorerNative
                 else if (clientChanged) said += ". Sign in to Google Drive again, because the Google client changed";
                 AnnounceOperation("settings.imported", said);
             }
+            catch (System.Security.Cryptography.CryptographicException)
+            {
+                if (!IsDisposed) AnnounceOperation("settings.import.failed",
+                    "Could not import settings. That settings file is locked to the PC and account that wrote it. " +
+                    "On that PC, use File, Export settings, and import the exported file here.");
+            }
             catch (Exception ex)
             {
                 if (!IsDisposed) AnnounceOperation("settings.import.failed", "Could not import settings: " + ex.Message);
@@ -11779,12 +11894,18 @@ namespace ExplorerNative
             // Only for a close somebody actually asked for. A shutdown or a task
             // manager is not a question anybody is there to answer, and a dialog
             // nobody can see is a process that will not exit.
+            bool abandoning = RunningTransfers > 0;
             if (!_forceClosing && e.CloseReason == CloseReason.UserClosing &&
                 !ConfirmAbandonTransfers("Close"))
             {
                 e.Cancel = true;
                 return;
             }
+
+            // Agreed to abandon the transfers: the process goes too, as the
+            // question said. Left in the tray they would run against a dead window.
+            if (abandoning && !_forceClosing && e.CloseReason == CloseReason.UserClosing)
+                SynchronizationContext.Current?.Post(_ => Program.QuitForRestart(), null);
 
             base.OnFormClosing(e);
         }

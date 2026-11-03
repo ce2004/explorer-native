@@ -90,13 +90,18 @@ namespace ExplorerNative
         };
 
         /// <summary>The list as read: each heading on a line of its own, then its keys.</summary>
-        public static List<string> Lines()
+        public static List<string> Lines(bool twoTabs = true)
         {
             var lines = new List<string>();
             foreach (var (heading, rows) in Sections)
             {
                 lines.Add(heading);
-                foreach (var row in rows) lines.Add(row.ToString());
+                foreach (var row in rows)
+                {
+                    // With one tab, Tab and Ctrl+Tab switch nothing.
+                    if (!twoTabs && row.Keys == "Tab or Ctrl+Tab") continue;
+                    lines.Add(row.ToString());
+                }
             }
             return lines;
         }

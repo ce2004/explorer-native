@@ -158,9 +158,14 @@ namespace ExplorerNative
             var candidates = new List<string>();
 
             // Beside the executable, where a loose copy would sit.
-            string baseDir = AppContext.BaseDirectory;
-            candidates.Add(Path.Combine(baseDir, exact));
-            candidates.Add(Path.Combine(baseDir, generic));
+            // A release is single-file (no assembly location), and a loose copy
+            // beside it is never ours, so only multi-file builds look here.
+            if (!string.IsNullOrEmpty(typeof(Speech).Assembly.Location))
+            {
+                string baseDir = AppContext.BaseDirectory;
+                candidates.Add(Path.Combine(baseDir, exact));
+                candidates.Add(Path.Combine(baseDir, generic));
+            }
 
             // Bundled inside a single-file build.
             //

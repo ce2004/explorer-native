@@ -2761,6 +2761,9 @@ namespace ExplorerNative
         /// <summary>Shuts down without the "hide to tray" behaviour, for Ctrl+R.</summary>
         public void QuitImmediately() => Quit();
 
+        /// <summary>The same quit as the tray's Exit, with its questions.</summary>
+        public void QuitAsked() => Quit(ask: true);
+
         /// <summary>Hears Windows ending the session; null if it could not be made.</summary>
         private SessionEndWindow? _sessionEnd;
 

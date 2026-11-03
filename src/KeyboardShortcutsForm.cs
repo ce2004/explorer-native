@@ -14,7 +14,7 @@ namespace ExplorerNative
     {
         private readonly ListBox _lines;
 
-        public KeyboardShortcutsForm()
+        public KeyboardShortcutsForm(bool twoTabs = true)
         {
             Text = "Keyboard shortcuts";
             FormBorderStyle = FormBorderStyle.Sizable;
@@ -32,7 +32,7 @@ namespace ExplorerNative
                 AccessibleName = "Keyboard shortcuts",
                 TabIndex = 0,
             };
-            _lines.Items.AddRange(BuiltInShortcuts.Lines().ToArray());
+            _lines.Items.AddRange(BuiltInShortcuts.Lines(twoTabs).ToArray());
             _lines.SelectedIndex = 0;
             _lines.KeyDown += OnListKeyDown;
 

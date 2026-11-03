@@ -994,6 +994,14 @@ namespace ExplorerNative
         /// <summary>Ends this process so a replacement started by Ctrl+R can take over.</summary>
         public static void QuitForRestart() => _context?.QuitImmediately();
 
+        /// <summary>File, Exit: quits like the tray's Exit; false when there is no tray to do it.</summary>
+        public static bool QuitAsked()
+        {
+            if (_context == null) return false;
+            _context.QuitAsked();
+            return true;
+        }
+
         /// <summary>
         /// Asks before something that takes Google Drive down while files saved
         /// on it are still on their way (see the tray's ConfirmUnsavedDrive).

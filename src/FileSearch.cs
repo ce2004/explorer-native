@@ -141,7 +141,8 @@ namespace ExplorerNative
                             (showSystem || (entry.Attributes & FileAttributes.System) == 0),
                     }.GetEnumerator();
                 }
-                catch { continue; }   // unreadable is skipped, never fatal
+                catch when (!ReferenceEquals(folder, root)) { continue; }   // unreadable is skipped, never fatal
+                // The folder searched itself cannot be read: say so, not "nothing matching".
 
                 using (walk)
                 {
@@ -244,6 +245,7 @@ namespace ExplorerNative
         private readonly string[] _words;      // folded; each must be found
         private readonly string[] _patterns;   // folded; each must fit the whole name
         private readonly string[] _without;    // folded; none may be found
+        private string[] _withoutPatterns = []; // folded; none may fit the whole name
 
         /// <summary>
         /// What to ask Google for (any one of them, as "name contains"): every
@@ -266,13 +268,16 @@ namespace ExplorerNative
             var typedWords = new List<string>();
             var patterns = new List<string>();
             var without = new List<string>();
+            var withoutPatterns = new List<string>();
             string patternPiece = "";
 
             foreach (var (token, quoted, dashOutside) in Tokens(text ?? ""))
             {
                 if (dashOutside && token.Length > 1)
                 {
-                    without.Add(FoldName(token[1..]));
+                    // -*.tmp leaves out names that fit the pattern.
+                    if (token.AsSpan(1).IndexOfAny('*', '?') >= 0) withoutPatterns.Add(FoldName(token[1..]));
+                    else without.Add(FoldName(token[1..]));
                     continue;
                 }
                 // Even quoted: no Windows name holds * or ?, so they can only
@@ -298,7 +303,10 @@ namespace ExplorerNative
                 ? (patternPiece.Length > 0 ? [patternPiece] : [])
                 : typedWords.ToArray();
 
-            return new SearchQuery(words.ToArray(), patterns.ToArray(), without.ToArray(), hints);
+            return new SearchQuery(words.ToArray(), patterns.ToArray(), without.ToArray(), hints)
+            {
+                _withoutPatterns = withoutPatterns.ToArray(),
+            };
         }
 
         /// <summary>Split on spaces, keeping "quoted words" as one.</summary>
@@ -345,6 +353,10 @@ namespace ExplorerNative
 
             foreach (var pattern in _patterns)
                 if (!System.IO.Enumeration.FileSystemName.MatchesSimpleExpression(pattern, name, ignoreCase: true))
+                    return false;
+
+            foreach (var pattern in _withoutPatterns)
+                if (System.IO.Enumeration.FileSystemName.MatchesSimpleExpression(pattern, name, ignoreCase: true))
                     return false;
 
             foreach (var word in _without)
