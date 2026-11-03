@@ -10,7 +10,7 @@ using System.Windows.Forms;
 
 namespace ExplorerNative
 {
-    public sealed class MainForm : Form
+    public sealed partial class MainForm : Form
     {
         /// <summary>One row. Built once during enumeration, formatted on demand.</summary>
         private sealed record Entry(string Path, string Name, bool IsDir, long Size, DateTime Modified)
@@ -155,6 +155,9 @@ namespace ExplorerNative
 
             /// <summary>Whether the results stopped at the cap rather than running out.</summary>
             public bool SearchTruncated;
+
+            /// <summary>Filter this folder (Ctrl+F), while on. See MainForm.Filter.cs.</summary>
+            public FolderFilter<Entry>? Filter;
 
             /// <summary>
             /// A search running right now. Separate from
@@ -1222,6 +1225,7 @@ namespace ExplorerNative
             go.DropDownItems.Add(search);
             _archiveHidden.Add(search);
             go.DropDownOpening += (_, _) => ShowArchiveHidden();
+            go.DropDownItems.Add(Item("&Filter this folder…", Keys.Control | Keys.F, FilterThisFolder));
             go.DropDownItems.Add(Item("&Refresh", Keys.F5, Refresh_));
             go.DropDownItems.Add(Item("Res&tart application", Keys.Control | Keys.R, RestartApp));
             menu.Items.Add(go);
@@ -2156,6 +2160,7 @@ namespace ExplorerNative
         /// </summary>
         private void SetEntries(Pane pane, List<Entry> entries, string? preferPath = null)
         {
+            entries = FilterIncoming(pane, entries);
             pane.StaleRows = false;
             pane.Entries = entries;
             pane.ItemCache = new ListViewItem?[entries.Count];
@@ -4488,6 +4493,9 @@ namespace ExplorerNative
         /// </param>
         private void ReplaceEntriesInPlace(Pane pane, List<Entry> entries, int unchanged = 0)
         {
+            var incoming = entries;
+            entries = FilterIncoming(pane, entries);
+            if (!ReferenceEquals(entries, incoming)) unchanged = 0;
             var old = pane.Entries;
             int keep = Math.Min(unchanged, Math.Min(old.Count, entries.Count));
             // Cheap proof the prefix really is the pane's own: same rows at both ends of it.
@@ -4542,6 +4550,7 @@ namespace ExplorerNative
         /// <summary>A first showing that chooses no row. See ProgressiveLoad.</summary>
         private void SetEntriesWithoutLanding(Pane pane, List<Entry> entries)
         {
+            entries = FilterIncoming(pane, entries);
             pane.StaleRows = false;
             pane.Entries = entries;
             pane.ItemCache = new ListViewItem?[entries.Count];
@@ -4962,7 +4971,8 @@ namespace ExplorerNative
                 var shown = pane.Entries;
                 var focused = FocusedPathOf(pane);
                 var folder = pane.CurrentPath;
-                var rows = new List<Entry>(shown);
+                // Filtered, the whole list is sorted and the filter applied again.
+                var rows = new List<Entry>(pane.Filter?.All ?? shown);
                 var sorted = await Task.Run(() => SortLikeAFolder(rows, folder));
 
                 // Moved on, reloaded or changed while sorting: that listing is
@@ -6573,6 +6583,12 @@ namespace ExplorerNative
                 // search anybody started: Escape leaves the results instead.
                 case Keys.Escape when pane.Searching && !pane.SearchQuietly:
                     CancelSearch();
+                    e.Handled = e.SuppressKeyPress = true;
+                    break;
+
+                // A filtered list first shows everything again (Ctrl+F).
+                case Keys.Escape when pane.Filter != null:
+                    ClearFilter(pane, say: true);
                     e.Handled = e.SuppressKeyPress = true;
                     break;
 
@@ -11588,14 +11604,14 @@ namespace ExplorerNative
 
             if (selected == 0)
             {
-                SetStatusText($"{prefix}{NameRules.Items(total)}{more}");
+                SetStatusText($"{prefix}{CountSaid(pane, total)}{more}");
                 return;
             }
 
             // Nothing in Apple Music has a size to add up.
             if (selected > MaxSelectionToSum || AppleMusic.Is(pane.CurrentPath))
             {
-                SetStatusText($"{prefix}{NameRules.Items(total)}{more}, {selected} selected");
+                SetStatusText($"{prefix}{CountSaid(pane, total)}{more}, {selected} selected");
                 return;
             }
 
@@ -11611,7 +11627,7 @@ namespace ExplorerNative
             }
 
             SetStatusText(
-                $"{prefix}{NameRules.Items(total)}{more}, {selected} selected " +
+                $"{prefix}{CountSaid(pane, total)}{more}, {selected} selected " +
                 $"({SizeFormatter.Format(bytes, _settings.SizeUnits)})");
         }
 

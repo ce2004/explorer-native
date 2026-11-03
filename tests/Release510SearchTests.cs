@@ -26,7 +26,66 @@ namespace ExplorerNative
             SizeDateKindWords();
             LocalWalkUsesFacts();
             DriveUsesFacts();
+            FilterAsYouType();
             await Task.CompletedTask;
+        }
+
+        private sealed record Row(string Name, bool IsDir, long Size, DateTime Modified);
+
+        private static void FilterAsYouType()
+        {
+            var rows = new List<Row>();
+            for (int i = 0; i < 5000; i++) rows.Add(new Row($"track {i}.{(i % 3 == 0 ? "flac" : "txt")}", false, i, Now));
+            rows.Add(new Row("Live", true, -1, Now));
+
+            var filter = new FolderFilter<Row>("C:\\x\n", rows, r => (r.Name, r.IsDir, r.Size, r.Modified));
+            Check("an empty filter shows every row", ReferenceEquals(filter.Apply(rows), rows) && !filter.Narrows);
+            filter.SetText("kind:audio size>4900b");
+            var shown = filter.Apply(filter.All);
+            Equal("the filter uses the search rule, size and kind words too", "33", shown.Count.ToString());
+            Check("and keeps the folder's order", shown[0].Name == "track 4902.flac");
+            filter.SetText("live");
+            Check("folders match by name", filter.Apply(filter.All) is { Count: 1 } one && one[0].IsDir);
+
+            // A new row arriving (the watcher reloading) is filtered the same way.
+            rows.Add(new Row("live set.flac", false, 10, Now));
+            filter.All = rows;
+            Equal("new rows respect the filter", "2", filter.Apply(filter.All).Count.ToString());
+
+            Equal("the count is said", "Showing 12 of 5,000", FolderFilterWords.Showing(12, 5000));
+            Equal("and all of it", "Showing all 5,000 items", FolderFilterWords.ShowingAll(5000));
+            Equal("one item reads naturally", "Showing the one item", FolderFilterWords.ShowingAll(1));
+
+            // MainForm needs a message loop; its wiring is checked in the source.
+            var main = Source("MainForm.cs");
+            var wiring = Source("MainForm.Filter.cs");
+            Check("Ctrl+F is on the Go menu with its own access key",
+                main != null && main.Contains("Item(\"&Filter this folder…\", Keys.Control | Keys.F, FilterThisFolder)", StringComparison.Ordinal));
+            Check("every way rows reach a pane goes through the filter",
+                main != null && CountOf(main, "entries = FilterIncoming(pane, entries);") == 3);
+            Check("Escape in a filtered list clears it",
+                main != null && main.Contains("case Keys.Escape when pane.Filter != null:", StringComparison.Ordinal));
+            Check("the status bar says how many show",
+                main != null && CountOf(main, "CountSaid(pane, total)") == 3);
+            Check("rows for another folder end the filter",
+                wiring != null && wiring.Contains("if (pane.Filter.Key != FilterKey(pane)) { pane.Filter = null; return entries; }", StringComparison.Ordinal));
+            Check("Ctrl+F is in the shortcuts list",
+                BuiltInShortcuts.Lines().Exists(l => l.StartsWith("Ctrl+F:", StringComparison.Ordinal)));
+        }
+
+        private static int CountOf(string text, string what)
+        {
+            int n = 0;
+            for (int at = text.IndexOf(what, StringComparison.Ordinal); at >= 0; at = text.IndexOf(what, at + what.Length, StringComparison.Ordinal)) n++;
+            return n;
+        }
+
+        private static string? Source(string name)
+        {
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "src"))) dir = dir.Parent;
+            var path = dir == null ? null : Path.Combine(dir.FullName, "src", name);
+            return path != null && File.Exists(path) ? File.ReadAllText(path) : null;
         }
 
         private static readonly DateTime Now = new(2026, 11, 4, 15, 30, 0);   // a Wednesday
