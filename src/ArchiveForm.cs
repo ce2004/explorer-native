@@ -105,7 +105,7 @@ namespace ExplorerNative
             foreach (var format in _formats) _format.Items.Add(Label(format));
             _format.SelectedIndex = _formats.IndexOf(_current);
 
-            var levelLabel = new Label { Text = "&Compression:", AutoSize = true, Location = new Point(14, 120) };
+            var levelLabel = new Label { Text = "Compression &level:", AutoSize = true, Location = new Point(14, 120) };
             _level = new ComboBox
             {
                 DropDownStyle = ComboBoxStyle.DropDownList,
