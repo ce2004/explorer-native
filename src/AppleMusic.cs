@@ -690,7 +690,9 @@ namespace ExplorerNative
                     catch (AppleMusicException ex) when (ex.NotFound)
                     {
                         // Deleted on another device since the menu was made.
-                        lock (Gate) _playlists?.RemoveAll(p => p.Id == playlist.Id);
+                        // A new list, never the shared one changed in place (see CreatePlaylistAsync).
+                        lock (Gate)
+                            if (_playlists != null) _playlists = _playlists.Where(p => p.Id != playlist.Id).ToList();
                         throw new AppleMusicException($"{playlist.Name} isn't in your library any more");
                     }
                 }
@@ -1110,6 +1112,9 @@ namespace ExplorerNative
             }
             RenameAll();
         }
+
+        /// <summary>Your playlists as if Apple had listed them.</summary>
+        internal static void SetPlaylistsForTests(List<AppleMusicItem> all) => KeepPlaylists(all);
 
         /// <summary>Signs in with a fake token so the offline folders (top, Library) list.</summary>
         internal static void ConfigureForTests(string token = "test-token") => Configure(token);

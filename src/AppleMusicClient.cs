@@ -118,6 +118,7 @@ namespace ExplorerNative
 
         private static async Task<string> DeveloperTokenAsync(CancellationToken token)
         {
+            if (FakeForTests != null) return "test-developer-token";
             string page;
             try { page = await Http.GetStringAsync(Home, token).ConfigureAwait(false); }
             catch (HttpRequestException ex) { throw new AppleMusicException("Apple Music couldn't be reached. " + GoogleNet.Reason(ex)); }
@@ -149,10 +150,14 @@ namespace ExplorerNative
             return await SendAsync(req, token).ConfigureAwait(false);
         }
 
+        /// <summary>Tests only: answers every request instead of Apple, and skips the developer token's fetch.</summary>
+        internal static Func<HttpRequestMessage, HttpResponseMessage>? FakeForTests;
+
         private static async Task<JsonDocument> SendAsync(HttpRequestMessage req, CancellationToken token)
         {
             HttpResponseMessage resp;
-            try { resp = await Http.SendAsync(req, token).ConfigureAwait(false); }
+            var fake = FakeForTests;
+            try { resp = fake != null ? fake(req) : await Http.SendAsync(req, token).ConfigureAwait(false); }
             catch (HttpRequestException ex) { throw new AppleMusicException("Apple Music couldn't be reached. " + GoogleNet.Reason(ex)); }
             catch (TaskCanceledException) when (!token.IsCancellationRequested) { throw new AppleMusicException("Apple Music took too long to answer."); }
             using (resp)
