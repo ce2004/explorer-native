@@ -990,6 +990,7 @@ namespace ExplorerNative
 
         /// <summary>Each pair's drive (null for My Drive), asked once: a folder's drive does not change.</summary>
         private readonly Dictionary<string, string?> _driveOf = new();
+        private readonly Dictionary<string, string?> _driveOfFolder = new();
 
         /// <summary>
         /// The shared look at each drive's feed (keyed by drive id, "" for My
@@ -1038,13 +1039,16 @@ namespace ExplorerNative
             {
                 string? driveId;
                 bool known;
-                lock (_gate) known = _driveOf.TryGetValue(pair.Id, out driveId);
+                // Known only for the Drive folder it was read for: a pair's folder can change.
+                lock (_gate)
+                    known = _driveOf.TryGetValue(pair.Id, out driveId) &&
+                            _driveOfFolder.TryGetValue(pair.Id, out var forFolder) && forFolder == pair.DriveFolderId;
                 if (!known)
                 {
                     try { driveId = await client.DriveOf(pair.DriveFolderId, token).ConfigureAwait(false); }
                     catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
                     catch { run.Add(pair); continue; }
-                    lock (_gate) _driveOf[pair.Id] = driveId;
+                    lock (_gate) { _driveOf[pair.Id] = driveId; _driveOfFolder[pair.Id] = pair.DriveFolderId; }
                 }
                 var key = driveId ?? "";
                 if (!groups.TryGetValue(key, out var list)) groups[key] = list = new();
@@ -3258,7 +3262,7 @@ namespace ExplorerNative
             bool driveKnown = true;
             try { driveId = await Patiently(pair, () => client.DriveOf(pair.DriveFolderId, token), client, token).ConfigureAwait(false); }
             catch (Exception) when (!token.IsCancellationRequested) { driveKnown = false; }
-            if (driveKnown) lock (_gate) _driveOf[pair.Id] = driveId;
+            if (driveKnown) lock (_gate) { _driveOf[pair.Id] = driveId; _driveOfFolder[pair.Id] = pair.DriveFolderId; }
 
             // The retry after FullListingNeededException comes here with the feed
             // still usable and every recorded folder known: First() then threw
