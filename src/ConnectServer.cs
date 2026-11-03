@@ -172,7 +172,11 @@ namespace ExplorerNative
         private static int Port(int raw) => ((raw & 0xFF) << 8) | ((raw >> 8) & 0xFF);
     }
 
-    public sealed record ConnectDeleted(int Deleted, IReadOnlyList<ConnectFailure> Failed);
+    public sealed record ConnectDeleted(int Deleted, IReadOnlyList<ConnectFailure> Failed)
+    {
+        /// <summary>The Drive ids moved to the trash, which an Undo can put back.</summary>
+        public IReadOnlyList<string> Trashed { get; init; } = Array.Empty<string>();
+    }
 
     /// <summary>
     /// A refusal with the HTTP status it deserves: 404 gone, 409 name taken, 403 not allowed, 503 Drive away.
@@ -247,6 +251,36 @@ namespace ExplorerNative
         /// image, archive), inside the budget <paramref name="token"/> carries; <c>partial</c> when it ran out.
         /// </summary>
         Task<Dictionary<string, object?>> DetailsAsync(string path, ConnectStat stat, bool hash, CancellationToken token);
+
+        /// <summary>The Drive letter's Trash folders (full paths), so the web app can offer Restore there.</summary>
+        IReadOnlyList<string> TrashFolders() => Array.Empty<string>();
+
+        /// <summary>Puts items that are directly in Drive's Trash folder back where they were.</summary>
+        Task<ConnectDeleted> RestoreAsync(IReadOnlyList<string> paths, CancellationToken token) =>
+            throw new ConnectException(503, "Google Drive is not connected on this computer.");
+
+        /// <summary>Takes back a delete made a moment ago: the Drive ids it trashed, untrashed.</summary>
+        Task<int> UndoTrashAsync(IReadOnlyList<string> ids, CancellationToken token) =>
+            throw new ConnectException(503, "Google Drive is not connected on this computer.");
+    }
+
+    /// <summary>What the PC's own player is doing, for the web app.</summary>
+    public sealed record ConnectPlayerState(bool HasTrack, bool Playing, string Title, string? Artist,
+        double Position, double Length, int Volume, bool Muted, bool AppleMusic, int SeekSeconds);
+
+    /// <summary>
+    /// Explorer Native's desktop player, driven from the phone. Actions run the desktop's own
+    /// <see cref="AudioAction"/>s on the UI thread, so they behave and speak as the shortcuts do.
+    /// </summary>
+    public interface IConnectPlayer
+    {
+        ConnectPlayerState State();
+
+        /// <summary>Runs one action and answers with the player as it is afterwards.</summary>
+        Task<ConnectPlayerState> RunAsync(AudioAction action, CancellationToken token);
+
+        /// <summary>Plays a file on the PC; false when the PC's player is turned off.</summary>
+        Task<bool> PlayFileAsync(string path, CancellationToken token);
     }
 
     /// <summary>A copy or move the web app started, polled with <c>/api/job</c>.</summary>
@@ -657,8 +691,10 @@ namespace ExplorerNative
             Func<string> code, Action<string>? log = null, bool loopbackOnly = false, int port = Port,
             Func<string, bool>? isDrive = null, IConnectFiles? files = null,
             Func<string, IRangeSource?>? remote = null, string? uploads = null,
-            IConnectClipboard? clipboard = null, string? clipboardSends = null, Func<string?>? tailscaleStatus = null)
+            IConnectClipboard? clipboard = null, string? clipboardSends = null, Func<string?>? tailscaleStatus = null,
+            IConnectPlayer? player = null)
         {
+            _player = player;
             _isDrive = isDrive;
             _files = files;
             _remote = remote;
@@ -1039,10 +1075,23 @@ namespace ExplorerNative
                         await Json(s, 200, await ClipCommit(await ReadJson(r, token), token), false, token);
                         break;
                     case "/api/formats":
-                        await Json(s, 200, new { audio = Files.AudioExtensions(), native = NativeFormats }, head, token, r);
+                        await Json(s, 200, new { audio = Files.AudioExtensions(), native = NativeFormats, trash = Files.TrashFolders(),
+                            pcPlayer = _player != null }, head, token, r);
                         break;
                     case "/api/audio":
                         await Audio(r, s, path, token);
+                        break;
+                    case "/api/pc/player":
+                        await Json(s, 200, PlayerJson(Player.State()), head, token);
+                        break;
+                    case "/api/pc/player/action":
+                        await Json(s, 200, await PlayerRun(await ReadJson(r, token), token), false, token);
+                        break;
+                    case "/api/pc/player/play":
+                        await Json(s, 200, await PlayerPlay(await ReadJson(r, token), token), false, token);
+                        break;
+                    case "/api/restore":
+                        await Json(s, 200, await Restore(await ReadJson(r, token), token), false, token);
                         break;
                     default:
                         await Error(s, 404, "Not found.", head, token);
@@ -1124,7 +1173,8 @@ namespace ExplorerNative
         private static string MethodFor(string path) => path switch
         {
             "/api/info" or "/api/drives" or "/api/list" or "/api/file" or "/api/size" or "/api/details" or "/api/job"
-                or "/api/upload/status" or "/api/formats" or "/api/audio" => "GET",
+                or "/api/upload/status" or "/api/formats" or "/api/audio" or "/api/pc/player" => "GET",
+            "/api/pc/player/action" or "/api/pc/player/play" or "/api/restore" => "POST",
             "/api/rename" or "/api/delete" or "/api/mkdir" or "/api/copy" or "/api/move" or "/api/job/cancel"
                 or "/api/upload" or "/api/upload/start" or "/api/upload/finish" or "/api/upload/cancel" => "POST",
             "/api/upload/chunk" => "PUT",
@@ -1373,7 +1423,43 @@ namespace ExplorerNative
             }
             var result = await Files.DeleteAsync(paths, token);
             Changed();
-            return new { ok = true, deleted = result.Deleted, failed = result.Failed };
+            return new { ok = true, deleted = result.Deleted, failed = result.Failed, undo = UndoTicket(result.Trashed) };
+        }
+
+        /// <summary>How long a delete's Undo can be used. The phone offers it for less.</summary>
+        public static readonly TimeSpan UndoFor = TimeSpan.FromMinutes(1);
+
+        /// <summary>Undo tickets: what a delete trashed on Drive, by a random name only the phone that deleted has.</summary>
+        private readonly ConcurrentDictionary<string, (IReadOnlyList<string> Ids, DateTime At)> _undo = new(StringComparer.Ordinal);
+
+        private string? UndoTicket(IReadOnlyList<string> trashed)
+        {
+            var now = DateTime.UtcNow;
+            foreach (var old in _undo.Where(e => now - e.Value.At > UndoFor).ToList()) _undo.TryRemove(old.Key, out _);
+            if (trashed.Count == 0) return null;
+            var ticket = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
+            _undo[ticket] = (trashed, now);
+            return ticket;
+        }
+
+        /// <summary>Restore from Drive's trash: named items in Trash, or an Undo of the last delete.</summary>
+        private async Task<object> Restore(JsonElement body, CancellationToken token)
+        {
+            var ticket = Str(body, "undo");
+            if (!string.IsNullOrEmpty(ticket))
+            {
+                if (!_undo.TryRemove(ticket, out var held) || DateTime.UtcNow - held.At > UndoFor)
+                    throw new ConnectException(410, "It's too late to undo that. Restore it from the Google Drive trash instead.");
+                int back = await Files.UndoTrashAsync(held.Ids, token);
+                Changed();
+                return new { ok = true, restored = back, failed = held.Ids.Count - back };
+            }
+            var paths = Strs(body, "paths");
+            if (paths.Count == 0) throw new ConnectException(400, "No paths were given.");
+            foreach (var path in paths) CheckPath(path);
+            var result = await Files.RestoreAsync(paths, token);
+            Changed();
+            return new { ok = true, restored = result.Deleted, failed = result.Failed };
         }
 
         private async Task<object> Mkdir(JsonElement body, CancellationToken token)
@@ -1584,6 +1670,48 @@ namespace ExplorerNative
         private const int MaxClipboardImage = 64 << 20;
 
         private IConnectClipboard Clip => _clipboard ?? throw new ConnectException(503, "The clipboard isn't available on this computer.");
+
+        // MARK: The PC's player
+
+        private readonly IConnectPlayer? _player;
+        private IConnectPlayer Player => _player ?? throw new ConnectException(503, "The PC's player isn't available.");
+
+        /// <summary>The web app's names for the player buttons, and the desktop action each runs.</summary>
+        public static AudioAction? PlayerAction(string? name) => name switch
+        {
+            "playpause" => AudioAction.PlayPause,
+            "previous" => AudioAction.PreviousTrack,
+            "next" => AudioAction.NextTrack,
+            "back" => AudioAction.SeekBackward,
+            "forward" => AudioAction.SeekForward,
+            "volumedown" => AudioAction.VolumeDown,
+            "volumeup" => AudioAction.VolumeUp,
+            _ => null,
+        };
+
+        private static object PlayerJson(ConnectPlayerState p) => new
+        {
+            hasTrack = p.HasTrack, playing = p.Playing, title = p.Title, artist = p.Artist,
+            position = Math.Round(p.Position, 1), length = double.IsFinite(p.Length) ? Math.Round(p.Length, 1) : 0,
+            volume = p.Volume, muted = p.Muted, appleMusic = p.AppleMusic, seekSeconds = p.SeekSeconds,
+        };
+
+        private async Task<object> PlayerRun(JsonElement body, CancellationToken token)
+        {
+            var action = PlayerAction(Str(body, "action")) ?? throw new ConnectException(400, "The PC's player has no such button.");
+            return PlayerJson(await Player.RunAsync(action, token));
+        }
+
+        private async Task<object> PlayerPlay(JsonElement body, CancellationToken token)
+        {
+            var path = CheckPath(Str(body, "path"));
+            var player = Player;
+            if (!Files.AudioExtensions().Contains(Path.GetExtension(path).ToLowerInvariant()))
+                throw new ConnectException(400, "The PC's player doesn't play that kind of file.");
+            if (!await player.PlayFileAsync(path, token))
+                throw new ConnectException(409, "The player is turned off on the PC. Turn it on in Preferences there.");
+            return new { ok = true };
+        }
 
         private static async Task Png(NetworkStream s, byte[] png, bool head, CancellationToken token)
         {

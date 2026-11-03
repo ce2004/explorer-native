@@ -38,6 +38,8 @@ const state = {
   native: new Set(['.mp3', '.m4a', '.m4b', '.m4r', '.aac', '.flac', '.wav', '.aif', '.aiff', '.caf', '.alac']),
   audio: new Set(['.mp3', '.flac', '.m4a', '.m4b', '.m4r', '.aac', '.wav', '.wma', '.aif', '.aiff', '.alac',
     '.ogg', '.oga', '.opus', '.mka', '.mp4', '.mov', '.mkv', '.avi', '.cda']),
+  trash: [],           // the Drive letter's Trash folders, from /api/formats
+  pcPlayer: false,     // whether the PC's player can be driven from here
 };
 
 // ---------- Speaking ----------
@@ -221,6 +223,7 @@ function showTab(name, focus = true) {
   if (name === 'settings') renderSettings();
   if (name === 'player') renderPlayer();
   if (name === 'clipboard') getClipboard();
+  pcSchedule();
   pollJobs();
   setBarTitle($(TITLES[name]).textContent);
   setBackLabel();
@@ -495,7 +498,10 @@ function activate(e, full) {
 async function actions(e, full, opener) {
   const items = [];
   if (e.folder) items.push(['open', 'Open']); else if (isAudio(e.name)) items.push(['open', 'Play']); else items.push(['open', 'Open']);
-  items.push(['details', 'Details'], ['rename', 'Rename'], ['delete', 'Delete'], ['copy', 'Copy'], ['move', 'Move'],
+  if (!e.folder && isAudio(e.name) && state.pcPlayer && !underDriveTrash(full)) items.push(['playpc', 'Play on PC']);
+  if (inDriveTrash(full)) items.push(['restore', 'Restore']);
+  items.push(['details', 'Details'], ['rename', 'Rename'],
+    underDriveTrash(full) ? ['delete', 'Delete forever'] : ['delete', 'Delete'], ['copy', 'Copy'], ['move', 'Move'],
     ['pc', 'Copy on PC']);
   if (!e.folder) items.push(['save', `Save to ${DEVICE}`]);
   if (e.folder) items.push(['size', 'Get size']);
@@ -505,6 +511,8 @@ async function actions(e, full, opener) {
   let placed = false;   // whether the action itself put focus somewhere
   switch (choice) {
     case 'open': activate(e, full); break;
+    case 'playpc': await playOnPc(full, e.name); break;
+    case 'restore': placed = await restore([full]); break;
     case 'details': await details(full); break;
     case 'rename': await rename(e, full); break;
     case 'delete': placed = await remove([full]); break;
@@ -537,9 +545,76 @@ function focusRow(name, index) {
   if (row) row.querySelector('.main').focus(); else $('files-title').focus();
 }
 
+// ---------- Google Drive trash ----------
+
+const lower = (p) => p.replace(/[\\]+$/, '').toLowerCase();
+// Straight inside Drive's Trash folder: what can be restored.
+function inDriveTrash(path) {
+  const p = parentOf(path);
+  return p != null && state.trash.some((t) => lower(t) === lower(p));
+}
+// The Trash folder itself or anything under it.
+function underDriveTrash(path) {
+  return path != null && state.trash.some((t) => lower(path) === lower(t) || lower(path).startsWith(lower(t) + '\\'));
+}
+
+// Returns whether it took care of where focus goes.
+async function restore(paths) {
+  const what = paths.length === 1 ? shownName(leaf(paths[0]), false) : plural(paths.length, 'item', 'items');
+  const gone = new Set(paths.map(leaf));
+  const index = state.entries.findIndex((e) => gone.has(e.name));
+  try {
+    const r = await api('/api/restore', { method: 'POST', body: { paths }, timeout: 60000 + paths.length * 2000 });
+    const failed = (r.failed || []).length;
+    announce(failed ? `Restored ${r.restored}. ${plural(failed, 'item', 'items')} could not be restored: ${r.failed[0].error}`
+      : `Restored ${what}`, failed > 0);
+    state.selectMode = false;
+    await openFolder(state.path, { push: false, quiet: true });
+    focusRow(null, index < 0 ? 0 : index);
+    return true;
+  } catch (err) { announce(err.message, true); return false; }
+}
+
+// After a Drive delete: Undo, for a short while, puts back what was trashed.
+let undoTimer = 0;
+function offerUndo(ticket) {
+  const b = $('btn-undo');
+  clearTimeout(undoTimer);
+  b.dataset.ticket = ticket;
+  b.hidden = false;
+  undoTimer = setTimeout(hideUndo, 10000);
+}
+function hideUndo() {
+  const b = $('btn-undo');
+  clearTimeout(undoTimer);
+  if (b.hidden) return;
+  const had = document.activeElement === b;
+  b.hidden = true;
+  delete b.dataset.ticket;
+  if (had) $('files-title').focus();
+}
+async function undoDelete() {
+  const ticket = $('btn-undo').dataset.ticket;
+  hideUndo();
+  if (!ticket) return;
+  try {
+    const r = await api('/api/restore', { method: 'POST', body: { undo: ticket }, timeout: 120000 });
+    announce(r.failed ? `Restored ${r.restored}. ${plural(r.failed, 'item', 'items')} could not be put back.`
+      : r.restored === 1 ? 'Restored' : `Restored ${r.restored} items`, r.failed > 0);
+    await openFolder(state.path, { push: false, quiet: true });
+  } catch (err) { announce(err.message, true); }
+}
+
 // Returns whether it took care of where focus goes.
 async function remove(paths) {
   const what = paths.length === 1 ? shownName(leaf(paths[0]), false) : plural(paths.length, 'item', 'items');
+  // In Drive's trash a delete is for good, which the web app never does: said plainly, as the PC asks.
+  if (paths.some(underDriveTrash)) {
+    await dialog({ title: 'Delete forever', body: 'Deleting from the Google Drive trash deletes it forever, and that ' +
+      'can\'t be undone, so the web app doesn\'t do it. Restore it from here, or delete it forever on the PC.',
+      buttons: [{ label: 'OK', value: 'ok', primary: true }] });
+    return false;
+  }
   if (prefs.confirmDelete && !(await confirmBox('Delete', `Delete ${what}? Files on the PC go to the Recycle Bin, and Google Drive files go to the Drive trash.`, 'Delete'))) return false;
   // Where the first of them is now, so focus lands on what follows it.
   const gone = new Set(paths.map(leaf));
@@ -548,7 +623,10 @@ async function remove(paths) {
     // Drive trashes one item at a time, most of a second each: the wait grows with the count.
     const r = await api('/api/delete', { method: 'POST', body: { paths }, timeout: 120000 + paths.length * 2000 });
     const failed = (r.failed || []).length;
-    announce(failed ? `Deleted ${r.deleted}. ${plural(failed, 'item', 'items')} could not be deleted: ${r.failed[0].error}` : `Deleted ${what}`, failed > 0);
+    const undo = r.undo ? (failed ? ' Undo is available.' : 'Moved to Google Drive trash. Undo is available.') : '';
+    announce(failed ? `Deleted ${r.deleted}. ${plural(failed, 'item', 'items')} could not be deleted: ${r.failed[0].error}${undo}`
+      : undo || `Deleted ${what}`, failed > 0);
+    if (r.undo) offerUndo(r.undo); else hideUndo();
     state.selectMode = false;
     await openFolder(state.path, { push: false, quiet: true });
     // A row that could not be deleted is still there, and is where it was.
@@ -1343,6 +1421,85 @@ function setSleep(value) {
   announce(`Pauses in ${plural(minutes, 'minute', 'minutes')}`);
 }
 
+// ---------- The PC's player ----------
+
+// Explorer Native's own player on the PC, driven from here. Its state is asked
+// for every few seconds, and only while the section is open and on screen.
+const pc = { open: false, timer: 0, busy: false, last: null };
+
+function pcText(s) {
+  if (!s.hasTrack) return { track: 'Nothing is playing on the PC.', sub: '' };
+  const where = s.length > 0 ? `${clock(s.position)} of ${clock(s.length)}` : clock(s.position);
+  return { track: s.title || 'Unknown track', sub: [s.artist, where, s.playing ? 'playing' : 'paused'].filter(Boolean).join(', ') };
+}
+
+function pcRender(s) {
+  pc.last = s;
+  const t = pcText(s);
+  setText($('pc-track'), t.track);
+  setText($('pc-sub'), t.sub);
+  const play = $('pc-play');
+  setText(play, s.playing ? 'Pause' : 'Play');
+  play.setAttribute('aria-label', s.playing ? 'Pause the PC\'s player' : 'Play on the PC');
+  const step = s.seekSeconds > 0 ? s.seekSeconds : 10;
+  const unit = plural(step, 'second', 'seconds');
+  setText($('pc-back'), `Back ${unit}`);
+  $('pc-back').setAttribute('aria-label', `Back ${unit} on the PC`);
+  setText($('pc-fwd'), `Forward ${unit}`);
+  $('pc-fwd').setAttribute('aria-label', `Forward ${unit} on the PC`);
+}
+
+async function pcRefresh() {
+  if (pc.busy) return;
+  try { pcRender(await api('/api/pc/player', { timeout: 8000 })); } catch { /* the next poll tries again */ }
+}
+
+// Polls only while the section is open, the Now Playing screen is showing and the page is visible.
+function pcSchedule() {
+  const want = pc.open && currentTab === 'player' && !document.hidden;
+  if (want && !pc.timer) { pcRefresh(); pc.timer = setInterval(pcRefresh, 3000); }
+  if (!want && pc.timer) { clearInterval(pc.timer); pc.timer = 0; }
+}
+
+function pcToggle() {
+  pc.open = !pc.open;
+  $('pc-player').hidden = !pc.open;
+  const b = $('pc-toggle');
+  b.setAttribute('aria-expanded', pc.open ? 'true' : 'false');
+  setText(b, pc.open ? 'Hide the PC\'s player' : 'Show the PC\'s player');
+  pcSchedule();
+}
+
+// What each button says once the PC has done it.
+function pcSaid(action, s) {
+  if (!s.hasTrack) return 'Nothing is playing on the PC.';
+  switch (action) {
+    case 'playpause': return s.playing ? 'Playing' : 'Paused';
+    case 'previous': case 'next': return [s.title, s.artist].filter(Boolean).join(' by ') || 'Unknown track';
+    case 'back': case 'forward': return spokenTime(s.position);
+    case 'volumedown': case 'volumeup': return s.muted ? 'Muted' : `Volume ${s.volume} percent`;
+    default: return '';
+  }
+}
+
+async function pcAction(action) {
+  pc.busy = true;
+  try {
+    const s = await api('/api/pc/player/action', { method: 'POST', body: { action }, timeout: 15000 });
+    pcRender(s);
+    announce(pcSaid(action, s));
+  } catch (err) { announce(err.message, true); }
+  finally { pc.busy = false; }
+}
+
+async function playOnPc(full, name) {
+  try {
+    await api('/api/pc/player/play', { method: 'POST', body: { path: full }, timeout: 20000 });
+    announce(`Playing ${shownName(name, false)} on the PC`);
+    if (pc.open) setTimeout(pcRefresh, 1500);
+  } catch (err) { announce(err.message, true); }
+}
+
 // ---------- Clipboard ----------
 
 // What to call the device this page is open on. A browser cannot read the
@@ -1688,6 +1845,10 @@ async function enter() {
   const formats = api('/api/formats').then((f) => {
     if (f.audio) state.audio = new Set(f.audio.map((x) => x.toLowerCase()));
     if (f.native) for (const n of f.native) state.native.add(n.toLowerCase());
+    if (Array.isArray(f.trash)) state.trash = f.trash;
+    state.pcPlayer = !!f.pcPlayer;
+    $('pc-head').hidden = !state.pcPlayer;
+    $('pc-toggle').hidden = !state.pcPlayer;
   }).catch(() => { });
   const last = store.get('lastPath', null);
   const ready = formats.then(() => {
@@ -1797,6 +1958,13 @@ function bindEvents() {
     announce(player.shuffle ? 'Shuffle on' : 'Shuffle off');
   });
   $('np-sleep').addEventListener('change', (e) => setSleep(e.target.value));
+  $('pc-toggle').addEventListener('click', pcToggle);
+  for (const [id, action] of [['pc-play', 'playpause'], ['pc-prev', 'previous'], ['pc-next', 'next'], ['pc-back', 'back'],
+    ['pc-fwd', 'forward'], ['pc-vol-down', 'volumedown'], ['pc-vol-up', 'volumeup']]) {
+    $(id).addEventListener('click', () => pcAction(action));
+  }
+  document.addEventListener('visibilitychange', pcSchedule);
+  $('btn-undo').addEventListener('click', undoDelete);
 
   $('tr-clear').addEventListener('click', () => {
     for (let i = transfers.length - 1; i >= 0; i--) if (!['running', 'waiting'].includes(transfers[i].state)) transfers.splice(i, 1);

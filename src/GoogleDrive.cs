@@ -3113,6 +3113,48 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// The web app's Undo: puts back what it trashed a moment ago, by the Drive ids it had. Returns how many
+        /// came back. Untrashing something not in the trash changes nothing.
+        /// </summary>
+        public async Task<int> UntrashIds(IReadOnlyList<string> ids, CancellationToken token = default)
+        {
+            DriveMount? mount;
+            DriveClient? client;
+            lock (_gate) { mount = _mount; client = _client; }
+            if (mount == null || client == null) return 0;
+            int back = 0;
+            foreach (var id in ids)
+            {
+                IReadOnlyList<string> backIn;
+                try { backIn = await client.Untrash(id, token).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                catch (Exception ex)
+                {
+                    Say("drive.restore.failed", $"Could not restore it: {ex.Message}");
+                    continue;
+                }
+                back++;
+                try
+                {
+                    foreach (var parent in backIn)
+                    {
+                        if (parent == await client.RootId(token).ConfigureAwait(false)) mount.ForgetKey("");
+                        mount.ForgetFolderId(parent);
+                    }
+                }
+                catch (Exception ex) { Note($"undo trash {id}: could not refresh its folder: {ex.Message}"); }
+            }
+            if (back > 0)
+            {
+                lock (_gate) _folders = null;
+                var top = (mount.Letter ?? mount.Root).TrimEnd('\\') + "\\";
+                try { mount.Forget(Path.Combine(top, DriveClient.TrashName)); } catch { }
+                Say("drive.restored", back == 1 ? "Restored it" : $"Restored {back} items");
+            }
+            return back;
+        }
+
+        /// <summary>
         /// Deletes something in the Trash folder for good. The caller has asked;
         /// this only refuses anything that is not in the trash, so nothing
         /// outside it can ever be deleted permanently from here.

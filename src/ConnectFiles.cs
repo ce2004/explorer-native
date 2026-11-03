@@ -62,6 +62,51 @@ namespace ExplorerNative
 
         private GoogleDrive Drive => _drive ?? throw new ConnectException(503, "Google Drive is not connected on this computer.");
 
+        public IReadOnlyList<string> TrashFolders()
+        {
+            var letter = _drive?.Letter;
+            if (letter == null || !_drive!.ShowTrash) return Array.Empty<string>();
+            return new[] { letter.TrimEnd('\\') + "\\" + DriveClient.TrashName };
+        }
+
+        /// <summary>The desktop's Restore: only for items directly in Drive's Trash folder. Quiet on the PC.</summary>
+        public async Task<ConnectDeleted> RestoreAsync(IReadOnlyList<string> paths, CancellationToken token)
+        {
+            var drive = Drive;
+            var failed = new List<ConnectFailure>();
+            int restored = 0;
+            foreach (var path in paths)
+            {
+                token.ThrowIfCancellationRequested();
+                if (!OnDrive(path) || !drive.IsTrashFolder(Path.GetDirectoryName(path) ?? ""))
+                {
+                    failed.Add(new ConnectFailure(path, drive.IsInTrash(path)
+                        ? "Only what is straight inside the Google Drive trash can be restored. Restore the folder it is in."
+                        : "It isn't in the Google Drive trash."));
+                    continue;
+                }
+                string? said = null;
+                try
+                {
+                    bool back;
+                    using (GoogleDrive.SayingTo((_, m) => said = m))
+                        back = await drive.RestoreFromTrash(path, token);
+                    if (back) restored++;
+                    else failed.Add(new ConnectFailure(path, said != null ? ConnectServer.Sentence(said) : "Google Drive would not restore it."));
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                catch (Exception e) { failed.Add(new ConnectFailure(path, ConnectServer.Sentence(said ?? e.Message))); }
+            }
+            return new ConnectDeleted(restored, failed);
+        }
+
+        public async Task<int> UndoTrashAsync(IReadOnlyList<string> ids, CancellationToken token)
+        {
+            var drive = Drive;
+            using (GoogleDrive.SayingTo(static (_, _) => { }))
+                return await drive.UntrashIds(ids, token);
+        }
+
         public string? Unavailable(string path)
         {
             if (_drive == null || !_settings.GoogleDriveEnabled) return null;
@@ -630,6 +675,7 @@ namespace ExplorerNative
             if (onDrive > 0)
             {
                 var drive = Drive;
+                var ids = new List<string>();
                 foreach (var path in paths)
                 {
                     token.ThrowIfCancellationRequested();
@@ -643,15 +689,16 @@ namespace ExplorerNative
                         }
                         string? said = null;
                         bool trashed;
+                        var id = drive.KnownIdOf(path);
                         using (GoogleDrive.SayingTo((_, m) => said = m))
                             trashed = await drive.TrashPath(path, token);
-                        if (trashed) deleted++;
+                        if (trashed) { deleted++; if (id != null) ids.Add(id); }
                         else failed.Add(new ConnectFailure(path, said != null ? ConnectServer.Sentence(said) : "Google Drive would not move it to the trash."));
                     }
                     catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
                     catch (Exception e) { failed.Add(new ConnectFailure(path, ConnectServer.Sentence(e.Message))); }
                 }
-                return new ConnectDeleted(deleted, failed);
+                return new ConnectDeleted(deleted, failed) { Trashed = ids };
             }
 
             await Task.Run(() =>
