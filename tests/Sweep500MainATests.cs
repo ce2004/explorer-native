@@ -245,7 +245,7 @@ namespace ExplorerNative
             var tray = Source("TrayApplicationContext.cs");
             var confirm = Body(tray, "bool ConfirmUnsavedDrive(");
             Check("the Drive question names the action being taken, not always Quit",
-                confirm.Contains("verb", StringComparison.Ordinal) && !confirm.Contains("Quit anyway?", StringComparison.Ordinal));
+                confirm.Contains("string before, string question", StringComparison.Ordinal) && confirm.Contains("before it {before}", StringComparison.Ordinal) && !confirm.Contains("Quit anyway?", StringComparison.Ordinal));
         }
     }
 }

@@ -266,7 +266,7 @@ namespace ExplorerNative
                 !main.Contains("Copying inside Google Drive is not supported", StringComparison.Ordinal));
 
             // A folder copied into itself must not find its own copy to copy.
-            int listed = drive.IndexOf("var children = await client.ListChildren(id, token, driveId: fromDrive)", StringComparison.Ordinal);
+            int listed = drive.IndexOf("var children = await client.ListChildren(id, token, max: int.MaxValue, driveId: fromDrive)", StringComparison.Ordinal);
             int created = drive.IndexOf("var folderId = await client.CreateFolder(name, intoId, token)", StringComparison.Ordinal);
             Check("a folder's contents are listed before its copy is made",
                 listed >= 0 && created > listed);
@@ -295,7 +295,7 @@ namespace ExplorerNative
             Check("a folder is copied by making one and copying what is in it",
                 drive.Contains("var folderId = await client.CreateFolder(name, intoId, token)",
                     StringComparison.Ordinal) &&
-                drive.Contains("await client.ListChildren(id, token, driveId: fromDrive)",
+                drive.Contains("await client.ListChildren(id, token, max: int.MaxValue, driveId: fromDrive)",
                     StringComparison.Ordinal));
 
             Check("and it recurses rather than stopping at the first level",

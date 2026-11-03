@@ -290,9 +290,9 @@ namespace ExplorerNative
             Check("nor may a retry after a network failure",
                 System.Text.RegularExpressions.Regex.IsMatch(tray, @"_drive\.Mount\(_settings, quietly: true, mayConsent: false\)"));
             var form = SourceText("SettingsForm.cs");
-            var signOut = MethodText(form, "bool gone = GoogleDrive.ForgetSignIn();", 600);
+            var signOut = MethodText(form, "// Switched off and saved now too, so Cancel or Escape cannot undo", 600);
             Check("Sign out switches Drive off and saves it at once, so Cancel cannot leave it on",
-                signOut.Contains("DisconnectDrive?.Invoke()", StringComparison.Ordinal));
+                signOut.Contains("DisconnectDrive?.Invoke(", StringComparison.Ordinal));
 
             if (!WinFsp.TryLoad(out var problem))
             {

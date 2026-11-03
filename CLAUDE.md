@@ -355,6 +355,26 @@ Browsing is ours; playing is Apple's. Legitimate: no DRM is broken. An earlier a
 - The registration names only the installed copy. A non-installed copy never rewrites it.
 - Pipe listener: read timeout (2s) below connect timeout (2.5s). UI posts go through `PostUi`.
 
+## The 5.0.0 sweep (rules it added)
+
+Every area was reviewed and the high and medium findings fixed, each pinned in `tests\Sweep500<Area>Tests.cs` (`EXPLORERNATIVE_SELFTEST_ONLY=sweep500` runs them all, `sweep500<key>` one: mount, client, sync, sync2, sync3, web, webjs, files, archives, archives2, player, player2, decoders, audioedit, applemusic, app, app2, keys, maina-maind). Area groups: `web`, `mainform`, `core`, `playback`, `files`. The minor findings were deferred.
+- Quit and session end: `SessionEndWindow` (src\SessionEnd.cs) is a hidden top-level window (message-only windows never get WM_QUERYENDSESSION); while uploads are pending it sets a ShutdownBlockReason, never vetoes, and WM_ENDSESSION runs `Quit(sessionEnding: true)`. Once `_quitting` is set PostUi drops everything, so drive.save.failed is held (`QuitNotices`), spoken, logged and saved (drive-unsaved.txt, DPAPI) to be said at the next start. `ConfirmUnsavedDrive(before, question, owner)` is the one question about unsent Drive files (Exit, Ctrl+R and Update through `Program.ConfirmUnsavedDrive`, Disconnect). `SingleInstance.QuittingMost` (2 min) is how long a restart or a folder messenger waits for a draining quit.
+- Never call `_drive.Unmount()` on the UI thread: it drains for up to `DrainFor`. `GoogleDrive.Unmount` returns at once and tears down on a chained worker (`_teardown`); MountFresh and Quit wait for it.
+- Sign-in: `Mount(mayConsent:)` is false at start-up and on retries; only Connect or OK may open the browser. `RenewSignIn` consents through a scratch GoogleAuth; another account retires the old auth and `DriveMount.AccountGone` keeps unsent files in UnsavedFolder instead of draining them to the wrong account.
+- The Drive volume runs without WinFsp's operation guard (`Host.Create(unguarded: true)`): DriveMount's name gates (`HoldNames`, 256 stripes, at most two, lower index first) keep creates, deletes and renames of one name in order. Lock order: name gates, hold gate, `_treeGate`, `Gate`. WinFsp's driver still holds every open while a rename runs, so renames stay short (`RenameFor` 20s, no inline re-list). Folder removal asks Drive (`EmptyOnDrive`), because listings leave out Google Docs. Listings write only while their key still names their folder (`StillListing`).
+- `ListChildren` throws `ListingCutException` at max: pass `partial: true` only when the first N will do, `max: int.MaxValue` wherever the whole folder matters.
+- Mark of the Web: every extraction route passes the archive's Zone.Identifier on (`ArchiveEngine.ZoneOf`, `ExtractionRules.Zone`, `zone: rules.Zone` on every `WriteCommitted`). A new writer path that skips it is a security hole. High-risk types (`FileLauncher.MustGoThroughShell`) always open through ShellExecute so Windows shows its warning.
+- Every program the app starts goes by full path from System32 (robocopy, msiexec, tar); a test fails on a bare "x.exe".
+- The web app trusts only the Tailscale service's own process or its child (`TailscaleServiceProcess`, `ProcessTable`); the pairing-code count keys every loopback address as one (`AddressKey`).
+- Folder watchers: a FileSystemWatcher that raises Error for anything but a buffer overflow has stopped for good. Panes (`Pane.WatchDead`) and the sync (`PcWatchJournal.Die`) re-arm instead of trusting it. The drive list follows WM_DEVICECHANGE through `RefreshDrivesList`.
+- Sync: `Stopped(pair)` also means edited since the pass began; the minute's loop syncs a pair as settings hold it when its turn comes (`SyncOneAsync(fromLive: true)`). The sync window never saves its own copy of every pair: `Save(change)` applies one change onto the live list. Account quota checks skip shared-drive pairs.
+- Extracts into one folder take turns (`ExtractTurns.InTurn`). 7-Zip renames bad names its own way (`CleanLike7Zip`), and only the tar half's ERROR lines name entries.
+- An MP3's exact length comes from Mp3Seek's background frame walk: the editor waits for it (`TrackDecoder.WaitForExactSeek`); anything else that needs the exact length must too. Ogg tags are read from the stream (`OggPages.ReadComments`).
+- Menus and dialogs have unique access keys, tested (main menus, tray menu O R P T W S U B X, audio effect dialogs).
+- While a track opens, `NowPlayingPath` is empty: use `OpeningOrPlayingPath` for the track the person means. A failed start asks `AudioPlayer.WhereIs` (never File.Exists) so a share that stopped answering is said as that.
+- Exact dates go through `TimeFormatter.WindowsDateTime`: InvariantGlobalization makes .NET's "g" always MM/dd/yyyy in the shipped exe.
+- Parallel work in git worktrees: never use `git stash` (every worktree shares one stash list, and two fixers popped each other's changes). In PowerShell, `[IO.File]` calls with a relative path resolve against the process folder, not Set-Location.
+
 ## Testing and probing the running app
 
 - Assert behaviour, not this machine's setup. Registry tests snapshot and restore.

@@ -271,7 +271,7 @@ namespace ExplorerNative
                 At(tray, "new SessionEndWindow(") >= 0 && At(tray, "Quit(sessionEnding: true)") > At(tray, "new SessionEndWindow("));
             var ctor = Body(tray, "public TrayApplicationContext(");
             Check("session end: listening starts before Drive mounts",
-                At(ctor, "new SessionEndWindow(") >= 0 && At(ctor, "MountGoogleDrive();") > At(ctor, "new SessionEndWindow("));
+                At(ctor, "new SessionEndWindow(") >= 0 && At(ctor, "MountGoogleDrive(") > At(ctor, "new SessionEndWindow("));
             var quit = Body(tray, "private void Quit(");
             Check("session end: a quit already under way is not started again",
                 At(quit, "if (_quitting) return;") >= 0 && At(quit, "if (_quitting) return;") < At(quit, "_drive.Dispose();"));

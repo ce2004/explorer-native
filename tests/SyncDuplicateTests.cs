@@ -1573,7 +1573,7 @@ namespace ExplorerNative
 
             Check("D the app itself never runs two passes at once: one loop, one pass at a time (DriveMonitor.LoopAsync/PassAsync)",
                 SourceHas("DriveMonitor.cs", "private async Task LoopAsync()") &&
-                SourceHas("DriveMonitor.cs", "if (!await SyncOneAsync(client, pair, token).ConfigureAwait(false)) return;"));
+                SourceHas("DriveMonitor.cs", "if (!await SyncOneAsync(client, listed, token, fromLive: true).ConfigureAwait(false)) return;"));
         }
 
         private static bool SourceHas(string file, string text)
