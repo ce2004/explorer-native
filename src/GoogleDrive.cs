@@ -1011,7 +1011,9 @@ namespace ExplorerNative
                 // is a worse folder, not a broken application — but an empty
                 // folder that is not empty is exactly the thing nobody can tell
                 // by looking, so it is worth one sentence.
-                Say("drive.folder.failed", $"Could not read {Path.GetFileName(path)}: {ex.Message}");
+                // A deadline is "took too long", not the framework's "operation was canceled".
+                Say("drive.folder.failed", $"Could not read {Path.GetFileName(path)}: " +
+                    (ex is OperationCanceledException ? "Google Drive took too long to answer" : ex.Message));
                 return false;
             }
         }
