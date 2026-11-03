@@ -177,8 +177,31 @@ namespace ExplorerNative
         private Action<string, string>? Forward =>
             _notification == null ? null : Say;
 
+        private static readonly AsyncLocal<Action<string, string>?> _sayTo = new();
+
+        /// <summary>
+        /// Until disposed, what this call flow would say on the PC goes to <paramref name="to"/> instead (the web
+        /// app: the phone hears the real reason, and the PC stays quiet).
+        /// </summary>
+        public static IDisposable SayingTo(Action<string, string> to)
+        {
+            var before = _sayTo.Value;
+            _sayTo.Value = to;
+            return new SayRestore(before);
+        }
+
+        private sealed class SayRestore(Action<string, string>? before) : IDisposable
+        {
+            public void Dispose() => _sayTo.Value = before;
+        }
+
         private void Say(string id, string message)
         {
+            if (_sayTo.Value is { } to)
+            {
+                try { to(id, message); } catch { }
+                return;
+            }
             var handler = _notification;
             if (handler == null) return;
             try { handler(id, message); } catch { }
@@ -1870,6 +1893,17 @@ namespace ExplorerNative
             return mount?.IdFor(path);
         }
 
+        /// <summary>What a file on the letter is now (id, size, date), from the mount's map only; null if unknown.
+        /// A download held under an older stamp is of a file since replaced or changed.</summary>
+        internal string? StampOf(string path)
+        {
+            DriveMount? mount;
+            lock (_gate) mount = _mount;
+            if (mount == null) return null;
+            var known = mount.Describe(path);
+            return $"{mount.IdFor(path)}|{known?.Size}|{known?.ModifiedUtc.Ticks}";
+        }
+
         private static async Task<string?> IdOrRelist(DriveMount mount, string path, CancellationToken token)
         {
             var id = mount.IdFor(path);
@@ -3091,6 +3125,48 @@ namespace ExplorerNative
             catch (Exception ex) { Note($"restore {name}: could not refresh its folder: {ex.Message}"); }
             Say("drive.restored", $"Restored {name}");
             return true;
+        }
+
+        /// <summary>
+        /// The web app's Undo: puts back what it trashed a moment ago, by the Drive ids it had. Returns how many
+        /// came back. Untrashing something not in the trash changes nothing.
+        /// </summary>
+        public async Task<int> UntrashIds(IReadOnlyList<string> ids, CancellationToken token = default)
+        {
+            DriveMount? mount;
+            DriveClient? client;
+            lock (_gate) { mount = _mount; client = _client; }
+            if (mount == null || client == null) return 0;
+            int back = 0;
+            foreach (var id in ids)
+            {
+                IReadOnlyList<string> backIn;
+                try { backIn = await client.Untrash(id, token).ConfigureAwait(false); }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                catch (Exception ex)
+                {
+                    Say("drive.restore.failed", $"Could not restore it: {ex.Message}");
+                    continue;
+                }
+                back++;
+                try
+                {
+                    foreach (var parent in backIn)
+                    {
+                        if (parent == await client.RootId(token).ConfigureAwait(false)) mount.ForgetKey("");
+                        mount.ForgetFolderId(parent);
+                    }
+                }
+                catch (Exception ex) { Note($"undo trash {id}: could not refresh its folder: {ex.Message}"); }
+            }
+            if (back > 0)
+            {
+                lock (_gate) _folders = null;
+                var top = (mount.Letter ?? mount.Root).TrimEnd('\\') + "\\";
+                try { mount.Forget(Path.Combine(top, DriveClient.TrashName)); } catch { }
+                Say("drive.restored", back == 1 ? "Restored it" : $"Restored {back} items");
+            }
+            return back;
         }
 
         /// <summary>

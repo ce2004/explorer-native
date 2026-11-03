@@ -2663,7 +2663,7 @@ namespace ExplorerNative
                 ConnectServer? server = null;
                 try
                 {
-                    streams = new ConnectStreams(path => _drive.OpenRange(path));
+                    streams = new ConnectStreams(path => _drive.OpenRange(path), stamp: path => _drive.StampOf(path));
                     var leased = streams;
                     // Its own STA thread and message-only window: never the UI thread.
                     clipboard = new ConnectClipboard();
@@ -2691,7 +2691,8 @@ namespace ExplorerNative
                         files: new ConnectFiles(_drive, () => _settings), // the live settings, not a snapshot
                         remote: path => _drive.Owns(path) ? leased.Lease(path) : null,
                         clipboard: clipboard,
-                        port: port);
+                        port: port,
+                        player: new PcPlayer(this));
 
                     // Said out loud on the PC, once per guesser: somebody on the tailnet
                     // keeps entering a wrong pairing code, and each try now waits.
@@ -2717,6 +2718,77 @@ namespace ExplorerNative
                 catch { }
                 if (!posted) DisposeConnect(server, streams, clipboard);
             });
+        }
+
+        /// <summary>
+        /// The web app's remote for this player. Buttons run the same AudioActions as the tray and the shortcuts,
+        /// on the UI thread, so they behave and speak the same.
+        /// </summary>
+        private sealed class PcPlayer(TrayApplicationContext tray) : IConnectPlayer
+        {
+            private string _tagsFor = "";
+            private SongSummary? _tags;
+
+            public ConnectPlayerState State()
+            {
+                int seek = tray._settings.AudioSeekSeconds;
+                if (AppleMusicPlayer.IsActive)
+                {
+                    var (at, length) = AppleMusicPlayer.Times;
+                    return new(true, AppleMusicPlayer.IsPlaying, AppleMusicPlayer.CurrentName, null, at, length,
+                        AppleMusicPlayer.VolumePercent, AppleMusicPlayer.VolumePercent == 0, true, seek);
+                }
+                var audio = tray._audio;
+                var path = audio.OpeningOrPlayingPath;
+                if (path.Length == 0) return new(false, false, "", null, 0, 0, audio.VolumePercent, audio.IsMuted, false, seek);
+                var tags = TagsOf(path);
+                return new(true, audio.IsPlaying, tags?.Title ?? audio.DisplayName, tags?.Artist, audio.PositionSeconds,
+                    audio.DurationSeconds, audio.VolumePercent, audio.IsMuted, false, seek);
+            }
+
+            /// <summary>Title and artist, read once per track on a worker. Never from the Drive letter.</summary>
+            private SongSummary? TagsOf(string path)
+            {
+                lock (this)
+                {
+                    if (string.Equals(_tagsFor, path, StringComparison.OrdinalIgnoreCase)) return _tags;
+                    _tagsFor = path;
+                    _tags = null;
+                }
+                if (tray._drive.Owns(path)) return null;
+                System.Threading.ThreadPool.QueueUserWorkItem(_ =>
+                {
+                    var read = AudioTags.ReadSummary(path);
+                    lock (this) if (string.Equals(_tagsFor, path, StringComparison.OrdinalIgnoreCase)) _tags = read;
+                });
+                return null;
+            }
+
+            private System.Threading.Tasks.Task<T> OnUi<T>(Func<T> work, CancellationToken token)
+            {
+                var done = new System.Threading.Tasks.TaskCompletionSource<T>(System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+                tray.PostUi(() =>
+                {
+                    try { done.TrySetResult(work()); }
+                    catch (Exception e) { done.TrySetException(e); }
+                });
+                return done.Task.WaitAsync(TimeSpan.FromSeconds(10), token);
+            }
+
+            public async System.Threading.Tasks.Task<ConnectPlayerState> RunAsync(AudioAction action, CancellationToken token)
+            {
+                try { await OnUi(() => { tray.RunAudioAction(action); return true; }, token); }
+                catch (TimeoutException) { throw new ConnectException(503, "The PC is busy. Try again in a moment."); }
+                // Long enough for the player (or Apple's page) to say what it now is.
+                await System.Threading.Tasks.Task.Delay(300, token);
+                return State();
+            }
+
+            public async System.Threading.Tasks.Task<bool> PlayFileAsync(string path, CancellationToken token)
+            {
+                try { return await OnUi(() => tray.PlayAudioFile(path), token); }
+                catch (TimeoutException) { throw new ConnectException(503, "The PC is busy. Try again in a moment."); }
+            }
         }
 
         private static void DisposeConnect(ConnectServer server, ConnectStreams streams, ConnectClipboard clipboard)

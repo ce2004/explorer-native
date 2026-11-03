@@ -935,6 +935,9 @@ namespace ExplorerNative
 
         public static int VolumePercent { get { lock (Gate) return _volumePercent; } }
 
+        /// <summary>Where the song is and how long it is, in seconds (0 when not known yet). For the web app.</summary>
+        public static (double Position, double Duration) Times { get { lock (Gate) return (_positionSeconds, _durationSeconds); } }
+
         /// <summary>
         /// The level a volume step counts from: while muted, the level before
         /// mute. Counting from 0, Volume down while muted saved 0 as the volume,

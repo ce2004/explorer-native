@@ -45,6 +45,7 @@
     <h1 class="screen-title" id="files-title" tabindex="-1">Files</h1>
     <p id="files-path" class="path"></p>
     <div class="toolbar" id="files-toolbar">
+      <button type="button" id="btn-undo" hidden>Undo delete</button>
       <button type="button" id="btn-play-folder">Play folder</button>
       <button type="button" id="btn-new-folder">New folder</button>
       <button type="button" id="btn-upload">Upload</button>
@@ -86,6 +87,25 @@
       <button type="button" id="np-next" class="plain">Next</button>
     </div>
     <div class="toolbar center"><button type="button" id="np-resume" class="plain" hidden>Resume</button></div>
+    <h2 class="group-head" id="pc-head" hidden>PC player</h2>
+    <div class="toolbar center"><button type="button" id="pc-toggle" aria-expanded="false" aria-controls="pc-player" hidden>Show the PC's player</button></div>
+    <div id="pc-player" hidden>
+      <p id="pc-track" class="np-title">Nothing is playing on the PC.</p>
+      <p id="pc-sub" class="np-sub"></p>
+      <div class="transport">
+        <button type="button" id="pc-back" class="round" aria-label="Back 10 seconds on the PC">Back 10 seconds</button>
+        <button type="button" id="pc-play" class="round big-play" aria-label="Play on the PC">Play</button>
+        <button type="button" id="pc-fwd" class="round" aria-label="Forward 10 seconds on the PC">Forward 10 seconds</button>
+      </div>
+      <div class="transport secondary">
+        <button type="button" id="pc-prev" class="plain" aria-label="Previous track on the PC">Previous</button>
+        <button type="button" id="pc-next" class="plain" aria-label="Next track on the PC">Next</button>
+      </div>
+      <div class="transport secondary">
+        <button type="button" id="pc-vol-down" class="plain" aria-label="PC volume down">Volume down</button>
+        <button type="button" id="pc-vol-up" class="plain" aria-label="PC volume up">Volume up</button>
+      </div>
+    </div>
     <div class="fields group">
       <div class="field"><label for="np-speed">Speed</label>
         <select id="np-speed"></select></div>

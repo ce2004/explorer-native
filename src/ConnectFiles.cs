@@ -47,7 +47,7 @@ namespace ExplorerNative
 
         public bool OnDrive(string path) => _drive != null && _drive.Owns(path);
 
-        /// <summary>Settings' list, as AudioFiles.IsAudio reads it: separated by semicolons, commas or spaces.</summary>
+        /// <summary>Settings' list, as AudioFiles.IsAudio reads it: separated by semicolons, commas or spaces, plus the formats always played.</summary>
         public IReadOnlyList<string> AudioExtensions()
         {
             var configured = string.IsNullOrWhiteSpace(_settings.AudioExtensions) ? AudioFiles.DefaultExtensions : _settings.AudioExtensions;
@@ -55,11 +55,57 @@ namespace ExplorerNative
                 .Select(e => e.Trim().ToLowerInvariant())
                 .Where(e => e.Length > 0 && e != "*" && e != ".*")
                 .Select(e => e.StartsWith('.') ? e : "." + e.TrimStart('*'))
+                .Concat(AudioFiles.AlwaysPlayed.Split(';'))
                 .Distinct()
                 .ToList();
         }
 
         private GoogleDrive Drive => _drive ?? throw new ConnectException(503, "Google Drive is not connected on this computer.");
+
+        public IReadOnlyList<string> TrashFolders()
+        {
+            var letter = _drive?.Letter;
+            if (letter == null || !_drive!.ShowTrash) return Array.Empty<string>();
+            return new[] { letter.TrimEnd('\\') + "\\" + DriveClient.TrashName };
+        }
+
+        /// <summary>The desktop's Restore: only for items directly in Drive's Trash folder. Quiet on the PC.</summary>
+        public async Task<ConnectDeleted> RestoreAsync(IReadOnlyList<string> paths, CancellationToken token)
+        {
+            var drive = Drive;
+            var failed = new List<ConnectFailure>();
+            int restored = 0;
+            foreach (var path in paths)
+            {
+                token.ThrowIfCancellationRequested();
+                if (!OnDrive(path) || !drive.IsTrashFolder(Path.GetDirectoryName(path) ?? ""))
+                {
+                    failed.Add(new ConnectFailure(path, drive.IsInTrash(path)
+                        ? "Only what is straight inside the Google Drive trash can be restored. Restore the folder it is in."
+                        : "It isn't in the Google Drive trash."));
+                    continue;
+                }
+                string? said = null;
+                try
+                {
+                    bool back;
+                    using (GoogleDrive.SayingTo((_, m) => said = m))
+                        back = await drive.RestoreFromTrash(path, token);
+                    if (back) restored++;
+                    else failed.Add(new ConnectFailure(path, said != null ? ConnectServer.Sentence(said) : "Google Drive would not restore it."));
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
+                catch (Exception e) { failed.Add(new ConnectFailure(path, ConnectServer.Sentence(said ?? e.Message))); }
+            }
+            return new ConnectDeleted(restored, failed);
+        }
+
+        public async Task<int> UndoTrashAsync(IReadOnlyList<string> ids, CancellationToken token)
+        {
+            var drive = Drive;
+            using (GoogleDrive.SayingTo(static (_, _) => { }))
+                return await drive.UntrashIds(ids, token);
+        }
 
         public string? Unavailable(string path)
         {
@@ -547,11 +593,16 @@ namespace ExplorerNative
                 if (!names.Contains(name)) throw new ConnectException(404, "That is not there any more.");
                 if (!caseOnly && names.Contains(DriveMount.Sanitise(newName)))
                     throw new ConnectException(409, $"Something called {newName} is already there.");
-                string? placed;
-                try { placed = await drive.RenameOnDrive(path, newName, token, interactive: true); }
+                string? placed, said = null;
+                try
+                {
+                    // The reason goes to the phone, not out loud on the PC.
+                    using (GoogleDrive.SayingTo((_, m) => said = m))
+                        placed = await drive.RenameOnDrive(path, newName, token, interactive: true);
+                }
                 catch (Exception e) when (e is not OperationCanceledException) { throw FromDrive(e, "rename it"); }
                 return placed == null
-                    ? throw new ConnectException(403, "Google Drive would not rename it. A shared drive is renamed on drive.google.com.")
+                    ? throw new ConnectException(403, said != null ? ConnectServer.Sentence(said) : "Google Drive would not rename it.")
                     : Path.Combine(parent, placed);
             }
 
@@ -604,6 +655,11 @@ namespace ExplorerNative
             }, token);
         }
 
+        /// <summary>Delete inside Drive's trash: on the PC that deletes forever, which the web app never does.</summary>
+        public const string TrashDeleteRefusal =
+            "It is already in the Google Drive trash. Deleting it from there would delete it forever, so the web app " +
+            "doesn't. Restore it, or delete it forever on the computer.";
+
         public async Task<ConnectDeleted> DeleteAsync(IReadOnlyList<string> paths, CancellationToken token)
         {
             int onDrive = paths.Count(OnDrive);
@@ -619,18 +675,30 @@ namespace ExplorerNative
             if (onDrive > 0)
             {
                 var drive = Drive;
+                var ids = new List<string>();
                 foreach (var path in paths)
                 {
                     token.ThrowIfCancellationRequested();
                     try
                     {
-                        if (await drive.TrashPath(path, token)) deleted++;
-                        else failed.Add(new ConnectFailure(path, "Google Drive would not move it to the trash: it is gone already, or it is a shared drive."));
+                        // The web app never deletes for good, and in the trash a delete would be for good.
+                        if (drive.IsTrashFolder(path) || drive.IsInTrash(path))
+                        {
+                            failed.Add(new ConnectFailure(path, TrashDeleteRefusal));
+                            continue;
+                        }
+                        string? said = null;
+                        bool trashed;
+                        var id = drive.KnownIdOf(path);
+                        using (GoogleDrive.SayingTo((_, m) => said = m))
+                            trashed = await drive.TrashPath(path, token);
+                        if (trashed) { deleted++; if (id != null) ids.Add(id); }
+                        else failed.Add(new ConnectFailure(path, said != null ? ConnectServer.Sentence(said) : "Google Drive would not move it to the trash."));
                     }
                     catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
                     catch (Exception e) { failed.Add(new ConnectFailure(path, ConnectServer.Sentence(e.Message))); }
                 }
-                return new ConnectDeleted(deleted, failed);
+                return new ConnectDeleted(deleted, failed) { Trashed = ids };
             }
 
             await Task.Run(() =>
@@ -708,6 +776,8 @@ namespace ExplorerNative
         public async Task TransferAsync(ConnectJob job, IReadOnlyList<string> sources, string destination, bool move,
             PasteConflictPolicy conflict)
         {
+            // The phone hears the job's own result; the PC says nothing per item.
+            using var quiet = GoogleDrive.SayingTo(static (_, _) => { });
             var token = job.Token;
             var paths = sources.ToArray();
             bool destinationOnDrive = OnDrive(destination);
@@ -1239,6 +1309,7 @@ namespace ExplorerNative
         public async Task<string> UploadAsync(string folder, string name, PasteConflictPolicy conflict, Stream body,
             CancellationToken token)
         {
+            using var quiet = GoogleDrive.SayingTo(static (_, _) => { });
             if (OnDrive(folder))
             {
                 var drive = Drive;
@@ -1424,6 +1495,7 @@ namespace ExplorerNative
         public async Task<string> PlaceFileAsync(string file, string folder, string name, PasteConflictPolicy conflict,
             Action<long, long>? progress, CancellationToken token)
         {
+            using var quiet = GoogleDrive.SayingTo(static (_, _) => { });
             if (OnDrive(folder))
             {
                 var (isFolder, exists) = await Task.Run(() => DriveKind(folder), token);

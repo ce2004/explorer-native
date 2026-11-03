@@ -172,7 +172,11 @@ namespace ExplorerNative
         private static int Port(int raw) => ((raw & 0xFF) << 8) | ((raw >> 8) & 0xFF);
     }
 
-    public sealed record ConnectDeleted(int Deleted, IReadOnlyList<ConnectFailure> Failed);
+    public sealed record ConnectDeleted(int Deleted, IReadOnlyList<ConnectFailure> Failed)
+    {
+        /// <summary>The Drive ids moved to the trash, which an Undo can put back.</summary>
+        public IReadOnlyList<string> Trashed { get; init; } = Array.Empty<string>();
+    }
 
     /// <summary>
     /// A refusal with the HTTP status it deserves: 404 gone, 409 name taken, 403 not allowed, 503 Drive away.
@@ -247,6 +251,36 @@ namespace ExplorerNative
         /// image, archive), inside the budget <paramref name="token"/> carries; <c>partial</c> when it ran out.
         /// </summary>
         Task<Dictionary<string, object?>> DetailsAsync(string path, ConnectStat stat, bool hash, CancellationToken token);
+
+        /// <summary>The Drive letter's Trash folders (full paths), so the web app can offer Restore there.</summary>
+        IReadOnlyList<string> TrashFolders() => Array.Empty<string>();
+
+        /// <summary>Puts items that are directly in Drive's Trash folder back where they were.</summary>
+        Task<ConnectDeleted> RestoreAsync(IReadOnlyList<string> paths, CancellationToken token) =>
+            throw new ConnectException(503, "Google Drive is not connected on this computer.");
+
+        /// <summary>Takes back a delete made a moment ago: the Drive ids it trashed, untrashed.</summary>
+        Task<int> UndoTrashAsync(IReadOnlyList<string> ids, CancellationToken token) =>
+            throw new ConnectException(503, "Google Drive is not connected on this computer.");
+    }
+
+    /// <summary>What the PC's own player is doing, for the web app.</summary>
+    public sealed record ConnectPlayerState(bool HasTrack, bool Playing, string Title, string? Artist,
+        double Position, double Length, int Volume, bool Muted, bool AppleMusic, int SeekSeconds);
+
+    /// <summary>
+    /// Explorer Native's desktop player, driven from the phone. Actions run the desktop's own
+    /// <see cref="AudioAction"/>s on the UI thread, so they behave and speak as the shortcuts do.
+    /// </summary>
+    public interface IConnectPlayer
+    {
+        ConnectPlayerState State();
+
+        /// <summary>Runs one action and answers with the player as it is afterwards.</summary>
+        Task<ConnectPlayerState> RunAsync(AudioAction action, CancellationToken token);
+
+        /// <summary>Plays a file on the PC; false when the PC's player is turned off.</summary>
+        Task<bool> PlayFileAsync(string path, CancellationToken token);
     }
 
     /// <summary>A copy or move the web app started, polled with <c>/api/job</c>.</summary>
@@ -382,14 +416,23 @@ namespace ExplorerNative
             public required StreamingSource Stream;
             public int Leases;
             public DateTime LastUsed;
+            public string? Stamp;
         }
+
+        private readonly Func<string, string?>? _stamp;
+
+        /// <summary>Downloads replaced by a newer one while still leased: let go when their last lease returns.</summary>
+        private readonly List<Entry> _retired = new();
 
         /// <param name="open">The remote source for a path, or null when it is not remote.</param>
         /// <param name="budget">Memory per file; a file within it is downloaded whole.</param>
-        public ConnectStreams(Func<string, IRangeSource?> open, long budget = 256L << 20)
+        /// <param name="stamp">What the file is now (id, size, date), or null; a held download whose stamp
+        /// differs is the old file and is not handed out again.</param>
+        public ConnectStreams(Func<string, IRangeSource?> open, long budget = 256L << 20, Func<string, string?>? stamp = null)
         {
             _open = open;
             _budget = budget;
+            _stamp = stamp;
             // Disarmed until a stream is opened, and disarmed again when the last one goes: a timer waking every
             // ten seconds to find nothing, for as long as the application runs, is battery spent on nothing.
             _sweep = new Timer(_ => Sweep(DateTime.UtcNow), null, Timeout.Infinite, Timeout.Infinite);
@@ -421,16 +464,26 @@ namespace ExplorerNative
         /// Disposing the lease does not stop the download.</summary>
         public IRangeSource? Lease(string path)
         {
+            var stamp = _stamp?.Invoke(path);
+            StreamingSource? stale = null;
             lock (_gate)
             {
                 if (_disposed) throw Closing();
                 if (_streams.TryGetValue(path, out var held))
                 {
-                    held.Leases++;
-                    held.LastUsed = DateTime.UtcNow;
-                    return new Leased(this, path, held.Stream);
+                    if (_stamp == null || held.Stamp == stamp)
+                    {
+                        held.Leases++;
+                        held.LastUsed = DateTime.UtcNow;
+                        return new Leased(this, path, held.Stream);
+                    }
+                    // The file changed since this was downloaded: a new one is opened below.
+                    _streams.Remove(path);
+                    if (held.Leases == 0) stale = held.Stream;
+                    else _retired.Add(held);
                 }
             }
+            stale?.Dispose();
 
             var source = _open(path);
             if (source == null) return null;
@@ -452,7 +505,7 @@ namespace ExplorerNative
                         var idle = _streams.Where(e => e.Value.Leases == 0).OrderBy(e => e.Value.LastUsed).FirstOrDefault();
                         if (idle.Value != null) { evicted = idle.Value.Stream; _streams.Remove(idle.Key); }
                     }
-                    _streams[path] = new Entry { Stream = stream, Leases = 1, LastUsed = DateTime.UtcNow };
+                    _streams[path] = new Entry { Stream = stream, Leases = 1, LastUsed = DateTime.UtcNow, Stamp = stamp };
                     ArmSweep();
                 }
                 if (!_disposed) lease = new Leased(this, path, stream);
@@ -470,12 +523,21 @@ namespace ExplorerNative
 
         private void Return(string path, StreamingSource stream)
         {
+            StreamingSource? done = null;
             lock (_gate)
+            {
                 if (_streams.TryGetValue(path, out var e) && ReferenceEquals(e.Stream, stream))
                 {
                     e.Leases = Math.Max(0, e.Leases - 1);
                     e.LastUsed = DateTime.UtcNow;
                 }
+                else if (_retired.FirstOrDefault(r => ReferenceEquals(r.Stream, stream)) is { } old && --old.Leases <= 0)
+                {
+                    _retired.Remove(old);
+                    done = old.Stream;
+                }
+            }
+            done?.Dispose();
         }
 
         /// <summary>Lets go of anything nobody has read for <see cref="IdleFor"/>.</summary>
@@ -498,8 +560,9 @@ namespace ExplorerNative
             lock (_gate)
             {
                 _disposed = true;
-                all = _streams.Values.Select(e => e.Stream).ToList();
+                all = _streams.Values.Concat(_retired).Select(e => e.Stream).ToList();
                 _streams.Clear();
+                _retired.Clear();
                 ArmSweep();
             }
             _sweep.Dispose();
@@ -628,8 +691,10 @@ namespace ExplorerNative
             Func<string> code, Action<string>? log = null, bool loopbackOnly = false, int port = Port,
             Func<string, bool>? isDrive = null, IConnectFiles? files = null,
             Func<string, IRangeSource?>? remote = null, string? uploads = null,
-            IConnectClipboard? clipboard = null, string? clipboardSends = null, Func<string?>? tailscaleStatus = null)
+            IConnectClipboard? clipboard = null, string? clipboardSends = null, Func<string?>? tailscaleStatus = null,
+            IConnectPlayer? player = null)
         {
+            _player = player;
             _isDrive = isDrive;
             _files = files;
             _remote = remote;
@@ -862,8 +927,14 @@ namespace ExplorerNative
 
             // Only under a name this server has, and anything that changes something only from its own page:
             // a site that points its own name at 127.0.0.1 is otherwise this server's own origin to a browser.
+            // Tailscale Serve marks requests that came in from the public internet through Funnel. Never ours.
+            if (r.Headers.ContainsKey("tailscale-funnel-request"))
+            {
+                await Error(s, 403, "The web app is only for your own tailnet, not the public internet.", head, token);
+                return;
+            }
             var host = r.Headers.GetValueOrDefault("host");
-            if (!HostAllowed(host, ListenPort, Volatile.Read(ref _ownDnsName)))
+            if (!HostAllowed(host, ListenPort, Volatile.Read(ref _ownDnsName)) && !await HostAllowedAfterRefresh(host))
             {
                 await Error(s, 421, "This server only answers to this PC's own names.", head, token);
                 return;
@@ -1004,10 +1075,23 @@ namespace ExplorerNative
                         await Json(s, 200, await ClipCommit(await ReadJson(r, token), token), false, token);
                         break;
                     case "/api/formats":
-                        await Json(s, 200, new { audio = Files.AudioExtensions(), native = NativeFormats }, head, token, r);
+                        await Json(s, 200, new { audio = Files.AudioExtensions(), native = NativeFormats, trash = Files.TrashFolders(),
+                            pcPlayer = _player != null }, head, token, r);
                         break;
                     case "/api/audio":
                         await Audio(r, s, path, token);
+                        break;
+                    case "/api/pc/player":
+                        await Json(s, 200, PlayerJson(Player.State()), head, token);
+                        break;
+                    case "/api/pc/player/action":
+                        await Json(s, 200, await PlayerRun(await ReadJson(r, token), token), false, token);
+                        break;
+                    case "/api/pc/player/play":
+                        await Json(s, 200, await PlayerPlay(await ReadJson(r, token), token), false, token);
+                        break;
+                    case "/api/restore":
+                        await Json(s, 200, await Restore(await ReadJson(r, token), token), false, token);
                         break;
                     default:
                         await Error(s, 404, "Not found.", head, token);
@@ -1089,7 +1173,8 @@ namespace ExplorerNative
         private static string MethodFor(string path) => path switch
         {
             "/api/info" or "/api/drives" or "/api/list" or "/api/file" or "/api/size" or "/api/details" or "/api/job"
-                or "/api/upload/status" or "/api/formats" or "/api/audio" => "GET",
+                or "/api/upload/status" or "/api/formats" or "/api/audio" or "/api/pc/player" => "GET",
+            "/api/pc/player/action" or "/api/pc/player/play" or "/api/restore" => "POST",
             "/api/rename" or "/api/delete" or "/api/mkdir" or "/api/copy" or "/api/move" or "/api/job/cancel"
                 or "/api/upload" or "/api/upload/start" or "/api/upload/finish" or "/api/upload/cancel" => "POST",
             "/api/upload/chunk" => "PUT",
@@ -1239,6 +1324,20 @@ namespace ExplorerNative
         /// <summary>How long this PC's Tailscale login is believed before it is asked again.</summary>
         public static readonly TimeSpan LoginFor = TimeSpan.FromSeconds(30);
 
+        /// <summary>
+        /// A ts.net name that is not the one remembered: the PC may have been renamed in Tailscale. Asks Tailscale
+        /// again (at most every <see cref="LoginFor"/>) and checks the name once more.
+        /// </summary>
+        private async Task<bool> HostAllowedAfterRefresh(string? host)
+        {
+            if (host == null || !SplitHost(host, out var name, out _) ||
+                !name.EndsWith(".ts.net", StringComparison.OrdinalIgnoreCase) || DateTime.UtcNow - _loginAt <= LoginFor)
+                return false;
+            RefreshOwnLogin();
+            await LoginSettled();
+            return HostAllowed(host, ListenPort, Volatile.Read(ref _ownDnsName));
+        }
+
         /// <summary>For tests: waits for a login refresh already under way.</summary>
         internal async Task LoginSettled()
         {
@@ -1324,7 +1423,43 @@ namespace ExplorerNative
             }
             var result = await Files.DeleteAsync(paths, token);
             Changed();
-            return new { ok = true, deleted = result.Deleted, failed = result.Failed };
+            return new { ok = true, deleted = result.Deleted, failed = result.Failed, undo = UndoTicket(result.Trashed) };
+        }
+
+        /// <summary>How long a delete's Undo can be used. The phone offers it for less.</summary>
+        public static readonly TimeSpan UndoFor = TimeSpan.FromMinutes(1);
+
+        /// <summary>Undo tickets: what a delete trashed on Drive, by a random name only the phone that deleted has.</summary>
+        private readonly ConcurrentDictionary<string, (IReadOnlyList<string> Ids, DateTime At)> _undo = new(StringComparer.Ordinal);
+
+        private string? UndoTicket(IReadOnlyList<string> trashed)
+        {
+            var now = DateTime.UtcNow;
+            foreach (var old in _undo.Where(e => now - e.Value.At > UndoFor).ToList()) _undo.TryRemove(old.Key, out _);
+            if (trashed.Count == 0) return null;
+            var ticket = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
+            _undo[ticket] = (trashed, now);
+            return ticket;
+        }
+
+        /// <summary>Restore from Drive's trash: named items in Trash, or an Undo of the last delete.</summary>
+        private async Task<object> Restore(JsonElement body, CancellationToken token)
+        {
+            var ticket = Str(body, "undo");
+            if (!string.IsNullOrEmpty(ticket))
+            {
+                if (!_undo.TryRemove(ticket, out var held) || DateTime.UtcNow - held.At > UndoFor)
+                    throw new ConnectException(410, "It's too late to undo that. Restore it from the Google Drive trash instead.");
+                int back = await Files.UndoTrashAsync(held.Ids, token);
+                Changed();
+                return new { ok = true, restored = back, failed = held.Ids.Count - back };
+            }
+            var paths = Strs(body, "paths");
+            if (paths.Count == 0) throw new ConnectException(400, "No paths were given.");
+            foreach (var path in paths) CheckPath(path);
+            var result = await Files.RestoreAsync(paths, token);
+            Changed();
+            return new { ok = true, restored = result.Deleted, failed = result.Failed };
         }
 
         private async Task<object> Mkdir(JsonElement body, CancellationToken token)
@@ -1535,6 +1670,48 @@ namespace ExplorerNative
         private const int MaxClipboardImage = 64 << 20;
 
         private IConnectClipboard Clip => _clipboard ?? throw new ConnectException(503, "The clipboard isn't available on this computer.");
+
+        // MARK: The PC's player
+
+        private readonly IConnectPlayer? _player;
+        private IConnectPlayer Player => _player ?? throw new ConnectException(503, "The PC's player isn't available.");
+
+        /// <summary>The web app's names for the player buttons, and the desktop action each runs.</summary>
+        public static AudioAction? PlayerAction(string? name) => name switch
+        {
+            "playpause" => AudioAction.PlayPause,
+            "previous" => AudioAction.PreviousTrack,
+            "next" => AudioAction.NextTrack,
+            "back" => AudioAction.SeekBackward,
+            "forward" => AudioAction.SeekForward,
+            "volumedown" => AudioAction.VolumeDown,
+            "volumeup" => AudioAction.VolumeUp,
+            _ => null,
+        };
+
+        private static object PlayerJson(ConnectPlayerState p) => new
+        {
+            hasTrack = p.HasTrack, playing = p.Playing, title = p.Title, artist = p.Artist,
+            position = Math.Round(p.Position, 1), length = double.IsFinite(p.Length) ? Math.Round(p.Length, 1) : 0,
+            volume = p.Volume, muted = p.Muted, appleMusic = p.AppleMusic, seekSeconds = p.SeekSeconds,
+        };
+
+        private async Task<object> PlayerRun(JsonElement body, CancellationToken token)
+        {
+            var action = PlayerAction(Str(body, "action")) ?? throw new ConnectException(400, "The PC's player has no such button.");
+            return PlayerJson(await Player.RunAsync(action, token));
+        }
+
+        private async Task<object> PlayerPlay(JsonElement body, CancellationToken token)
+        {
+            var path = CheckPath(Str(body, "path"));
+            var player = Player;
+            if (!Files.AudioExtensions().Contains(Path.GetExtension(path).ToLowerInvariant()))
+                throw new ConnectException(400, "The PC's player doesn't play that kind of file.");
+            if (!await player.PlayFileAsync(path, token))
+                throw new ConnectException(409, "The player is turned off on the PC. Turn it on in Preferences there.");
+            return new { ok = true };
+        }
 
         private static async Task Png(NetworkStream s, byte[] png, bool head, CancellationToken token)
         {
