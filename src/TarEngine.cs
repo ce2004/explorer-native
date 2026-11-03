@@ -547,6 +547,7 @@ namespace ExplorerNative
             damaged = false;
             using var reader = new TarReader(tar, leaveOpen: true);
             var entries = new List<ArchiveEntryInfo>();
+            var sizes = new Dictionary<string, long>(StringComparer.Ordinal);
 
             while (true)
             {
@@ -573,9 +574,18 @@ namespace ExplorerNative
 
                 bool isDirectory = IsFolder(entry.EntryType);
                 var sparse = SparseOf(entry);
+                long size = isDirectory ? 0 : sparse?.RealSize ?? entry.Length;
+
+                // A hard link has no data of its own: it is as big as the file it names.
+                if (entry.EntryType == TarEntryType.HardLink &&
+                    sizes.TryGetValue(ExtractionRules.Normalise(entry.LinkName ?? ""), out var linked))
+                    size = linked;
+
+                var listedName = sparse?.Name ?? entry.Name;
+                if (!isDirectory) sizes.TryAdd(ExtractionRules.Normalise(listedName), size);
                 entries.Add(new ArchiveEntryInfo(
-                    sparse?.Name ?? entry.Name,
-                    isDirectory ? 0 : sparse?.RealSize ?? entry.Length,
+                    listedName,
+                    size,
                     entry.ModificationTime.LocalDateTime,
                     isDirectory));
             }
