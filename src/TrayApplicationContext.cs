@@ -1397,6 +1397,11 @@ namespace ExplorerNative
                 ShowUpNext();
                 return;
             }
+            if (action == AudioAction.Lyrics)
+            {
+                ShowLyrics();
+                return;
+            }
 
             // Apple Music plays in its own player, so the same keys drive it while
             // it is the thing playing. The sound is sealed, so the processing
@@ -1642,6 +1647,40 @@ namespace ExplorerNative
         private static string _deviceName = "";
 
         /// <summary>Apple Music's Up next: the songs to come, to reorder, take out, play or clear (4.1.6).</summary>
+        private bool _lyricsBusy;
+
+        /// <summary>The playing Apple Music song's lyrics, in a window to read line by line (5.1.0).</summary>
+        private async void ShowLyrics()
+        {
+            if (_lyricsBusy) return;
+            var path = AppleMusicPlayer.CurrentPath;
+            if (!AppleMusicPlayer.IsActive || string.IsNullOrEmpty(path))
+            {
+                SayAudio("applemusic.lyrics", "Nothing from Apple Music is playing");
+                return;
+            }
+            _lyricsBusy = true;
+            try
+            {
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(20));
+                var lines = await AppleMusic.LyricsAsync(path, cts.Token);
+                if (lines == null)
+                {
+                    SayAudio("applemusic.lyrics", "Apple Music has no lyrics for this song.");
+                    return;
+                }
+                var title = AppleMusic.SpokenName(path) ?? AppleMusicPlayer.CurrentName;
+                using var dialog = new LyricsForm(title, lines);
+                if (_form is { IsDisposed: false, Visible: true }) dialog.ShowDialog(_form);
+                else dialog.ShowDialog();
+                _form?.RestoreListFocusExternally();
+            }
+            catch (AppleMusicException ex) { SayAudio("applemusic.failed", ex.Message); }
+            catch (OperationCanceledException) { SayAudio("applemusic.failed", "Apple Music took too long to answer."); }
+            catch (Exception ex) { SayAudio("applemusic.failed", "Apple Music couldn't get the lyrics: " + ex.Message); }
+            finally { _lyricsBusy = false; }
+        }
+
         private void ShowUpNext()
         {
             if (!AppleMusicPlayer.IsActive)

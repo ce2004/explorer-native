@@ -385,6 +385,24 @@ namespace ExplorerNative
             return items;
         }
 
+        /// <summary>A catalogue song's lyrics as Apple's TTML, or null when it has none.</summary>
+        public async Task<string?> LyricsTtmlAsync(string catalogId, CancellationToken token)
+        {
+            await StartAsync(token).ConfigureAwait(false);
+            JsonDocument doc;
+            try { doc = await GetAsync($"/v1/catalog/{Storefront}/songs/{Uri.EscapeDataString(catalogId)}/lyrics", token).ConfigureAwait(false); }
+            catch (AppleMusicException ex) when (ex.NotFound) { return null; }
+            using (doc)
+            {
+                if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array) return null;
+                foreach (var d in data.EnumerateArray())
+                    if (d.TryGetProperty("attributes", out var a) && a.TryGetProperty("ttml", out var t) &&
+                        t.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(t.GetString()))
+                        return t.GetString();
+                return null;
+            }
+        }
+
         // ---- Favorites and playlists ----
 
         /// <summary>Song ratings asked for per request; one answer covers 300 in about 0.4s.</summary>

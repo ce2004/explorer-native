@@ -1358,8 +1358,12 @@ namespace ExplorerNative
             _shuffleItem.Text = "S&huffle";
             _upNextItem = AudioItem(AudioAction.UpNext);
             _upNextItem.Text = "Up ne&xt…";
+            // L is free while Apple Music plays: Limiter is hidden then.
+            _lyricsItem = AudioItem(AudioAction.Lyrics);
+            _lyricsItem.Text = "&Lyrics…";
             audio.DropDownItems.Add(_shuffleItem);
             audio.DropDownItems.Add(_upNextItem);
+            audio.DropDownItems.Add(_lyricsItem);
             audio.DropDownItems.Add(new ToolStripSeparator());
 
             audio.DropDownItems.Add(AudioItem(AudioAction.WhatIsPlaying));
@@ -1470,7 +1474,7 @@ namespace ExplorerNative
                 item.Visible = !apple;
 
             // Repeat is Apple's own while it plays: off, all, or this song.
-            _shuffleItem.Visible = _upNextItem.Visible = apple;
+            _shuffleItem.Visible = _upNextItem.Visible = _lyricsItem.Visible = apple;
             _shuffleItem.Checked = AppleMusicPlayer.Shuffle;
             if (apple)
             {
@@ -1488,6 +1492,7 @@ namespace ExplorerNative
 
         private ToolStripMenuItem _shuffleItem = null!;
         private ToolStripMenuItem _upNextItem = null!;
+        private ToolStripMenuItem _lyricsItem = null!;
 
         private void OpenAudioPreferences() => OpenPreferences("Audio");
 

@@ -32,6 +32,7 @@ namespace ExplorerNative
                 LateErrorIsQuiet();
                 await PlayAllFromRow();
                 await StationFromSong();
+                await Lyrics();
             }
             finally
             {
@@ -128,6 +129,48 @@ namespace ExplorerNative
             Equal("the station's first songs are ready to play", "2", rows.Count.ToString());
             Check("its songs play on as a station", AppleMusic.InStation(rows[0].Path), rows[0].Path);
             Check("a station is never refreshed under the player", !AppleMusic.CanRefresh(AppleMusic.SongStationFolder), null);
+        }
+
+        private const string SampleTtml =
+            "<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:itunes=\"http://music.apple.com/lyric-ttml-internal\" xmlns:ttm=\"http://www.w3.org/ns/ttml#metadata\" itunes:timing=\"Word\">" +
+            "<head><metadata><ttm:agent type=\"person\" xml:id=\"v1\"/><iTunesMetadata><songwriters><songwriter>Lennon</songwriter></songwriters></iTunesMetadata></metadata></head>" +
+            "<body dur=\"2:05\"><div begin=\"0.5\" end=\"20\" itunes:songPart=\"Verse\">" +
+            "<p begin=\"0.5\" end=\"4\" ttm:agent=\"v1\"><span begin=\"0.5\" end=\"1\">Yesterday,</span> <span begin=\"1\" end=\"2\">all</span> <span begin=\"2\" end=\"3\">my</span> <span begin=\"3\" end=\"4\">troubles</span></p>" +
+            "<p begin=\"4\" end=\"8\">Seemed so far &amp; away<br/>Now it looks</p>" +
+            "</div><div begin=\"20\" end=\"30\"><p begin=\"20\" end=\"25\">Suddenly</p></div></body></tt>";
+
+        /// <summary>Feature B: lyrics from Apple's TTML as plain lines, and "none" when Apple has none.</summary>
+        private static async Task Lyrics()
+        {
+            var lines = AppleMusic.LyricsLines(SampleTtml);
+            Equal("TTML becomes plain lines, a blank line between verses",
+                "Yesterday, all my troubles|Seemed so far & away|Now it looks||Suddenly", string.Join("|", lines));
+            Check("the head's credits are not lyrics", !lines.Any(l => l.Contains("Lennon")), null);
+            Equal("broken TTML still gives its lines", "One|Two",
+                string.Join("|", AppleMusic.LyricsLines("<tt><body><p>One<br>Two</p></body>")));
+
+            AppleMusic.ResetForTests();
+            AppleMusic.ConfigureForTests();
+            var song = AppleMusic.SeedForTests("::applemusic\\Library\\Songs", new List<AppleMusicItem> { Song("Yesterday", "y1") })[0].Path;
+            var asked = new List<string>();
+            FakeApple(path => path.EndsWith("/songs/y1/lyrics")
+                ? "{\"data\":[{\"id\":\"y1\",\"type\":\"lyrics\",\"attributes\":{\"ttml\":" + System.Text.Json.JsonSerializer.Serialize(SampleTtml) + "}}]}"
+                : null, asked);
+            var got = await AppleMusic.LyricsAsync(song, CancellationToken.None);
+            Equal("a song's lyrics come from the catalogue's lyrics endpoint", "5", (got?.Count ?? 0).ToString());
+            Check("asked of the catalogue song", asked.Any(a => a == "GET /v1/catalog/us/songs/y1/lyrics"), string.Join("; ", asked));
+
+            AppleMusicClient.FakeForTests = req => req.RequestUri!.AbsolutePath.Contains("/me/account")
+                ? Answer(HttpStatusCode.OK, "{\"meta\":{\"subscription\":{\"active\":true,\"storefront\":\"us\"}}}")
+                : Answer(HttpStatusCode.NotFound);
+            Check("a song with no lyrics gives none (said as such)", await AppleMusic.LyricsAsync(song, CancellationToken.None) == null, null);
+
+            var tray = SourceText("TrayApplicationContext.cs");
+            Check("no lyrics is said in plain words", tray.Contains("\"Apple Music has no lyrics for this song.\""), null);
+            Check("lyrics with nothing playing says so", tray.Contains("\"Nothing from Apple Music is playing\""), null);
+            Check("Lyrics comes after every older action, so saved shortcuts keep their meaning",
+                (int)AudioAction.Lyrics > (int)AudioAction.UpNext, null);
+            Check("Lyrics has no key until one is chosen", new Settings().AudioLyricsShortcut.Length == 0, null);
         }
 
         /// <summary>Bug 3: after Stop or a failure, a late page error with no play number was still spoken.</summary>

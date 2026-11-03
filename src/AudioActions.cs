@@ -34,6 +34,7 @@ namespace ExplorerNative
         PreviousTrack,
         ToggleShuffle,
         UpNext,
+        Lyrics,
     }
 
     /// <summary>
@@ -291,6 +292,11 @@ namespace ExplorerNative
             new AudioActionInfo(AudioAction.UpNext, "Up next (Apple Music)", false,
                 s => s.AudioUpNextShortcut, (s, v) => s.AudioUpNextShortcut = v)
                 { NotificationId = "applemusic.upnext" },
+
+            // 5.1.0: the playing song's lyrics, in a window to read line by line.
+            new AudioActionInfo(AudioAction.Lyrics, "Lyrics (Apple Music)", false,
+                s => s.AudioLyricsShortcut, (s, v) => s.AudioLyricsShortcut = v)
+                { NotificationId = "applemusic.lyrics" },
 
             // E and L rather than the obvious P and D: both were already taken by
             // Pause and Volume down, and two items sharing a letter means the key

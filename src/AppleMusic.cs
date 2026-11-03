@@ -463,6 +463,73 @@ namespace ExplorerNative
             return (item.Name, songs, item.Kind == "artist" ? null : path);
         }
 
+        /// <summary>
+        /// The lyrics of a song (5.1.0), as plain lines with a blank line between
+        /// verses, or null when Apple has none for it.
+        /// </summary>
+        public static async Task<List<string>?> LyricsAsync(string songPath, CancellationToken token)
+        {
+            var id = CatalogIdForPlaying(songPath);
+            var ttml = await Client().LyricsTtmlAsync(id, token).ConfigureAwait(false);
+            if (ttml == null) return null;
+            var lines = LyricsLines(ttml);
+            return lines.Count == 0 ? null : lines;
+        }
+
+        /// <summary>
+        /// Apple's TTML lyrics as plain lines: one per &lt;p&gt; (a &lt;br/&gt;
+        /// breaks it), a blank line between verses (&lt;div&gt;), timings, word
+        /// spans and the head's credits dropped.
+        /// </summary>
+        internal static List<string> LyricsLines(string ttml)
+        {
+            var lines = new List<string>();
+            System.Xml.Linq.XDocument doc;
+            try { doc = System.Xml.Linq.XDocument.Parse(ttml, System.Xml.Linq.LoadOptions.PreserveWhitespace); }
+            catch (System.Xml.XmlException)
+            {
+                // Not well formed: tags out, one line per line break.
+                var text = System.Text.RegularExpressions.Regex.Replace(ttml, "<br\\s*/?>|</p>", "\n");
+                text = System.Net.WebUtility.HtmlDecode(System.Text.RegularExpressions.Regex.Replace(text, "<[^>]+>", ""));
+                return text.Split('\n').Select(Tidy).Where(l => l.Length > 0).ToList();
+            }
+            var body = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "body");
+            if (body == null) return lines;
+            var verses = body.Descendants().Where(e => e.Name.LocalName == "div").ToList();
+            foreach (var verse in verses.Count > 0 ? verses : new List<System.Xml.Linq.XElement> { body })
+            {
+                bool any = false;
+                foreach (var p in verse.Descendants().Where(e => e.Name.LocalName == "p"))
+                {
+                    var line = new System.Text.StringBuilder();
+                    foreach (var node in p.DescendantNodes())
+                    {
+                        if (node is System.Xml.Linq.XText t) line.Append(t.Value);
+                        else if (node is System.Xml.Linq.XElement { Name.LocalName: "br" })
+                        {
+                            AddLine(line.ToString());
+                            line.Clear();
+                        }
+                    }
+                    AddLine(line.ToString());
+                }
+                if (any) lines.Add("");
+
+                void AddLine(string raw)
+                {
+                    var l = Tidy(raw);
+                    if (l.Length == 0) return;
+                    if (!any && lines.Count > 0 && lines[^1].Length > 0) lines.Add("");
+                    lines.Add(l);
+                    any = true;
+                }
+            }
+            while (lines.Count > 0 && lines[^1].Length == 0) lines.RemoveAt(lines.Count - 1);
+            return lines;
+
+            static string Tidy(string s) => System.Text.RegularExpressions.Regex.Replace(s, "\\s+", " ").Trim();
+        }
+
         /// <summary>"Playing Abbey Road, 17 songs", and the like for Shuffle and Play next.</summary>
         public static string PlayAllSaid(string how, string name, int count)
         {
