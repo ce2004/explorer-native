@@ -102,6 +102,46 @@ namespace ExplorerNative
         /// by a bit rate no AAC file has) gets null: writing it back as AAC
         /// would silently throw its lossless quality away, so the editor asks.
         /// </summary>
+        /// <summary>
+        /// Whether an .m4a holds Apple Lossless: its sample description (stsd)
+        /// names 'alac'. Looks at the ends of the file, where the movie box is.
+        /// </summary>
+        public static bool IsAppleLossless(string path)
+        {
+            try
+            {
+                if (!string.Equals(Path.GetExtension(path), ".m4a", StringComparison.OrdinalIgnoreCase)) return false;
+                using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                const int Chunk = 2 * 1024 * 1024;
+                var buffer = new byte[(int)Math.Min(file.Length, Chunk)];
+                for (int pass = 0; pass < 2; pass++)
+                {
+                    if (pass == 1 && file.Length <= Chunk) break;
+                    file.Position = pass == 0 ? 0 : file.Length - buffer.Length;
+                    int got = 0;
+                    while (got < buffer.Length)
+                    {
+                        int n = file.Read(buffer, got, buffer.Length - got);
+                        if (n <= 0) break;
+                        got += n;
+                    }
+                    var span = new ReadOnlySpan<byte>(buffer, 0, got);
+                    ReadOnlySpan<byte> stsd = "stsd"u8;
+                    int from = 0;
+                    while (from < span.Length)
+                    {
+                        int at = span[from..].IndexOf(stsd);
+                        if (at < 0) break;
+                        at += from;
+                        if (at + 16 + 4 <= span.Length && span.Slice(at + 16, 4).SequenceEqual("alac"u8)) return true;
+                        from = at + 4;
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
         public static AudioFormatChoice? SameFormatAs(string extension, int? sourceKbps, bool sourceLossless = false)
         {
             var ext = (extension ?? "").ToLowerInvariant();

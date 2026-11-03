@@ -243,6 +243,8 @@ namespace ExplorerNative
             var result = new ConvertResult();
             if (parallel <= 0) parallel = Parallel;
 
+            SweepStaleTemps(jobs.Select(j => Path.GetDirectoryName(j.Target)).Distinct());
+
             long total = jobs.Sum(j => Math.Max(1, j.Bytes));
             var fractions = new double[jobs.Count];
             int done = 0;
@@ -389,6 +391,31 @@ namespace ExplorerNative
         }
 
         /// <summary>A hidden-looking temporary name in the target's folder, keeping the target's extension.</summary>
+        /// <summary>
+        /// Deletes temp files a crash or a quit left in these folders. Only ones
+        /// untouched for a while, so a conversion running in another window keeps its own.
+        /// </summary>
+        internal static void SweepStaleTemps(IEnumerable<string?> folders, TimeSpan? olderThan = null)
+        {
+            var limit = DateTime.UtcNow - (olderThan ?? TimeSpan.FromHours(6));
+            foreach (var folder in folders)
+            {
+                if (string.IsNullOrEmpty(folder)) continue;
+                try
+                {
+                    foreach (var file in Directory.EnumerateFiles(folder, TempMarker + "*"))
+                    {
+                        try
+                        {
+                            if (File.GetLastWriteTimeUtc(file) < limit) File.Delete(file);
+                        }
+                        catch { }
+                    }
+                }
+                catch { }
+            }
+        }
+
         internal static string TempPathBeside(string target)
         {
             var folder = Path.GetDirectoryName(target) ?? "";

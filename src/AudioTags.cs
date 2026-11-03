@@ -13,10 +13,10 @@ namespace ExplorerNative
     /// Null means absent, the same rule as everywhere else here.
     /// </summary>
     public sealed record AudioTagSet(string? Title, string? Artist, string? Album, string? AlbumArtist,
-        string? Genre, uint? Year, uint? Track)
+        string? Genre, uint? Year, uint? Track, string? Composer = null, string? Disc = null)
     {
         public bool IsEmpty => Title == null && Artist == null && Album == null && AlbumArtist == null &&
-                               Genre == null && Year == null && Track == null;
+                               Genre == null && Year == null && Track == null && Composer == null && Disc == null;
 
         /// <summary>The same tags as Vorbis comment fields, for FLAC and Opus, which carry them that way.</summary>
         public IEnumerable<(string Key, string Value)> VorbisFields()
@@ -28,6 +28,8 @@ namespace ExplorerNative
             if (Genre != null) yield return ("GENRE", Genre);
             if (Year != null) yield return ("DATE", Year.Value.ToString());
             if (Track != null) yield return ("TRACKNUMBER", Track.Value.ToString());
+            if (Composer != null) yield return ("COMPOSER", Composer);
+            if (Disc != null) yield return ("DISCNUMBER", Disc);
         }
     }
 
@@ -149,6 +151,7 @@ namespace ExplorerNative
         private static readonly PropertyKey Year = new(Music, 5);
         private static readonly PropertyKey TrackNumber = new(Music, 7);
         private static readonly PropertyKey Genre = new(Music, 11);
+        private static readonly PropertyKey PartOfSet = new(Music, 25);
         private static readonly PropertyKey AlbumArtist = new(Music, 13);
         // Not in the music block: PKEY_Music_Composer lives in the media file
         // summary block, and asked for in the other the row never appeared.
@@ -342,7 +345,8 @@ namespace ExplorerNative
             var artists = All("ARTIST");
             var tags = new AudioTagSet(One("TITLE"), artists.Count > 0 ? string.Join("; ", artists) : null, One("ALBUM"),
                 One("ALBUMARTIST", "ALBUM ARTIST"), One("GENRE"),
-                Number(One("DATE", "YEAR"), 4, 9999), Number(One("TRACKNUMBER"), 0, 99999));
+                Number(One("DATE", "YEAR"), 4, 9999), Number(One("TRACKNUMBER"), 0, 99999),
+                One("COMPOSER"), One("DISCNUMBER", "DISC"));
             return tags.IsEmpty ? null : tags;
         }
 
@@ -359,7 +363,8 @@ namespace ExplorerNative
                     Text(store, Title), Text(store, Artist), Text(store, AlbumTitle), Text(store, AlbumArtist),
                     Text(store, Genre),
                     year is > 0 and < 10000 ? (uint)year.Value : null,
-                    track is > 0 and < 100000 ? (uint)track.Value : null);
+                    track is > 0 and < 100000 ? (uint)track.Value : null,
+                    Text(store, Composer), Text(store, PartOfSet));
                 return tags.IsEmpty ? null : tags;
             }
             catch { return null; }
@@ -392,6 +397,8 @@ namespace ExplorerNative
                 if (SetText(store, Genre, tags.Genre)) written++;
                 if (SetNumber(store, Year, tags.Year)) written++;
                 if (SetNumber(store, TrackNumber, tags.Track)) written++;
+                if (SetText(store, Composer, tags.Composer)) written++;
+                if (SetText(store, PartOfSet, tags.Disc)) written++;
 
                 // Commit is where a handler that opened read-write says no; its
                 // answer was dropped, and the summary never said the tags were lost.

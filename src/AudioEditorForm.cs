@@ -291,7 +291,9 @@ namespace ExplorerNative
 
             if (_busy && IsEditorKey(keyData))
             {
-                Say("Still working on the last command. Wait a moment, or cancel a save in its own window");
+                Say(_measuring != null
+                    ? "Still measuring. Wait a moment, or press Escape to close the editor"
+                    : "Still working on the last command. Wait a moment, or cancel a save in its own window");
                 return true;
             }
 
@@ -629,10 +631,13 @@ namespace ExplorerNative
                 var (from, to, what) = Target();
                 var edits = Edits!;
                 _busy = true;
+                var measuring = new CancellationTokenSource();
+                _measuring = measuring;
                 Say($"Measuring {what}");
 
-                float peak = await Task.Run(() => MeasurePeak(_path, edits, from, to));
+                float peak = await Task.Run(() => MeasurePeak(_path, edits, from, to, measuring.Token), measuring.Token);
                 _busy = false;
+                _measuring = null;
                 if (IsDisposed || !ReferenceEquals(edits, Edits)) return;
 
                 if (peak <= 1e-6f) { Say($"{char.ToUpperInvariant(what[0])}{what[1..]} is silent, so there is nothing to normalise"); return; }
@@ -643,15 +648,25 @@ namespace ExplorerNative
                 Apply(edits.ChangeGain(from, to, gain), $"normalise {what}", Now,
                     $"Normalised {what}: {Decibels(gain)}");
             }
+            catch (OperationCanceledException)
+            {
+                // The window was closed while it measured.
+                _busy = false;
+                _measuring = null;
+            }
             catch (Exception ex)
             {
                 _busy = false;
+                _measuring = null;
                 if (!IsDisposed) Say("Could not measure the audio: " + ex.Message);
             }
         }
 
+        /// <summary>Set while Normalise measures; closing the window cancels it.</summary>
+        private CancellationTokenSource? _measuring;
+
         /// <summary>The loudest sample in [from, to) of the edited audio. On a worker.</summary>
-        private static float MeasurePeak(string path, EditList edits, long from, long to)
+        private static float MeasurePeak(string path, EditList edits, long from, long to, CancellationToken token = default)
         {
             var inner = EditSource.Open(path, 0, 0, EditSource.Settle, out string why)
                         ?? throw new IOException(why);
@@ -664,6 +679,7 @@ namespace ExplorerNative
             float peak = 0;
             while (left > 0)
             {
+                token.ThrowIfCancellationRequested();
                 int got = decoder.Read(block, (int)Math.Min(8192, left));
                 if (got <= 0) break;
                 for (int i = 0; i < got * channels; i++)
@@ -709,7 +725,9 @@ namespace ExplorerNative
         /// <summary>The format to save in: the original's when it can be written, otherwise asked.</summary>
         private async Task<AudioFormatChoice?> ChooseFormat(bool mayAsk)
         {
-            var same = AudioFormats.SameFormatAs(Path.GetExtension(_path), _kbps);
+            var editing = _path;
+            bool lossless = await Task.Run(() => AudioFormats.IsAppleLossless(editing));
+            var same = AudioFormats.SameFormatAs(Path.GetExtension(_path), _kbps, lossless);
             var unavailable = await Task.Run(AudioConvertForm.Availability);
             if (IsDisposed) return null;
 
@@ -1066,6 +1084,15 @@ namespace ExplorerNative
         {
             if (e.CloseReason == CloseReason.UserClosing)
             {
+                // Measuring has nothing to lose: stop it and carry on closing.
+                var measuring = _measuring;
+                if (measuring != null)
+                {
+                    try { measuring.Cancel(); } catch { }
+                    _measuring = null;
+                    _busy = false;
+                }
+
                 if (_busy)
                 {
                     e.Cancel = true;
