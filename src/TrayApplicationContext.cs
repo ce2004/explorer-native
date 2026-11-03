@@ -1680,6 +1680,7 @@ namespace ExplorerNative
             // player still names the missing device — so OK kept it pinned there.
             if (outcome == DialogResult.OK) _audio.OutputDeviceId = dialog.SelectedId;
             _settings.AudioOutputDeviceId = _audio.OutputDeviceId;
+            if (outcome == DialogResult.OK) _settings.Save();
             AppleMusicPlayer.SetOutputDevice(NameOf(_audio.OutputDeviceId));
 
             _form?.RestoreListFocusExternally();
