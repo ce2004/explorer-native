@@ -164,7 +164,8 @@ namespace ExplorerNative
             IProgress<FileOpProgress>? progress,
             Func<string, ConflictChoice>? askConflict,
             CancellationToken token,
-            IEnumerable<string>? reserved = null)
+            IEnumerable<string>? reserved = null,
+            TransferPause? pause = null)
         {
             var errors = new ConcurrentBag<string>();
             int succeeded = 0, skipped = 0, failed = 0;
@@ -373,6 +374,8 @@ namespace ExplorerNative
                         for (int i = run.Start; i < run.End; i++)
                         {
                             ct.ThrowIfCancellationRequested();
+                            // Paused: no new file starts until Resume.
+                            if (pause != null) await pause.WaitAsync(ct);
                             await CopyOne(plan[i], ct);
                         }
                     }).ConfigureAwait(false);
@@ -412,7 +415,7 @@ namespace ExplorerNative
                     {
                         landed = await CopyFileAsync(item.Source, item.Destination, bufferSize, item.Size,
                             copied => { Interlocked.Add(ref bytesDone, copied); Report(item.Source); }, ct,
-                            item.OnClash);
+                            item.OnClash, pause);
                     }
 
                     // Something arrived at the destination after the plan, and
@@ -502,8 +505,8 @@ namespace ExplorerNative
                     try
                     {
                         var exact = NameRules.ExactPath(src);
-                        if (Directory.Exists(exact) && !IsLinkAt(exact) && IsEffectivelyEmpty(exact))
-                            Directory.Delete(exact, recursive: true);
+                        if (Directory.Exists(exact) && !IsLinkAt(exact) && IsEffectivelyEmpty(exact, out var folders))
+                            DeleteDeepestFirst(folders);
                     }
                     catch (Exception ex) { errors.Add($"{src}: {ex.Message}"); }
                 }
@@ -1000,7 +1003,7 @@ namespace ExplorerNative
         /// </returns>
         private static async Task<string?> CopyFileAsync(
             string source, string destination, int bufferSize, long sizeHint,
-            Action<long> onChunk, CancellationToken token, ClashRule onClash)
+            Action<long> onChunk, CancellationToken token, ClashRule onClash, TransferPause? pause = null)
         {
             // Exact, so "report." is read and written as itself.
             var from = NameRules.ExactPath(source);
@@ -1091,6 +1094,8 @@ namespace ExplorerNative
                     read = await next;
                     (current, spare) = (spare, current);
                     onChunk(wrote);
+                    // Paused mid-file: it waits here, at the next chunk.
+                    if (pause != null) await pause.WaitAsync(token);
                 }
 
                 // Written out before it is called complete: the last piece sits in
@@ -1345,19 +1350,37 @@ namespace ExplorerNative
             }
         }
 
-        private static bool IsEffectivelyEmpty(string dir)
+        /// <summary>
+        /// Deletes the folders a walk found empty, deepest first and never
+        /// recursive: one that something was written into since stays.
+        /// </summary>
+        internal static void DeleteDeepestFirst(List<string> folders)
+        {
+            for (int i = folders.Count - 1; i >= 0; i--)
+            {
+                var folder = folders[i];
+                try { Directory.Delete(folder, recursive: false); }
+                catch (DirectoryNotFoundException) { }
+                catch (IOException) when (Directory.Exists(folder) && System.Linq.Enumerable.Any(Directory.EnumerateFileSystemEntries(folder))) { }
+            }
+        }
+
+        private static bool IsEffectivelyEmpty(string dir, out List<string> folders)
         {
             // Walked by hand, never through a link: AllDirectories went through
             // junctions, and one pointing back up the tree recursed until the
             // path was too long. A link is something in the folder, so a folder
-            // holding one is not empty.
+            // holding one is not empty. Folders come out parents first.
+            folders = new List<string>();
             try
             {
                 var stack = new Stack<string>();
                 stack.Push(dir);
                 while (stack.Count > 0)
                 {
-                    foreach (var entry in new DirectoryInfo(stack.Pop()).EnumerateFileSystemInfos())
+                    var current = stack.Pop();
+                    folders.Add(current);
+                    foreach (var entry in new DirectoryInfo(current).EnumerateFileSystemInfos())
                     {
                         if (entry is not DirectoryInfo sub || NameRules.IsLink(sub)) return false;
                         stack.Push(sub.FullName);

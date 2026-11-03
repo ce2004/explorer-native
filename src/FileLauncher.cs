@@ -137,12 +137,20 @@ namespace ExplorerNative
 
         private static string Quote(string s) => "\"" + s + "\"";
 
+        /// <summary>Said when a name ending in a dot or space cannot be opened safely.</summary>
+        internal const string MisreadMessage =
+            "its name, or a folder it is in, ends in a dot or a space, so other programs would open a different file. Rename it first.";
+
         private static string ArgumentsFor(Launch launch, string path) =>
             launch.ArgsTemplate.Replace("%1", path);
 
         /// <summary>Launches the file. Throws only if every route failed.</summary>
         public static void Open(string path)
         {
+            // Programs and the shell read "notes.txt." as its sibling "notes.txt",
+            // so they would open a file nobody chose.
+            if (ShellContextMenu.MisreadNames(new[] { path }))
+                throw new IOException(MisreadMessage);
             var ext = Path.GetExtension(path);
             var launch = string.IsNullOrEmpty(ext) ? null : Lookup(ext);
 

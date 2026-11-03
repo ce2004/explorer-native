@@ -424,6 +424,10 @@ namespace ExplorerNative
             }
         }
 
+        /// <summary>Said when Properties is refused for a name ending in a dot or space.</summary>
+        internal const string PropertiesMisreadMessage =
+            "its name, or a folder it is in, ends in a dot or a space, so Windows would show a different file. Rename it first.";
+
         /// <summary>
         /// Opens the standard Windows properties sheet for one item, on a thread
         /// of its own in a single-threaded apartment — which is what the shell
@@ -437,6 +441,14 @@ namespace ExplorerNative
         {
             var done = new System.Threading.Tasks.TaskCompletionSource<bool>(
                 System.Threading.Tasks.TaskCreationOptions.RunContinuationsAsynchronously);
+
+            // The shell reads "report." as "report", so the sheet would show
+            // and change the sibling.
+            if (MisreadNames(new[] { path }))
+            {
+                done.TrySetException(new System.IO.IOException(PropertiesMisreadMessage));
+                return done.Task;
+            }
 
             var thread = new System.Threading.Thread(() =>
             {

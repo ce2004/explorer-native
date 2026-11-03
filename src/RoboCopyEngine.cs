@@ -285,9 +285,10 @@ namespace ExplorerNative
             CancellationToken token,
             int bufferKilobytes = 1024,
             bool cloudSource = false,
-            Func<string, bool>? onCloudLetter = null) =>
+            Func<string, bool>? onCloudLetter = null,
+            TransferPause? pause = null) =>
             Task.Run(() => RunCoreAsync(sources, destinationDir, move, threads, conflictPolicy, progress, token,
-                bufferKilobytes, cloudSource, onCloudLetter));
+                bufferKilobytes, cloudSource, onCloudLetter, pause));
 
         private static async Task<TransferResult> RunCoreAsync(
             IReadOnlyList<string> sources,
@@ -299,7 +300,8 @@ namespace ExplorerNative
             CancellationToken token,
             int bufferKilobytes,
             bool cloudSource,
-            Func<string, bool>? onCloudLetter)
+            Func<string, bool>? onCloudLetter,
+            TransferPause? pause = null)
         {
             // cloudSource: copying *out of* the Google Drive letter, where every
             // source file is a placeholder this same process downloads while
@@ -595,7 +597,7 @@ namespace ExplorerNative
                 {
                     return await FileOperations.RunAsync(
                         list, destinationDir, move, policy,
-                        threads, bufferKilobytes, managedSink, null, token, reserved: reserved);
+                        threads, bufferKilobytes, managedSink, null, token, reserved: reserved, pause: pause);
                 }
                 finally
                 {
@@ -1439,8 +1441,18 @@ namespace ExplorerNative
             bool allCounted = true;
             var failedSources = new List<string>();
 
+            // Paused: the robocopy running is suspended where it is, and the
+            // next job waits at the gate below.
+            using var pauser = new ProcessPauser(pause);
+
             foreach (var job in jobs)
             {
+                if (pause != null)
+                {
+                    try { await pause.WaitAsync(token); }
+                    catch (OperationCanceledException) { }
+                }
+
                 if (token.IsCancellationRequested)
                 {
                     try { await planning; } catch { }
@@ -1476,7 +1488,13 @@ namespace ExplorerNative
                     Volatile.Write(ref currentIsStatus, 1);
                     Report();
                 },
-                p => Volatile.Write(ref liveJob, p), token);
+                p =>
+                {
+                    // Cleared before the process is disposed; see RunOneAsync.
+                    if (p == null) pauser.Set(null);
+                    Volatile.Write(ref liveJob, p);
+                    if (p != null) pauser.Set(p);
+                }, token);
 
                 // Carried over before the next job starts from zero, so a
                 // multi-job transfer accumulates rather than restarting.

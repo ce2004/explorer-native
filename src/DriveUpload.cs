@@ -210,6 +210,12 @@ namespace ExplorerNative
             _report = report;
         }
 
+        /// <summary>
+        /// Pause and resume: no new file or folder starts while paused, and a big
+        /// file in flight stops and later carries on from Google's count.
+        /// </summary>
+        public TransferPause? Pause { get; set; }
+
         /// <summary>Everything that went wrong, one line each.</summary>
         public IReadOnlyList<string> Errors { get { lock (_errors) return _errors.ToArray(); } }
 
@@ -352,6 +358,8 @@ namespace ExplorerNative
         public async Task Run(UploadWork work, CancellationToken token)
         {
             var clock = System.Diagnostics.Stopwatch.StartNew();
+            // Read by the resumable upload under this flow; see TransferPause.Ambient.
+            if (Pause != null) TransferPause.Ambient.Value = Pause;
             work = await SettleTopFolders(work, token);
             GoogleDrive.Trace($"upload run: settling top folders {clock.ElapsedMilliseconds}ms");
 
@@ -392,6 +400,7 @@ namespace ExplorerNative
                     new ParallelOptions { MaxDegreeOfParallelism = FolderStreams, CancellationToken = token },
                     async (folder, inner) =>
                     {
+                        if (Pause != null) await Pause.WaitAsync(inner);
                         await EnsureFolder(folder, inner);
                         Report($"Creating folders, {Interlocked.Increment(ref made)} of {work.Folders.Count}");
                     });
@@ -611,6 +620,8 @@ namespace ExplorerNative
         private async ValueTask UploadOne(UploadFile file, CancellationToken token)
         {
             var name = Path.GetFileName(file.LocalPath);
+            // Paused: no new file starts until Resume.
+            if (Pause != null) await Pause.WaitAsync(token);
             string? folder;
             try
             {
