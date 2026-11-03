@@ -1,3 +1,8 @@
+5.1.2
+Bug fixed: if WebView2 wasn't installed, you could still open Apple Music and nothing would play, and the offer to install came only once. Now Apple Music stays closed until WebView2 is installed, and asks every time you open it.
+New feature: installing WebView2 now opens its own window with a progress bar, showing the download percent and then the install. You can cancel the download. If you open Apple Music while it installs, it tells you it's still installing.
+Bug fixed: if the WebView2 install failed, you heard only a short message. Now a dialog explains what went wrong, such as no internet connection or an installer error, and you can try again by opening Apple Music.
+
 5.1.1
 Bug fixed: if Microsoft WebView2 wasn't installed, every Apple Music song failed with "a compatible WebView2 Runtime installation could not be found". Now going into Apple Music asks whether to download and install it, and does it for you.
 Bug fixed: New folder was on Ctrl+Shift+N. Now it is Ctrl+N, like other programs. F8 still works too.

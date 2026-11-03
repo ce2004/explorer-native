@@ -2508,6 +2508,19 @@ namespace ExplorerNative
             var pane = onPane ?? Active;
             var cameFrom = pane.CurrentPath;
 
+            // Apple Music plays through WebView2, so it stays shut without it:
+            // each time somebody opens it they are asked to install it, and
+            // while that runs they are told it is still installing. Checked
+            // before anything about the pane changes, so a refusal leaves the
+            // pane exactly as it was.
+            if (!quiet && AppleMusic.Is(path) && !AppleMusic.Is(cameFrom) && !WebView2Setup.IsInstalled())
+            {
+                try { WebView2Setup.Offer(this, (m, e) => Announce(m, isError: e)); }
+                catch (Exception ex) { Announce("WebView2 couldn't be installed. " + ex.Message, isError: true); }
+                RestoreListFocus();
+                return false;
+            }
+
             // And a navigation that is no longer the latest one gives way. The
             // existence check ran before anything else was cancelled, so a slow
             // one finishing late took the window back to a folder somebody had
@@ -2547,14 +2560,6 @@ namespace ExplorerNative
             // Apple Music: folders listed by Apple, nothing on disk to probe or watch.
             if (AppleMusic.Is(path))
             {
-                // Coming in from outside: playing needs WebView2, so offer it now
-                // rather than letting the first song fail with Microsoft's words.
-                if (!quiet && !AppleMusic.Is(cameFrom))
-                {
-                    try { await WebView2Setup.OfferAsync(this, (m, e) => Announce(m, isError: e)); }
-                    catch (Exception ex) { Announce("WebView2 couldn't be installed: " + ex.Message, isError: true); }
-                    RestoreListFocus();
-                }
                 try
                 {
                     return await ShowAppleMusicFolderAsync(pane, path, preferPath, cameFrom, mine, quiet, keepFocus);

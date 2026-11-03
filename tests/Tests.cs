@@ -294,9 +294,15 @@ namespace ExplorerNative
                 Check("New folder is Ctrl+N on the menu", main.Contains("Item(\"New &folder\", Keys.Control | Keys.N, CreateNewFolder)", StringComparison.Ordinal));
                 Check("F8 still makes a new folder", main.Contains("if (keyData == Keys.F8)", StringComparison.Ordinal));
                 Check("Ctrl+Shift+N no longer does", !main.Contains("Keys.Control | Keys.Shift | Keys.N", StringComparison.Ordinal));
-                Check("going into Apple Music offers WebView2", main.Contains("WebView2Setup.OfferAsync(this", StringComparison.Ordinal) &&
-                    main.IndexOf("WebView2Setup.OfferAsync(this", StringComparison.Ordinal) < main.IndexOf("return await ShowAppleMusicFolderAsync(", StringComparison.Ordinal));
-                Check("the offer asks before downloading", setup.IndexOf("MessageBox.Show", StringComparison.Ordinal) < setup.IndexOf("GetByteArrayAsync", StringComparison.Ordinal));
+                int offer = main.IndexOf("WebView2Setup.Offer(this", StringComparison.Ordinal);
+                Check("going into Apple Music without WebView2 asks, every time, and stays shut", offer > 0 &&
+                    main.IndexOf("!WebView2Setup.IsInstalled()", StringComparison.Ordinal) < offer &&
+                    main.IndexOf("return false;", offer, StringComparison.Ordinal) - offer < 300 &&
+                    offer < main.IndexOf("int mine = ++pane.NavigationId;", StringComparison.Ordinal));
+                Check("while it installs, opening Apple Music says so", setup.Contains("WebView2 is still installing", StringComparison.Ordinal));
+                Check("the offer asks before downloading", setup.IndexOf("MessageBox.Show", StringComparison.Ordinal) < setup.IndexOf("await DownloadAsync(", StringComparison.Ordinal));
+                Check("download and install show a progress window", setup.Contains("new ProgressBar", StringComparison.Ordinal) && setup.Contains("window.Show();", StringComparison.Ordinal));
+                Check("a failed install is explained in a dialog", setup.Contains("\"WebView2 couldn't be installed. \" + failure", StringComparison.Ordinal));
                 Check("the download goes through the app's network handler", setup.Contains("new HttpClient(GoogleNet.Handler", StringComparison.Ordinal));
                 ReservedShortcutTests();
                 SearchTests.RunAll(Check, Equal);
