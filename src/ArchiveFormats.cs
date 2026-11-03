@@ -263,7 +263,8 @@ namespace ExplorerNative
 
             // The name is enough for everything except .tar, whose bytes are the
             // only confirmation there is, and the case where it says nothing.
-            if (byName != null && byName != Tar) return byName;
+            // .tar.gz is checked too: a browser may have unpacked it while saving.
+            if (byName != null && byName != Tar && byName != TarGz) return byName;
 
             try
             {
@@ -284,7 +285,11 @@ namespace ExplorerNative
                 // "backup.tar" that is gzip inside is a gzipped tar with the
                 // wrong name, not a bare gzip — read as one, it came out as a
                 // single file holding the raw tar.
+                if (byName == TarGz) return byBytes == Tar ? Tar : TarGz;
                 if (byName == Tar && byBytes == Gz) return TarGz;
+                if (byName == Tar && byBytes == Xz) return TarXz;
+                if (byName == Tar && byBytes == Bz2) return TarBz2;
+                if (byName == Tar && byBytes == Zst) return TarZst;
                 return byBytes ?? byName;
             }
             catch { return byName; }

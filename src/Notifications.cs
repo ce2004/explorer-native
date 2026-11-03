@@ -383,6 +383,10 @@ namespace ExplorerNative
             Live("archive.open.cancelled", "Opening an archive cancelled", FileOperations, Say, "Opening cancelled"),
             Live("archive.warning", "Archive only partly shown", FileOperations, Say, "{0}", "This archive is damaged, so only part of it is shown."),
             Live("archive.refused", "Archive cannot be changed", FileOperations, Say, "Archives are read-only here"),
+            Live("archive.test.done", "Archive tested and fine", FileOperations, Say, "{0} is fine: all {1} files are intact.", "photos.zip", "1,204"),
+            Live("archive.test.damaged", "Archive tested and damaged", FileOperations, Loud, "{0} is damaged: {1} of {2} files are bad.", "photos.zip", 3, "1,204"),
+            Live("archive.test.failed", "Could not test an archive", FileOperations, Loud, "Could not test {0}: {1}", "photos.zip", "it could not be read"),
+            Live("archive.test.cancelled", "Testing an archive cancelled", FileOperations, Say, "Testing cancelled"),
             Live("archive.member.failed", "Could not take a file out of an archive", FileOperations, Loud, "Could not get {0} out of the archive: {1}", "track 1.flac", "it is damaged in the archive"),
 
             Live("conflict.overwrite", "Overwriting", FileOperations, Bar, "Replacing {0}", "song.flac"),

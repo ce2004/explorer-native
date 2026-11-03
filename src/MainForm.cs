@@ -455,6 +455,10 @@ namespace ExplorerNative
         {
             _settings = settings;
 
+            // The window last used asks for archive passwords.
+            ArchivePasswords.Asker = AskArchivePassword;
+            Activated += (_, _) => ArchivePasswords.Asker = AskArchivePassword;
+
             // A walk of C:\Users reaches the Drive sync root under AppData, where
             // every folder is a Drive listing. Not walked, as the web app's
             // sizes are not (ConnectFiles).
@@ -1720,6 +1724,7 @@ namespace ExplorerNative
         /// <summary>Kept so the popup can decide whether they belong on it.</summary>
         private ToolStripMenuItem _extractItem = null!;
         private ToolStripMenuItem _extractHereItem = null!;
+        private ToolStripMenuItem _testArchiveItem = null!;
         private ToolStripMenuItem _shortcutItem = null!;
         private ToolStripMenuItem _convertAudioItem = null!;
         private ToolStripMenuItem _editAudioItem = null!;
@@ -1928,6 +1933,11 @@ namespace ExplorerNative
 
             _contextMenu.Items.Add(_extractItem);
             _contextMenu.Items.Add(_extractHereItem);
+
+            // Shown on archives it can test, by name only. A is free on an
+            // archive's menu: Edit audio and the Apple Music items are never there.
+            _testArchiveItem = Item("Test &archive", Keys.None, TestFocusedArchive);
+            _contextMenu.Items.Add(_testArchiveItem);
 
             // Audio, on the same terms as Extract: shown only when the row is
             // something they can work on, decided from the name alone. Convert
@@ -5267,6 +5277,26 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// Asks for a protected archive's password, from a worker. Null means
+        /// the person cancelled. The password is never logged or kept on disk.
+        /// </summary>
+        private string? AskArchivePassword(string archivePath, bool wrong)
+        {
+            if (IsDisposed || !IsHandleCreated) return null;
+            string? typed = null;
+            try
+            {
+                Invoke(() =>
+                {
+                    typed = PromptForm.AskPassword(this, "Password",
+                        wrong ? ArchivePasswords.WrongSaid(archivePath) : ArchivePasswords.Question(archivePath));
+                });
+            }
+            catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { return null; }
+            return typed;
+        }
+
+        /// <summary>
         /// Runs archive work on a worker with a progress window that appears only
         /// if it takes a while, and says how it ended when it did not finish.
         /// Returns whether it finished, and what it produced.
@@ -5297,6 +5327,11 @@ namespace ExplorerNative
                 {
                     var value = await task;
                     return (true, value);
+                }
+                catch (ArchivePasswords.Declined)
+                {
+                    // Cancelled at the password question: stops quietly.
+                    return (false, default);
                 }
                 catch (OperationCanceledException)
                 {
@@ -6972,6 +7007,7 @@ namespace ExplorerNative
 
             _extractItem.Visible = looksLikeArchive;
             _extractHereItem.Visible = looksLikeArchive;
+            _testArchiveItem.Visible = looksLikeArchive && ArchiveTester.CanTest(focused);
 
             _editTagsItem.Visible = focused != null && !inArchive &&
                                     !IsDirectoryInView(focused) &&
@@ -10067,6 +10103,50 @@ namespace ExplorerNative
         /// that is where the paste conflict setting comes in, asked once about
         /// the top-level names exactly as a paste asks it.
         /// </summary>
+        /// <summary>
+        /// Test archive (Shift+F10): reads every file in the archive and checks
+        /// it, writing nothing, then says in one sentence whether it is whole.
+        /// </summary>
+        private async void TestFocusedArchive()
+        {
+            try
+            {
+                if (RefuseInArchive()) return;
+                var archive = FocusedPath();
+                if (archive == null) { AnnounceOperation("clip.nothing", "Nothing selected"); return; }
+                var name = Path.GetFileName(archive);
+
+                var (done, result) = await RunArchiveWork($"Testing {name}",
+                    (progress, token) => ArchiveTester.Test(archive, progress, token),
+                    "archive.test.cancelled", "Testing cancelled",
+                    "archive.test.failed", $"Could not test {name}");
+                if (IsDisposed || !done || result == null) { RestoreListFocus(); return; }
+
+                if (result.Fine)
+                {
+                    AnnounceOperation("archive.test.done", result.Sentence);
+                    RestoreListFocus();
+                    return;
+                }
+
+                AnnounceOperation("archive.test.damaged", result.Sentence);
+                if (result.Bad.Count > 0)
+                {
+                    const int most = 40;
+                    var text = result.Sentence + Environment.NewLine + Environment.NewLine +
+                               (result.ReadToEnd ? "The bad files:" : "Where it stopped:") + Environment.NewLine +
+                               string.Join(Environment.NewLine, result.Bad.Take(most));
+                    if (result.Bad.Count > most) text += $"{Environment.NewLine}and {result.Bad.Count - most:N0} more";
+                    MessageBox.Show(this, text, $"{name} is damaged", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+                RestoreListFocus();
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) AnnounceOperation("archive.test.failed", $"Could not test the archive: {ex.Message.TrimEnd('.')}");
+            }
+        }
+
         private async void ExtractFocused(bool intoNewFolder)
         {
             if (IsDrivesView) { Announce("Cannot extract from the drive list", isError: true); return; }
@@ -10236,7 +10316,9 @@ namespace ExplorerNative
                 catch (Exception ex)
                 {
                     window.Finish();
-                    AnnounceOperation("extract.failed", $"Could not extract: {ex.Message}");
+                    // Cancelled at the password question: nothing to say.
+                    if (ex is not ArchivePasswords.Declined)
+                        AnnounceOperation("extract.failed", $"Could not extract: {ex.Message}");
                     await RefreshDestination(intoNewFolder ? here : destination);
                     RestoreListFocus();
                     return;

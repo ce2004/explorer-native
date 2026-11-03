@@ -722,6 +722,18 @@ namespace ExplorerNative
             return format;
         }
 
+        /// <summary>A zip holding files that need a password, when 7-Zip is here to open them.</summary>
+        internal static bool IsProtectedZip(string archivePath, ArchiveFormat format, CancellationToken token)
+        {
+            if (format.Engine != ArchiveEngineKind.Zip || BsdTar.SevenZipExecutable == null) return false;
+            try
+            {
+                ZipEngine.List(archivePath, token, out _, out int locked);
+                return locked > 0;
+            }
+            catch (InvalidDataException) { return false; }
+        }
+
         public static Task<ArchiveResult> ExtractAsync(
             string archivePath,
             string destinationDir,
@@ -764,7 +776,8 @@ namespace ExplorerNative
             // the destination and the conflict rules are applied to the result,
             // which means the question is asked after the decompression rather
             // than before it — and every name in it is correct.
-            if (format.Engine == ArchiveEngineKind.BsdTar)
+            // A zip with protected files is taken out by 7-Zip, which asks for the password.
+            if (format.Engine == ArchiveEngineKind.BsdTar || IsProtectedZip(archivePath, format, token))
             {
                 bool existed = Directory.Exists(destinationDir);
                 try
@@ -780,6 +793,14 @@ namespace ExplorerNative
                     reporter.Done();
                     RoboCopyEngine.Trace($"archive: extracted {moved} entries, {errors.Count} failed");
                     return new ArchiveResult(moved, errors.Count, false, errors, 0, reporter.BytesDone, collisions);
+                }
+                catch (ArchivePasswords.Declined)
+                {
+                    // No password, so nothing came out: nothing more to say.
+                    reporter.Done(finished: false);
+                    if (!existed)
+                        try { Directory.Delete(destinationDir, recursive: false); } catch { }
+                    throw;
                 }
                 catch (OperationCanceledException)
                 {

@@ -62,6 +62,8 @@
     <Compile Include="..\src\BsdTar.SevenZip.cs" />
     <Compile Include="..\src\ArchiveBrowser.cs" />
     <Compile Include="..\src\ArchiveForm.cs" />
+    <Compile Include="..\src\ArchivePasswords.cs" />
+    <Compile Include="..\src\ArchiveTester.cs" />
     <Compile Include="..\src\ProgressForm.cs" />
     <Compile Include="..\src\ConflictForm.cs" />
     <Compile Include="..\src\ShellContextMenu.cs" /><Compile Include="..\src\ShellDelete.cs" />
