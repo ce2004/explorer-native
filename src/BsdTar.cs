@@ -1009,7 +1009,19 @@ namespace ExplorerNative
             "(names that differ only in capitals are one name here); the first of each was kept";
 
         /// <summary>Whether one of bsdtar's complaints is about the archive rather than about one entry.</summary>
-        private static bool LooksDamaged(string message) =>
+        internal static bool LooksDamaged(string message)
+        {
+            // Only the reason is judged, not the names before it or quoted in it:
+            // "tar.exe: damaged photos/a.jpg: Can't create '...\damaged photos\a.jpg'".
+            var reason = QuotedName.Replace(message, "''");
+            int at = reason.LastIndexOf(": ", StringComparison.Ordinal);
+            return reason.Contains("Error opening archive", StringComparison.OrdinalIgnoreCase) ||
+                   LooksDamagedUnquoted(at >= 0 ? reason[(at + 2)..] : reason);
+        }
+
+        private static readonly Regex QuotedName = new(@"(?<=^|\s)'.*?'(?=:|\s|$)", RegexOptions.Compiled);
+
+        private static bool LooksDamagedUnquoted(string message) =>
             message.Contains("truncated", StringComparison.OrdinalIgnoreCase) ||
             message.Contains("damaged", StringComparison.OrdinalIgnoreCase) ||
             message.Contains("corrupt", StringComparison.OrdinalIgnoreCase) ||
