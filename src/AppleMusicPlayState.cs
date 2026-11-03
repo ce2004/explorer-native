@@ -29,6 +29,9 @@ namespace ExplorerNative
             };
         }
 
+        /// <summary>A page error is said only while a song is loaded; after Stop or a failure it is about nothing.</summary>
+        internal static bool ErrorMatters(string currentPath) => currentPath.Length > 0;
+
         /// <summary>
         /// What is playing, in words. A song still loading counts as playing
         /// when that was asked for, and its length is the catalogue's until

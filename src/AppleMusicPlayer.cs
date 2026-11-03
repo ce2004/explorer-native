@@ -1395,6 +1395,8 @@ namespace ExplorerNative
                             break;
                         }
                         string path, name; lock (Gate) { path = _currentPath; name = _currentName; }
+                        // Nothing loaded (after Stop or a failure): a late error is about nothing.
+                        if (!AppleMusicPlayState.ErrorMatters(path)) { Log("error with nothing loaded ignored"); break; }
                         int failed = gen == 0 ? Volatile.Read(ref _generation) : gen;
                         var sentence = Sentence(code, msg);
                         // Playing on by itself into a song Apple won't play: say so
