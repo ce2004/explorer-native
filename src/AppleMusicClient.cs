@@ -118,6 +118,7 @@ namespace ExplorerNative
 
         private static async Task<string> DeveloperTokenAsync(CancellationToken token)
         {
+            if (FakeForTests != null) return "test-developer-token";
             string page;
             try { page = await Http.GetStringAsync(Home, token).ConfigureAwait(false); }
             catch (HttpRequestException ex) { throw new AppleMusicException("Apple Music couldn't be reached. " + GoogleNet.Reason(ex)); }
@@ -149,10 +150,14 @@ namespace ExplorerNative
             return await SendAsync(req, token).ConfigureAwait(false);
         }
 
+        /// <summary>Tests only: answers every request instead of Apple, and skips the developer token's fetch.</summary>
+        internal static Func<HttpRequestMessage, HttpResponseMessage>? FakeForTests;
+
         private static async Task<JsonDocument> SendAsync(HttpRequestMessage req, CancellationToken token)
         {
             HttpResponseMessage resp;
-            try { resp = await Http.SendAsync(req, token).ConfigureAwait(false); }
+            var fake = FakeForTests;
+            try { resp = fake != null ? fake(req) : await Http.SendAsync(req, token).ConfigureAwait(false); }
             catch (HttpRequestException ex) { throw new AppleMusicException("Apple Music couldn't be reached. " + GoogleNet.Reason(ex)); }
             catch (TaskCanceledException) when (!token.IsCancellationRequested) { throw new AppleMusicException("Apple Music took too long to answer."); }
             using (resp)
@@ -378,6 +383,24 @@ namespace ExplorerNative
             if (doc.RootElement.TryGetProperty("data", out var data))
                 foreach (var d in data.EnumerateArray()) Add(items, d);
             return items;
+        }
+
+        /// <summary>A catalogue song's lyrics as Apple's TTML, or null when it has none.</summary>
+        public async Task<string?> LyricsTtmlAsync(string catalogId, CancellationToken token)
+        {
+            await StartAsync(token).ConfigureAwait(false);
+            JsonDocument doc;
+            try { doc = await GetAsync($"/v1/catalog/{Storefront}/songs/{Uri.EscapeDataString(catalogId)}/lyrics", token).ConfigureAwait(false); }
+            catch (AppleMusicException ex) when (ex.NotFound) { return null; }
+            using (doc)
+            {
+                if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array) return null;
+                foreach (var d in data.EnumerateArray())
+                    if (d.TryGetProperty("attributes", out var a) && a.TryGetProperty("ttml", out var t) &&
+                        t.ValueKind == JsonValueKind.String && !string.IsNullOrWhiteSpace(t.GetString()))
+                        return t.GetString();
+                return null;
+            }
         }
 
         // ---- Favorites and playlists ----

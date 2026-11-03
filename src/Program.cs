@@ -1024,6 +1024,14 @@ namespace ExplorerNative
         /// <summary>Play next on an Apple Music song: after the one playing, or now when nothing is.</summary>
         public static void PlayAppleMusicNext(string path) => _context?.PlayAppleMusicNext(path);
 
+        /// <summary>Play or Shuffle on an Apple Music album, playlist or artist row.</summary>
+        public static void PlayAppleMusicList(List<string> songs, string? folder, bool shuffle, string said) =>
+            _context?.PlayAppleMusicList(songs, folder, shuffle, said);
+
+        /// <summary>Play next on an Apple Music album, playlist or artist row.</summary>
+        public static void PlayAppleMusicListNext(List<string> songs, string? folder, string said, string saidIfNow) =>
+            _context?.PlayAppleMusicListNext(songs, folder, said, saidIfNow);
+
         /// <summary>Apple Music's repeat: off, all, one, from its menu whether or not anything plays.</summary>
         public static void CycleAppleRepeat() => _context?.CycleAppleRepeat();
 

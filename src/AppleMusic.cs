@@ -404,6 +404,144 @@ namespace ExplorerNative
             return rows;
         }
 
+        /// <summary>Where a station started from a song (Start station) is kept: a folder no list shows.</summary>
+        public static string SongStationFolder => Root + "\\Song station";
+
+        /// <summary>
+        /// Start station on a song (5.1.0): Apple's station made from it, the
+        /// same "ra." one Autoplay uses. Returns its first songs, which play on
+        /// and top themselves up like any station.
+        /// </summary>
+        public static async Task<List<Row>> StartSongStationAsync(string songPath, CancellationToken token)
+        {
+            var song = ItemAt(songPath);
+            if (song == null || !song.IsSong) throw new AppleMusicException("That isn't a song.");
+            var catalogId = CatalogIdForPlaying(songPath);
+            var station = new AppleMusicItem { Kind = "station", Id = "ra." + catalogId, Name = "Station from " + song.Name };
+            var tracks = await Client().StationTracksAsync(station, token).ConfigureAwait(false);
+            var folder = SongStationFolder;
+            List<Row> rows;
+            lock (Gate)
+            {
+                Items[folder] = station;
+                Listings.Remove(folder);
+                Displayed.Remove(folder);
+                rows = RowsFor(folder, tracks, sort: false, numbered: false);
+                Listings[folder] = rows;
+            }
+            if (rows.Count == 0) throw new AppleMusicException($"Apple Music has no station for {song.Name} right now.");
+            Grew?.Invoke(folder); _ = RateAsync(folder);
+            return rows;
+        }
+
+        /// <summary>True for a row that Play all can play: an album, a playlist or an artist.</summary>
+        public static bool CanPlayAll(string? path) =>
+            path != null && ItemAt(path) is { Kind: "album" or "playlist" or "artist" };
+
+        /// <summary>
+        /// Every song of an album, playlist or artist row, without opening it:
+        /// its name, its songs in Apple's order, and the folder they are in (null
+        /// for an artist, whose songs are spread over its albums).
+        /// </summary>
+        public static async Task<(string Name, List<string> Songs, string? Folder)> SongsOfAsync(string path, CancellationToken token)
+        {
+            path = path.TrimEnd('\\');
+            var item = ItemAt(path);
+            if (item == null || !CanPlayAll(path)) throw new AppleMusicException("That isn't an album, a playlist or an artist.");
+            var rows = await ListAsync(path, fresh: false, token).ConfigureAwait(false);
+            var songs = new List<string>();
+            if (item.Kind == "artist")
+            {
+                foreach (var album in rows.Where(r => r.IsFolder && ItemAt(r.Path) is { Kind: "album" }))
+                {
+                    var tracks = await ListAsync(album.Path, fresh: false, token).ConfigureAwait(false);
+                    songs.AddRange(tracks.Where(r => !r.IsFolder).Select(r => r.Path));
+                }
+            }
+            else songs.AddRange(rows.Where(r => !r.IsFolder).Select(r => r.Path));
+            if (songs.Count == 0) throw new AppleMusicException($"There are no songs in {item.Name}.");
+            return (item.Name, songs, item.Kind == "artist" ? null : path);
+        }
+
+        /// <summary>
+        /// The lyrics of a song (5.1.0), as plain lines with a blank line between
+        /// verses, or null when Apple has none for it.
+        /// </summary>
+        public static async Task<List<string>?> LyricsAsync(string songPath, CancellationToken token)
+        {
+            var id = CatalogIdForPlaying(songPath);
+            var ttml = await Client().LyricsTtmlAsync(id, token).ConfigureAwait(false);
+            if (ttml == null) return null;
+            var lines = LyricsLines(ttml);
+            return lines.Count == 0 ? null : lines;
+        }
+
+        /// <summary>
+        /// Apple's TTML lyrics as plain lines: one per &lt;p&gt; (a &lt;br/&gt;
+        /// breaks it), a blank line between verses (&lt;div&gt;), timings, word
+        /// spans and the head's credits dropped.
+        /// </summary>
+        internal static List<string> LyricsLines(string ttml)
+        {
+            var lines = new List<string>();
+            System.Xml.Linq.XDocument doc;
+            try { doc = System.Xml.Linq.XDocument.Parse(ttml, System.Xml.Linq.LoadOptions.PreserveWhitespace); }
+            catch (System.Xml.XmlException)
+            {
+                // Not well formed: tags out, one line per line break.
+                var text = System.Text.RegularExpressions.Regex.Replace(ttml, "<br\\s*/?>|</p>", "\n");
+                text = System.Net.WebUtility.HtmlDecode(System.Text.RegularExpressions.Regex.Replace(text, "<[^>]+>", ""));
+                return text.Split('\n').Select(Tidy).Where(l => l.Length > 0).ToList();
+            }
+            var body = doc.Descendants().FirstOrDefault(e => e.Name.LocalName == "body");
+            if (body == null) return lines;
+            var verses = body.Descendants().Where(e => e.Name.LocalName == "div").ToList();
+            foreach (var verse in verses.Count > 0 ? verses : new List<System.Xml.Linq.XElement> { body })
+            {
+                bool any = false;
+                foreach (var p in verse.Descendants().Where(e => e.Name.LocalName == "p"))
+                {
+                    var line = new System.Text.StringBuilder();
+                    foreach (var node in p.DescendantNodes())
+                    {
+                        if (node is System.Xml.Linq.XText t) line.Append(t.Value);
+                        else if (node is System.Xml.Linq.XElement { Name.LocalName: "br" })
+                        {
+                            AddLine(line.ToString());
+                            line.Clear();
+                        }
+                    }
+                    AddLine(line.ToString());
+                }
+                if (any) lines.Add("");
+
+                void AddLine(string raw)
+                {
+                    var l = Tidy(raw);
+                    if (l.Length == 0) return;
+                    if (!any && lines.Count > 0 && lines[^1].Length > 0) lines.Add("");
+                    lines.Add(l);
+                    any = true;
+                }
+            }
+            while (lines.Count > 0 && lines[^1].Length == 0) lines.RemoveAt(lines.Count - 1);
+            return lines;
+
+            static string Tidy(string s) => System.Text.RegularExpressions.Regex.Replace(s, "\\s+", " ").Trim();
+        }
+
+        /// <summary>"Playing Abbey Road, 17 songs", and the like for Shuffle and Play next.</summary>
+        public static string PlayAllSaid(string how, string name, int count)
+        {
+            var songs = count == 1 ? "1 song" : $"{count} songs";
+            return how switch
+            {
+                "shuffle" => $"Shuffling {name}, {songs}",
+                "next" => $"{name} plays next, {songs}",
+                _ => $"Playing {name}, {songs}",
+            };
+        }
+
         /// <summary>
         /// A folder's rows in memory grew without anyone opening it (a station
         /// playing on past its end), so a pane showing it can put them on screen.
@@ -690,7 +828,9 @@ namespace ExplorerNative
                     catch (AppleMusicException ex) when (ex.NotFound)
                     {
                         // Deleted on another device since the menu was made.
-                        lock (Gate) _playlists?.RemoveAll(p => p.Id == playlist.Id);
+                        // A new list, never the shared one changed in place (see CreatePlaylistAsync).
+                        lock (Gate)
+                            if (_playlists != null) _playlists = _playlists.Where(p => p.Id != playlist.Id).ToList();
                         throw new AppleMusicException($"{playlist.Name} isn't in your library any more");
                     }
                 }
@@ -1110,6 +1250,9 @@ namespace ExplorerNative
             }
             RenameAll();
         }
+
+        /// <summary>Your playlists as if Apple had listed them.</summary>
+        internal static void SetPlaylistsForTests(List<AppleMusicItem> all) => KeepPlaylists(all);
 
         /// <summary>Signs in with a fake token so the offline folders (top, Library) list.</summary>
         internal static void ConfigureForTests(string token = "test-token") => Configure(token);

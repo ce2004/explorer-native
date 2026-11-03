@@ -1411,6 +1411,11 @@ namespace ExplorerNative
                 ShowUpNext();
                 return;
             }
+            if (action == AudioAction.Lyrics)
+            {
+                ShowLyrics();
+                return;
+            }
 
             // Apple Music plays in its own player, so the same keys drive it while
             // it is the thing playing. The sound is sealed, so the processing
@@ -1656,6 +1661,40 @@ namespace ExplorerNative
         private static string _deviceName = "";
 
         /// <summary>Apple Music's Up next: the songs to come, to reorder, take out, play or clear (4.1.6).</summary>
+        private bool _lyricsBusy;
+
+        /// <summary>The playing Apple Music song's lyrics, in a window to read line by line (5.1.0).</summary>
+        private async void ShowLyrics()
+        {
+            if (_lyricsBusy) return;
+            var path = AppleMusicPlayer.CurrentPath;
+            if (!AppleMusicPlayer.IsActive || string.IsNullOrEmpty(path))
+            {
+                SayAudio("applemusic.lyrics", "Nothing from Apple Music is playing");
+                return;
+            }
+            _lyricsBusy = true;
+            try
+            {
+                using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(20));
+                var lines = await AppleMusic.LyricsAsync(path, cts.Token);
+                if (lines == null)
+                {
+                    SayAudio("applemusic.lyrics", "Apple Music has no lyrics for this song.");
+                    return;
+                }
+                var title = AppleMusic.SpokenName(path) ?? AppleMusicPlayer.CurrentName;
+                using var dialog = new LyricsForm(title, lines);
+                if (_form is { IsDisposed: false, Visible: true }) dialog.ShowDialog(_form);
+                else dialog.ShowDialog();
+                _form?.RestoreListFocusExternally();
+            }
+            catch (AppleMusicException ex) { SayAudio("applemusic.failed", ex.Message); }
+            catch (OperationCanceledException) { SayAudio("applemusic.failed", "Apple Music took too long to answer."); }
+            catch (Exception ex) { SayAudio("applemusic.failed", "Apple Music couldn't get the lyrics: " + ex.Message); }
+            finally { _lyricsBusy = false; }
+        }
+
         private void ShowUpNext()
         {
             if (!AppleMusicPlayer.IsActive)
@@ -2219,6 +2258,29 @@ namespace ExplorerNative
             var said = AppleMusicPlayer.CycleRepeat();
             _settings.AppleMusicRepeat = AppleMusicPlayer.Repeat.ToString().ToLowerInvariant();
             Notify("applemusic.repeat", said);
+        }
+
+        /// <summary>Play or Shuffle on an album, playlist or artist row (5.1.0): its songs, the first now.</summary>
+        public void PlayAppleMusicList(List<string> songs, string? folder, bool shuffle, string said)
+        {
+            if (!_settings.AudioPlayerEnabled)
+            {
+                Notify("applemusic.failed", "Turn the audio player on in Preferences to play Apple Music");
+                return;
+            }
+            _playRequest = System.Threading.Interlocked.Increment(ref _playRequest);
+            _audio.CancelOpening();
+            if (_audio.HasTrack) _audio.Stop();
+            AppleMusicPlayer.SetOutputDevice(OutputDeviceName(_settings.AudioOutputDeviceId));
+            if (AppleMusicPlayer.PlayList(songs, folder, shuffle, Math.Min(100, _settings.AudioVolumePercent)))
+                Notify("applemusic.playall", said);
+        }
+
+        /// <summary>Play next on an album, playlist or artist row: after the song playing, or now when nothing is.</summary>
+        public void PlayAppleMusicListNext(List<string> songs, string? folder, string said, string saidIfNow)
+        {
+            if (AppleMusicPlayer.PlayListAfterCurrent(songs)) Notify("applemusic.playall", said);
+            else PlayAppleMusicList(songs, folder, shuffle: false, saidIfNow);
         }
 
         public void PlayAppleMusicNext(string path)

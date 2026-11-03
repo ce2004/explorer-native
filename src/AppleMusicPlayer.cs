@@ -145,7 +145,8 @@ namespace ExplorerNative
 
         public static bool IsPlaying
         {
-            get { lock (Gate) return _playing; }
+            // A song still loading that was asked to play is not "Paused".
+            get { lock (Gate) return _playing || _wantPlaying; }
         }
 
         /// <summary>Must be called once on the UI thread (the tray does this) so the host can live there.</summary>
@@ -402,6 +403,65 @@ namespace ExplorerNative
             Log("play next " + id);
             OnUi(() => _ = CallAsync("requeue", id, gen));
             return name + " plays next";
+        }
+
+        /// <summary>
+        /// Play or Shuffle on an album, playlist or artist row (5.1.0): the first
+        /// song now, the rest as the queue, all of them shuffled for Shuffle.
+        /// <paramref name="folder"/> is where Repeat all refills from (null: no refill).
+        /// </summary>
+        public static bool PlayList(List<string> songs, string? folder, bool shuffle, int volumePercent = -1)
+        {
+            var order = songs.ToList();
+            if (order.Count == 0) return false;
+            if (shuffle) Shuffled(order);
+            var first = order[0];
+            string id, name;
+            try
+            {
+                id = AppleMusic.CatalogIdForPlaying(first);
+                name = AppleMusic.SpokenName(first) ?? Path.GetFileName(first);
+            }
+            catch (AppleMusicException ex) { Say?.Invoke("applemusic.failed", ex.Message); return false; }
+            lock (Gate)
+            {
+                _upNext.RemoveAll(p => string.Equals(p, first, StringComparison.OrdinalIgnoreCase));
+                _anchor = first;
+                _history.Clear(); _history.Add(first);
+                _listFolder = folder;
+                _listQueue = order.Skip(1).ToList();
+            }
+            Start(first, id, name, volumePercent, startAt: 0, retried: false, how: StartKind.Back);
+            return true;
+        }
+
+        /// <summary>
+        /// Play next on an album, playlist or artist row: all its songs after the
+        /// one playing, in order, ahead of anything chosen before. False when
+        /// nothing is playing (they should play now instead).
+        /// </summary>
+        public static bool PlayListAfterCurrent(List<string> songs)
+        {
+            if (songs.Count == 0) return true;
+            string id, name; int gen;
+            try
+            {
+                id = AppleMusic.CatalogIdForPlaying(songs[0]);
+                name = AppleMusic.SpokenName(songs[0]) ?? Path.GetFileName(songs[0]);
+            }
+            catch (AppleMusicException) { return false; }
+            lock (Gate)
+            {
+                if (_currentPath.Length == 0 || _ended) return false;
+                _upNext.RemoveAll(p => songs.Contains(p, StringComparer.OrdinalIgnoreCase));
+                _upNext.InsertRange(0, songs);
+                if (_queuedPath != null && _queuedId != id) { _displacedPath = _queuedPath; _displacedId = _queuedId; }
+                _queuedPath = songs[0]; _queuedId = id; _queuedName = name;
+                gen = _generation;
+            }
+            Log("play next, " + songs.Count + " songs");
+            OnUi(() => _ = CallAsync("requeue", id, gen));
+            return true;
         }
 
         /// <summary>
@@ -888,15 +948,12 @@ namespace ExplorerNative
         /// <summary>"Title by Artist, 1 minute 20 of 3 minutes 5", like the built-in player's.</summary>
         public static string Describe()
         {
-            lock (Gate)
-            {
-                if (_currentPath.Length == 0) return "Nothing is playing";
-                var where = _durationSeconds > 0
-                    ? $", {AudioPlayer.SpokenTime(_positionSeconds)} of {AudioPlayer.SpokenTime(_durationSeconds)}"
-                    : "";
-                return (_playing ? "" : "Paused, ") + _currentName + where;
-            }
+            string path, name; double at, length; bool playing;
+            lock (Gate) { path = _currentPath; name = _currentName; at = _positionSeconds; length = _durationSeconds; playing = _playing || _wantPlaying; }
+            return AppleMusicPlayState.DescribeNow(path, name, at, length, playing);
         }
+
+        private static double LengthOf(string path, double reported) => AppleMusicPlayState.LengthOf(path, reported);
 
         public static string DescribeElapsed()
         {
@@ -905,14 +962,19 @@ namespace ExplorerNative
 
         public static string DescribeRemaining()
         {
-            lock (Gate) return _currentPath.Length == 0 || _durationSeconds <= 0 ? "Nothing is playing"
-                : AudioPlayer.SpokenTime(Math.Max(0, _durationSeconds - _positionSeconds)) + " left";
+            string path; double at, length;
+            lock (Gate) { path = _currentPath; at = _positionSeconds; length = _durationSeconds; }
+            length = LengthOf(path, length);
+            return path.Length == 0 || length <= 0 ? "Nothing is playing"
+                : AudioPlayer.SpokenTime(Math.Max(0, length - at)) + " left";
         }
 
         public static string DescribeTotal()
         {
-            lock (Gate) return _currentPath.Length == 0 || _durationSeconds <= 0 ? "Nothing is playing"
-                : AudioPlayer.SpokenTime(_durationSeconds) + " in all";
+            string path; double length;
+            lock (Gate) { path = _currentPath; length = _durationSeconds; }
+            length = LengthOf(path, length);
+            return path.Length == 0 || length <= 0 ? "Nothing is playing" : AudioPlayer.SpokenTime(length) + " in all";
         }
 
         // ---- Play-on ----
@@ -1392,6 +1454,8 @@ namespace ExplorerNative
                             break;
                         }
                         string path, name; lock (Gate) { path = _currentPath; name = _currentName; }
+                        // Nothing loaded (after Stop or a failure): a late error is about nothing.
+                        if (!AppleMusicPlayState.ErrorMatters(path)) { Log("error with nothing loaded ignored"); break; }
                         int failed = gen == 0 ? Volatile.Read(ref _generation) : gen;
                         var sentence = Sentence(code, msg);
                         // Playing on by itself into a song Apple won't play: say so

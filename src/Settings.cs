@@ -675,6 +675,8 @@ namespace ExplorerNative
         // Apple Music's shuffle and Up next (4.1.6): no key until one is chosen.
         public string AudioShuffleShortcut { get; set; } = "";
         public string AudioUpNextShortcut { get; set; } = "";
+        // Apple Music lyrics (5.1.0): no key until one is chosen.
+        public string AudioLyricsShortcut { get; set; } = "";
 
         /// <summary>
         /// Audio actions whose shortcut works only while one of this application's
