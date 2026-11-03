@@ -37,6 +37,218 @@ namespace ExplorerNative
             DriveMessagesGoToThePhone();
             StaleDriveDownloadIsNotReused();
             await FunnelAndRenamedHost();
+            await PcPlayerRoutes();
+            PcPlayerPage();
+            await TrashRoutes();
+            TrashPage();
+        }
+
+        // MARK: Features
+
+        /// <summary>The PC's player from the phone: state, buttons and Play on PC, behind the code and origin checks.</summary>
+        private static async Task PcPlayerRoutes()
+        {
+            foreach (var (name, action) in new[] { ("playpause", AudioAction.PlayPause), ("previous", AudioAction.PreviousTrack),
+                         ("next", AudioAction.NextTrack), ("back", AudioAction.SeekBackward), ("forward", AudioAction.SeekForward),
+                         ("volumedown", AudioAction.VolumeDown), ("volumeup", AudioAction.VolumeUp) })
+                Check($"the {name} button runs the desktop's {action}", ConnectServer.PlayerAction(name) == action);
+            Check("anything else is no button", ConnectServer.PlayerAction("stop") == null && ConnectServer.PlayerAction(null) == null);
+
+            var dir = Path.Combine(Path.GetTempPath(), "en-r510web-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            var song = Path.Combine(dir, "song.flac");
+            File.WriteAllBytes(song, new byte[10]);
+            var player = new FakePlayer();
+            int port = FreePort();
+            var server = new ConnectServer(_ => null, p => new FileRangeSource(p), () => Code, loopbackOnly: true, port: port,
+                files: new FakeFiles(), player: player);
+            try
+            {
+                server.Start();
+                if (!await WaitForListener(port)) { Check("the player server listens", false); return; }
+                using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}"), Timeout = TimeSpan.FromSeconds(20) };
+
+                var (status, body) = await Call(http, HttpMethod.Get, "/api/pc/player");
+                Check("the PC player's state is answered", status == 200 && body.GetProperty("title").GetString() == "Song" &&
+                      body.GetProperty("artist").GetString() == "Artist" && body.GetProperty("playing").GetBoolean() &&
+                      body.GetProperty("length").GetDouble() == 200 && body.GetProperty("seekSeconds").GetInt32() == 10, $"{status} {body}");
+
+                (status, body) = await Call(http, HttpMethod.Post, "/api/pc/player/action", new { action = "playpause" });
+                Check("Play/Pause runs PlayPause on the PC and answers with the new state",
+                      status == 200 && player.Ran.SequenceEqual(new[] { AudioAction.PlayPause }) && !body.GetProperty("playing").GetBoolean(),
+                      $"{status} {string.Join(",", player.Ran)}");
+                (status, _) = await Call(http, HttpMethod.Post, "/api/pc/player/action", new { action = "format" });
+                Equal("an unknown button is refused", "400", status.ToString());
+                (status, _) = await Call(http, HttpMethod.Get, "/api/pc/player/action");
+                Equal("a button is a POST", "405", status.ToString());
+                (status, _) = await Call(http, HttpMethod.Post, "/api/pc/player/action", new { action = "next" }, code: "");
+                Equal("without the pairing code it is refused", "401", status.ToString());
+                (status, _) = await Call(http, HttpMethod.Post, "/api/pc/player/action", new { action = "next" }, origin: "https://evil.example.com");
+                Equal("from another site it is refused", "403", status.ToString());
+                Check("and neither ran anything", player.Ran.Count == 1, string.Join(",", player.Ran));
+
+                (status, _) = await Call(http, HttpMethod.Post, "/api/pc/player/play", new { path = song });
+                Check("Play on PC plays that file on the PC", status == 200 && player.Played == song, $"{status} {player.Played}");
+                (status, _) = await Call(http, HttpMethod.Post, "/api/pc/player/play", new { path = Path.Combine(dir, "notes.txt") });
+                Equal("a file the player doesn't play is refused", "400", status.ToString());
+                player.Off = true;
+                (status, body) = await Call(http, HttpMethod.Post, "/api/pc/player/play", new { path = song });
+                Check("with the player off it says so", status == 409 && body.GetProperty("error").GetString()!.Contains("turned off"), $"{status}");
+
+                (status, body) = await Call(http, HttpMethod.Get, "/api/formats");
+                Check("the page is told the PC player is there", status == 200 && body.GetProperty("pcPlayer").GetBoolean());
+            }
+            finally { server.Dispose(); try { Directory.Delete(dir, true); } catch { } }
+
+            port = FreePort();
+            var without = new ConnectServer(_ => null, p => new FileRangeSource(p), () => Code, loopbackOnly: true, port: port, files: new FakeFiles());
+            try
+            {
+                without.Start();
+                if (!await WaitForListener(port)) return;
+                using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}"), Timeout = TimeSpan.FromSeconds(20) };
+                var (status, _) = await Call(http, HttpMethod.Get, "/api/pc/player");
+                Equal("with no player the route is 503", "503", status.ToString());
+            }
+            finally { without.Dispose(); }
+        }
+
+        private static void PcPlayerPage()
+        {
+            var js = File.ReadAllText(Path.Combine(WebDir(), "app.js"));
+            var html = File.ReadAllText(Path.Combine(WebDir(), "index.html"));
+            foreach (var id in new[] { "pc-play", "pc-prev", "pc-next", "pc-back", "pc-fwd", "pc-vol-down", "pc-vol-up" })
+                Check($"the {id} button has a label", Regex(html, "id=\"" + id + "\"[^>]*aria-label=\"[^\"]+\"[^>]*>[^<]+<"));
+            Check("the section opens with a button that says whether it is open", Regex(html, "id=\"pc-toggle\" aria-expanded=\"false\" aria-controls=\"pc-player\""));
+            Check("state is polled every few seconds only while open, on screen and visible",
+                  Regex(js, @"const want = pc\.open && currentTab === 'player' && !document\.hidden;") && Regex(js, @"setInterval\(pcRefresh, 3000\)") &&
+                  Regex(js, @"clearInterval\(pc\.timer\)"));
+            Check("results go through the live region", Regex(js, @"announce\(pcSaid\(action, s\)\)") && js.Contains("s.playing ? 'Playing' : 'Paused'"));
+            Check("an audio file's More has Play on PC", js.Contains("items.push(['playpc', 'Play on PC'])") && js.Contains("case 'playpc': await playOnPc(full, e.name)"));
+            Check("every player fetch has a time limit", Regex(js, @"api\('/api/pc/player', \{ timeout:") && Regex(js, @"api\('/api/pc/player/action'[^\n]*timeout:") &&
+                  Regex(js, @"api\('/api/pc/player/play'[^\n]*timeout:"));
+        }
+
+        /// <summary>Restore from Drive's trash, and Undo after a Drive delete.</summary>
+        private static async Task TrashRoutes()
+        {
+            var files = new FakeFiles { TrashedIds = new[] { "id-a", "id-b" } };
+            int port = FreePort();
+            var server = new ConnectServer(_ => null, p => new FileRangeSource(p), () => Code, loopbackOnly: true, port: port, files: files);
+            try
+            {
+                server.Start();
+                if (!await WaitForListener(port)) { Check("the trash server listens", false); return; }
+                using var http = new HttpClient { BaseAddress = new Uri($"http://127.0.0.1:{port}"), Timeout = TimeSpan.FromSeconds(20) };
+
+                var (status, body) = await Call(http, HttpMethod.Post, "/api/delete", new { paths = new[] { @"Q:\a.flac", @"Q:\b.flac" } });
+                var ticket = status == 200 && body.TryGetProperty("undo", out var u) ? u.GetString() : null;
+                Check("a Drive delete hands back an Undo", !string.IsNullOrEmpty(ticket), $"{status} {body}");
+
+                (status, _) = await Call(http, HttpMethod.Post, "/api/restore", new { undo = ticket }, origin: "https://evil.example.com");
+                Equal("Undo from another site is refused", "403", status.ToString());
+                (status, body) = await Call(http, HttpMethod.Post, "/api/restore", new { undo = ticket });
+                Check("Undo puts back exactly what that delete trashed",
+                      status == 200 && body.GetProperty("restored").GetInt32() == 2 && string.Join(",", files.Untrashed) == "id-a,id-b", $"{status} {body}");
+                (status, _) = await Call(http, HttpMethod.Post, "/api/restore", new { undo = ticket });
+                Equal("an Undo works once", "410", status.ToString());
+                (status, _) = await Call(http, HttpMethod.Post, "/api/restore", new { undo = "made-up" });
+                Equal("a made-up Undo does nothing", "410", status.ToString());
+
+                files.TrashedIds = Array.Empty<string>();
+                (status, body) = await Call(http, HttpMethod.Post, "/api/delete", new { paths = new[] { @"C:\x.txt" } });
+                Check("a delete with nothing trashed on Drive offers no Undo", status == 200 && body.GetProperty("undo").ValueKind == JsonValueKind.Null, $"{body}");
+
+                (status, body) = await Call(http, HttpMethod.Post, "/api/restore", new { paths = new[] { @"Q:\Trash\a.flac" } });
+                Check("Restore restores the named items", status == 200 && body.GetProperty("restored").GetInt32() == 1 &&
+                      files.Restored.SequenceEqual(new[] { @"Q:\Trash\a.flac" }), $"{status} {body}");
+                (status, _) = await Call(http, HttpMethod.Post, "/api/restore", new { paths = new[] { @"Q:\Trash\a.flac" } }, code: "");
+                Equal("Restore needs the pairing code", "401", status.ToString());
+                (status, _) = await Call(http, HttpMethod.Get, "/api/restore");
+                Equal("Restore is a POST", "405", status.ToString());
+
+                (status, body) = await Call(http, HttpMethod.Get, "/api/formats");
+                Check("the page is told where Drive's trash is", status == 200 && body.GetProperty("trash")[0].GetString() == @"Q:\Trash", $"{body}");
+            }
+            finally { server.Dispose(); }
+
+            Check("an Undo lasts longer than the phone offers it", ConnectServer.UndoFor >= TimeSpan.FromSeconds(10));
+        }
+
+        private static void TrashPage()
+        {
+            var js = File.ReadAllText(Path.Combine(WebDir(), "app.js"));
+            Check("More offers Restore straight inside Drive's trash", js.Contains("if (inDriveTrash(full)) items.push(['restore', 'Restore'])"));
+            Check("and calls Delete there Delete forever", js.Contains("underDriveTrash(full) ? ['delete', 'Delete forever']"));
+            Check("Delete in the trash says plainly that it deletes forever", Regex(js, @"if \(paths\.some\(underDriveTrash\)\)\s*\{\s*await dialog\(\{ title: 'Delete forever', body: 'Deleting from the Google Drive trash deletes it forever"));
+            Check("after a Drive delete the phone says Undo is there", js.Contains("'Moved to Google Drive trash. Undo is available.'") && js.Contains("if (r.undo) offerUndo(r.undo)"));
+            Check("for about ten seconds", Regex(js, @"undoTimer = setTimeout\(hideUndo, 10000\)"));
+            Check("and a hidden Undo button gives focus back", Regex(js, @"if \(had\) \$\('files-title'\)\.focus\(\)"));
+            var html = File.ReadAllText(Path.Combine(WebDir(), "index.html"));
+            Check("the Undo button names what it undoes", html.Contains("id=\"btn-undo\" hidden>Undo delete<"));
+        }
+
+        private sealed class FakePlayer : IConnectPlayer
+        {
+            public readonly List<AudioAction> Ran = new();
+            public string? Played;
+            public bool Off;
+            private bool _playing = true;
+            public ConnectPlayerState State() => new(true, _playing, "Song", "Artist", 12, 200, 50, false, false, 10);
+            public Task<ConnectPlayerState> RunAsync(AudioAction action, CancellationToken token)
+            {
+                Ran.Add(action);
+                if (action == AudioAction.PlayPause) _playing = !_playing;
+                return Task.FromResult(State());
+            }
+            public Task<bool> PlayFileAsync(string path, CancellationToken token) { Played = path; return Task.FromResult(!Off); }
+        }
+
+        private sealed class FakeFiles : IConnectFiles
+        {
+            public IReadOnlyList<string> TrashedIds = Array.Empty<string>();
+            public readonly List<string> Untrashed = new();
+            public readonly List<string> Restored = new();
+            public string? Unavailable(string path) => null;
+            public (long Used, long Limit)? DriveQuota() => null;
+            public Task<ConnectSize> SizeAsync(string folder, CancellationToken token) => Task.FromResult(new ConnectSize(folder, 0, 0, 0, true));
+            public Task<ConnectStat> StatAsync(string path, CancellationToken token) => Task.FromResult(new ConnectStat(path, "x", true, 0, DateTime.UtcNow, DateTime.UtcNow, false, false));
+            public Task<string> RenameAsync(string path, string newName, CancellationToken token) => Task.FromResult(path);
+            public Task<string> CreateFolderAsync(string parent, string name, CancellationToken token) => Task.FromResult(parent);
+            public Task<ConnectDeleted> DeleteAsync(IReadOnlyList<string> paths, CancellationToken token) =>
+                Task.FromResult(new ConnectDeleted(paths.Count, Array.Empty<ConnectFailure>()) { Trashed = TrashedIds });
+            public void CheckTransfer(IReadOnlyList<string> paths, string destination, bool move) { }
+            public Task TransferAsync(ConnectJob job, IReadOnlyList<string> paths, string destination, bool move, PasteConflictPolicy conflict) => Task.CompletedTask;
+            public Task<string> UploadAsync(string folder, string name, PasteConflictPolicy conflict, Stream body, CancellationToken token) => Task.FromResult(folder);
+            public bool OnDrive(string path) => path.StartsWith("Q:", StringComparison.OrdinalIgnoreCase);
+            public Task<string> PlaceFileAsync(string file, string folder, string name, PasteConflictPolicy conflict, Action<long, long>? progress, CancellationToken token) => Task.FromResult(folder);
+            public IReadOnlyList<string> AudioExtensions() => new[] { ".flac" };
+            public Task<Dictionary<string, object?>> DetailsAsync(string path, ConnectStat stat, bool hash, CancellationToken token) => Task.FromResult(new Dictionary<string, object?>());
+            public IReadOnlyList<string> TrashFolders() => new[] { @"Q:\Trash" };
+            public Task<ConnectDeleted> RestoreAsync(IReadOnlyList<string> paths, CancellationToken token)
+            {
+                Restored.AddRange(paths);
+                return Task.FromResult(new ConnectDeleted(paths.Count, Array.Empty<ConnectFailure>()));
+            }
+            public Task<int> UndoTrashAsync(IReadOnlyList<string> ids, CancellationToken token)
+            {
+                Untrashed.AddRange(ids);
+                return Task.FromResult(ids.Count);
+            }
+        }
+
+        private static async Task<(int Status, JsonElement Body)> Call(HttpClient http, HttpMethod method, string url, object? body = null,
+            string code = Code, string? origin = null)
+        {
+            var request = new HttpRequestMessage(method, url);
+            if (code.Length > 0) request.Headers.Add("X-Connect-Code", code);
+            if (origin != null) request.Headers.Add("Origin", origin);
+            if (body != null) request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
+            var r = await http.SendAsync(request);
+            var text = await r.Content.ReadAsStringAsync();
+            JsonElement parsed = default;
+            try { parsed = JsonDocument.Parse(text.Length == 0 ? "{}" : text).RootElement; } catch { parsed = JsonDocument.Parse("{}").RootElement; }
+            return ((int)r.StatusCode, parsed);
         }
 
         // MARK: Bugs
