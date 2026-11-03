@@ -159,6 +159,15 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            // 5.1.0: release510 runs every area, release510drive (and so on) one.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") is string release510
+                && release510.StartsWith("release510", StringComparison.Ordinal))
+            {
+                await RunRelease510(release510.Substring("release510".Length));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             // The 5.0.0 sweep: sweep500 runs every area, sweep500mount (and so on) one.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") is string sweep500
                 && sweep500.StartsWith("sweep500", StringComparison.Ordinal))
@@ -624,12 +633,29 @@ namespace ExplorerNative
             await Guard("Sweep309DecoderTests", () => { Sweep309DecoderTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("SyncHardeningTests", () => SyncHardeningTests.RunAll(Check, Equal));
             await RunSweep500("");
+            await RunRelease510("");
 
             Console.WriteLine($"\n{_passed} passed, {_failed} failed");
             return _failed == 0 ? 0 : 1;
         }
 
         /// <summary>The 5.0.0 sweep's areas, all of them or the one named.</summary>
+        private static async Task RunRelease510(string only)
+        {
+            var areas = new (string Key, Func<Task> Run)[]
+            {
+                ("drive", () => Release510DriveTests.RunAll(Check, Equal)),
+                ("main", () => Release510MainTests.RunAll(Check, Equal)),
+                ("archives", () => Release510ArchivesTests.RunAll(Check, Equal)),
+                ("playback", () => Release510PlaybackTests.RunAll(Check, Equal)),
+                ("applemusic", () => Release510AppleMusicTests.RunAll(Check, Equal)),
+                ("web", () => Release510WebTests.RunAll(Check, Equal)),
+                ("files", () => Release510FilesTests.RunAll(Check, Equal)),
+            };
+            foreach (var (key, run) in areas)
+                if (only.Length == 0 || only == key) await Guard("Release510-" + key, run);
+        }
+
         private static async Task RunSweep500(string only)
         {
             var areas = new (string Key, Func<Task> Run)[]
