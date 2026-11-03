@@ -659,6 +659,7 @@ namespace ExplorerNative
         {
             if (_offeringWinFsp || _quitting) return;
             _offeringWinFsp = true;
+            bool installing = false;
             try
             {
                 var body = "Google Drive needs WinFsp, a free driver that lets Explorer Native show Google Drive " +
@@ -681,17 +682,23 @@ namespace ExplorerNative
                 }
 
                 Notify("drive.winfsp.installing", "Installing WinFsp");
+                // Stays set until the install ends, so pressing Connect during a
+                // slow download cannot start a second install on the same file.
+                installing = true;
                 _ = System.Threading.Tasks.Task.Run(async () =>
                 {
-                    var problem = await WinFspSetup.InstallAsync(GoogleDrive.Trace, CancellationToken.None);
+                    string? problem;
+                    try { problem = await WinFspSetup.InstallAsync(GoogleDrive.Trace, CancellationToken.None); }
+                    catch (Exception ex) { problem = ex.Message; }
                     PostUi(() =>
                     {
+                        _offeringWinFsp = false;
                         if (problem != null) TurnOffDriveWithoutWinFsp(problem);
                         else if (_settings.GoogleDriveEnabled && !_quitting) MountGoogleDrive();
                     });
                 });
             }
-            finally { _offeringWinFsp = false; }
+            finally { if (!installing) _offeringWinFsp = false; }
         }
 
         /// <summary>
