@@ -31,7 +31,133 @@ namespace ExplorerNative
             DamageWordInNames();
             IdleCacheSwept();
             HardLinkSizes();
-            await Task.CompletedTask;
+            await ProtectedArchives();
+        }
+
+        // ---------- Feature A: password-protected archives ----------
+
+        /// <summary>Makes an archive with the bundled 7za. Test-only: the password is on its command line.</summary>
+        internal static bool Make7za(string archive, IEnumerable<string> switches, params string[] files)
+        {
+            var exe = BsdTar.SevenZipExecutable;
+            if (exe == null) return false;
+            var start = new System.Diagnostics.ProcessStartInfo(exe)
+            {
+                UseShellExecute = false, CreateNoWindow = true,
+                RedirectStandardOutput = true, RedirectStandardError = true,
+            };
+            start.ArgumentList.Add("a");
+            foreach (var s in switches) start.ArgumentList.Add(s);
+            start.ArgumentList.Add("-sccUTF-8");
+            start.ArgumentList.Add(archive);
+            foreach (var f in files) start.ArgumentList.Add(f);
+            using var p = System.Diagnostics.Process.Start(start)!;
+            p.StandardOutput.ReadToEnd();
+            p.StandardError.ReadToEnd();
+            p.WaitForExit(60000);
+            return p.ExitCode == 0 && File.Exists(archive);
+        }
+
+        /// <summary>An asker that gives the answers in turn and notes each question.</summary>
+        internal static List<string> FakeAsker(params string?[] answers)
+        {
+            var asked = new List<string>();
+            var queue = new Queue<string?>(answers);
+            ArchivePasswords.Asker = (path, wrong) =>
+            {
+                lock (asked) asked.Add(wrong ? ArchivePasswords.WrongSaid(path) : ArchivePasswords.Question(path));
+                return queue.Count > 0 ? queue.Dequeue() : null;
+            };
+            return asked;
+        }
+
+        private static async Task ProtectedArchives()
+        {
+            if (BsdTar.SevenZipExecutable == null) { Check("7-Zip is bundled for the password tests", false); return; }
+            var dir = Scratch();
+            var before = ArchivePasswords.Asker;
+            var logBefore = Environment.GetEnvironmentVariable("EXPLORERNATIVE_TRANSFERLOG");
+            const string secret = "Tr0ub4dor-x9";
+            try
+            {
+                var src = Path.Combine(dir, "src");
+                Directory.CreateDirectory(src);
+                var a = Path.Combine(src, "a.txt");
+                var b = Path.Combine(src, "b.txt");
+                File.WriteAllText(a, "hello");
+                File.WriteAllText(b, "world");
+
+                var hidden = Path.Combine(dir, "photos.7z");
+                var aes = Path.Combine(dir, "aes.zip");
+                var crypto = Path.Combine(dir, "crypto.zip");
+                var accented = Path.Combine(dir, "accented.7z");
+                Check("7za makes a 7z with hidden names", Make7za(hidden, new[] { "-t7z", "-p" + secret, "-mhe=on" }, a, b));
+                Check("7za makes an AES zip", Make7za(aes, new[] { "-tzip", "-p" + secret, "-mem=AES256" }, a, b));
+                Check("7za makes a ZipCrypto zip", Make7za(crypto, new[] { "-tzip", "-p" + secret, "-mem=ZipCrypto" }, a, b));
+                Check("7za makes a 7z with an accented password", Make7za(accented, new[] { "-t7z", "-pPässwörd", "-mhe=on" }, a));
+
+                ArchivePasswords.ForgetAll();
+                var log = Path.Combine(dir, "transfer.log");
+                Environment.SetEnvironmentVariable("EXPLORERNATIVE_TRANSFERLOG", log);
+
+                // A wrong password is said plainly and asked again.
+                var asked = FakeAsker("wrong one", secret);
+                var into = Path.Combine(dir, "out7z");
+                var result = await ArchiveEngine.ExtractAsync(hidden, into, PasteConflictPolicy.AutoRename, null, 2, null, CancellationToken.None);
+                Equal("a 7z with hidden names comes out with the password", "hello",
+                    File.Exists(Path.Combine(into, "a.txt")) ? File.ReadAllText(Path.Combine(into, "a.txt")) : "missing");
+                Equal("and nothing failed", "0", result.Failed.ToString());
+                Equal("it asked twice", "photos.7z needs a password | That password is not right for photos.7z. Type it again",
+                    string.Join(" | ", asked));
+                Check("the wrong try left nothing behind", !File.Exists(Path.Combine(into, "a (2).txt")) &&
+                    !Directory.EnumerateDirectories(into, ".extracting-*").Any());
+
+                // Remembered for the session: browsing the same archive asks nothing.
+                var listing = ArchiveBrowser.Open(hidden, null, CancellationToken.None);
+                Check("browsing it afterwards shows its files", listing.Find("b.txt") != null);
+                Equal("without asking again", "2", asked.Count.ToString());
+                Environment.SetEnvironmentVariable("EXPLORERNATIVE_TRANSFERLOG", logBefore);
+                var logged = File.Exists(log) ? File.ReadAllText(log) : "";
+                Check("the transfer log was written", logged.Contains("7-Zip extract", StringComparison.Ordinal));
+                Check("and the password is not in it", !logged.Contains(secret, StringComparison.Ordinal));
+
+                // AES zip: browsing and opening one file inside.
+                asked = FakeAsker(secret);
+                var zipListing = ArchiveBrowser.Open(aes, null, CancellationToken.None);
+                var opened = ArchiveBrowser.ExtractOne(zipListing, "a.txt", null, CancellationToken.None);
+                Equal("a file inside an AES zip opens", "hello", File.ReadAllText(opened));
+                Equal("after one question", "aes.zip needs a password", string.Join(" | ", asked));
+
+                // ZipCrypto zip, extracted whole.
+                asked = FakeAsker(secret);
+                var intoZip = Path.Combine(dir, "outzip");
+                result = await ArchiveEngine.ExtractAsync(crypto, intoZip, PasteConflictPolicy.AutoRename, null, 2, null, CancellationToken.None);
+                Equal("a ZipCrypto zip comes out", "world",
+                    File.Exists(Path.Combine(intoZip, "b.txt")) ? File.ReadAllText(Path.Combine(intoZip, "b.txt")) : "missing");
+
+                // A password outside ASCII.
+                FakeAsker("Pässwörd");
+                var intoAccent = Path.Combine(dir, "outaccent");
+                await ArchiveEngine.ExtractAsync(accented, intoAccent, PasteConflictPolicy.AutoRename, null, 2, null, CancellationToken.None);
+                Check("a password with accents works", File.Exists(Path.Combine(intoAccent, "a.txt")));
+
+                // Cancel stops quietly and leaves no folder.
+                ArchivePasswords.ForgetAll();
+                FakeAsker((string?)null);
+                var intoCancel = Path.Combine(dir, "outcancel");
+                bool declined = false;
+                try { await ArchiveEngine.ExtractAsync(hidden, intoCancel, PasteConflictPolicy.AutoRename, null, 2, null, CancellationToken.None); }
+                catch (ArchivePasswords.Declined) { declined = true; }
+                Check("cancelling the question stops the extraction", declined);
+                Check("and leaves no folder behind", !Directory.Exists(intoCancel));
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("EXPLORERNATIVE_TRANSFERLOG", logBefore);
+                ArchivePasswords.Asker = before;
+                ArchivePasswords.ForgetAll();
+                Clean(dir);
+            }
         }
 
         private static void WriteTar(string path, System.Formats.Tar.TarEntryFormat format,

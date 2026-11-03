@@ -102,6 +102,18 @@ namespace ExplorerNative
         /// Shows the prompt and returns what was typed, or null if it was
         /// cancelled or left empty.
         /// </summary>
+        /// <summary>
+        /// Asks for a password: the box shows dots and nothing is trimmed.
+        /// Returns null if cancelled or left empty.
+        /// </summary>
+        public static string? AskPassword(IWin32Window? owner, string title, string label)
+        {
+            using var dialog = new PromptForm(title, label, "");
+            dialog._box.UseSystemPasswordChar = true;
+            if (dialog.ShowDialog(owner) != DialogResult.OK) return null;
+            return dialog._box.Text.Length == 0 ? null : dialog._box.Text;
+        }
+
         public static string? Ask(IWin32Window owner, string title, string label,
                                   string initial = "", bool selectStem = false)
         {

@@ -302,29 +302,7 @@ namespace ExplorerNative
 
             try
             {
-                var start = SevenZipStart(exe);
-                // -aos keeps the first of two entries with one name, as the other
-                // readers do. A password is given so a protected archive fails
-                // with "Wrong password" instead of waiting for one to be typed.
-                // A tar.xz or tar.bz2 is two steps: one 7-Zip decompresses to
-                // its standard output, and a second reads the tar from it.
-                foreach (var a in compressedTar
-                             ? new[]
-                             {
-                                 "x", "-si", "-ttar", "-y", "-aos", "-bso1", "-bse1", "-bsp0", "-bb1",
-                                 "-sccUTF-8", "-o" + SevenZipPath(staging),
-                             }
-                             : new[]
-                             {
-                                 "x", "-y", "-aos", "-pExplorerNative", $"-mmt{SevenZipThreads}",
-                                 SevenZipMemory, "-bso1", "-bse1", "-bsp1", "-bb1",
-                                 "-sccUTF-8", "-o" + SevenZipPath(staging), "--",
-                             })
-                    start.ArgumentList.Add(a);
-                if (!compressedTar) start.ArgumentList.Add(SevenZipPath(archivePath));
-
-                RoboCopyEngine.Trace($"7-Zip extract: {string.Join(" ", start.ArgumentList)}");
-
+                string? password = compressedTar ? null : ArchivePasswords.Known(archivePath);
                 long archiveBytes = 0;
                 try { archiveBytes = new FileInfo(archivePath).Length; } catch { }
                 long percentNow = 0;
@@ -332,55 +310,100 @@ namespace ExplorerNative
                 int filesSaid = -1;
                 reporter.Estimate(archiveBytes, () => Math.Max(1, archiveBytes) * Interlocked.Read(ref percentNow) / 100);
 
-                bool stalled = false;
+                bool stalled;
                 int exit;
-                List<string> lines;
-                Feeder? feeding = compressedTar
-                    ? new Feeder(exe, new[]
-                    {
-                        "x", "-so", "-y", $"-mmt{SevenZipThreads}", SevenZipMemory,
-                        "-bse2", "-bsp2", "-sccUTF-8", "--", SevenZipPath(archivePath),
-                    }, (p, _, _) => Interlocked.Exchange(ref percentNow, p), token)
-                    : null;
-                try
+                List<string> lines, own;
+                bool locked;
+                while (true)
                 {
-                    (exit, lines) = RunSevenZip(start, token, (percent, _, name) =>
+                    stalled = false;
+                    var start = SevenZipStart(exe);
+                    // -aos keeps the first of two entries with one name, as the other
+                    // readers do. Until a password is known a dummy one is given, so a
+                    // protected archive fails with "Wrong password" instead of waiting.
+                    // A tar.xz or tar.bz2 is two steps: one 7-Zip decompresses to
+                    // its standard output, and a second reads the tar from it.
+                    foreach (var a in compressedTar
+                                 ? new[]
+                                 {
+                                     "x", "-si", "-ttar", "-y", "-aos", "-bso1", "-bse1", "-bsp0", "-bb1",
+                                     "-sccUTF-8", "-o" + SevenZipPath(staging),
+                                 }
+                                 : new[]
+                                 {
+                                     "x", "-y", "-aos", $"-mmt{SevenZipThreads}",
+                                     SevenZipMemory, "-bso1", "-bse1", "-bsp1", "-bb1",
+                                     "-sccUTF-8", "-o" + SevenZipPath(staging), "--",
+                                 })
+                        start.ArgumentList.Add(a);
+                    if (!compressedTar && password == null) start.ArgumentList.Insert(3, "-pExplorerNative");
+                    if (!compressedTar) start.ArgumentList.Add(SevenZipPath(archivePath));
+
+                    RoboCopyEngine.Trace($"7-Zip extract: {string.Join(" ", start.ArgumentList)}");
+
+                    Feeder? feeding = compressedTar
+                        ? new Feeder(exe, new[]
+                        {
+                            "x", "-so", "-y", $"-mmt{SevenZipThreads}", SevenZipMemory,
+                            "-bse2", "-bsp2", "-sccUTF-8", "--", SevenZipPath(archivePath),
+                        }, (p, _, _) => Interlocked.Exchange(ref percentNow, p), token)
+                        : null;
+                    try
                     {
-                        if (feeding == null) Interlocked.Exchange(ref percentNow, percent);
-                        if (name != null) reporter.Starting(name);
-                    }, onLine: line =>
+                        (exit, lines) = RunSevenZip(start, token, (percent, _, name) =>
+                        {
+                            if (feeding == null) Interlocked.Exchange(ref percentNow, percent);
+                            if (name != null) reporter.Starting(name);
+                        }, onLine: line =>
+                        {
+                            // Its summary's "Files: 5", read here rather than from
+                            // the kept lines, which a big archive's may not reach.
+                            var files = SevenZipFilesLine.Match(line.TrimEnd());
+                            if (files.Success && int.TryParse(files.Groups[1].Value, out var count))
+                                Volatile.Write(ref filesSaid, count);
+                            if (!line.StartsWith("- ", StringComparison.Ordinal)) return;
+                            lock (printed) printed.Add((line[2..].Replace('\\', '/'), null));
+                            reporter.Finished(0);
+                        }, feed: feeding != null ? feeding.CopyTo : password != null ? PasswordFeed(password) : null);
+                    }
+                    catch (IOException ex) when (!token.IsCancellationRequested)
                     {
-                        // Its summary's "Files: 5", read here rather than from
-                        // the kept lines, which a big archive's may not reach.
-                        var files = SevenZipFilesLine.Match(line.TrimEnd());
-                        if (files.Success && int.TryParse(files.Groups[1].Value, out var count))
-                            Volatile.Write(ref filesSaid, count);
-                        if (!line.StartsWith("- ", StringComparison.Ordinal)) return;
-                        lock (printed) printed.Add((line[2..].Replace('\\', '/'), null));
-                        reporter.Finished(0);
-                    }, feed: feeding == null ? null : feeding.CopyTo);
-                }
-                catch (IOException ex) when (!token.IsCancellationRequested)
-                {
-                    errors.Add(ex.Message);
-                    (exit, lines, stalled) = (2, new List<string>(), true);
-                }
-                finally { feeding?.Finish(); }
+                        errors.Add(ex.Message);
+                        (exit, lines, stalled) = (2, new List<string>(), true);
+                    }
+                    finally { feeding?.Finish(); }
 
-                // Only the half that wrote the files names entries: the
-                // decompressing half's "Unexpected end of data : x.tar" names
-                // the inner tar, which was said as a damaged entry of its own.
-                var own = new List<string>(lines);
+                    // Only the half that wrote the files names entries: the
+                    // decompressing half's "Unexpected end of data : x.tar" names
+                    // the inner tar, which was said as a damaged entry of its own.
+                    own = new List<string>(lines);
 
-                // The decompressing half's complaints count with the tar's:
-                // a damaged .xz is said by the first, not the second.
-                if (feeding != null)
-                {
-                    lines.AddRange(feeding.Lines);
-                    exit = Math.Max(exit, feeding.ExitCode);
+                    // The decompressing half's complaints count with the tar's:
+                    // a damaged .xz is said by the first, not the second.
+                    if (feeding != null)
+                    {
+                        lines.AddRange(feeding.Lines);
+                        exit = Math.Max(exit, feeding.ExitCode);
+                    }
+
+                    token.ThrowIfCancellationRequested();
+
+                    locked = lines.Any(l => l.Contains("Wrong password", StringComparison.OrdinalIgnoreCase) ||
+                                            l.Contains("Cannot open encrypted archive", StringComparison.OrdinalIgnoreCase));
+                    if (!locked || compressedTar) break;
+
+                    // Protected: ask (once a session per archive), clear what the
+                    // wrong try left in staging, and go again.
+                    var next = ArchivePasswords.Next(archivePath, password);
+                    if (next == null) break;
+                    password = next;
+                    ArchiveBrowser.DeleteTree(staging);
+                    Directory.CreateDirectory(staging);
+                    lock (printed) printed.Clear();
+                    Volatile.Write(ref filesSaid, -1);
+                    Interlocked.Exchange(ref percentNow, 0);
                 }
-
-                token.ThrowIfCancellationRequested();
+                if (!locked && password != null) ArchivePasswords.Remember(archivePath, password);
 
                 // "ERROR: Data Error : dir\f.bin", "ERROR: CRC Failed : f.bin",
                 // "ERROR: Data Error in encrypted file. Wrong password? : f.bin".
@@ -393,8 +416,6 @@ namespace ExplorerNative
                 var links = new List<string>();
                 var notes = new List<string>();
                 bool damaged = false;
-                bool locked = lines.Any(l => l.Contains("Wrong password", StringComparison.OrdinalIgnoreCase) ||
-                                             l.Contains("Cannot open encrypted archive", StringComparison.OrdinalIgnoreCase));
 
                 // A name as the rules see it, without the staging folder, which
                 // is gone by the time anyone reads what was said.
@@ -510,6 +531,17 @@ namespace ExplorerNative
                 RemoveStaging(staging, errors);
             }
         }
+
+        /// <summary>
+        /// Gives 7-Zip a password on its standard input, which it reads when it
+        /// needs one, so it is never on a command line another program can see.
+        /// </summary>
+        private static Action<Stream> PasswordFeed(string password) => input =>
+        {
+            var bytes = new UTF8Encoding(false).GetBytes(password + "\n");
+            input.Write(bytes, 0, bytes.Length);
+            input.Flush();
+        };
 
         private static bool LooksDamagedTo7Zip(string message) =>
             message.Contains("Data Error", StringComparison.OrdinalIgnoreCase) ||

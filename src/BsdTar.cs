@@ -849,9 +849,10 @@ namespace ExplorerNative
             // errors alone cannot say that: a link not made or a repeated name
             // is a note about one entry, not an archive taken only in part.
             var identified = ArchiveFormats.Identify(archivePath);
-            if (UnpacksWithSevenZip(identified))
+            // A protected zip comes here too: 7-Zip has the decryption it needs.
+            if (UnpacksWithSevenZip(identified) || (identified == ArchiveFormats.Zip && SevenZipExecutable != null))
                 return ExtractWithSevenZip(archivePath, destination, policy, ask, reporter, errors, token, stoppedShort,
-                    compressedTar: identified!.Id != "7z", zone: zone);
+                    compressedTar: identified!.Id is not ("7z" or "zip"), zone: zone);
             RequireAvailable();
 
             Directory.CreateDirectory(destination);

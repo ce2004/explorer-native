@@ -355,6 +355,11 @@ namespace ExplorerNative
                         throw new InvalidDataException($"{name} is damaged or incomplete, so it cannot be opened.");
                     }
 
+                    // Protected files: 7-Zip takes the zip out whole with the
+                    // password, as it does a 7z.
+                    if (locked > 0 && BsdTar.SevenZipExecutable != null)
+                        return OpenThroughTree(archivePath, format, key, progress, token);
+
                     // Every file locked is a protected zip, said once, rather
                     // than a folder of rows that each fail on Enter.
                     if (locked > 0 && locked == files) throw new NotSupportedException(ZipEngine.ProtectedMessage);

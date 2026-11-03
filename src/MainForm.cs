@@ -455,6 +455,10 @@ namespace ExplorerNative
         {
             _settings = settings;
 
+            // The window last used asks for archive passwords.
+            ArchivePasswords.Asker = AskArchivePassword;
+            Activated += (_, _) => ArchivePasswords.Asker = AskArchivePassword;
+
             // A walk of C:\Users reaches the Drive sync root under AppData, where
             // every folder is a Drive listing. Not walked, as the web app's
             // sizes are not (ConnectFiles).
@@ -5223,6 +5227,26 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// Asks for a protected archive's password, from a worker. Null means
+        /// the person cancelled. The password is never logged or kept on disk.
+        /// </summary>
+        private string? AskArchivePassword(string archivePath, bool wrong)
+        {
+            if (IsDisposed || !IsHandleCreated) return null;
+            string? typed = null;
+            try
+            {
+                Invoke(() =>
+                {
+                    typed = PromptForm.AskPassword(this, "Password",
+                        wrong ? ArchivePasswords.WrongSaid(archivePath) : ArchivePasswords.Question(archivePath));
+                });
+            }
+            catch (Exception ex) when (ex is ObjectDisposedException or InvalidOperationException) { return null; }
+            return typed;
+        }
+
+        /// <summary>
         /// Runs archive work on a worker with a progress window that appears only
         /// if it takes a while, and says how it ended when it did not finish.
         /// Returns whether it finished, and what it produced.
@@ -5253,6 +5277,11 @@ namespace ExplorerNative
                 {
                     var value = await task;
                     return (true, value);
+                }
+                catch (ArchivePasswords.Declined)
+                {
+                    // Cancelled at the password question: stops quietly.
+                    return (false, default);
                 }
                 catch (OperationCanceledException)
                 {
@@ -10079,7 +10108,9 @@ namespace ExplorerNative
                 catch (Exception ex)
                 {
                     window.Finish();
-                    AnnounceOperation("extract.failed", $"Could not extract: {ex.Message}");
+                    // Cancelled at the password question: nothing to say.
+                    if (ex is not ArchivePasswords.Declined)
+                        AnnounceOperation("extract.failed", $"Could not extract: {ex.Message}");
                     await RefreshDestination(intoNewFolder ? here : destination);
                     RestoreListFocus();
                     return;
