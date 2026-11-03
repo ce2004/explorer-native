@@ -118,7 +118,17 @@ namespace ExplorerNative
             _list.KeyDown += (_, e) =>
             {
                 if (e.KeyCode == Keys.Enter && _pairs.Count > 0) { EditPair(); e.Handled = e.SuppressKeyPress = true; }
-                else if (e.KeyCode == Keys.Delete && _pairs.Count > 0) { RemovePair(); e.Handled = e.SuppressKeyPress = true; }
+                else if (e.KeyCode == Keys.Delete && _pairs.Count > 0)
+                {
+                    e.Handled = e.SuppressKeyPress = true;
+                    // One stray Delete must not forget a folder's records and its kept-on-Drive list.
+                    int at = _list.SelectedIndex;
+                    if (at < 0 || at >= _pairs.Count) return;
+                    var ask = $"Stop syncing {DriveMonitor.DisplayName(_pairs[at])}? No files are deleted, but Explorer Native forgets what it knew about this folder.";
+                    if (MessageBox.Show(this, ask, "Explorer Native", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                            MessageBoxDefaultButton.Button2) == DialogResult.Yes)
+                        RemovePair();
+                }
             };
 
             _list.SelectedIndexChanged += (_, _) => { if (_list.SelectedIndex >= 0) { FillDetails(); ShowButtons(); } };
@@ -760,6 +770,7 @@ namespace ExplorerNative
 
         /// <summary>The list as it stands in the window: each folder, and whether it was added just now.</summary>
         private readonly List<(string Relative, bool New)> _driveOnly = new();
+        private readonly Dictionary<string, List<(string Relative, bool New)>> _absorbed = new();
         private ListBox _driveOnlyList = null!;
         private Button _putBack = null!;
 
@@ -1075,6 +1086,8 @@ namespace ExplorerNative
                             return;
                         }
                         // A folder inside it that was on the list becomes part of it.
+                        // Remembered, so taking this one back out brings them back.
+                        _absorbed[relative] = _driveOnly.Where(d => DriveOnlyFolders.Covers(new[] { relative }, d.Relative)).ToList();
                         _driveOnly.RemoveAll(d => DriveOnlyFolders.Covers(new[] { relative }, d.Relative));
                         _driveOnly.Add((relative, true));
                         ShowDriveOnly(relative);
@@ -1087,7 +1100,10 @@ namespace ExplorerNative
                 {
                     int at = _driveOnlyList.SelectedIndex;
                     if (_driveOnly.Count == 0 || at < 0 || at >= _driveOnly.Count) return;
+                    var gone = _driveOnly[at];
                     _driveOnly.RemoveAt(at);
+                    if (gone.New && _absorbed.Remove(gone.Relative, out var back))
+                        _driveOnly.AddRange(back);
                     ShowDriveOnly();
                     if (_driveOnly.Count > 0) _driveOnlyList.SelectedIndex = Math.Min(at, _driveOnly.Count - 1);
                     _driveOnlyList.Focus();
