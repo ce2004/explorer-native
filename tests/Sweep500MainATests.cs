@@ -137,10 +137,16 @@ namespace ExplorerNative
 
             var context = Body(main, "private void BuildContextMenu()");
             string[] appleOnly = { "_playNextItem", "_favoriteItem", "_addToPlaylistItem", "_goToArtistItem", "_goToAlbumItem",
-                                   "_libraryItem", "_appleShuffleItem", "_appleRepeatItem", "_appleUpNextItem" };
+                                   "_libraryItem", "_appleShuffleItem", "_appleRepeatItem", "_appleUpNextItem",
+                                   "_playAllItem", "_shuffleAllItem", "_playAllNextItem", "_startStationItem" };
             string[] trashOnly = { "_restoreItem", "_deleteForeverItem", "_emptyTrashItem" };
             Distinct("the Shift+F10 menu's access keys are unique for files, archives and audio",
-                Labels(context, appleOnly.Concat(trashOnly).ToArray()));
+                Labels(context, appleOnly.Concat(trashOnly).Append("_testArchiveItem").ToArray()));
+            // Test archive shows only on archives, Edit audio only on audio files.
+            Distinct("the Shift+F10 menu's access keys are unique for archives",
+                Labels(context, appleOnly.Concat(trashOnly).Append("_editAudioItem").ToArray()));
+            Distinct("the Shift+F10 menu's access keys are unique for Apple Music rows",
+                Labels(context, trashOnly.Concat(new[] { "_playAllItem", "_shuffleAllItem", "_playAllNextItem" }).ToArray()).Where(i => appleOnly.Any(f => context.Contains(f + " = Item(\"" + i.Label, StringComparison.Ordinal))).ToList());
 
             var file = Slice("new ToolStripMenuItem(\"&File\")", "menu.Items.Add(file)");
             var fileItems = Labels(file).Skip(1).ToList(); // the menu's own name is not one of its items

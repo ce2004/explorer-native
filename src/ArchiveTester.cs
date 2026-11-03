@@ -174,6 +174,10 @@ namespace ExplorerNative
                             while (member.Read(buffer, 0, buffer.Length) > 0) token.ThrowIfCancellationRequested();
                         reporter.Finished(0);
                     }
+                    // The tar reader stops at its end marker, before gzip's CRC
+                    // at the very end. Read on to it, so damage inside a member
+                    // (which plain deflate does not notice) is still found.
+                    data.CopyTo(Stream.Null, 1 << 20);
                 }
                 catch (Exception ex) when (ex is InvalidDataException or FormatException or EndOfStreamException ||
                                            (ex is IOException && ex is not TarEngine.ArchiveReadException))

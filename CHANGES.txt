@@ -1,3 +1,93 @@
+5.1.0
+New feature: you can now see everything that is copying, moving, compressing, extracting or converting in one list. Press Ctrl+Shift+T, or choose Running transfers on the Tools menu. Press Enter on a transfer to go to its window, P to pause or resume it, or Delete to cancel it. Press Ctrl+Alt+T to hear how far everything has got without leaving your folder.
+New feature: you can now pause a copy, a move or a Google Drive upload and carry on later. Press P or the Pause button in its progress window, and press it again to resume. Nothing already copied is sent again.
+New feature: you can now search by size, date and kind. Press F1 and add words like size>100mb, modified:today, modified:7d, modified:2025 or kind:audio to what you type. They work in Google Drive too.
+New feature: you can now filter the folder you're in as you type. Press Ctrl+F (or Go, Filter this folder) and type. The list narrows as you go and tells you how many items it's showing. Press Enter to keep the filter, or Escape to see everything again.
+New feature: you can now open password-protected zip and 7z archives. Explorer Native asks for the password once, tells you plainly if it is wrong, and remembers it until you quit.
+New feature: you can now check that an archive is not damaged. Press Shift+F10 on it and choose Test archive (Alt+A). Explorer Native reads every file without writing anything, then tells you whether they are all intact and lists any that are bad.
+New feature: you can now play a whole Apple Music album, playlist or artist without opening it. Press Shift+F10 on its row and choose Play all, Shuffle all or Play all next.
+New feature: you can now read the lyrics of the Apple Music song that is playing. Choose Lyrics in the Audio menu, or set a shortcut for it in Preferences, and read them line by line. Press Escape to close.
+New feature: you can now start a station from any Apple Music song. Press Shift+F10 on the song and choose Start station, and it keeps playing similar music.
+New feature: you can now control the PC's player from the web app. On Now Playing, tap "Show the PC's player" for play and pause, previous and next, skipping back and forward, and volume. In an audio file's More menu, "Play on PC" plays it on the PC.
+New feature: you can now restore files from the Google Drive trash in the web app. Open Trash on your Google Drive, then choose Restore in an item's More menu. After you delete Google Drive files from the web app, an "Undo delete" button appears for about ten seconds and puts them back.
+Bug fixed: if you opened a file whose name, or a folder above it, ends in a dot or a space, Windows could open a different file with almost the same name. Now Explorer Native says it can't open it safely and asks you to rename it first.
+Bug fixed: if you moved a folder to another drive while a program was still saving into it, a file that arrived at the last moment could be deleted along with the empty source folder. Now only folders that are really empty are removed, and anything new stays.
+Bug fixed: if you pressed Alt+Enter on a name ending in a dot, the Properties window showed, and could change, a different file with almost the same name. Now Explorer Native says so and asks you to rename it first.
+Bug fixed: in the Compress dialog, Alt+C went to the Compression list instead of pressing Compress. Now Alt+C compresses, and the list is Alt+L.
+Bug fixed: if a browser unpacked a .tar.gz while saving it, Explorer Native called the file damaged. Now it opens as the plain tar it is.
+Bug fixed: if a .tar file was really xz, bzip2 or zstd inside, Explorer Native refused it as a single compressed file. Now it opens as the archive it is.
+Bug fixed: if a 7z or rar held a folder or file with "damaged" in its name, the whole archive was said to be damaged. Now only real damage is reported.
+Bug fixed: if Explorer Native stayed open for days, files opened, browsed or copied out of archives piled up in your temporary folder until you quit. Now anything unused for a day is cleared while the app runs.
+Bug fixed: if you browsed a tar with hard links, such as a Linux backup, the linked files showed as 0 bytes and folder sizes came up short. Now they show their real size.
+Bug fixed: if a playlist was deleted on another device and you then tried to add a song to it, opening the menu again at that moment could crash the app. Now it just says the playlist is gone.
+Bug fixed: if you asked what was playing while an Apple Music song was still loading, it said "Paused" and gave no time left or total length. Now it says the song is playing and gives its length.
+Bug fixed: after you stopped Apple Music, or a song failed, a late error from Apple's player could still be read out. Now it stays quiet.
+Bug fixed: if you opened a .tta, .w64, .voc, .au or .caf file in the web app, it downloaded instead of playing. Now it plays, and its details show the track information.
+Bug fixed: if you deleted, renamed or moved Google Drive files from the web app, the PC read out a sentence for every single item. Now the PC stays quiet and the phone hears the result.
+Bug fixed: if you deleted or renamed something in the Google Drive trash from the web app, the phone gave the wrong reason. Now it says the real one.
+Bug fixed: if you changed a Google Drive file and opened it again from the web app within a minute, you could get the old version. Now you get the new one.
+Bug fixed: if the web app's address was ever opened to the public internet through Tailscale Funnel, strangers could reach the pairing screen. Now those requests are refused.
+Bug fixed: if you renamed the PC in Tailscale, the web app stopped working until Explorer Native was restarted. Now it picks up the new name by itself.
+Bug fixed: if an update failed to install, the message pointed you at a log file that NVDA read as gibberish. Now it tells you to run Explorer Native with the option --read-log to read it.
+Bug fixed: if you chose File, Exit, the window only hid to the tray and the app kept running. Now it quits, the same as Exit in the tray, and asks first if something is still being worked on.
+Bug fixed: if you opened the list of drives, the menus offered New folder, Rename, Delete, Paste and other commands that could only refuse. Now they are left out.
+Bug fixed: if you pressed Shift+F10 in an empty folder, the menu offered commands that said "Nothing selected". Now they are left out. Paste also shows again when the cursor is on the Trash row.
+Bug fixed: if you left the window open past midnight, NVDA still read yesterday's files as modified "today". Now the dates are refreshed when the day changes.
+Bug fixed: if a hidden folder such as .git kept changing while hidden files were off, the whole folder was reloaded again and again. Now it is left alone.
+Bug fixed: if you stopped a search with Escape, folder sizes stopped filling in and updating. Now they carry on.
+Bug fixed: if you tapped Ctrl+Space and let go of Ctrl quickly, or let go in another tab or a prompt, the selection total was said twice or at the wrong time. Now it is said once, in the right place.
+Bug fixed: if you pressed Delete on an item inside a trashed Drive folder, it asked about deleting forever and then failed on every item. Now it says to restore the folder first. Restore and Delete permanently with nothing selected now say "Nothing selected".
+Bug fixed: if you emptied the Drive trash and switched tabs while it worked, the tab in front was moved to the Trash folder. Now only the tab that asked is touched.
+Bug fixed: if you pasted files that were all skipped because they already existed, it said "Copy complete" or "Uploaded 0 files". Now it says nothing was copied or uploaded because the files were already there.
+Bug fixed: if you moved a Drive folder into one of its own subfolders, it was sent to Google to refuse. Now Explorer Native refuses it right away.
+Bug fixed: if you chose Convert audio on a big folder, nothing was said for a long time and you could start it twice. Now it says it is looking for audio, and a second press tells you it is still busy.
+Bug fixed: if you pressed Edit audio twice on the same file, two editors opened on it and one overwrote the other's work. Now the open editor is brought forward instead.
+Bug fixed: if you extracted several archives and switched tabs during the check, they could be extracted into the wrong folder. Now the folder is fixed when you start.
+Bug fixed: if a folder was slow to answer, Calculate folder size said "Select a folder first". Now it says the folder is not answering.
+Bug fixed: if you imported a settings.json from another PC, you got a raw encryption error. Now it explains that the file is locked to the PC that wrote it and to use Export settings there.
+Bug fixed: if you closed the window with the tray option off and a transfer running, the transfer went on against a closed window and later failed. Now agreeing to close takes the whole app down, as the question said.
+Bug fixed: if a copy of Explorer Native ran from a folder holding a stray NVDA client DLL, it loaded that file. Now a single-file release ignores loose copies beside it.
+Bug fixed: if you turned off two tabs, the keyboard shortcuts list still said Tab and Ctrl+Tab switch tabs. Now that line is left out.
+Bug fixed: if you searched a folder that could not be read, it said "Nothing matching". Now it says the search failed, with the reason.
+Bug fixed: if you searched for love and used a minus word with a wildcard to leave out M4A files, they were still listed. Now minus words with wildcards work.
+Bug fixed: if Google Drive came back after a dropout on a different drive letter, nothing told you and panes stayed on the old letter. Now the panes follow and it says "Google Drive is on" the new letter.
+Bug fixed: if you quit or disconnected while a big Google Drive folder was still loading, the app could freeze for up to 45 seconds. Now it stops waiting for the listing.
+Bug fixed: if you pressed Connect again while WinFsp was still installing, it asked again and could break the install. Now it waits for the first install to finish.
+Bug fixed: if a Google Drive folder took too long to load, it said "The operation was canceled". Now it says Google Drive took too long to answer.
+Bug fixed: if you changed a synced folder's Drive folder to one in a shared drive, or the other way round, its changes could be slow to show up. Now it checks the new folder's drive.
+Bug fixed: the sync status could say "trying again in 1 seconds". Now it says "1 second".
+Bug fixed: if a file was open in another program during a first sync of two copies, it could be skipped until the daily check. Now its folder is looked at again on the next pass.
+Bug fixed: if Google refused to let you rename or move a file in a shared drive, nothing was said and the sync looked fine. Now it is counted as a problem and shown in the sync history.
+Bug fixed: if you pressed Pause while the sync was waiting on Google, it carried on listing everything for a minute or more. Now it stops.
+Bug fixed: if the PC folder was on a sleeping network drive, Keep on Drive only froze the window. Now it waits at most five seconds and says the folder is not answering.
+Bug fixed: if you chose Put back on PC for a folder in an upload-only synced folder, it said it was putting it back but nothing came down. Now it says that an upload-only folder cannot do that.
+Bug fixed: pressing Delete in the synced folders list removed the folder at once. Now it asks first.
+Bug fixed: with spoken announcements turned off, the sync window, the Drive folder picker, Changelog and Keyboard shortcuts still spoke. Now they stay quiet.
+Bug fixed: in the synced folder dialog, if you added a folder, then took it back out, the folders it had covered were put back on your PC. Now they stay as they were.
+Bug fixed: if Google Drive could not be read at the top of the folder picker, it said "Could not read :" with no name. Now it says "Could not read Google Drive".
+Bug fixed: if a sync ran out of disk space during a full Drive listing, changes in folders it had not reached were missed until the daily check. Now it keeps what it knew.
+Bug fixed: if one new folder could not be made in Drive (for example no permission), the whole sync stopped before any download. Now only those files fail.
+Bug fixed: during a big sync the Uploaded and Downloaded counts jumped back to 1. Now they keep counting up.
+Bug fixed: with spoken announcements turned off, Explorer Native still said "updated to version" after an update. Now it stays quiet.
+Bug fixed: if WinFsp was installed but would not load, Explorer Native kept asking to install it and then turned Google Drive off. Now it tells you WinFsp would not load and why.
+Bug fixed: if you picked an Output device and the app was then closed without a clean quit, the old device came back. Now the choice is saved straight away.
+Bug fixed: two uploads reading a folder at once could throw away each other's list of names. Now each only removes its own.
+Bug fixed: if you pressed Enter on the Drive track that was already playing, the whole file was downloaded again. Now it restarts from the copy already held.
+Bug fixed: if you paused a track while it was still opening, its download was never let go of. Now the usual release timer starts.
+Bug fixed: if you pressed Back to the start on a track with no known length, it refused. Now it goes to the start.
+Bug fixed: if you rested the cursor on a network file and then went back to the playing track, the readied download stayed in memory. Now it is let go of.
+Bug fixed: the memory-released message said "1 minutes" and said "paused" for a track that had finished. Now it reads naturally.
+Bug fixed: an MP3, AAC or WAV file saved with an .ogg or .opus name could not be played. Now it plays.
+Bug fixed: if you pressed Defaults in the silence dialog, it read out one setting as if only that one had changed. Now it says it is back to the defaults.
+Bug fixed: if a file changed its audio format part way through, playback could stop. Now it carries on.
+Bug fixed: mono Opus files were treated as stereo. Now they stay mono.
+Bug fixed: half-finished conversion files left after a crash stayed in your music folder and were uploaded by sync. Now sync ignores them and the converter clears old ones.
+Bug fixed: in Convert audio, What is spoken, Audio keyboard shortcuts and Pitch, Tab reached Cancel or skipped a control before the main button. Now Tab follows the screen.
+Bug fixed: saving over an Apple Lossless file in the audio editor could silently turn it into lossy AAC. Now it asks you which format to use.
+Bug fixed: if you closed the audio editor while Normalise was measuring, it told you to wait for a save that did not exist. Now measuring stops and the editor closes.
+Bug fixed: converting an audio file or replacing the original lost the composer and disc number. Now they are kept.
+Bug fixed: if many files could not be tagged, the message read out every file. Now it names three and says how many more.
+
 5.0.0
 This version is a big clean-up: every part of Explorer Native was gone through, and over 120 problems were fixed, each with a test so it stays fixed.
 Bug fixed: if you saved a file to Google Drive and then signed out, restarted or shut down Windows a few seconds later, the file could be lost without a word. Now Explorer Native finishes sending it first, and Windows shows that it is saving to Google Drive.

@@ -492,7 +492,7 @@ namespace ExplorerNative
                         }
 
                 if (locked)
-                    errors.Add("This archive is protected with a password, which Explorer Native can't open yet");
+                    errors.Add("This archive is protected with a password, and no password was given");
                 else if (exit >= 2 && !damaged && !stalled && distrusted.Count == 0 && links.Count == 0)
                     errors.Add(SevenZipProblem(exit, lines, extracting: true)
                         .Replace(stagingShown, "", StringComparison.OrdinalIgnoreCase));
