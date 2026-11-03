@@ -133,10 +133,18 @@ namespace ExplorerNative
                         chain.Select(id => nameOf.TryGetValue(id, out var n) ? n : "")));
                     folded[key] = folders;
                 }
-                if (query.MatchesFolded(item.Name, folders)) kept.Add(item);
+                if (!query.MatchesFolded(item.Name, folders)) continue;
+                // Size and the kinds Google cannot tell are judged here.
+                if (query.HasFacts && !query.Facts.Fits(item.Name, item.IsFolder,
+                        item.IsFolder ? -1 : item.Size, LocalTime(item.Modified))) continue;
+                kept.Add(item);
             }
             return kept;
         }
+
+        /// <summary>Drive's times are UTC; date words are local.</summary>
+        private static DateTime LocalTime(DateTime when) =>
+            when == default || when.Kind == DateTimeKind.Local ? when : DateTime.SpecifyKind(when, DateTimeKind.Utc).ToLocalTime();
 
         /// <summary>
         /// Walks a chain of folder ids down from the searched folder and gives

@@ -532,7 +532,7 @@ namespace ExplorerNative
             var drive = Source("GoogleDrive.cs");
             Check("a Drive search asks Google rather than walking placeholders",
                 drive != null &&
-                drive.Contains("client.FindByName(query.DriveHints, token, most, driveId)", StringComparison.Ordinal) &&
+                drive.Contains("client.FindByName(query.DriveHints, token, most, driveId, query.DriveClauses)", StringComparison.Ordinal) &&
                 drive.Contains("client.AllFolders(token, driveId: driveId)", StringComparison.Ordinal),
                 "a recursive walk of the letter is one listing per folder");
 
@@ -549,7 +549,7 @@ namespace ExplorerNative
             // own Populate in a Task.Run.
             Check("a Drive search never resumes on the thread that asked for it",
                 drive != null &&
-                drive.Contains("client.FindByName(query.DriveHints, token, most, driveId).ConfigureAwait(false)", StringComparison.Ordinal) &&
+                drive.Contains("client.FindByName(query.DriveHints, token, most, driveId, query.DriveClauses).ConfigureAwait(false)", StringComparison.Ordinal) &&
                 drive.Contains("FolderGraph(client, driveId, token).ConfigureAwait(false)", StringComparison.Ordinal) &&
                 drive.Contains("client.RootId(token).ConfigureAwait(false)", StringComparison.Ordinal),
                 "a synchronous folder listing would run on the UI thread");

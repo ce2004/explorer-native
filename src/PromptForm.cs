@@ -39,6 +39,9 @@ namespace ExplorerNative
                 AutoSize = true,
                 Location = new Point(12, 14),
             };
+            // A long label widens the box rather than running off its edge.
+            if (prompt.PreferredWidth + 24 > ClientSize.Width)
+                ClientSize = new Size(System.Math.Min(prompt.PreferredWidth + 24, 900), ClientSize.Height);
 
             _box = new TextBox
             {

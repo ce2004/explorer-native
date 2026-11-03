@@ -88,6 +88,7 @@
     <Compile Include="Release510AppleMusicTests.cs" />
     <Compile Include="Release510WebTests.cs" />
     <Compile Include="Release510FilesTests.cs" />
+    <Compile Include="Release510SearchTests.cs" />
     <Compile Include="Sweep500MountTests.cs" />
     <Compile Include="Sweep500App2Tests.cs" />
     <Compile Include="Sweep500Player2Tests.cs" />
@@ -133,6 +134,8 @@
     <Compile Include="..\src\GoogleDrive.cs" />
     <Compile Include="..\src\DriveUpload.cs" />
     <Compile Include="..\src\FileSearch.cs" />
+    <Compile Include="..\src\SearchFacts.cs" />
+    <Compile Include="..\src\FolderFilter.cs" />
     <Compile Include="..\src\BuiltInShortcuts.cs" />
     <Compile Include="..\src\KeyboardShortcutsForm.cs" />
     <Compile Include="..\src\ConnectServer.cs" /><Compile Include="..\src\ConnectFiles.cs" /><Compile Include="..\src\ConnectAudio.cs" /><Compile Include="..\src\ConnectUploads.cs" /><Compile Include="..\src\ConnectClipboard.cs" /><Compile Include="..\src\ClipboardInterop.cs" /><Compile Include="..\src\ConnectDetails.cs" /><Compile Include="..\src\TailscaleWeb.cs" /><Compile Include="..\src\WebAssets.cs" />

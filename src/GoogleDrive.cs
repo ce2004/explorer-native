@@ -1275,7 +1275,7 @@ namespace ExplorerNative
                 var named = new List<SearchHit>();
                 if (mount.TryListing(folderPath, out var drives))
                     foreach (var d in drives)
-                        if (query.Matches(d.Name, ""))
+                        if (query.Matches(d.Name, "", d.IsFolder, d.IsFolder ? -1 : d.Size, d.Modified))
                             named.Add(new SearchHit(Path.Combine(folderPath, d.Name), d.Name, d.IsFolder,
                                 d.IsFolder ? -1 : d.Size, d.Modified));
                 return new SearchResult(named, false);
@@ -1297,7 +1297,7 @@ namespace ExplorerNative
             // in a folder on the PC matches any part of a name.
             var indexed = await FoundInIndex(client, query, driveId, token).ConfigureAwait(false);
             var found = indexed == null
-                ? await client.FindByName(query.DriveHints, token, most, driveId).ConfigureAwait(false)
+                ? await client.FindByName(query.DriveHints, token, most, driveId, query.DriveClauses).ConfigureAwait(false)
                 : indexed.Count > most ? indexed.GetRange(0, most) : indexed;
             var folders = await FolderGraph(client, driveId, token).ConfigureAwait(false);
             token.ThrowIfCancellationRequested();

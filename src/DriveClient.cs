@@ -1002,19 +1002,21 @@ namespace ExplorerNative
         /// that narrows it down.
         /// </summary>
         public Task<List<DriveFound>> FindByName(IReadOnlyList<string> anyOf, CancellationToken token, int max = 10_000,
-            string? driveId = null) =>
-            Query(NameQuery(anyOf), token, max, driveId, interactive: true);
+            string? driveId = null, string also = "") =>
+            Query(NameQuery(anyOf, also), token, max, driveId, interactive: true);
 
         /// <summary>
         /// The query for items whose name contains any of <paramref name="anyOf"/>
-        /// (none: everything not in the trash). The caller narrows the answer
-        /// with the whole search rule (<see cref="SearchQuery"/>).
+        /// (none: everything not in the trash), and <paramref name="also"/>
+        /// (folder or not, modified range) when given. The caller narrows the
+        /// answer with the whole search rule (<see cref="SearchQuery"/>).
         /// </summary>
-        internal static string NameQuery(IReadOnlyList<string> anyOf)
+        internal static string NameQuery(IReadOnlyList<string> anyOf, string also = "")
         {
-            if (anyOf.Count == 0) return "trashed = false";
+            var tail = also.Length == 0 ? " and trashed = false" : $" and {also} and trashed = false";
+            if (anyOf.Count == 0) return also.Length == 0 ? "trashed = false" : $"{also} and trashed = false";
             var names = string.Join(" or ", anyOf.Select(t => $"name contains '{EscapeQuery(t)}'"));
-            return anyOf.Count == 1 ? $"{names} and trashed = false" : $"({names}) and trashed = false";
+            return anyOf.Count == 1 ? $"{names}{tail}" : $"({names}){tail}";
         }
 
         /// <summary>

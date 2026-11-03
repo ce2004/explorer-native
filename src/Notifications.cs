@@ -425,6 +425,8 @@ namespace ExplorerNative
             Live("search.nowhere", "Nothing to search", Searching, Say,
                  "There is nothing to search in the drive list"),
             Live("search.failed", "Search failed", Searching, Say, "Could not search: {0}", "the network is down"),
+            Live("filter.shown", "Folder filtered", Searching, Say, "Showing {0} of {1}", 12, "5,000"),
+            Live("filter.cleared", "Filter cleared", Searching, Say, "Showing all {0} items", "5,000"),
 
             // ---- Clipboard and selection -------------------------------------------
             Live("clip.copied", "Copied to the clipboard", Clipboard, Say, "Copied {0} items", 3),
