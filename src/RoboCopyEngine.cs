@@ -737,7 +737,11 @@ namespace ExplorerNative
                         {
                             var target = Path.Combine(destinationDir,
                                 Path.GetFileName(s.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)));
-                            return newRootSources.ContainsKey(target) && !OnCloud(s) && !IsWithin(target, s);
+                            // Only a folder can have its target inside it, and
+                            // asking where both really are costs a fifth of a
+                            // millisecond, once per file of a big selection.
+                            return newRootSources.ContainsKey(target) && !OnCloud(s) &&
+                                   !(IsFolderAt(s) && IsWithin(target, s));
                         }).ToList()
                         : new List<string>();
                     int planned = candidates.Count + linkMoves.Count;
@@ -745,13 +749,28 @@ namespace ExplorerNative
                     int done = 0, files = 0;
                     var trouble = new List<string>();
 
-                    void Moved(string name)
+                    // At most ten a second, as everywhere else: a rename takes
+                    // microseconds, so a moved selection of 50,000 files was
+                    // 50,000 posts to the window, each rewriting its fields,
+                    // queued far faster than the window could take them.
+                    int shownDone = 0;
+                    long shownAt = -100;
+                    string lastName = "";
+                    void Show()
                     {
-                        done++;
+                        shownDone = done;
+                        shownAt = clock.ElapsedMilliseconds;
                         // After whatever the managed phases did, so the count
                         // and the clock carry on from where they were.
                         progress?.Report(new TransferProgress(0, 0, managedBaseItems + done, managedBaseItems + planned,
-                            name, 0, managedClock.Elapsed + clock.Elapsed, ItemsKnown: true));
+                            lastName, 0, managedClock.Elapsed + clock.Elapsed, ItemsKnown: true));
+                    }
+
+                    void Moved(string name)
+                    {
+                        done++;
+                        lastName = name;
+                        if (done == planned || clock.ElapsedMilliseconds - shownAt >= 100) Show();
                     }
 
                     foreach (var (source, target) in linkMoves)
@@ -766,14 +785,19 @@ namespace ExplorerNative
                         catch (Exception ex) { trouble.Add($"{source}: the link could not be moved ({ex.Message})"); }
                     }
 
+                    // Taken out of the sources in one pass afterwards: a Remove
+                    // per rename shifted the whole list each time.
+                    var renamedAway = new HashSet<string>(StringComparer.Ordinal);
+
+                    var onDestinationVolume = new VolumeAnswers(destinationDir);
                     foreach (var source in candidates)
                     {
                         if (token.IsCancellationRequested) break;
                         var target = Path.Combine(destinationDir,
                             Path.GetFileName(source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)));
-                        if (!SameVolume(source, destinationDir) || !TryRename(source, target)) continue;
+                        if (!onDestinationVolume.SameAs(source) || !TryRename(source, target)) continue;
 
-                        lock (clean) clean.Remove(source);
+                        renamedAway.Add(source);
                         newRootSources.Remove(target);
 
                         // Counted in files, like everything else this reports.
@@ -782,6 +806,10 @@ namespace ExplorerNative
                         else files++;
                         Moved(Path.GetFileName(target));
                     }
+
+                    if (renamedAway.Count > 0) lock (clean) clean.RemoveAll(renamedAway.Contains);
+                    // The last one said, if the throttle held it back.
+                    if (done != shownDone) Show();
 
                     return (done, files, trouble);
                 });
@@ -2646,6 +2674,35 @@ namespace ExplorerNative
         }
 
         /// <summary>
+        /// <see cref="SameVolume"/> against one destination folder, asked once
+        /// per source folder. The question is several calls to Windows and the
+        /// mount manager, about a millisecond, and a big selection asked it for
+        /// every item: 22 of the 36 seconds a 20,000-file move spent renaming.
+        /// Anything in a folder is on that folder's volume unless it is a
+        /// reparse point (a mount point is one), which is asked on its own.
+        /// One thread at a time.
+        /// </summary>
+        internal sealed class VolumeAnswers
+        {
+            private readonly string _destination;
+            private readonly Dictionary<string, bool> _byFolder = new(StringComparer.OrdinalIgnoreCase);
+
+            public VolumeAnswers(string destination) => _destination = destination;
+
+            public bool SameAs(string source)
+            {
+                var folder = Path.GetDirectoryName(source.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                bool alone;
+                try { alone = string.IsNullOrEmpty(folder) || File.GetAttributes(NameRules.ExactPath(source)).HasFlag(FileAttributes.ReparsePoint); }
+                catch { alone = true; }
+                if (!alone && _byFolder.TryGetValue(folder!, out var known)) return known;
+                bool same = SameVolume(source, _destination);
+                if (!alone) _byFolder[folder!] = same;
+                return same;
+            }
+        }
+
+        /// <summary>
         /// "\\server\share" for a path on a share, or on a letter mapped to
         /// one; otherwise null. The Google Drive volume (server GoogleDrive) is
         /// never a share here: moves there go through the Drive API.
@@ -2892,6 +2949,13 @@ namespace ExplorerNative
                 foreach (var (file, length, folder, _) in entries)
                     if (!folder) yield return (NameRules.PlainPath(file), length);
             }
+        }
+
+        /// <summary>A folder, or anything that cannot be asked (taken as one, the careful answer).</summary>
+        private static bool IsFolderAt(string path)
+        {
+            try { return File.GetAttributes(NameRules.ExactPath(path)).HasFlag(FileAttributes.Directory); }
+            catch { return true; }
         }
 
         private static bool IsWithin(string candidate, string ancestor)

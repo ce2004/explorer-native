@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace ExplorerNative
@@ -14,6 +16,75 @@ namespace ExplorerNative
         public static async Task RunAll(Action<string, bool, string?> check, Action<string, string, string> equal)
         {
             await ForgetCostsNoSearchPerEvent(check);
+            await RenamedMoveReportsAtMostTenASecond(check);
+        }
+
+        /// <summary>Counts reports where they are made, with no window or thread hop.</summary>
+        private sealed class CountingProgress : IProgress<TransferProgress>
+        {
+            public int Reports;
+            public TransferProgress? Last;
+            public void Report(TransferProgress value) { Interlocked.Increment(ref Reports); Last = value; }
+        }
+
+        /// <summary>
+        /// A same-volume move of a big selection is one rename per item, and it
+        /// reported every one: 50,000 selected files were 50,000 posts to the
+        /// progress window. Now at most ten a second, with the last always said.
+        /// The sources renamed away are taken out of the list in one pass, not
+        /// one Remove (a shift of the whole list) per rename. And the volume
+        /// question (about a millisecond of calls to Windows) is asked once per
+        /// source folder, and where a file really is only for a folder.
+        /// </summary>
+        private static async Task RenamedMoveReportsAtMostTenASecond(Action<string, bool, string?> check)
+        {
+            var dir = Path.Combine(Path.GetTempPath(), "EN-perf522m-" + Guid.NewGuid().ToString("N")[..8]);
+            try
+            {
+                const int Files = 20_000;
+                var from = Path.Combine(dir, "from");
+                var to = Path.Combine(dir, "to");
+                Directory.CreateDirectory(from);
+                Directory.CreateDirectory(to);
+                var sources = new List<string>(Files);
+                for (int i = 0; i < Files; i++)
+                {
+                    var path = Path.Combine(from, $"photo {i:D5}.jpg");
+                    File.WriteAllBytes(path, new byte[1]);
+                    sources.Add(path);
+                }
+
+                // The per-folder answer is the answer SameVolume gives, asked once.
+                var answers = new RoboCopyEngine.VolumeAnswers(to);
+                check("Perf522 move: the volume answer per folder agrees with asking each file",
+                    answers.SameAs(sources[0]) == RoboCopyEngine.SameVolume(sources[0], to) &&
+                    answers.SameAs(sources[1]) == RoboCopyEngine.SameVolume(sources[1], to) &&
+                    !answers.SameAs(@"Q:\nowhere\x.jpg"), null);
+
+                var counting = new CountingProgress();
+                var clock = Stopwatch.StartNew();
+                var result = await RoboCopyEngine.RunAsync(sources, to, move: true, threads: 8,
+                    PasteConflictPolicy.AutoRename, counting, CancellationToken.None);
+                clock.Stop();
+                Console.WriteLine($"  Perf522 move: {Files} renames took {clock.ElapsedMilliseconds}ms, {counting.Reports} reports");
+
+                int landed = Directory.GetFiles(to).Length;
+                check("Perf522 move: every file was moved", landed == Files && result.Failed == 0,
+                    $"landed {landed}, failed {result.Failed}");
+                check("Perf522 move: a renamed selection reports at most ten a second, not once per file",
+                    counting.Reports <= 10 * (clock.ElapsedMilliseconds / 1000 + 1) + 5,
+                    $"{counting.Reports} reports in {clock.ElapsedMilliseconds}ms");
+                check("Perf522 move: the last report counts every file",
+                    counting.Last is { } last && last.ItemsDone == Files, counting.Last?.ToString());
+                // 36s here before: the volume asked of Windows for every file,
+                // and where both paths really are asked for every file too.
+                check("Perf522 move: 20,000 files renamed in under 20 seconds",
+                    clock.ElapsedMilliseconds < 20_000, $"{clock.ElapsedMilliseconds}ms");
+            }
+            finally
+            {
+                try { Directory.Delete(dir, recursive: true); } catch { }
+            }
         }
 
         /// <summary>
