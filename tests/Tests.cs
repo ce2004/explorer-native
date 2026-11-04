@@ -477,6 +477,13 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "perf522sync")
+            {
+                await Guard("Perf522SyncTests", () => Perf522SyncTests.RunAll(Check));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "pcchanges")
             {
                 await Guard("PcChangesTests", () => PcChangesTests.RunAll(Check));
