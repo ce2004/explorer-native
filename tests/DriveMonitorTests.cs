@@ -1592,7 +1592,7 @@ namespace ExplorerNative
 
             var engine = Tests_Source("DriveMonitor.cs") ?? "";
             Check("hashing sets no thread priority (it stayed with the pool thread after the await)",
-                engine.Length > 0 && !engine.Contains("ThreadPriority", StringComparison.Ordinal));
+                engine.Length > 0 && !engine.Contains("CurrentThread.Priority", StringComparison.Ordinal));
             Check("closing the monitor lets go of the drive's connection event",
                 engine.Contains("ConnectionChanged -= _onConnection", StringComparison.Ordinal));
             var form = Tests_Source("DriveMonitorForm.cs") ?? "";

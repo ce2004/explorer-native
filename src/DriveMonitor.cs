@@ -391,12 +391,27 @@ namespace ExplorerNative
             long now = Environment.TickCount64;
             lock (_gate)
             {
-                if (_ownWrites.Count > 256)
+                if (OwnWritesSweepDue(_ownWrites.Count, now, _ownWritesSweptAt))
+                {
+                    _ownWritesSweptAt = now;
                     foreach (var old in _ownWrites.Where(kv => now - kv.Value > 5000).Select(kv => kv.Key).ToList())
                         _ownWrites.Remove(old);
+                }
                 return _ownWrites.TryGetValue(path, out var at) && now - at <= 5000;
             }
         }
+
+        private long _ownWritesSweptAt = long.MinValue / 2;
+
+        /// <summary>
+        /// Whether the own-writes table is swept of entries past five seconds:
+        /// once it holds over 256, and at most once a second. Swept on every
+        /// watcher event, a fast download of small files (thousands written in
+        /// five seconds, several events each) walked the whole table per event
+        /// under the monitor's lock.
+        /// </summary>
+        internal static bool OwnWritesSweepDue(int count, long now, long sweptAt) =>
+            count > 256 && now - sweptAt >= 1000;
 
         public static string StateDirectory => Path.Combine(Settings.AppDataDir, "drive-monitor");
 
@@ -602,7 +617,7 @@ namespace ExplorerNative
         /// system, or inside a hidden or system folder, which a walk never
         /// reaches. A path that cannot be looked at (gone already) is news.
         /// </summary>
-        internal static bool NotNews(string root, string fullPath, SyncRules? rules)
+        internal static bool NotNews(string root, string fullPath, SyncRules? rules, VisibleFolders? visible = null)
         {
             string relative;
             try { relative = Relative(root, fullPath); }
@@ -610,16 +625,53 @@ namespace ExplorerNative
             if (relative.Length == 0 || relative == "." || relative.StartsWith("../", StringComparison.Ordinal)) return false;
             if (SyncPlanner.IsSkippedPath(relative) || rules?.LeavesOut(relative) == true) return true;
             var at = root;
-            foreach (var part in relative.Split('/', StringSplitOptions.RemoveEmptyEntries))
+            var parts = relative.Split('/', StringSplitOptions.RemoveEmptyEntries);
+            long now = Environment.TickCount64;
+            for (int i = 0; i < parts.Length; i++)
             {
-                at = Path.Combine(at, part);
+                at = Path.Combine(at, parts[i]);
+                bool folderAbove = i < parts.Length - 1;
+                if (folderAbove && visible?.Knows(at, now) == true) continue;
                 try
                 {
                     if ((File.GetAttributes(at) & (FileAttributes.Hidden | FileAttributes.System)) != 0) return true;
                 }
                 catch { return false; }
+                if (folderAbove) visible?.Note(at, now);
             }
             return false;
+        }
+
+        /// <summary>
+        /// Folders above a watched change lately seen neither hidden nor
+        /// system, so a burst of events in one deep folder costs one attribute
+        /// read each (the item itself), not one per folder above it: a download
+        /// of thousands of small files eight folders down read every folder's
+        /// attributes for each of the several events per file. Only "not hidden"
+        /// is kept, for <see cref="ForMs"/>: a folder just hidden can at worst
+        /// make one needless pass, never a missed change. A hidden one is read
+        /// every time.
+        /// </summary>
+        internal sealed class VisibleFolders
+        {
+            internal const long ForMs = 2000;
+            private const int Most = 4096;
+            private readonly object _gate = new();
+            private readonly Dictionary<string, long> _seen = new(StringComparer.OrdinalIgnoreCase);
+
+            public bool Knows(string folder, long now)
+            {
+                lock (_gate) return _seen.TryGetValue(folder, out var at) && now - at < ForMs;
+            }
+
+            public void Note(string folder, long now)
+            {
+                lock (_gate)
+                {
+                    if (_seen.Count >= Most) _seen.Clear();
+                    _seen[folder] = now;
+                }
+            }
         }
 
         /// <summary>The newest watcher asked for, per pair: one made for an older ticket is thrown away.</summary>
@@ -668,11 +720,12 @@ namespace ExplorerNative
                 var id = pair.Id;
                 var root = pair.LocalFolder;
                 var journal = new PcWatchJournal();
+                var visible = new VisibleFolders();
                 bool Ignored(string fullPath)
                 {
                     SyncRules? rules;
                     lock (_gate) _watchRules.TryGetValue(id, out rules);
-                    return NotNews(root, fullPath, rules);
+                    return NotNews(root, fullPath, rules, visible);
                 }
                 void Seen(string fullPath, WatcherChangeTypes kind)
                 {
@@ -2534,32 +2587,34 @@ namespace ExplorerNative
                     state.DriveClashing = clashing.ToList();
                     state.LocalClashing = localClashing.Distinct(StringComparer.Ordinal).ToList();
                     PcPlanned(pair, state, look, walkedWhole: changedOnPc == null, links);
-                }, scope: null, hold: null, token).ConfigureAwait(false);
+                }, scope: null, hold: null, token, saveWhenDone: false).ConfigureAwait(false);
+            // From here the state is written once, by FinishPass (every way out
+            // of it saves), or by the catch below if anything stops the pass.
             try
             {
                 await MakeEmptyFoldersAsync(client, pair, state, rules, pcFolders, folders, driveFoldersBefore, skips, tally, token)
                     .ConfigureAwait(false);
                 ClearFoldersGoneFromDrive(pair, rules, skips, pcFolders, folders, driveFoldersBefore, _ => fullList);
+                await FreeUpAsync(client, pair, state, rules, local, skips, tally, token).ConfigureAwait(false);
+                ClearEmptyFolders(pair, state, rules, skips, pcFolders, folders);
+                await TidyTwinFoldersAsync(client, pair, rules, clashing, folders, tally, token).ConfigureAwait(false);
+                if (pair.FreesUpSpace)
+                {
+                    state.DriveFileTotal = fullList || state.DriveFileTotal is not int before
+                        ? remote.Count + tally.Uploaded
+                        : Math.Max(remote.Count, before) + tally.Uploaded;
+                    int total = state.DriveFileTotal.Value;
+                    Report(pair.Id, s => s with { DriveFound = total }, now: true);
+                }
+                FinishPass(pair, state, tally, unusable, clashing, localClashing);
             }
-            catch (Exception ex) when (ex is OperationCanceledException or PairStoppedException)
+            catch
             {
-                // The folders made before the stop are remembered (the table is the state's own).
+                // What the pass did (the records, the folders made before a
+                // stop: the table is the state's own) is remembered.
                 SaveState(pair.Id, state);
                 throw;
             }
-            await FreeUpAsync(client, pair, state, rules, local, skips, tally, token).ConfigureAwait(false);
-            if (ClearEmptyFolders(pair, state, rules, skips, pcFolders, folders)) SaveState(pair.Id, state);
-            await TidyTwinFoldersAsync(client, pair, rules, clashing, folders, tally, token).ConfigureAwait(false);
-            if (pair.FreesUpSpace)
-            {
-                state.DriveFileTotal = fullList || state.DriveFileTotal is not int before
-                    ? remote.Count + tally.Uploaded
-                    : Math.Max(remote.Count, before) + tally.Uploaded;
-                int total = state.DriveFileTotal.Value;
-                Report(pair.Id, s => s with { DriveFound = total }, now: true);
-                SaveState(pair.Id, state);
-            }
-            FinishPass(pair, state, tally, unusable, clashing, localClashing);
         }
 
         /// <summary>How old an empty folder has to be before free up space clears it, so one just made is not taken from under a file arriving in it.</summary>
@@ -4006,7 +4061,7 @@ namespace ExplorerNative
             Dictionary<string, SyncFile> local, Dictionary<string, SyncFile> remote, Dictionary<string, string> folders,
             SyncSkips skips, Dictionary<string, List<SyncFile>> shadowed, int generation, PassTally tally,
             Action<List<SyncAction>>? onPlan, IReadOnlySet<string>? scope, Func<SyncAction, bool>? hold,
-            CancellationToken token)
+            CancellationToken token, bool saveWhenDone = true)
         {
             // Files already on both sides with nothing remembered about them (a
             // first sync over two copies of one library) are compared by MD5
@@ -4123,6 +4178,7 @@ namespace ExplorerNative
                 ? new FreeUpLane((path, was) => TryFreeUpOneAsync(client, pair, rules, skips, path, was, token),
                     () => Stopped(pair) || GenerationOf(pair.Id) != generation, token)
                 : null;
+            bool finished = false;
             try
             {
                 // New small files first, many at once (see UploadNewSmallAsync).
@@ -4566,6 +4622,7 @@ namespace ExplorerNative
                         }
                     }
                 }
+                finished = true;
             }
             finally
             {
@@ -4579,7 +4636,12 @@ namespace ExplorerNative
 
                 // Everything done so far is remembered even if the connection
                 // dropped part way. What was not done is found again next time.
-                SaveState(pair.Id, state);
+                // A caller that saves at its own end (a small pair: FinishPass,
+                // or its catch when anything after this throws) is not written
+                // twice: each pass wrote every record twice within moments,
+                // tens of megabytes a minute for a quiet code folder.
+                // Files cleared off the PC are written at once all the same.
+                if (saveWhenDone || !finished || (freeUp?.FreedCount ?? 0) > 0) SaveState(pair.Id, state);
 
                 tally.Uploaded += uploaded;
                 tally.Downloaded += downloaded;
@@ -5169,7 +5231,14 @@ namespace ExplorerNative
             for (int i = 0; i < threads.Length; i++)
             {
                 int me = i;
-                threads[i] = new Thread(() => Work(me)) { IsBackground = true, Name = "PC folder scan" };
+                // Background work: a whole walk of a big pair (24,000 folders)
+                // keeps up to eight threads busy, and must give way to whatever
+                // the person is doing. With the PC otherwise idle it runs just
+                // as fast.
+                threads[i] = new Thread(() => Work(me))
+                {
+                    IsBackground = true, Name = "PC folder scan", Priority = ThreadPriority.BelowNormal,
+                };
                 threads[i].Start();
             }
             foreach (var thread in threads) thread.Join();
@@ -6809,6 +6878,9 @@ namespace ExplorerNative
 
         private static readonly object StateLock = new();
 
+        /// <summary>State files (or slices) written by this monitor. For tests.</summary>
+        internal int StateSaves;
+
         /// <summary>
         /// Writes a pair's state, unless the pair has been removed: a pass that
         /// was still running wrote its file back after Remove had deleted it.
@@ -6822,6 +6894,7 @@ namespace ExplorerNative
                     if (_removed.Contains(pairId)) return;
                     _savedAt[pairId] = Environment.TickCount64;
                 }
+                Interlocked.Increment(ref StateSaves);
                 if (state.Store != null)
                 {
                     long began = Environment.TickCount64;
