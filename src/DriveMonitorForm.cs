@@ -829,7 +829,7 @@ namespace ExplorerNative
                     $"Add or change a file in {drive}, and within a minute it is copied to {pc}. " +
                     "Nothing is ever copied from this PC to Google Drive. " +
                     (deletes
-                        ? "Delete a file in Google Drive, and it is moved to the Recycle Bin on this PC too. "
+                        ? "Delete a file in Google Drive, and it is deleted from this PC too, for good, not into the Recycle Bin. "
                         : "Delete a file in Google Drive, and this PC keeps its copy. ") +
                     "If you delete a file on this PC, it is copied back from Google Drive.",
                 _ =>
@@ -837,7 +837,8 @@ namespace ExplorerNative
                     "It works the other way too. " +
                     (deletes
                         ? "Delete a file on either side, and it is deleted on the other side too. " +
-                          "You can get it back from the Recycle Bin or the Google Drive trash."
+                          "A file deleted on this PC goes to the Google Drive trash. A file deleted in Google Drive " +
+                          "is deleted from this PC for good, not into the Recycle Bin."
                         : "If you delete a file on one side, it is copied back from the other. " +
                           "To delete files on both sides, tick Delete on both sides."),
             };

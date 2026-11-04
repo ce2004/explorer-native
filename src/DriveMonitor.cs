@@ -331,6 +331,27 @@ namespace ExplorerNative
         internal Func<string, string?> RecycleLocal { get; set; } = ShellDelete.RecycleWithoutUi;
 
         /// <summary>
+        /// Deletes a PC file for good, with no window: null when it went (or was
+        /// already gone), otherwise why it was kept. Used when deletes are copied
+        /// and the file was deleted on the other side (5.2.1, Conner: code synced
+        /// between two PCs filled the laptop's Recycle Bin). The Recycle Bin is
+        /// kept only for a PC edit about to be overwritten by Drive's copy.
+        /// </summary>
+        internal Func<string, string?> DeleteLocalFile { get; set; } = DeleteForGood;
+
+        internal static string? DeleteForGood(string path)
+        {
+            try
+            {
+                ShellDelete.DeletePermanently(path);
+                return null;
+            }
+            catch (FileNotFoundException) { return null; }
+            catch (DirectoryNotFoundException) { return null; }
+            catch (Exception ex) { return "it could not be deleted: " + ex.Message; }
+        }
+
+        /// <summary>
         /// Called at the moments a crash would hurt most: after something has
         /// happened in Drive or on disk and before the state says so. The suite
         /// copies the state file aside there and throws, which is what a crash
@@ -4432,13 +4453,13 @@ namespace ExplorerNative
                                         break;
                                     }
 
-                                    // Never a window: the monitor runs with nobody
-                                    // watching. A file that could only be deleted for
-                                    // good (no Recycle Bin on that drive) is kept and
-                                    // said, and stays remembered so it is not sent
-                                    // back up as new.
+                                    // Deleted for good, never through the Recycle Bin
+                                    // (5.2.1, Conner). Never a window: the monitor runs
+                                    // with nobody watching. A file that could not be
+                                    // deleted is kept and said, and stays remembered so
+                                    // it is not sent back up as new.
                                     Mine(localPath);
-                                    var kept = RecycleLocal(localPath);
+                                    var kept = DeleteLocalFile(localPath);
                                     if (kept != null)
                                     {
                                         failed++;
@@ -4446,10 +4467,10 @@ namespace ExplorerNative
                                         SyncHistory.Add(pair.Id, "Kept on the PC", path, kept);
                                         break;
                                     }
-                                    Kill("recycled " + path);
+                                    Kill("deleted " + path);
                                     state.Files.Remove(path);
                                     deleted++;
-                                    SyncHistory.Add(pair.Id, "Moved to the Recycle Bin", path, "deleted in Drive");
+                                    SyncHistory.Add(pair.Id, "Deleted from the PC", path, "deleted in Drive");
                                     break;
                                 }
 

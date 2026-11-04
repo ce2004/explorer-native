@@ -1015,8 +1015,8 @@ namespace ExplorerNative
                 text.Append($"This folder is part of the sync pair {name}. Deleting it follows that sync's settings. ")
                     .Append("Remove the sync first if you only want to delete it here. ");
                 if (pair.CopyDeletes)
-                    text.Append("If you delete it anyway, it is deleted on both sides: the other copy goes to ")
-                        .Append(deletingDriveSide ? "the Recycle Bin." : "the Google Drive trash.");
+                    text.Append("If you delete it anyway, it is deleted on both sides: ")
+                        .Append(deletingDriveSide ? "the copy on this PC is deleted for good, not into the Recycle Bin." : "the other copy goes to the Google Drive trash.");
                 else
                     text.Append("If you delete it anyway, only this side is deleted; the other copy is kept.");
                 text.Append("\n\n");

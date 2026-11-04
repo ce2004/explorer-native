@@ -1,3 +1,6 @@
+5.2.2
+Change: when a synced folder copies deletes, a file deleted in Google Drive or on your other PC is now deleted from this PC for good. It no longer goes to the Recycle Bin, so the bin doesn't fill up with every file your other PC deleted. Files you delete on this PC still go to the Google Drive trash.
+
 5.2.1
 Bug fixed: if you pressed Enter on a picture before setting up an AI, the picture just opened. Now you hear "AI image description hasn't been set up yet. Go to Preferences to complete setup." Shift+Enter still opens it.
 Change: Preferences, AI image describer no longer has a separate button for each company. Set up an AI provider does it all, and fills in a key you already have when you pick that company again.

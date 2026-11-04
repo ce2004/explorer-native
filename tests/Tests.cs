@@ -1255,8 +1255,8 @@ namespace ExplorerNative
                                   "Remove the sync first if you only want to delete it here."));
             Check("deletes on, deleting the PC side: the other copy goes to the Google Drive trash",
                 onText.EndsWith("If you delete it anyway, it is deleted on both sides: the other copy goes to the Google Drive trash."));
-            Check("deletes on, deleting the Drive side: the other copy goes to the Recycle Bin",
-                SyncSafety.DeleteWarning(new[] { on }, deletingDriveSide: true).EndsWith("goes to the Recycle Bin."));
+            Check("deletes on, deleting the Drive side: the PC's copy is deleted for good",
+                SyncSafety.DeleteWarning(new[] { on }, deletingDriveSide: true).EndsWith("deleted for good, not into the Recycle Bin."));
             Check("deletes off: only this side is deleted",
                 SyncSafety.DeleteWarning(new[] { off }, false)
                     .EndsWith("If you delete it anyway, only this side is deleted; the other copy is kept."));
@@ -1478,8 +1478,8 @@ namespace ExplorerNative
             Check("the 2-way example names both folders",
                 two.StartsWith("Add or change a file in the Music folder on this PC, and within a minute the same change is made in the music folder in Google Drive."), two);
             Check("and says a deleted file is copied back when deletes are not copied", two.Contains("it is copied back from the other"));
-            Check("and that it can be had back from the bin when they are",
-                DrivePairForm.Example(SyncMode.TwoWay, @"C:\Music", "My Drive/music", deletes: true).Contains("Recycle Bin or the Google Drive trash"));
+            Check("and that a Drive delete removes the PC copy for good when they are",
+                DrivePairForm.Example(SyncMode.TwoWay, @"C:\Music", "My Drive/music", deletes: true).Contains("deleted from this PC for good, not into the Recycle Bin"));
             Check("the backup example says nothing comes down",
                 DrivePairForm.Example(SyncMode.UploadOnly, @"C:\Music", "My Drive/music", false).Contains("Nothing is ever copied from Google Drive to this PC"));
             Check("the download example says nothing goes up",
@@ -1606,7 +1606,7 @@ namespace ExplorerNative
                 "Download:a.txt", Plan(SyncMode.TwoWay, false, Files(), Files(("a.txt", F(5, t0, "x"))), synced));
             Equal("two-way, deletes on: a file deleted on the PC goes to the Drive trash",
                 "DeleteRemote:a.txt", Plan(SyncMode.TwoWay, true, Files(), Files(("a.txt", F(5, t0, "x"))), synced));
-            Equal("two-way, deletes on: a file deleted in Drive goes to the Recycle Bin",
+            Equal("two-way, deletes on: a file deleted in Drive is deleted on the PC",
                 "DeleteLocal:a.txt", Plan(SyncMode.TwoWay, true, Files(("a.txt", F(5, t0))), Files(), synced));
             Equal("upload only, deletes on: a Drive delete is never copied to the PC; the backup is put back",
                 "Upload:a.txt", Plan(SyncMode.UploadOnly, true, Files(("a.txt", F(5, t0))), Files(), synced));

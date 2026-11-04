@@ -85,6 +85,7 @@ namespace ExplorerNative
             public readonly DriveSyncPair Pair;
             public readonly List<string> Said = new();
             public readonly List<string> Recycled = new();
+            public readonly List<string> DeletedForGood = new();
             public DriveClient Client;
             public DriveMonitor Monitor;
 
@@ -114,17 +115,24 @@ namespace ExplorerNative
                         File.Delete(path);
                         return null;
                     },
+                    DeleteLocalFile = path =>
+                    {
+                        lock (DeletedForGood) DeletedForGood.Add(Path.GetFileName(path));
+                        return DriveMonitor.DeleteForGood(path);
+                    },
                 };
 
             /// <summary>The app closing and starting again: a new monitor and client, the same state file.</summary>
             public void Restart()
             {
                 var recycle = Monitor.RecycleLocal;
+                var delete = Monitor.DeleteLocalFile;
                 var disk = Monitor.DiskOfRoot;
                 Monitor.Dispose();
                 Client = new DriveClient(Drive, Fast);
                 Monitor = NewMonitor();
                 Monitor.RecycleLocal = recycle;
+                Monitor.DeleteLocalFile = delete;
                 Monitor.DiskOfRoot = disk;
             }
 
@@ -771,7 +779,7 @@ namespace ExplorerNative
                 Equal("deletes off: a file deleted on one side comes back from the other",
                     "gone in drive.txt,gone on pc.txt", Names(rig.LocalTree()));
                 Check("on both sides", SameTrees(rig.LocalTree(), rig.DriveTree()));
-                Check("and nothing is deleted anywhere", rig.Drive.Trashes == 0 && rig.Recycled.Count == 0);
+                Check("and nothing is deleted anywhere", rig.Drive.Trashes == 0 && rig.Recycled.Count == 0 && rig.DeletedForGood.Count == 0);
             }
 
             using (var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true))
@@ -786,26 +794,27 @@ namespace ExplorerNative
                 Equal("deletes on: a delete on either side is copied", "kept.txt", Names(rig.LocalTree()));
                 Equal("on both sides", "kept.txt", Names(rig.DriveTree()));
                 Check("the Drive copy goes to Drive's trash, once", rig.Drive.Trashes == 1);
-                Check("the PC copy goes through the no-window recycle", rig.Recycled.SequenceEqual(new[] { "gone in drive.txt" }));
+                Check("the PC copy is deleted for good, not sent to the Recycle Bin",
+                    rig.DeletedForGood.SequenceEqual(new[] { "gone in drive.txt" }) && rig.Recycled.Count == 0);
                 Check("with no problem", problem == null, problem);
             }
 
-            // Fix 6: a drive with no Recycle Bin. The file is kept and said, it is
-            // never deleted for good, and it is not sent back up as new.
+            // A PC file that cannot be deleted (open in another program) is kept
+            // and said, and it is not sent back up as new.
             using (var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true))
             {
                 rig.Write("stays.txt", "y", T0);
                 await rig.Pass();
                 rig.Drive.Trash(rig.Drive.Find(rig.FolderId, "stays.txt")!);
                 int asked = 0;
-                rig.Monitor.RecycleLocal = _ =>
+                rig.Monitor.DeleteLocalFile = _ =>
                 {
                     asked++;
-                    return "that drive has no Recycle Bin, so it would have been deleted for good";
+                    return "it could not be deleted: it is open in another program";
                 };
                 var problem = await rig.Pass();
-                Check("no Recycle Bin: the PC file is kept", File.Exists(Path.Combine(rig.Local, "stays.txt")) && asked == 1);
-                Check("and the pair says so", problem != null && problem.Contains("kept") && problem.Contains("Recycle Bin"),
+                Check("a PC file that will not delete is kept", File.Exists(Path.Combine(rig.Local, "stays.txt")) && asked == 1);
+                Check("and the pair says so", problem != null && problem.Contains("kept") && problem.Contains("could not be deleted"),
                     problem);
                 int uploads = rig.Drive.Uploads;
                 await rig.Pass();
@@ -831,7 +840,7 @@ namespace ExplorerNative
                 Check($"a Drive folder {how} pauses the pair", problem != null && problem.Contains("Google Drive folder is gone"),
                     problem);
                 Equal($"and every PC file is still there ({how})", "a.txt,b/c.txt", Names(rig.LocalTree()));
-                Check($"nothing was recycled or trashed ({how})", rig.Recycled.Count == 0 && rig.Drive.Trashes == 0);
+                Check($"nothing was recycled, deleted or trashed ({how})", rig.Recycled.Count == 0 && rig.DeletedForGood.Count == 0 && rig.Drive.Trashes == 0);
             }
 
             using (var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true))
@@ -1474,8 +1483,8 @@ namespace ExplorerNative
                 };
                 await rig.Pass();
                 rig.Drive.BeforeAnswer = null;
-                Check("a PC file edited after the scan is not recycled for a delete made in Drive",
-                    edited && rig.Recycled.Count == 0 && Text(rig.LocalTree(), "y.txt") == "edited on the pc meanwhile");
+                Check("a PC file edited after the scan is not deleted for a delete made in Drive",
+                    edited && rig.Recycled.Count == 0 && rig.DeletedForGood.Count == 0 && Text(rig.LocalTree(), "y.txt") == "edited on the pc meanwhile");
                 await rig.Pass();
                 Equal("and the edit goes up", "edited on the pc meanwhile", Text(rig.DriveTree(), "y.txt"));
             }
@@ -1763,7 +1772,7 @@ namespace ExplorerNative
                 // An edit now replaces Drive's copy in place, so there is no
                 // moment with the new copy up and the old one not yet trashed.
                 "uploaded new.txt", "uploaded edited.txt",
-                "downloaded fromdrive.txt", "trashed gone on pc.txt", "recycled gone in drive.txt",
+                "downloaded fromdrive.txt", "trashed gone on pc.txt", "deleted gone in drive.txt",
                 "set aside in Drive both.txt", "uploaded both.txt",
             };
 
