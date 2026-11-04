@@ -146,6 +146,7 @@ namespace ExplorerNative
             else if (t == typeof(int)) value = (int)now! + 1;
             else if (t == typeof(long)) value = (long)now! + 1;
             else if (t == typeof(double)) value = (double)now! + 0.5;
+            else if (t == typeof(List<string>)) value = new List<string> { @"C:\x" + p.Name };
             else if (t.IsEnum)
             {
                 var all = Enum.GetValues(t);

@@ -345,6 +345,13 @@ namespace ExplorerNative
                 // Real Drive, real sign-in: a whole listing of one drive, plain and then gzip.
                 return await DriveSizeTests.Bench(Environment.GetEnvironmentVariable("EXPLORERNATIVE_BENCH_DRIVE") ?? "");
             }
+            // Favourite folders, and the window coming back after an update (5.3.0).
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "favourites")
+            {
+                await Guard("Favourites530Tests", () => Favourites530Tests.RunAll(Check, Equal));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
             // CPU and battery costs of big operations and the idle window (5.2.2).
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "perf522ops")
             {
@@ -661,6 +668,7 @@ namespace ExplorerNative
             await Guard("ArchiveBrowserTests", () => ArchiveBrowserTests.RunAll(Check, Equal));
             await Guard("DriveSizeTests", () => DriveSizeTests.RunAll(Check, Equal));
             await Guard("Perf522OpsTests", () => Perf522OpsTests.RunAll(Check, Equal));
+            await Guard("Favourites530Tests", () => Favourites530Tests.RunAll(Check, Equal));
             await Guard("DriveClientCacheTests", () => DriveClientCacheTests.RunAll(Check, Equal));
             await Guard("TagEditTests", () => { TagEditTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("AudioConvertTests", () => AudioConvertTests.RunAll(Check, Equal));

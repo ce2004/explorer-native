@@ -120,6 +120,7 @@ namespace ExplorerNative
                             MaxFileMegabytes = 12, CheckMinutes = 9,
                         },
                     } :
+                    type == typeof(List<string>) ? new List<string> { @"D:\Music é", @"C:\Users\Me\Downloads" } :
                     type == typeof(Dictionary<string, string>) ? new Dictionary<string, string>
                     {
                         [@"D:\Music é"] = "Modified descending",

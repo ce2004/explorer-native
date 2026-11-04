@@ -341,7 +341,8 @@ namespace ExplorerNative
             // folder while the app is the default handler started a process that
             // put nothing at all on screen.
             bool askedForAFolder = !string.IsNullOrEmpty(_settings.InitialFolderOverride);
-            if (!_settings.StartMinimised || askedForAFolder) ShowWindow();
+            bool wasOpenBeforeUpdate = ReopenAfterUpdate.Take();
+            if (!_settings.StartMinimised || askedForAFolder || wasOpenBeforeUpdate) ShowWindow();
 
             // Posted, not said. Everything above is the path to the window, and
             // this application is the shell's handler for every folder on the
@@ -2608,6 +2609,10 @@ namespace ExplorerNative
 
                     if (request == SingleInstance.ExitCommand)
                     {
+                        // An install or update stands this copy down. With the
+                        // window open, the new copy opens it again where it was
+                        // (5.3.0, Conner); in the tray, it stays in the tray.
+                        if (_form is { IsDisposed: false, Visible: true }) ReopenAfterUpdate.Mark();
                         Quit();
                         return;
                     }

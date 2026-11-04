@@ -48,6 +48,21 @@ the app. Arrow through it; Ctrl+Down and Ctrl+Up jump between sections. The
 audio player's keys are your own, set in Preferences.
 
 
+Favourite folders
+
+Press Ctrl+D in a folder to make it a favourite. Ctrl+Shift+1 to Ctrl+Shift+9
+go straight to favourites 1 to 9 from anywhere in the window. The Favourites
+menu (Alt+V) lists them, adds or removes the folder you're in, and has
+Organise favourites, where Alt+Up and Alt+Down change the order, Delete
+removes one and Enter goes there.
+
+Updates
+
+If the window is open when Explorer Native updates, it opens again by itself
+afterwards, in the same folders and tabs. If it was in the system tray, it
+stays there.
+
+
 Google Drive
 
 No Google credentials ship with the app. In Google Cloud console, create an

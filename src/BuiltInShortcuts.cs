@@ -32,6 +32,8 @@ namespace ExplorerNative
                 new("Alt+D", "the list of drives"),
                 new("Alt+Home", "your home folder"),
                 new("Ctrl+L", "go to a folder by typing its path"),
+                new("Ctrl+D", "make the folder you are in a favourite"),
+                new("Ctrl+Shift+1 to Ctrl+Shift+9", "go to favourite folder 1 to 9"),
                 new("Tab or Ctrl+Tab", "switch to the other tab"),
                 new("F5", "refresh the folder"),
                 new("Ctrl+Shift+A", "say which folder you are in"),

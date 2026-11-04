@@ -1,3 +1,8 @@
+5.3.0
+New feature: favourite folders. Press Ctrl+D in a folder to make it a favourite, then Ctrl+Shift+1 to Ctrl+Shift+9 takes you straight back to it from anywhere in the window. You can have nine.
+New feature: the Favourites menu (Alt+V) lists your favourites with their numbers, adds or removes the folder you're in, and has Organise favourites, where Alt+Up and Alt+Down change the order, Delete removes one and Enter goes there.
+Change: if the window was open when Explorer Native updated, it opens again by itself afterwards, in the same folders and tabs. If it was in the system tray, it stays there.
+
 5.2.2
 Change: when a synced folder copies deletes, a file deleted in Google Drive or on your other PC is now deleted from this PC for good. It no longer goes to the Recycle Bin, so the bin doesn't fill up with every file your other PC deleted. Files you delete on this PC still go to the Google Drive trash.
 Faster: synced folders write their records to disk once per check instead of twice, which cuts a lot of disk writing for big folders that change all the time.

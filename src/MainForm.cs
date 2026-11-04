@@ -664,6 +664,145 @@ namespace ExplorerNative
             catch { return null; }
         }
 
+        // ---------- favourite folders (5.3.0) ----------
+
+        private ToolStripMenuItem? _favouriteAdd, _favouriteRemove;
+        private ToolStripSeparator? _favouriteTop, _favouriteBottom;
+
+        /// <summary>
+        /// Favourites: Add this folder (Ctrl+D) or Remove this folder, the
+        /// favourites themselves as &amp;1 to &amp;9 (Ctrl+Shift+1 to 9), then
+        /// Organise favourites. The list is rebuilt each time it opens.
+        /// </summary>
+        private ToolStripMenuItem BuildFavouritesMenu()
+        {
+            var menu = new ToolStripMenuItem("Fa&vourites");
+            _favouriteAdd = new ToolStripMenuItem("&Add this folder", null, (_, _) => AddFavourite())
+            { ShortcutKeyDisplayString = "Ctrl+D" };
+            _favouriteRemove = new ToolStripMenuItem("&Remove this folder", null, (_, _) => RemoveFavouriteHere());
+            _favouriteTop = new ToolStripSeparator();
+            _favouriteBottom = new ToolStripSeparator();
+            menu.DropDownItems.Add(_favouriteAdd);
+            menu.DropDownItems.Add(_favouriteRemove);
+            menu.DropDownItems.Add(_favouriteTop);
+            menu.DropDownItems.Add(_favouriteBottom);
+            menu.DropDownItems.Add(Item("&Organise favourites…", Keys.None, OrganiseFavourites));
+            menu.DropDownOpening += (_, _) =>
+            {
+                try { FillFavouritesMenu(menu); } catch { }
+            };
+            return menu;
+        }
+
+        private void FillFavouritesMenu(ToolStripMenuItem menu)
+        {
+            var items = menu.DropDownItems;
+            int top = items.IndexOf(_favouriteTop!), bottom = items.IndexOf(_favouriteBottom!);
+            for (int i = bottom - 1; i > top; i--) items.RemoveAt(i);
+
+            var list = _settings.FavouriteFolders ?? new();
+            var here = FavouriteHere();
+            bool isOne = here != null && Favourites.IndexOf(list, here) >= 0;
+            // A menu item that can only refuse is hidden (CLAUDE.md).
+            _favouriteAdd!.Visible = here != null && !isOne && list.Count < Favourites.Most;
+            _favouriteRemove!.Visible = isOne;
+            _favouriteTop!.Visible = list.Count > 0 && (_favouriteAdd.Visible || isOne);
+            _favouriteBottom!.Visible = list.Count > 0;
+
+            for (int i = 0; i < list.Count; i++)
+            {
+                var folder = list[i];
+                var label = Favourites.Label(list, i).Replace("&", "&&");
+                var item = new ToolStripMenuItem($"&{i + 1} {label}", null, (_, _) => Navigate(folder))
+                {
+                    ShortcutKeyDisplayString = $"Ctrl+Shift+{i + 1}",
+                };
+                items.Insert(top + 1 + i, item);
+            }
+        }
+
+        /// <summary>The folder Ctrl+D would add: where the active tab is. Not the drives list or inside an archive.</summary>
+        private string? FavouriteHere()
+        {
+            var pane = Active;
+            var path = pane.CurrentPath;
+            if (string.IsNullOrEmpty(path) || path == DrivesPath || pane.Archive != null) return null;
+            return path;
+        }
+
+        private void AddFavourite()
+        {
+            try
+            {
+                var here = FavouriteHere();
+                if (here == null) { Announce("Go into a folder first, then press Ctrl+D to make it a favourite.", isError: true); return; }
+                var list = _settings.FavouriteFolders ?? new();
+                int at = Favourites.IndexOf(list, here);
+                if (at >= 0)
+                {
+                    Announce($"{Favourites.Label(list, at)} is already favourite {at + 1}, on Ctrl+Shift+{at + 1}.");
+                    return;
+                }
+                var next = Favourites.Add(list, here);
+                if (next == null)
+                {
+                    Announce($"You already have {Favourites.Most} favourites. Remove one in Favourites, Organise favourites.", isError: true);
+                    return;
+                }
+                _settings.FavouriteFolders = next;
+                _settings.Save();
+                int n = Favourites.IndexOf(next, here) + 1;
+                Announce($"Added {Favourites.Label(next, n - 1)} as favourite {n}. Press Ctrl+Shift+{n} to come back to it.");
+            }
+            catch (Exception ex) { Announce("Couldn't add the favourite: " + ex.Message, isError: true); }
+        }
+
+        private void RemoveFavouriteHere()
+        {
+            try
+            {
+                var here = FavouriteHere();
+                var list = _settings.FavouriteFolders ?? new();
+                int at = here == null ? -1 : Favourites.IndexOf(list, here);
+                if (at < 0) return;
+                var name = Favourites.Label(list, at);
+                _settings.FavouriteFolders = Favourites.RemoveAt(list, at);
+                _settings.Save();
+                Announce($"Removed {name} from favourites.");
+            }
+            catch (Exception ex) { Announce("Couldn't remove the favourite: " + ex.Message, isError: true); }
+        }
+
+        /// <summary>Ctrl+Shift+1 to 9. Says nothing on arrival: the app never announces navigation (CLAUDE.md).</summary>
+        private void GoToFavourite(int number)
+        {
+            var list = _settings.FavouriteFolders ?? new();
+            if (number < 1 || number > list.Count)
+            {
+                Announce($"There's no favourite on Ctrl+Shift+{number}. Go into a folder and press Ctrl+D to add one.");
+                return;
+            }
+            Navigate(list[number - 1]);
+        }
+
+        private void OrganiseFavourites()
+        {
+            string? goTo = null;
+            try
+            {
+                using var window = new FavouritesForm(_settings.FavouriteFolders ?? new());
+                window.Changed = list =>
+                {
+                    _settings.FavouriteFolders = list;
+                    _settings.Save();
+                };
+                if (window.ShowDialog(this) == DialogResult.OK) goTo = window.GoTo;
+            }
+            catch (Exception ex) { Announce("Couldn't open your favourites: " + ex.Message, isError: true); }
+            if (goTo != null) Navigate(goTo);
+            else RestoreListFocus();
+        }
+
         /// <summary>Help, Changelog (Shift+F1): the built-in CHANGES.txt, no network.</summary>
         private void ShowChangelog()
         {
@@ -1248,6 +1387,7 @@ namespace ExplorerNative
             go.DropDownItems.Add(Item("&Refresh", Keys.F5, Refresh_));
             go.DropDownItems.Add(Item("Res&tart application", Keys.Control | Keys.R, RestartApp));
             menu.Items.Add(go);
+            menu.Items.Add(BuildFavouritesMenu());
 
             menu.Items.Add(BuildAudioMenu());
 
@@ -6966,6 +7106,20 @@ namespace ExplorerNative
             if (keyData == Keys.F8)
             {
                 CreateNewFolder();
+                return true;
+            }
+
+            // Favourites: here rather than as menu shortcuts, because the menu's
+            // items come and go with the list.
+            if (keyData == (Keys.Control | Keys.D))
+            {
+                AddFavourite();
+                return true;
+            }
+            if ((keyData & Keys.Modifiers) == (Keys.Control | Keys.Shift) &&
+                (keyData & Keys.KeyCode) is >= Keys.D1 and <= Keys.D9)
+            {
+                GoToFavourite((keyData & Keys.KeyCode) - Keys.D0);
                 return true;
             }
 

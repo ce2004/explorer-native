@@ -160,6 +160,10 @@
     <Compile Include="DriveMountTimerTests.cs" />
     <Compile Include="DriveSizeTests.cs" />
     <Compile Include="Perf522OpsTests.cs" />
+    <Compile Include="Favourites530Tests.cs" />
+    <Compile Include="..\src\Favourites.cs" />
+    <Compile Include="..\src\FavouritesForm.cs" />
+    <Compile Include="..\src\ReopenAfterUpdate.cs" />
     <Compile Include="DriveClientCacheTests.cs" />
     <Compile Include="DriveMonitorTests.cs" />
     <Compile Include="SyncDuplicateTests.cs" />

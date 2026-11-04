@@ -106,6 +106,12 @@ namespace ExplorerNative
         /// because the sort reads it on a worker.
         /// </summary>
         public Dictionary<string, string> FolderSorts { get; set; } = new();
+
+        /// <summary>
+        /// Favourite folders, in Ctrl+Shift+1 to 9 order (5.3.0). Replaced whole
+        /// on every change, never edited in place. See <see cref="Favourites"/>.
+        /// </summary>
+        public List<string> FavouriteFolders { get; set; } = new();
         public SizeUnitStyle SizeUnits { get; set; } = SizeUnitStyle.FullWords;
 
         // There is no SizeDecimals or DateFormat setting. One decimal place and
@@ -1330,6 +1336,7 @@ namespace ExplorerNative
             DriveSyncPairs ??= new();
             DriveSyncPairs.RemoveAll(p => p == null);
             FolderSorts ??= new();
+            FavouriteFolders = Favourites.Clean(FavouriteFolders);
 
             Migrate();
 
@@ -1875,6 +1882,7 @@ namespace ExplorerNative
             int[] numbers => (int[])numbers.Clone(),
             List<DriveSyncPair> pairs => pairs.Select(p => p?.Copy()!).ToList(),
             Dictionary<string, string> sorts => new Dictionary<string, string>(sorts, sorts.Comparer),
+            List<string> strings => new List<string>(strings),
             Dictionary<string, JsonElement> unknown => unknown.ToDictionary(p => p.Key, p => p.Value.Clone(), unknown.Comparer),
             _ => value,
         };
@@ -1884,6 +1892,7 @@ namespace ExplorerNative
             if (a is int[] x && b is int[] y) return x.AsSpan().SequenceEqual(y);
             if (a is List<DriveSyncPair> || b is List<DriveSyncPair>)
                 return JsonSerializer.Serialize(a, PlainFormat) == JsonSerializer.Serialize(b, PlainFormat);
+            if (a is List<string> la && b is List<string> lb) return la.SequenceEqual(lb, StringComparer.Ordinal);
             if (a is Dictionary<string, string> sa && b is Dictionary<string, string> sb)
             {
                 if (sa.Count != sb.Count) return false;
