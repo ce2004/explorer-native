@@ -386,7 +386,9 @@ namespace ExplorerNative
             {
                 Check("a listing somebody is waiting on has a deadline",
                     mount.Contains("ListFolder(relative, folderId, deadline.Token, Place, interactive);", StringComparison.Ordinal) &&
-                    mount.Contains("using var deadline = new CancellationTokenSource(listFor);", StringComparison.Ordinal));
+                    // Linked to the unmount since, so Quit and Disconnect do not wait one out either.
+                    mount.Contains("using var deadline = CancellationTokenSource.CreateLinkedTokenSource(_closing.Token);", StringComparison.Ordinal) &&
+                    mount.Contains("deadline.CancelAfter(listFor < TimeSpan.Zero ? TimeSpan.Zero : listFor);", StringComparison.Ordinal));
                 Check("and so does every piece of a read the volume answers",
                     mount.Contains("cache.Read(at, want, deadline.Token)", StringComparison.Ordinal) &&
                     mount.Contains("deadline.CancelAfter(DataDeadline);", StringComparison.Ordinal));

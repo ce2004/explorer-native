@@ -1,3 +1,9 @@
+5.2.0
+New feature: Explorer Native can describe your pictures out loud. Set up Claude, Gemini, OpenAI or OpenRouter in Preferences, AI image describer, then press Enter on any picture. You hear a full description, and you can type questions about it, like "what does the sign say". Shift+Enter still opens the picture in its own app.
+New feature: Set up an AI provider walks you through it: choose who describes your pictures, open their website to get a key, paste it, and pick a model. Every key is checked with its company before it's saved, so a wrong or deleted key is caught straight away.
+New feature: in the describer window, Shift+Tab takes you to the conversation, one line at a time. Ctrl+C copies a line, and Ctrl+A then Ctrl+C copies the whole conversation. Tab past the edit box tells you how much the conversation has cost so far.
+New feature: Shift+F10 on a picture has AI description.
+
 5.1.2
 Bug fixed: if WebView2 wasn't installed, you could still open Apple Music and nothing would play, and the offer to install came only once. Now Apple Music stays closed until WebView2 is installed, and asks every time you open it.
 New feature: installing WebView2 now opens its own window with a progress bar, showing the download percent and then the install. You can cancel the download. If you open Apple Music while it installs, it tells you it's still installing.

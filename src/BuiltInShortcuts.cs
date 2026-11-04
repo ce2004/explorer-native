@@ -81,6 +81,18 @@ namespace ExplorerNative
                 new("Escape in a filtered list", "show everything again"),
                 new("Kind","kind:folder, kind:file, kind:audio, kind:video, kind:image, kind:document or kind:archive"),
             }),
+            ("Describing pictures", new Line[]
+            {
+                new("Enter on a picture", "describe it with the AI set up in Preferences, AI image describer"),
+                new("Shift+F10, AI description", "the same, from the menu"),
+                new("Typing, then Enter", "ask a question about the picture"),
+                new("Enter on an empty box", "ask again after a problem"),
+                new("Shift+Tab", "the conversation, a line at a time"),
+                new("Ctrl+C in the conversation", "copy the line you are on"),
+                new("Ctrl+A, then Ctrl+C", "copy the whole conversation"),
+                new("Tab after the edit box", "what the conversation has cost so far"),
+                new("Escape", "close the window"),
+            }),
             ("The app", new Line[]
             {
                 new("Ctrl+P", "Preferences, where the audio player's keys can be changed"),

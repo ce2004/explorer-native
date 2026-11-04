@@ -1743,6 +1743,7 @@ namespace ExplorerNative
         private ToolStripMenuItem _shortcutItem = null!;
         private ToolStripMenuItem _convertAudioItem = null!;
         private ToolStripMenuItem _editAudioItem = null!;
+        private ToolStripMenuItem _describeItem = null!;
 
         /// <summary>
         /// Every "Copy Drive link" entry, on whichever menu it sits.
@@ -1962,6 +1963,11 @@ namespace ExplorerNative
             _editAudioItem = Item("Edit &audio…", Keys.None, EditAudio);
             _contextMenu.Items.Add(_convertAudioItem);
             _contextMenu.Items.Add(_editAudioItem);
+
+            // On a picture only, by name. N is the one letter its words
+            // share with no other file item (Delete permanently is Trash only).
+            _describeItem = Item("AI descriptio&n…", Keys.None, DescribeFocused);
+            _contextMenu.Items.Add(_describeItem);
 
             _contextMenu.Items.Add(new ToolStripSeparator());
 
@@ -7064,6 +7070,8 @@ namespace ExplorerNative
                                 AudioFiles.IsAudio(focused, _settings.AudioExtensions) &&
                                 !CdTrackStream.IsCdaName(Path.GetExtension(focused));
             _editAudioItem.Visible = local && focusedAudio;
+            _describeItem.Visible = focused != null && !inArchive && !AppleMusic.Is(focused) &&
+                                    !IsDirectoryInView(focused) && AiDescriber.IsPicture(focused);
             _convertAudioItem.Visible = local && focused != null &&
                 SelectedPaths().Any(p => IsDirectoryInView(p) ||
                     (AudioFiles.IsAudio(p, _settings.AudioExtensions) && !CdTrackStream.IsCdaName(Path.GetExtension(p))));
@@ -8290,6 +8298,14 @@ namespace ExplorerNative
                 AudioFiles.IsAudio(path, _settings.AudioExtensions) &&
                 Program.PlayAudioFile(path))
                 return;
+
+            // A picture is described, once an AI provider is set up and the
+            // preference is on. Shift+Enter still opens it in its own app.
+            if (!openExternally && _settings.AiDescribeOnEnter && AiDescriber.IsPicture(path) && _settings.AiActive() != null)
+            {
+                OpenDescriber(path, name);
+                return;
+            }
 
             AnnounceOperation("file.opening", $"Opening {name}");
 
@@ -11258,6 +11274,67 @@ namespace ExplorerNative
                 }
             }
             return list.PointToScreen(new Point(20, 20));
+        }
+
+        /// <summary>Shift+F10, AI description: the describer, or Preferences when nothing is set up yet.</summary>
+        private void DescribeFocused()
+        {
+            var path = FocusedPath();
+            if (path == null || !AiDescriber.IsPicture(path) || IsDirectoryInView(path)) { Announce("Choose a picture first", isError: true); return; }
+            if (_settings.AiActive() == null)
+            {
+                Announce("No AI is set up yet. Set one up here, then press OK.");
+                OpenPreferences("AI image describer");
+                if (_settings.AiActive() == null) return;
+            }
+            OpenDescriber(path, Path.GetFileName(path));
+        }
+
+        /// <summary>
+        /// Opens the picture describer on a file. On the Google Drive letter the
+        /// picture is read from Google through the API, never through the letter
+        /// (CLAUDE.md); anywhere else it is read from disk on a worker.
+        /// </summary>
+        private void OpenDescriber(string path, string name)
+        {
+            try
+            {
+                if (_settings.AiActive() is not { } provider) { Announce("No AI is set up yet. Set one up in Preferences, AI image describer.", isError: true); return; }
+                bool onDrive = Drive != null && Drive.Owns(path);
+                var drive = Drive;
+                Func<CancellationToken, Task<byte[]>> read = onDrive
+                    ? async token =>
+                    {
+                        using var source = drive!.OpenRange(path) ?? throw new AiException("Google Drive couldn't find the picture.");
+                        if (source.Length > AiDescriber.LargestFile) throw new AiException("The picture is too big to describe.");
+                        var bytes = new byte[source.Length];
+                        int at = 0;
+                        while (at < bytes.Length)
+                        {
+                            int got = await source.ReadAsync(at, bytes.AsMemory(at, Math.Min(4 * 1024 * 1024, bytes.Length - at)), token).ConfigureAwait(false);
+                            if (got <= 0) throw new AiException("Google Drive stopped sending the picture part way. Try again.");
+                            at += got;
+                        }
+                        return bytes;
+                    }
+                    : async token =>
+                    {
+                        var info = new FileInfo(path);
+                        if (!info.Exists) throw new AiException("The picture isn't there any more.");
+                        if (info.Length > AiDescriber.LargestFile) throw new AiException("The picture is too big to describe.");
+                        return await File.ReadAllBytesAsync(path, token).ConfigureAwait(false);
+                    };
+
+                var window = new AiDescriberForm(_settings, provider, _settings.AiKeyFor(provider).Trim(),
+                    _settings.AiModelFor(provider).Trim(), name, read, onDrive ? null : path);
+                window.Icon = Icon;
+                window.FormClosed += (_, _) =>
+                {
+                    if (!IsDisposed) BeginInvoke(RestoreListFocus);
+                };
+                window.Show(this);
+            }
+            catch (Exception ex) { Announce("Couldn't open the picture describer: " + ex.Message, isError: true); }
         }
 
         private void RestoreListFocus()

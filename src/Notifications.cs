@@ -94,6 +94,7 @@ namespace ExplorerNative
         public const string Clipboard = "Clipboard and selection";
         public const string Searching = "Searching";
         public const string Application = "Explorer Native";
+        public const string Pictures = "Describing pictures";
 
         // Five names collapse into two, because the three channels did.
         //
@@ -123,6 +124,12 @@ namespace ExplorerNative
 
         public static readonly IReadOnlyList<NotificationInfo> All = new[]
         {
+            // ---- AI image describer (5.2.0) -----------------------------------
+            Live("ai.looking", "The AI is looking at a picture or thinking", Pictures, Say, "{0}", "Claude is looking at the picture"),
+            Live("ai.reply", "The AI's answer", Pictures, Say, "{0}", "A tabby cat asleep on a blue sofa in afternoon sun."),
+            Live("ai.failed", "A problem describing a picture", Pictures, Say, "{0}", "Anthropic didn't accept the API key."),
+            Live("ai.copied", "Conversation copied or selected", Pictures, Say, "{0}", "Copied the whole conversation"),
+
             // ---- Apple Music -------------------------------------------------
             Live("applemusic.loading", "Loading from Apple Music", Navigation, Say, "Loading from Apple Music"),
             Live("applemusic.failed", "Apple Music problem", AudioTransport, Say, "{0}", "Apple Music didn't accept your sign-in."),

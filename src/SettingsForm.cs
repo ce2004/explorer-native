@@ -250,6 +250,7 @@ namespace ExplorerNative
                 ("Audio", BuildAudioTab),
                 ("Google Drive", BuildGoogleDriveTab),
                 ("Apple Music", BuildAppleMusicTab),
+                ("AI image describer", BuildAiTab),
                 ("Web app", BuildWebAppTab),
                 ("Integration", BuildIntegrationTab),
             };
@@ -1382,6 +1383,240 @@ namespace ExplorerNative
 
             // Saved into the working settings at OK, like every other page.
             _applies.Add(() => _working.AppleMusicUserToken = tokenBox.Text.Trim());
+            return panel;
+        }
+
+        /// <summary>
+        /// AI image describer: a key for each of four providers, each checked with
+        /// its company before it is taken, a model for each one set up, which one
+        /// pictures go to, and when it opens. Saved at OK like every other page.
+        /// </summary>
+        private FlowLayoutPanel BuildAiTab()
+        {
+            var panel = NewPage();
+            AddInfo(panel,
+                "Press Enter on a picture and an AI describes it out loud. Then type questions about it, such as what a sign says " +
+                "or what colour the car is. You need an API key from one of the companies below, and you pay that company for " +
+                "what you use, usually around a cent a picture. The picture and your questions are sent to them. Keys are kept " +
+                "encrypted on this PC. A settings export includes them, so keep exported files private.");
+
+            var keys = AiDescriber.All.ToDictionary(p => p, p => _working.AiKeyFor(p).Trim());
+            var models = AiDescriber.All.ToDictionary(p => p, p => _working.AiModelFor(p).Trim());
+            var lists = new Dictionary<AiProvider, IReadOnlyList<AiModel>>();
+            AiProvider? chosen = _working.AiActive();
+
+            var wizard = new Button { Text = "Set &up an AI provider…", AutoSize = true, Margin = new Padding(3, 10, 3, 8) };
+            wizard.AccessibleName = "Set up an AI provider";
+            panel.Controls.Add(wizard);
+
+            var which = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 260 };
+            which.AccessibleName = "Which AI describes pictures";
+            var whichChoices = new List<AiProvider?>();
+            AddLabelled(panel, "&Which AI describes pictures", which);
+
+            AddCheck(panel, "&Describe pictures when I press Enter on them (Shift+Enter still opens them)",
+                _working.AiDescribeOnEnter, v => _working.AiDescribeOnEnter = v);
+            AddCheck(panel, "Start with a &brief description instead of a full one",
+                _working.AiBriefFirst, v => _working.AiBriefFirst = v);
+
+            var statuses = new Dictionary<AiProvider, Label>();
+            var removes = new Dictionary<AiProvider, Button>();
+            var setups = new Dictionary<AiProvider, Button>();
+            var combos = new Dictionary<AiProvider, ComboBox>();
+            var comboRows = new Dictionary<AiProvider, Control>();
+            var shownModels = new Dictionary<AiProvider, List<string>>();
+
+            string Mnemonic(AiProvider p) => p switch
+            {
+                AiProvider.Claude => "Claude by A&nthropic…",
+                AiProvider.Gemini => "Google &Gemini…",
+                AiProvider.OpenAI => "Op&enAI…",
+                _ => "OpenRou&ter…",
+            };
+
+            void FillModels(AiProvider p)
+            {
+                var combo = combos[p];
+                var ids = new List<string>();
+                combo.BeginUpdate();
+                try
+                {
+                    combo.Items.Clear();
+                    if (lists.TryGetValue(p, out var list))
+                    {
+                        var recommended = AiDescriber.Recommended(p, list);
+                        foreach (var m in list)
+                        {
+                            ids.Add(m.Id);
+                            combo.Items.Add(AiDescriber.ModelLabel(p, m) + (m.Id == recommended ? " (recommended)" : ""));
+                        }
+                    }
+                    if (models[p].Length > 0 && !ids.Contains(models[p]))
+                    {
+                        ids.Insert(0, models[p]);
+                        combo.Items.Insert(0, lists.ContainsKey(p) ? models[p] + " (not offered any more)" : models[p]);
+                    }
+                    shownModels[p] = ids;
+                    int at = ids.IndexOf(models[p]);
+                    combo.SelectedIndex = ids.Count == 0 ? -1 : Math.Max(0, at);
+                    if (at < 0 && ids.Count > 0) models[p] = ids[0];
+                }
+                finally { combo.EndUpdate(); }
+            }
+
+            void Refresh()
+            {
+                foreach (var p in AiDescriber.All)
+                {
+                    bool set = keys[p].Length > 0;
+                    statuses[p].Text = AiDescriber.Name(p) + (set ? ": set up." : ": not set up.");
+                    removes[p].Visible = set;
+                    comboRows[p].Visible = set;
+                    setups[p].AccessibleName = (set ? "Change the key for " : "Set up ") + AiDescriber.Name(p);
+                    if (set) FillModels(p);
+                }
+
+                if (chosen is { } c && keys[c].Length == 0) chosen = null;
+                chosen ??= AiDescriber.All.Cast<AiProvider?>().FirstOrDefault(p => keys[p!.Value].Length > 0);
+                which.BeginUpdate();
+                try
+                {
+                    which.Items.Clear();
+                    whichChoices.Clear();
+                    foreach (var p in AiDescriber.All)
+                        if (keys[p].Length > 0) { whichChoices.Add(p); which.Items.Add(AiDescriber.Name(p)); }
+                    if (whichChoices.Count == 0) { whichChoices.Add(null); which.Items.Add("None set up yet"); }
+                    which.SelectedIndex = Math.Max(0, whichChoices.IndexOf(chosen));
+                }
+                finally { which.EndUpdate(); }
+            }
+
+            which.SelectedIndexChanged += (_, _) =>
+            {
+                if (which.SelectedIndex >= 0 && which.SelectedIndex < whichChoices.Count && whichChoices[which.SelectedIndex] is { } p)
+                    chosen = p;
+            };
+
+            foreach (var provider in AiDescriber.All)
+            {
+                var p = provider;
+                var status = new Label { AutoSize = true, Margin = new Padding(3, 14, 3, 2), UseMnemonic = false };
+                status.AccessibleName = AiDescriber.Name(p) + " status";
+                panel.Controls.Add(status);
+                statuses[p] = status;
+
+                var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 2) };
+                var setup = new Button { Text = Mnemonic(p), AutoSize = true, Margin = new Padding(3, 2, 8, 2) };
+                var remove = new Button { Text = "Remove " + AiDescriber.Name(p) + " key", AutoSize = true, Margin = new Padding(3, 2, 8, 2), UseMnemonic = false };
+                remove.AccessibleName = remove.Text;
+                row.Controls.Add(setup);
+                row.Controls.Add(remove);
+                panel.Controls.Add(row);
+                setups[p] = setup;
+                removes[p] = remove;
+
+                var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 460 };
+                combo.AccessibleName = AiDescriber.Name(p) + " model";
+                var comboRow = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false, Margin = new Padding(3, 2, 3, 4) };
+                comboRow.Controls.Add(new Label { Text = AiDescriber.Name(p) + " model:", AutoSize = true, Margin = new Padding(0, 6, 6, 0), UseMnemonic = false });
+                comboRow.Controls.Add(combo);
+                panel.Controls.Add(comboRow);
+                combos[p] = combo;
+                comboRows[p] = comboRow;
+
+                combo.SelectedIndexChanged += (_, _) =>
+                {
+                    if (shownModels.TryGetValue(p, out var ids) && combo.SelectedIndex >= 0 && combo.SelectedIndex < ids.Count)
+                        models[p] = ids[combo.SelectedIndex];
+                };
+
+                // The list of models is asked for when the list is first reached,
+                // not when the page is built: the page is built while nobody is
+                // looking, and that would ask four companies every time
+                // Preferences opened.
+                bool asking = false;
+                combo.Enter += async (_, _) =>
+                {
+                    if (asking || lists.ContainsKey(p) || keys[p].Length == 0) return;
+                    asking = true;
+                    try
+                    {
+                        var key = keys[p];
+                        using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(30));
+                        var found = await AiSetupForm.Check(p, key, cts.Token);
+                        try { await AiDescriber.PriceAsync(p, models[p], cts.Token); } catch { }
+                        if (IsDisposed || keys[p] != key) return;
+                        lists[p] = found;
+                        if (models[p].Length == 0) models[p] = AiDescriber.Recommended(p, found);
+                        FillModels(p);
+                    }
+                    catch (AiException ex) { if (!IsDisposed) { status.Text = AiDescriber.Name(p) + ": " + ex.Message; Say(ex.Message); } }
+                    catch (Exception) { }
+                    finally { asking = false; }
+                };
+
+                setup.Click += (_, _) =>
+                {
+                    try
+                    {
+                        using var dialog = new AiSetupForm(_working, p, keys[p]);
+                        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                        keys[p] = dialog.Key;
+                        lists[p] = dialog.Models;
+                        if (models[p].Length == 0 || !dialog.Models.Any(m => m.Id == models[p])) models[p] = dialog.Model;
+                        if (chosen == null) chosen = p;
+                        Refresh();
+                        Say(AiDescriber.Name(p) + " is set up. Press OK to save it.");
+                        combo.Focus();
+                    }
+                    catch (Exception ex) { Say("Something went wrong: " + AiDescriber.Short(ex.Message)); }
+                };
+
+                remove.Click += (_, _) =>
+                {
+                    keys[p] = "";
+                    models[p] = "";
+                    lists.Remove(p);
+                    Refresh();
+                    Say(AiDescriber.Name(p) + " key removed. Press OK to save.");
+                    setup.Focus();
+                };
+            }
+
+            wizard.Click += (_, _) =>
+            {
+                try
+                {
+                    using var dialog = new AiSetupForm(_working, null);
+                    if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                    var p = dialog.Provider;
+                    keys[p] = dialog.Key;
+                    lists[p] = dialog.Models;
+                    models[p] = dialog.Model;
+                    if (dialog.MakeActive || chosen == null) chosen = p;
+                    Refresh();
+                    Say(AiDescriber.Name(p) + " is set up. Press OK to save it, then press Enter on any picture.");
+                    wizard.Focus();
+                }
+                catch (Exception ex) { Say("Something went wrong: " + AiDescriber.Short(ex.Message)); }
+            };
+
+            Refresh();
+
+            // Only what changed is written: OK on an untouched page leaves the file as it was.
+            var startKeys = new Dictionary<AiProvider, string>(keys);
+            var startModels = new Dictionary<AiProvider, string>(models);
+            var startChosen = chosen;
+            _applies.Add(() =>
+            {
+                foreach (var p in AiDescriber.All)
+                {
+                    if (keys[p] != startKeys[p]) _working.SetAiKey(p, keys[p]);
+                    var model = keys[p].Length > 0 ? models[p] : "";
+                    if (model != startModels[p] || keys[p] != startKeys[p]) _working.SetAiModel(p, model);
+                }
+                if (chosen != startChosen) _working.AiProvider = chosen?.ToString() ?? "";
+            });
             return panel;
         }
 

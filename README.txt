@@ -80,6 +80,27 @@ Everything Explorer Native saves in AppData (settings, the client ID and
 secret, the sign-in, logs) is encrypted for your Windows account.
 
 
+Describing pictures
+
+Explorer Native can describe a picture out loud using an AI from Anthropic
+(Claude), Google (Gemini), OpenAI (GPT) or OpenRouter. You need an API key from
+one of them, and you pay that company for what you use, usually around a cent
+a picture. Open Preferences (Ctrl+P), AI image describer, and choose Set up an
+AI provider. It explains where to get a key, checks the key with the company,
+and lets you choose a model.
+
+Then press Enter on any picture. A window opens and the description is read
+out. The edit box has the focus: type a question about the picture and press
+Enter, such as what a sign says or what colour something is. Shift+Tab goes to
+the conversation, where Ctrl+C copies a line and Ctrl+A then Ctrl+C copies all
+of it. Tab after the edit box says what the conversation has cost so far.
+Escape closes the window. Shift+Enter on a picture still opens it in its own
+app, and Shift+F10 on a picture has AI description.
+
+The picture and your questions are sent to the company you chose. It only
+talks about the picture, and politely turns down anything else.
+
+
 Apple Music
 
 With an Apple Music subscription you can browse and play Apple Music inside

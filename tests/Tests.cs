@@ -285,6 +285,20 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            // 5.2.0: the AI image describer, offline, and live against the real providers.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "ai")
+            {
+                await Guard("AiDescriberTests", () => AiDescriberTests.RunAll(Check, Equal));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "ailive")
+            {
+                await Guard("AiDescriberLive", () => AiDescriberTests.RunLive(Check, Equal));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             // 5.1.1: Ctrl+N makes a new folder, and Apple Music offers WebView2.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "fix511")
             {
@@ -618,6 +632,7 @@ namespace ExplorerNative
             await Guard("FilesR2Tests", () => FilesR2Tests.RunAll(Check, Equal));
             await Guard("SettingsFixTests", () => { SettingsFixTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("SettingsTransferTests", () => { SettingsTransferTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("AiDescriberTests", () => AiDescriberTests.RunAll(Check, Equal));
             await Guard("SearchTests", () => { SearchTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("Fix418Tests", () => { Fix418Tests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("ConnectTests", () => ConnectTests.RunAll(Check, Equal));
@@ -3575,7 +3590,10 @@ namespace ExplorerNative
                     var boxes = FindAll<TextBox>(window);
                     fields = boxes.Count;
 
-                    var buttons = FindAll<Button>(window);
+                    // Shown buttons only: Pause is hidden until a transfer can
+                    // pause, and a hidden button sits at the top, so every field
+                    // read as under it.
+                    var buttons = FindAll<Button>(window).Where(b => b.Visible).ToList();
                     int floor = buttons.Count > 0
                         ? buttons.Min(b => window.PointToClient(b.PointToScreen(System.Drawing.Point.Empty)).Y)
                         : window.ClientSize.Height;

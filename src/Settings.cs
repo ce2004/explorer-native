@@ -559,6 +559,85 @@ namespace ExplorerNative
         public string AppleMusicRepeat { get; set; } = "off";
 
         /// <summary>
+        /// The AI image describer (5.2.0, Preferences, AI image describer): an API
+        /// key and a chosen model for each provider. Secrets, kept like the rest of
+        /// this file (DPAPI); an export carries them, as it does every sign-in.
+        /// Anything is accepted here and read at use: a blank key is "not set up".
+        /// </summary>
+        public string AiClaudeKey { get; set; } = "";
+        public string AiClaudeModel { get; set; } = "";
+        public string AiGeminiKey { get; set; } = "";
+        public string AiGeminiModel { get; set; } = "";
+        public string AiOpenAiKey { get; set; } = "";
+        public string AiOpenAiModel { get; set; } = "";
+        public string AiOpenRouterKey { get; set; } = "";
+        public string AiOpenRouterModel { get; set; } = "";
+
+        /// <summary>Which provider describes pictures: Claude, Gemini, OpenAI or OpenRouter; blank is none.</summary>
+        public string AiProvider { get; set; } = "";
+
+        /// <summary>Enter on a picture opens the describer (when a provider is set up). Shift+Enter still opens its own app.</summary>
+        public bool AiDescribeOnEnter { get; set; } = true;
+
+        /// <summary>The first description is two or three sentences rather than a full one.</summary>
+        public bool AiBriefFirst { get; set; }
+
+        /// <summary>The key saved for a provider.</summary>
+        internal string AiKeyFor(ExplorerNative.AiProvider provider) => provider switch
+        {
+            ExplorerNative.AiProvider.Claude => AiClaudeKey,
+            ExplorerNative.AiProvider.Gemini => AiGeminiKey,
+            ExplorerNative.AiProvider.OpenAI => AiOpenAiKey,
+            ExplorerNative.AiProvider.OpenRouter => AiOpenRouterKey,
+            _ => "",
+        } ?? "";
+
+        internal string AiModelFor(ExplorerNative.AiProvider provider) => provider switch
+        {
+            ExplorerNative.AiProvider.Claude => AiClaudeModel,
+            ExplorerNative.AiProvider.Gemini => AiGeminiModel,
+            ExplorerNative.AiProvider.OpenAI => AiOpenAiModel,
+            ExplorerNative.AiProvider.OpenRouter => AiOpenRouterModel,
+            _ => "",
+        } ?? "";
+
+        internal void SetAiKey(ExplorerNative.AiProvider provider, string key)
+        {
+            switch (provider)
+            {
+                case ExplorerNative.AiProvider.Claude: AiClaudeKey = key; break;
+                case ExplorerNative.AiProvider.Gemini: AiGeminiKey = key; break;
+                case ExplorerNative.AiProvider.OpenAI: AiOpenAiKey = key; break;
+                case ExplorerNative.AiProvider.OpenRouter: AiOpenRouterKey = key; break;
+            }
+        }
+
+        internal void SetAiModel(ExplorerNative.AiProvider provider, string model)
+        {
+            switch (provider)
+            {
+                case ExplorerNative.AiProvider.Claude: AiClaudeModel = model; break;
+                case ExplorerNative.AiProvider.Gemini: AiGeminiModel = model; break;
+                case ExplorerNative.AiProvider.OpenAI: AiOpenAiModel = model; break;
+                case ExplorerNative.AiProvider.OpenRouter: AiOpenRouterModel = model; break;
+            }
+        }
+
+        /// <summary>
+        /// The provider pictures go to: the chosen one when its key is there,
+        /// else the first one set up, else null.
+        /// </summary>
+        internal ExplorerNative.AiProvider? AiActive()
+        {
+            if (Enum.TryParse<ExplorerNative.AiProvider>(AiProvider ?? "", ignoreCase: true, out var chosen) &&
+                Enum.IsDefined(chosen) && AiKeyFor(chosen).Trim().Length > 0)
+                return chosen;
+            foreach (var p in ExplorerNative.AiDescriber.All)
+                if (AiKeyFor(p).Trim().Length > 0) return p;
+            return null;
+        }
+
+        /// <summary>
         /// The Explorer Connect web app on https://&lt;this pc&gt;.&lt;tailnet&gt;.ts.net/, through
         /// Tailscale Serve (Preferences, Web app). Off by default.
         /// </summary>
