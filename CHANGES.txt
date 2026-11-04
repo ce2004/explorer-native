@@ -1,5 +1,10 @@
 5.2.2
 Change: when a synced folder copies deletes, a file deleted in Google Drive or on your other PC is now deleted from this PC for good. It no longer goes to the Recycle Bin, so the bin doesn't fill up with every file your other PC deleted. Files you delete on this PC still go to the Google Drive trash.
+Faster: synced folders write their records to disk once per check instead of twice, which cuts a lot of disk writing for big folders that change all the time.
+Faster: a synced folder with lots of new files coming in, like a big download deep inside it, uses much less CPU noticing them.
+Faster: scanning a big synced folder now gives way to whatever else you're doing, and runs just as fast when the PC is idle.
+Faster: pasting thousands of files into a folder you have open no longer burns CPU keeping folder sizes up to date. 60,000 changes went from about 4 seconds of CPU to under a fifth of a second.
+Faster: moving a big selection within the same drive is about four times quicker, and the progress window no longer floods with an update for every file.
 
 5.2.1
 Bug fixed: if you pressed Enter on a picture before setting up an AI, the picture just opened. Now you hear "AI image description hasn't been set up yet. Go to Preferences to complete setup." Shift+Enter still opens it.
