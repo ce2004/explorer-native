@@ -159,6 +159,7 @@
     <Compile Include="DriveTransferTests.cs" />
     <Compile Include="DriveMountTimerTests.cs" />
     <Compile Include="DriveSizeTests.cs" />
+    <Compile Include="Perf522OpsTests.cs" />
     <Compile Include="DriveClientCacheTests.cs" />
     <Compile Include="DriveMonitorTests.cs" />
     <Compile Include="SyncDuplicateTests.cs" />

@@ -614,6 +614,9 @@ namespace ExplorerNative
             // of each other; on a move, the first was then deleted.
             var claimed = new HashSet<string>(reserved ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
 
+            // Asked once per source folder, not once per selected file: see VolumeAnswers.
+            var volumes = new RoboCopyEngine.VolumeAnswers(destinationDir);
+
             foreach (var source in sources)
             {
                 token.ThrowIfCancellationRequested();
@@ -754,7 +757,7 @@ namespace ExplorerNative
 
                     long size = 0;
                     try { size = new FileInfo(exact).Length; } catch { }
-                    plan.Add(new PlannedCopy(source, dest, size, move && SameVolume(source, dest), fileRule));
+                    plan.Add(new PlannedCopy(source, dest, size, move && volumes.SameAs(source), fileRule));
                 }
 
                 // Neither a file nor a folder: gone since it was picked. This had

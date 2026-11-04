@@ -102,8 +102,42 @@ namespace ExplorerNative
                 if (Touches(walk.Root, changed)) walk.Dirty = true;
 
             if (_cache.IsEmpty) return;
+
+            // The folder itself and every folder above it, looked up one level
+            // at a time. The panes' size watcher calls this for every event
+            // below the folder on screen, three or so per file, and searching
+            // every cached size each time made a 100,000-file paste into an
+            // open folder cost a search of the whole cache per event.
+            for (string? at = changed; at != null; at = ParentOf(at))
+            {
+                _cache.TryRemove(at, out _);
+                _cache.TryRemove(at + "\\", out _);
+            }
+
+            // Folders inside it: only a path some measured folder sits under
+            // can have any, so a new file (nearly every event) searches nothing.
+            if (!_holders.ContainsKey(changed)) return;
             foreach (var key in _cache.Keys)
                 if (Touches(key, changed)) _cache.TryRemove(key, out _);
+        }
+
+        /// <summary>
+        /// Every folder above a folder ever cached, trailing slash trimmed: where
+        /// a change can have cached sizes inside it. Only grows; a folder left
+        /// here after its sizes went costs one search, as every change used to.
+        /// </summary>
+        private readonly ConcurrentDictionary<string, byte> _holders = new(StringComparer.OrdinalIgnoreCase);
+
+        private static string? ParentOf(string trimmed)
+        {
+            int cut = trimmed.LastIndexOf('\\');
+            return cut > 0 ? trimmed[..cut] : null;
+        }
+
+        private void NoteHolders(string root)
+        {
+            for (string? at = ParentOf(root.TrimEnd('\\')); at != null; at = ParentOf(at))
+                _holders.TryAdd(at, 0);
         }
 
         /// <summary>Whether a change at <paramref name="changed"/> is at, inside or above the folder <paramref name="key"/>.</summary>
@@ -214,6 +248,9 @@ namespace ExplorerNative
                 // would be handed back for ever as though it were the real size.
                 // Nor one a change touched while it ran: it may have read the
                 // changed folder before the change.
+                // Its holders first, so a Forget that misses them also finds
+                // this walk in flight and marks it.
+                if (result.Complete) NoteHolders(root);
                 if (result.Complete && !marker.Dirty)
                     _cache[root] = new CacheEntry(result.Bytes, result.Files, result.Folders, stamp, Environment.TickCount64);
 
