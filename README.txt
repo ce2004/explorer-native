@@ -87,7 +87,9 @@ Explorer Native can describe a picture out loud using an AI from Anthropic
 one of them, and you pay that company for what you use, usually around a cent
 a picture. Open Preferences (Ctrl+P), AI image describer, and choose Set up an
 AI provider. It explains where to get a key, checks the key with the company,
-and lets you choose a model.
+and lets you choose a model. To change a key or add another company, run Set
+up an AI provider again. Until an AI is set up, Enter on a picture tells you
+so. Each time you go to a model list it asks the company for its current list.
 
 Then press Enter on any picture. A window opens and the description is read
 out. The edit box has the focus: type a question about the picture and press

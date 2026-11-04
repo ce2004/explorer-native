@@ -1396,7 +1396,7 @@ namespace ExplorerNative
             var panel = NewPage();
             AddInfo(panel,
                 "Press Enter on a picture and an AI describes it out loud. Then type questions about it, such as what a sign says " +
-                "or what colour the car is. You need an API key from one of the companies below, and you pay that company for " +
+                "or what colour the car is. Press Set up an AI provider to choose Claude, Gemini, OpenAI or OpenRouter. You need an API key from that company, and you pay it for " +
                 "what you use, usually around a cent a picture. The picture and your questions are sent to them. Keys are kept " +
                 "encrypted on this PC. A settings export includes them, so keep exported files private.");
 
@@ -1421,18 +1421,9 @@ namespace ExplorerNative
 
             var statuses = new Dictionary<AiProvider, Label>();
             var removes = new Dictionary<AiProvider, Button>();
-            var setups = new Dictionary<AiProvider, Button>();
             var combos = new Dictionary<AiProvider, ComboBox>();
             var comboRows = new Dictionary<AiProvider, Control>();
             var shownModels = new Dictionary<AiProvider, List<string>>();
-
-            string Mnemonic(AiProvider p) => p switch
-            {
-                AiProvider.Claude => "Claude by A&nthropic…",
-                AiProvider.Gemini => "Google &Gemini…",
-                AiProvider.OpenAI => "Op&enAI…",
-                _ => "OpenRou&ter…",
-            };
 
             void FillModels(AiProvider p)
             {
@@ -1469,10 +1460,10 @@ namespace ExplorerNative
                 foreach (var p in AiDescriber.All)
                 {
                     bool set = keys[p].Length > 0;
-                    statuses[p].Text = AiDescriber.Name(p) + (set ? ": set up." : ": not set up.");
+                    statuses[p].Text = AiDescriber.Name(p) + ": set up.";
+                    statuses[p].Visible = set;
                     removes[p].Visible = set;
                     comboRows[p].Visible = set;
-                    setups[p].AccessibleName = (set ? "Change the key for " : "Set up ") + AiDescriber.Name(p);
                     if (set) FillModels(p);
                 }
 
@@ -1506,13 +1497,10 @@ namespace ExplorerNative
                 statuses[p] = status;
 
                 var row = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 0, 2) };
-                var setup = new Button { Text = Mnemonic(p), AutoSize = true, Margin = new Padding(3, 2, 8, 2) };
                 var remove = new Button { Text = "Remove " + AiDescriber.Name(p) + " key", AutoSize = true, Margin = new Padding(3, 2, 8, 2), UseMnemonic = false };
                 remove.AccessibleName = remove.Text;
-                row.Controls.Add(setup);
                 row.Controls.Add(remove);
                 panel.Controls.Add(row);
-                setups[p] = setup;
                 removes[p] = remove;
 
                 var combo = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 460 };
@@ -1530,14 +1518,14 @@ namespace ExplorerNative
                         models[p] = ids[combo.SelectedIndex];
                 };
 
-                // The list of models is asked for when the list is first reached,
-                // not when the page is built: the page is built while nobody is
-                // looking, and that would ask four companies every time
-                // Preferences opened.
-                bool asking = false;
-                combo.Enter += async (_, _) =>
+                // The list of models is asked for again every time the list is
+                // reached or opened, so it is always what the company offers now.
+                // Never at page build: the page is built while nobody is looking,
+                // and that would ask four companies every time Preferences opened.
+                bool asking = false, stale = false;
+                async void AskForModels()
                 {
-                    if (asking || lists.ContainsKey(p) || keys[p].Length == 0) return;
+                    if (asking || keys[p].Length == 0) return;
                     asking = true;
                     try
                     {
@@ -1546,30 +1534,25 @@ namespace ExplorerNative
                         var found = await AiSetupForm.Check(p, key, cts.Token);
                         try { await AiDescriber.PriceAsync(p, models[p], cts.Token); } catch { }
                         if (IsDisposed || keys[p] != key) return;
+                        bool same = lists.TryGetValue(p, out var had) && had.Select(m => m.Id).SequenceEqual(found.Select(m => m.Id));
                         lists[p] = found;
                         if (models[p].Length == 0) models[p] = AiDescriber.Recommended(p, found);
-                        FillModels(p);
+                        // Filled again only when the list changed, so NVDA is not
+                        // made to read the box again for nothing.
+                        if (same) { }
+                        else if (combo.DroppedDown) stale = true;
+                        else FillModels(p);
                     }
                     catch (AiException ex) { if (!IsDisposed) { status.Text = AiDescriber.Name(p) + ": " + ex.Message; Say(ex.Message); } }
                     catch (Exception) { }
                     finally { asking = false; }
-                };
-
-                setup.Click += (_, _) =>
+                }
+                combo.Enter += (_, _) => AskForModels();
+                combo.DropDown += (_, _) => AskForModels();
+                combo.DropDownClosed += (_, _) =>
                 {
-                    try
-                    {
-                        using var dialog = new AiSetupForm(_working, p, keys[p]);
-                        if (dialog.ShowDialog(this) != DialogResult.OK) return;
-                        keys[p] = dialog.Key;
-                        lists[p] = dialog.Models;
-                        if (models[p].Length == 0 || !dialog.Models.Any(m => m.Id == models[p])) models[p] = dialog.Model;
-                        if (chosen == null) chosen = p;
-                        Refresh();
-                        Say(AiDescriber.Name(p) + " is set up. Press OK to save it.");
-                        combo.Focus();
-                    }
-                    catch (Exception ex) { Say("Something went wrong: " + AiDescriber.Short(ex.Message)); }
+                    try { if (stale && !IsDisposed) { stale = false; FillModels(p); } }
+                    catch { }
                 };
 
                 remove.Click += (_, _) =>
@@ -1579,7 +1562,7 @@ namespace ExplorerNative
                     lists.Remove(p);
                     Refresh();
                     Say(AiDescriber.Name(p) + " key removed. Press OK to save.");
-                    setup.Focus();
+                    wizard.Focus();
                 };
             }
 
@@ -1587,7 +1570,7 @@ namespace ExplorerNative
             {
                 try
                 {
-                    using var dialog = new AiSetupForm(_working, null);
+                    using var dialog = new AiSetupForm(_working, null, keyFor: which => keys[which]);
                     if (dialog.ShowDialog(this) != DialogResult.OK) return;
                     var p = dialog.Provider;
                     keys[p] = dialog.Key;

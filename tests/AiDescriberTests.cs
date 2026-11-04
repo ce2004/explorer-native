@@ -736,6 +736,9 @@ namespace ExplorerNative
             int describe = main.IndexOf("AiDescriber.IsPicture(path) && _settings.AiActive() != null", activate, StringComparison.Ordinal);
             int launch = main.IndexOf("FileLauncher.Open(path);", activate, StringComparison.Ordinal);
             Check("Enter on a picture describes it, before it would be opened", activate > 0 && describe > activate && describe < launch);
+            int notSet = main.IndexOf("AnnounceOperation(\"ai.failed\", AiNotSetUp)", activate, StringComparison.Ordinal);
+            Check("Enter on a picture before any AI is set up says so instead of opening it", notSet > describe && notSet < launch);
+            Check("and says where to set it up", main.Contains("AI image description hasn't been set up yet. Go to Preferences to complete setup.", StringComparison.Ordinal));
             Check("only on plain Enter, with the preference on", main.IndexOf("!openExternally && _settings.AiDescribeOnEnter && AiDescriber.IsPicture(path)", activate, StringComparison.Ordinal) > 0);
             int open = main.IndexOf("private void OpenDescriber(string path, string name)", StringComparison.Ordinal);
             Check("a picture on the Drive letter is read through Google, not the letter",
@@ -984,6 +987,16 @@ namespace ExplorerNative
                         wizard.Model == "google/gemini-3.8-flash" && wizard.MakeActive);
                 }
             });
+            error = OnSta(() =>
+            {
+                using var again = new AiSetupForm(new Settings { SpeakEnabled = false }, null, keyFor: p => p == AiProvider.Gemini ? "AIza-held" : "");
+                again.Show();
+                PumpUntil(() => false, 200);
+                FindAll<RadioButton>(again).First(r => r.Text == "Google Gemini").Checked = true;
+                FindAll<Button>(again).First(b => b.Text.Contains("Next")).PerformClick();
+                PumpUntil(() => false, 100);
+                Check("the wizard fills in a key already set up", FindAll<TextBox>(again).First(t => t.AccessibleName == "API key").Text == "AIza-held");
+            });
             Equal("the setup window runs", "", error);
 
             // ---- the Preferences page ----
@@ -998,7 +1011,7 @@ namespace ExplorerNative
                     var buttons = FindAll<Button>(page).Select(b => b.Text.Replace("&", "")).ToList();
                     Check("it has the wizard", buttons.Contains("Set up an AI provider…"));
                     foreach (var name in new[] { "Claude by Anthropic…", "Google Gemini…", "OpenAI…", "OpenRouter…" })
-                        Check($"and a button for {name}", buttons.Contains(name));
+                        Check($"and no separate button for {name}", !buttons.Contains(name));
                     var models = FindAll<ComboBox>(page).Where(c => (c.AccessibleName ?? "").EndsWith(" model", StringComparison.Ordinal)).ToList();
                     Check("no model lists while nothing is set up", models.Count == 4 && models.All(c => !c.Parent!.Visible));
                     Check("the settings are there", FindAll<CheckBox>(page).Count(c => c.Text.Contains("Describe pictures") || c.Text.Contains("brief")) == 2);
@@ -1019,7 +1032,23 @@ namespace ExplorerNative
                     Equal("the chosen provider is shown", "OpenRouter", which.SelectedItem?.ToString() ?? "");
                     Check("only providers set up are offered", which.Items.Count == 2);
                     var statuses = FindAll<Label>(page).Where(l => (l.AccessibleName ?? "").EndsWith(" status", StringComparison.Ordinal)).Select(l => l.Text).ToList();
-                    Check("each says whether it is set up", statuses.Contains("Claude by Anthropic: set up.") && statuses.Contains("Google Gemini: not set up."), string.Join(" | ", statuses));
+                    Check("each set up says so", statuses.Contains("Claude by Anthropic: set up."), string.Join(" | ", statuses));
+                    Check("one not set up is not listed", !FindAll<Label>(page).Any(l => l.AccessibleName == "Google Gemini status" && l.Visible));
+
+                    // The model list is asked for again every time it is reached.
+                    int asked = 0;
+                    var offered = new List<AiModel> { new("claude-sonnet-5-5", "Sonnet") };
+                    AiSetupForm.Check = (_, _, _) => { asked++; return Task.FromResult<IReadOnlyList<AiModel>>(offered.ToList()); };
+                    claude.Focus();
+                    PumpUntil(() => asked == 1 && claude.Items.Count == 1, 2000);
+                    which.Focus();
+                    PumpUntil(() => false, 100);
+                    offered.Add(new AiModel("claude-opus-5-5", "Opus"));
+                    claude.Focus();
+                    Check("the model list is checked again each time", PumpUntil(() => asked == 2 && claude.Items.Count == 2, 2000), $"asked {asked}, {claude.Items.Count} items");
+                    Check("keeping the chosen model", claude.SelectedItem?.ToString()?.StartsWith("Sonnet", StringComparison.Ordinal) == true, claude.SelectedItem?.ToString());
+                    which.Focus();
+                    PumpUntil(() => false, 100);
 
                     // OK on an untouched page changes nothing.
                     var before = set.Clone();

@@ -57,8 +57,9 @@ namespace ExplorerNative
         /// <summary>Asks the provider about a key. The suite swaps it.</summary>
         internal static Func<AiProvider, string, CancellationToken, Task<IReadOnlyList<AiModel>>> Check = AiDescriber.CheckKeyAsync;
 
-        public AiSetupForm(Settings settings, AiProvider? only, string? existingKey = null)
+        public AiSetupForm(Settings settings, AiProvider? only, string? existingKey = null, Func<AiProvider, string>? keyFor = null)
         {
+            _keyFor = keyFor ?? settings.AiKeyFor;
             _wizard = only == null;
             _speak = settings.SpeakEnabled;
             _provider = only ?? settings.AiActive() ?? AiProvider.Claude;
@@ -165,6 +166,11 @@ namespace ExplorerNative
         }
 
         private enum Step { Choose, Key, Model }
+
+        // The wizard is the one way in for every provider, so a provider that
+        // already has a key starts with it filled in, ready to change.
+        private readonly Func<AiProvider, string> _keyFor;
+        private AiProvider? _keyShownFor;
         private Step _step;
 
         private void ShowChoose()
@@ -250,9 +256,10 @@ namespace ExplorerNative
                 {
                     var chosen = _choices.FirstOrDefault(c => c.Checked);
                     if (chosen?.Tag is not AiProvider p) { Say("Choose one first."); return; }
-                    bool changed = p != _provider;
+                    bool changed = p != _keyShownFor;
                     _provider = p;
-                    ShowKey(changed ? "" : null);
+                    _keyShownFor = p;
+                    ShowKey(changed ? (_keyFor(p) ?? "").Trim() : null);
                     return;
                 }
                 case Step.Key:

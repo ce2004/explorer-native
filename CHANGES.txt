@@ -1,3 +1,8 @@
+5.2.1
+Bug fixed: if you pressed Enter on a picture before setting up an AI, the picture just opened. Now you hear "AI image description hasn't been set up yet. Go to Preferences to complete setup." Shift+Enter still opens it.
+Change: Preferences, AI image describer no longer has a separate button for each company. Set up an AI provider does it all, and fills in a key you already have when you pick that company again.
+Change: the model list now checks with the company every time you go to it, so it always shows every model they offer right now that can look at pictures.
+
 5.2.0
 New feature: Explorer Native can describe your pictures out loud. Set up Claude, Gemini, OpenAI or OpenRouter in Preferences, AI image describer, then press Enter on any picture. You hear a full description, and you can type questions about it, like "what does the sign say". Shift+Enter still opens the picture in its own app.
 New feature: Set up an AI provider walks you through it: choose who describes your pictures, open their website to get a key, paste it, and pick a model. Every key is checked with its company before it's saved, so a wrong or deleted key is caught straight away.

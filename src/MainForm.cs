@@ -8307,6 +8307,14 @@ namespace ExplorerNative
                 return;
             }
 
+            // The preference is on by default, so before any AI is set up Enter
+            // says what to do instead of quietly opening the picture.
+            if (!openExternally && _settings.AiDescribeOnEnter && AiDescriber.IsPicture(path))
+            {
+                AnnounceOperation("ai.failed", AiNotSetUp);
+                return;
+            }
+
             AnnounceOperation("file.opening", $"Opening {name}");
 
             Task.Run(() =>
@@ -11275,6 +11283,9 @@ namespace ExplorerNative
             }
             return list.PointToScreen(new Point(20, 20));
         }
+
+        /// <summary>What Enter on a picture says before any AI is set up.</summary>
+        internal const string AiNotSetUp = "AI image description hasn't been set up yet. Go to Preferences to complete setup.";
 
         /// <summary>Shift+F10, AI description: the describer, or Preferences when nothing is set up yet.</summary>
         private void DescribeFocused()
