@@ -121,6 +121,13 @@ namespace ExplorerNative
                 media.Segments[0].Iv?[15] == 42 && media.Segments[1].KeyMethod == null, null);
             check("hls: byte ranges", media.Segments[1].Range is { Length: 1000, Offset: 500 }, null);
 
+            equal("radio: a stale StreamTheWorld server goes through its redirect", "https://playerservices.streamtheworld.com/api/livestream-redirect/WBAPAMAAC.aac",
+                RadioStream.General(new Uri("https://14223.live.streamtheworld.com/WBAPAMAAC.aac")).ToString());
+            equal("radio: a stale Amperwave server goes through its manifest address", "https://live.amperwave.net/manifest/audacy-krldamaac-hlsc.m3u8",
+                RadioStream.General(new Uri("https://prod-3-88-28-70.amperwave.net/audacy-krldamaac-hlsc.m3u8")).ToString());
+            equal("radio: other addresses are left alone", "http://listen.181fm.com/181-beat_128k.mp3",
+                RadioStream.General(new Uri("http://listen.181fm.com/181-beat_128k.mp3")).ToString());
+
             var id3 = new byte[] { (byte)'I', (byte)'D', (byte)'3', 4, 0, 0, 0, 0, 0, 3, 1, 2, 3, 0xFF, 0xF1 };
             equal("hls: the ID3 timestamp in front of packed audio is skipped", "13", RadioStream.SkipId3(id3).ToString());
         }

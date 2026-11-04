@@ -112,6 +112,9 @@ namespace ExplorerNative
 
         public SoundKind Kind => _kind;
 
+        /// <summary>The decoder is still opening: reads may come back short then, never after.</summary>
+        public volatile bool Opening = true;
+
         /// <summary>Why it stopped or would not start, in words for a person.</summary>
         public string Problem { get; private set; } = "";
 
@@ -181,7 +184,11 @@ namespace ExplorerNative
                         if (_end - _position >= count || _ended) break;
                         // What has come, rather than waiting for a whole block: a
                         // decoder asking for 64KB of a 64kbps stream waited 8s to start.
-                        if (_end > _position && Environment.TickCount64 - waitedSince >= 150) break;
+                        // Not for MP3 once it plays: Media Foundation's MP3 reader takes a
+                        // short read as the end (181.fm, sent at playing speed, stopped after
+                        // 5s). Its AAC reader does not, and full reads held a 64kbps AAC
+                        // station silent for 20s.
+                        if ((Opening || _kind != SoundKind.Mp3) && _end > _position && Environment.TickCount64 - waitedSince >= 150) break;
                         if (Environment.TickCount64 - waitedSince > StallMilliseconds + GiveUpAfter.TotalMilliseconds) break;
                         Monitor.Wait(_gate, 250);
                     }
@@ -312,7 +319,7 @@ namespace ExplorerNative
                 try
                 {
                     if (!Uri.TryCreate(entry.Url, UriKind.Absolute, out var uri)) throw new StreamGone("its address is not a web address");
-                    PlayUrl(uri, depth);
+                    PlayUrl(General(uri), depth);
                     return;
                 }
                 catch (Exception ex) when (!Disposed)
@@ -323,6 +330,28 @@ namespace ExplorerNative
                 }
             }
             if (last != null) throw last;
+        }
+
+        /// <summary>
+        /// An address saved pointing at one server of a big radio network
+        /// (StreamTheWorld's 12345.live.streamtheworld.com, Amperwave's
+        /// prod-1-2-3-4.amperwave.net) goes stale when that server is moved
+        /// or retired: 403, or no answer at all. The network's own address for
+        /// the station sends us to whichever server is live now.
+        /// </summary>
+        internal static Uri General(Uri uri)
+        {
+            var host = uri.Host.ToLowerInvariant();
+            var path = uri.AbsolutePath.TrimStart('/');
+            if (Regex.IsMatch(host, @"^\d+\.live\.streamtheworld\.com$") && Regex.IsMatch(path, @"^[A-Za-z0-9_]+(\.(aac|mp3))?$"))
+            {
+                var mount = path.EndsWith("_SC", StringComparison.OrdinalIgnoreCase) ? path[..^3] + ".mp3"
+                    : path.Contains('.') ? path : path + ".mp3";
+                return new Uri("https://playerservices.streamtheworld.com/api/livestream-redirect/" + mount);
+            }
+            if (Regex.IsMatch(host, @"^prod-[0-9-]+\.amperwave\.net$") && path.Length > 0 && !path.Contains('/'))
+                return new Uri("https://live.amperwave.net/" + (path.EndsWith(".m3u8", StringComparison.OrdinalIgnoreCase) ? "manifest/" : "direct/") + path);
+            return uri;
         }
 
         private void PlayUrl(Uri uri, int depth)
@@ -1304,6 +1333,19 @@ namespace ExplorerNative
             }
 
             ITrackDecoder? decoder = null;
+            try
+            {
+                decoder = OpenFor(radio, path, sampleRate, channels, out why);
+            }
+            finally { radio.Opening = false; }
+            if (decoder == null) return null;
+            why = "ready";
+            return new LiveDecoder(decoder, radio);
+        }
+
+        private static ITrackDecoder? OpenFor(RadioStream radio, string path, int sampleRate, int channels, out string why)
+        {
+            ITrackDecoder? decoder = null;
             if (radio.Kind == RadioStream.SoundKind.Ogg)
             {
                 var ogg = new OggDecoder();
@@ -1322,7 +1364,7 @@ namespace ExplorerNative
                 }
             }
             why = "ready";
-            return new LiveDecoder(decoder, radio);
+            return decoder;
         }
     }
 }

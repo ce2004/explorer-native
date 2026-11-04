@@ -1,3 +1,9 @@
+5.4.1
+Bug fixed: some stations, like the 181.fm ones, stopped after a few seconds. They now play on.
+Bug fixed: some AAC stations took up to 20 seconds to make any sound. They now start in a second or two.
+Bug fixed: a station saved with the address of one particular StreamTheWorld or Audacy server, like WBAP or KRLD, wouldn't play once that server was retired. Explorer Native now asks the network for whichever server is live.
+Change: a station is named the way its playlist file names it when it does, so you hear "Groove Salad" rather than the station's whole description.
+
 5.4.0
 New feature: internet radio. Press Enter on a .pls, .m3u, .m3u8, .asx or .xspf file for a station and it plays right in Explorer Native, with your volume, equaliser and other audio keys.
 New feature: HLS live streams play too, the kind radio and TV websites use. For a stream with video you hear just the sound.
