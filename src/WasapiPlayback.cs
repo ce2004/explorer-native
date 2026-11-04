@@ -685,6 +685,7 @@ namespace ExplorerNative
             Path = path;
             _preferRaw = preferRaw;
             _download = stream as StreamingSource;
+            _live = stream is RadioStream;
 
             Watch(_renderer);
             if (!_renderer.Start(Fill, preferRaw, deviceId))
@@ -819,7 +820,7 @@ namespace ExplorerNative
             // of those is seconds: fifteen failed a file that plays perfectly.
             // Nothing waits behind it — a newer Enter or Stop calls the open
             // off and its reads with it.
-            if (!opened.Wait(TimeSpan.FromSeconds(_download != null ? 45 : 15)))
+            if (!opened.Wait(TimeSpan.FromSeconds(_download != null || _live ? 45 : 15)))
             {
                 Diagnostic = "the file did not open in time";
                 Stop();
@@ -948,6 +949,9 @@ namespace ExplorerNative
         // A device change waiting while the ring is filled deep first, on the
         // pump thread only. See TakeSwitchWhenCushioned.
         private bool _cushioning;
+
+        /// <summary>A live stream (RadioStream): always the deep ring, since the network is always racing playback.</summary>
+        private bool _live;
         private long _cushionUntil;
         private const int CushionMostMilliseconds = 500;
 
@@ -1420,7 +1424,7 @@ namespace ExplorerNative
             // in holds a 1.3GB Ogg, against a budget of one gigabyte. Asking the
             // plainer question costs nothing and cannot be wrong in the direction
             // that stutters.
-            return _cushioning || download != null && download.Available < download.Length
+            return _cushioning || _live || download != null && download.Available < download.Length
                 ? AtDeviceRate(RingFrames)
                 : AtDeviceRate(ShallowFrames);
         }

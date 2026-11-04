@@ -790,13 +790,13 @@ namespace ExplorerNative
             string? goTo = null;
             try
             {
-                using var window = new FavouritesForm(_settings.FavouriteFolders ?? new());
-                window.Changed = list =>
+                using var dialog = new FavouritesForm(_settings.FavouriteFolders ?? new());
+                dialog.Changed = list =>
                 {
                     _settings.FavouriteFolders = list;
                     _settings.Save();
                 };
-                if (window.ShowDialog(this) == DialogResult.OK) goTo = window.GoTo;
+                if (dialog.ShowDialog(this) == DialogResult.OK) goTo = dialog.GoTo;
             }
             catch (Exception ex) { Announce("Couldn't open your favourites: " + ex.Message, isError: true); }
             if (goTo != null) Navigate(goTo);
@@ -6040,7 +6040,7 @@ namespace ExplorerNative
                 if (!done || onDisk == null || IsDisposed) return;
 
                 if (!openExternally && _settings.PlayAudioInApp &&
-                    AudioFiles.IsAudio(onDisk, _settings.AudioExtensions) &&
+                    (AudioFiles.IsAudio(onDisk, _settings.AudioExtensions) || StreamPlaylists.IsPlaylistName(onDisk)) &&
                     Program.PlayAudioFile(onDisk))
                     return;
 
@@ -7280,7 +7280,7 @@ namespace ExplorerNative
         /// next and previous track; null when no pane shows that folder (the
         /// caller then reads it off the UI thread). No reads: the rows on screen.
         /// </summary>
-        public List<string>? AudioFilesShown(string folder)
+        public List<string>? AudioFilesShown(string folder, bool stations = false)
         {
             folder = folder.TrimEnd('\\');
             foreach (var pane in _panes)
@@ -7291,7 +7291,7 @@ namespace ExplorerNative
                 // Still arriving: the rows are only those listed so far, or the
                 // folder before it, and would answer "last track" too soon.
                 if (!string.Equals(pane.LastLoadedPath?.TrimEnd('\\'), folder, StringComparison.OrdinalIgnoreCase)) continue;
-                return pane.Entries.Where(e => !e.IsDir && AudioFiles.IsAudio(e.Path, _settings.AudioExtensions))
+                return pane.Entries.Where(e => !e.IsDir && (stations ? StreamPlaylists.IsPlaylistName(e.Path) : AudioFiles.IsAudio(e.Path, _settings.AudioExtensions)))
                     .Select(e => e.Path).ToList();
             }
             return null;
@@ -8448,8 +8448,10 @@ namespace ExplorerNative
             // can decode the file, the player hands it on to whatever owns the
             // extension itself; that decision is not known yet and cannot be
             // waited for here without putting the freeze back.
+            // A playlist file plays the internet stream inside it (5.4.0); one
+            // that lists only files opens in its own app, as before.
             if (!openExternally && _settings.PlayAudioInApp &&
-                AudioFiles.IsAudio(path, _settings.AudioExtensions) &&
+                (AudioFiles.IsAudio(path, _settings.AudioExtensions) || StreamPlaylists.IsPlaylistName(path)) &&
                 Program.PlayAudioFile(path))
                 return;
 

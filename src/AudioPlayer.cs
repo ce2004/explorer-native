@@ -78,6 +78,41 @@ namespace ExplorerNative
         /// </summary>
         private StreamingSource? _streaming;
 
+        /// <summary>The live stream playing or opening (5.4.0), or null. Its decoder owns it.</summary>
+        private RadioStream? _radio;
+
+        /// <summary>Why the last playlist did not play, when it was a list of files with no streams.</summary>
+        internal const string NoStreamsInPlaylist = "playlist: no streams";
+
+        /// <summary>The last stream failed on its format, so its own app may do better.</summary>
+        private bool _radioHandOver;
+
+        /// <summary>Whether a live stream is what is playing or opening: no length, no skipping.</summary>
+        public bool IsLive { get { lock (_gate) return _radio != null && (_path.Length > 0 || _startingPath.Length > 0); } }
+
+        /// <summary>The station and the song on it, for "what is playing".</summary>
+        internal static string RadioDisplayName(RadioStream radio) =>
+            radio.Song is { Length: > 0 } song ? $"{song} on {radio.Name}" : radio.Name;
+
+        private void OnRadioSong(RadioStream radio)
+        {
+            lock (_gate)
+            {
+                if (_radio != radio || _path.Length == 0) return;
+                _displayName = RadioDisplayName(radio);
+            }
+            Raise("audio.stream.song", radio.Song ?? "");
+        }
+
+        private const string LiveCannotSkip = "This is a live stream, so it can't be skipped through";
+
+        private void ForgetRadio()
+        {
+            RadioStream? radio;
+            lock (_gate) { radio = _radio; _radio = null; }
+            try { radio?.Dispose(); } catch { }
+        }
+
         private string? _displayName;
         private int _volumePercent = 70;
         private bool _muted;
@@ -1135,6 +1170,7 @@ namespace ExplorerNative
         public void CancelOpening(string next = "")
         {
             StreamingSource? opening = null;
+            bool openingRadio = false;
             lock (_gate)
             {
                 bool wasOpening = _startingPath.Length > 0;
@@ -1149,9 +1185,11 @@ namespace ExplorerNative
                 {
                     opening = _streaming;
                     _streaming = null;
+                    openingRadio = _radio != null && _path.Length == 0;
                 }
             }
             try { opening?.Dispose(); } catch { }
+            if (openingRadio) ForgetRadio();
         }
 
         /// <summary>A start that Stop has called off, by number; see StartDirect.</summary>
@@ -1212,12 +1250,38 @@ namespace ExplorerNative
                 Loop = _repeat,
             };
 
+            // A playlist file: the internet stream it points at (5.4.0).
+            RadioStream? radio = null;
+            _radioHandOver = false;
+            if (StreamPlaylists.IsPlaylistName(path))
+            {
+                radio = RadioStream.FromPlaylistFile(path, out var problem);
+                if (radio == null)
+                {
+                    _lastProblem = problem.Length == 0 ? NoStreamsInPlaylist : "stream: " + problem;
+                    direct.Dispose();
+                    return false;
+                }
+                radio.SongChanged += OnRadioSong;
+                lock (_gate)
+                {
+                    if (_disposed || generation != _openGeneration)
+                    {
+                        abandoned = !_disposed;
+                        radio.Dispose();
+                        direct.Dispose();
+                        return false;
+                    }
+                    _radio = radio;
+                }
+            }
+
             // A remote track plays through a download held in memory, so a skip
             // into it costs about a millisecond rather than a network round
             // trip. Null for a local file, and null if it could not be set up —
             // in which case the decoder simply opens the path, which is what
             // always happened before this existed.
-            var streaming = keep ?? OpenStreaming(path, generation);
+            var streaming = radio != null ? null : keep ?? OpenStreaming(path, generation);
 
             // Called off while the download was opening: nothing to start.
             lock (_gate)
@@ -1229,6 +1293,7 @@ namespace ExplorerNative
                     _openingPath = "";
                     abandoned = !_disposed;
                     direct.Dispose();
+                    if (radio != null) ForgetRadio();
                     return false;
                 }
             }
@@ -1237,7 +1302,7 @@ namespace ExplorerNative
             var openedOn = _deviceId;
             try
             {
-                started = direct.Start(path, PreferRawOutput, 0, streaming,
+                started = direct.Start(path, PreferRawOutput, 0, (System.Runtime.InteropServices.ComTypes.IStream?)radio ?? streaming,
                     openedOn.Length == 0 ? null : openedOn);
             }
             finally
@@ -1256,6 +1321,7 @@ namespace ExplorerNative
                     {
                         abandoned = !_disposed;
                         direct.Dispose();
+                        if (radio != null) ForgetRadio();
                         return false;
                     }
                 }
@@ -1264,6 +1330,19 @@ namespace ExplorerNative
                 Diagnostic = direct.Diagnostic;
                 direct.Dispose();
                 StopStreaming();
+                if (radio != null)
+                {
+                    // The station's own reason, not the decoder's, unless the sound card is to blame.
+                    if (!direct.Diagnostic.Contains("renderer", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var diagnostic = direct.Diagnostic.StartsWith("decoder: ", StringComparison.Ordinal) ? direct.Diagnostic[9..] : direct.Diagnostic;
+                        _lastProblem = "stream: " + (radio.Problem.Length > 0 ? radio.Problem
+                            : diagnostic.Contains("in time", StringComparison.OrdinalIgnoreCase) ? "the station did not answer in time"
+                            : "its sound couldn't be decoded (" + diagnostic + ")");
+                        _radioHandOver = radio.WrongFormat || radio.Problem.Length == 0;
+                    }
+                    ForgetRadio();
+                }
                 return false;
             }
 
@@ -1285,7 +1364,7 @@ namespace ExplorerNative
                 // between the two cannot miss the player and leave it playing
                 // with no track recorded.
                 _path = path;
-                _displayName = null;
+                _displayName = radio != null ? RadioDisplayName(radio) : null;
 
                 // No longer opening, under the same lock: an Enter now calls off
                 // nothing, where it used to dispose the download this track had
@@ -1373,7 +1452,15 @@ namespace ExplorerNative
             // turns the decoder round instead, before anything empties. The
             // guard stays because a track can be repeating and still reach here
             // if the decoder failed outright rather than merely running out.
-            if (_repeat) return;
+            if (_repeat && !IsLive) return;
+
+            RadioStream? radio;
+            lock (_gate) radio = _radio;
+            if (radio != null)
+            {
+                Raise("audio.stream.stopped", $"{radio.Name} stopped: {(radio.Problem.Length > 0 ? radio.Problem : "it ended")}");
+                return;
+            }
 
             Finished?.Invoke(path);
         }
@@ -1382,6 +1469,7 @@ namespace ExplorerNative
         {
             var direct = DetachDirect();
             try { direct?.Dispose(); } catch { }
+            ForgetRadio();
         }
 
         /// <summary>
@@ -1504,6 +1592,15 @@ namespace ExplorerNative
             // than an error, and it still hands the file to whichever
             // application owns it. That is what returning null means.
             lock (_gate) { _path = ""; _displayName = null; }
+
+            // A playlist: a list of files goes to its own app; a station says why.
+            if (_lastProblem == NoStreamsInPlaylist) { Failed?.Invoke(path); return null; }
+            if (_lastProblem.StartsWith("stream: ", StringComparison.Ordinal))
+            {
+                Raise("audio.failed", $"Could not play {Path.GetFileNameWithoutExtension(path)}: {_lastProblem[8..]}");
+                if (_radioHandOver) Failed?.Invoke(path);
+                return null;
+            }
 
             var extension = Path.GetExtension(path);
             var reason = _lastProblem;
@@ -1673,7 +1770,12 @@ namespace ExplorerNative
                 // Through this.SeekTo, not the device's: the jump is where the
                 // next skip counts from, or a skip right after resuming counted
                 // from a target left over from before the pause.
-                if (direct.Ended || (length > 0 && now >= length - 0.05)) SeekTo(0);
+                if (IsLive)
+                {
+                    // A station that stopped is connected again; one paused carries on from where it was.
+                    if (direct.Ended) { var again = NowPlayingPath; return Play(again) ?? "Could not play it"; }
+                }
+                else if (direct.Ended || (length > 0 && now >= length - 0.05)) SeekTo(0);
                 else if (RewindOnResumeSeconds > 0 && !pausing)
                 {
                     // The last few seconds again, so picking a track back up does
@@ -1856,6 +1958,7 @@ namespace ExplorerNative
                     if (_startingPath.Length > 0) return "Still opening";
                 return NothingLoaded();
             }
+            if (IsLive) return LiveCannotSkip;
 
             try
             {
@@ -1920,6 +2023,8 @@ namespace ExplorerNative
                     if (_startingPath.Length > 0) return "Still opening";
                 return NothingLoaded();
             }
+
+            if (IsLive) return LiveCannotSkip;
 
             try
             {
@@ -2040,6 +2145,7 @@ namespace ExplorerNative
         public string DescribeRemaining()
         {
             if (!HasTrack) return StillOpening() ?? "Nothing is playing";
+            if (IsLive) return "This is a live stream, so it has no length";
 
             double duration = DurationSeconds;
             if (double.IsNaN(duration) || double.IsInfinity(duration) || duration <= 0)
@@ -2051,6 +2157,7 @@ namespace ExplorerNative
         public string DescribeTotal()
         {
             if (!HasTrack) return StillOpening() ?? "Nothing is playing";
+            if (IsLive) return "This is a live stream, so it has no length";
 
             double duration = DurationSeconds;
             if (double.IsNaN(duration) || double.IsInfinity(duration) || duration <= 0)
@@ -2088,7 +2195,8 @@ namespace ExplorerNative
                 bool ended = duration > 0 && !double.IsNaN(duration) && now >= duration - 0.05;
                 string state = ended ? "Finished" : direct.IsPaused ? "Paused" : "Playing";
 
-                string where = double.IsNaN(duration) || double.IsInfinity(duration)
+                string where = IsLive ? "listening for " + SpokenTime(now)
+                    : double.IsNaN(duration) || double.IsInfinity(duration)
                     ? SpokenTime(now)
                     : $"{SpokenTime(now)} of {SpokenTime(duration)}";
 

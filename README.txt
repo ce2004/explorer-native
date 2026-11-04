@@ -155,6 +155,21 @@ the speed, pitch, equaliser and silence-removal tools do not apply to Apple
 Music.
 
 
+Internet radio and live streams
+
+Press Enter on a .pls, .m3u, .m3u8, .asx or .xspf file that points at an
+internet radio station or a live stream, and it plays in Explorer Native.
+Shoutcast and Icecast stations work, and so does HLS, the kind of stream TV
+and radio websites use, including ones with video, where you just hear the
+sound. If the station sends song titles, Say what is playing tells you the
+song and the station, and each new song shows in the status bar (you can have
+it read out in Preferences, Speech). If the connection drops, it reconnects
+by itself. Pausing holds your place for a few minutes. Live streams have no
+length, so the skip keys don't apply. Next track and Previous track move to
+the next or previous station file in the same folder. A playlist that lists
+files on your PC instead of streams opens in its own app, as before.
+
+
 Updates
 
 Help menu (Alt, then H), Check for updates. It asks GitHub whether a newer

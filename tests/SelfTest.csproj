@@ -161,6 +161,9 @@
     <Compile Include="DriveSizeTests.cs" />
     <Compile Include="Perf522OpsTests.cs" />
     <Compile Include="Favourites530Tests.cs" />
+    <Compile Include="Radio540Tests.cs" />
+    <Compile Include="..\src\StreamPlaylists.cs" />
+    <Compile Include="..\src\RadioStream.cs" />
     <Compile Include="..\src\Favourites.cs" />
     <Compile Include="..\src\FavouritesForm.cs" />
     <Compile Include="..\src\ReopenAfterUpdate.cs" />

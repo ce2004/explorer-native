@@ -2184,7 +2184,9 @@ namespace ExplorerNative
             var folder = System.IO.Path.GetDirectoryName(current);
             if (string.IsNullOrEmpty(folder)) return "That track has no folder to move through";
 
-            var shown = _form?.AudioFilesShown(folder);
+            // A station steps to the next station file (5.4.0), a track to the next track.
+            bool stations = StreamPlaylists.IsPlaylistName(current);
+            var shown = _form?.AudioFilesShown(folder, stations);
             if (shown != null) return PlayNeighbourIn(shown, current, direction);
 
             int ticket = ++_neighbourTicket;
@@ -2206,7 +2208,7 @@ namespace ExplorerNative
                             _drive.Populate(folder);
                             _drive.TryListing(folder, out placed);
                         }
-                        files = placed?.Where(e => !e.IsFolder && AudioFiles.IsAudio(e.Name, extensions))
+                        files = placed?.Where(e => !e.IsFolder && (stations ? StreamPlaylists.IsPlaylistName(e.Name) : AudioFiles.IsAudio(e.Name, extensions)))
                             .Select(e => System.IO.Path.Combine(folder, e.Name))
                             .ToList() ?? new List<string>();
                     }
@@ -2214,7 +2216,7 @@ namespace ExplorerNative
                     {
                         files = new System.IO.DirectoryInfo(folder).EnumerateFiles()
                             .Where(f => (f.Attributes & (System.IO.FileAttributes.Hidden | System.IO.FileAttributes.System)) == 0 &&
-                                        AudioFiles.IsAudio(f.FullName, extensions))
+                                        (stations ? StreamPlaylists.IsPlaylistName(f.FullName) : AudioFiles.IsAudio(f.FullName, extensions)))
                             .Select(f => f.FullName)
                             .ToList();
                     }
@@ -2244,8 +2246,9 @@ namespace ExplorerNative
             int at = files.FindIndex(p => string.Equals(p, current, StringComparison.OrdinalIgnoreCase));
             if (at < 0) return "That track isn't in its folder any more";
             int to = at + direction;
-            if (to < 0) return "That's the first audio file in the folder";
-            if (to >= files.Count) return "That's the last audio file in the folder";
+            bool stations = StreamPlaylists.IsPlaylistName(current);
+            if (to < 0) return stations ? "That's the first station in the folder" : "That's the first audio file in the folder";
+            if (to >= files.Count) return stations ? "That's the last station in the folder" : "That's the last audio file in the folder";
             if (!PlayAudioFile(files[to])) return "That file can't be played here";
             return System.IO.Path.GetFileName(files[to]);
         }

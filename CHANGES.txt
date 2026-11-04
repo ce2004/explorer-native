@@ -1,3 +1,10 @@
+5.4.0
+New feature: internet radio. Press Enter on a .pls, .m3u, .m3u8, .asx or .xspf file for a station and it plays right in Explorer Native, with your volume, equaliser and other audio keys.
+New feature: HLS live streams play too, the kind radio and TV websites use. For a stream with video you hear just the sound.
+New feature: Say what is playing tells you the song and the station when the station sends song titles, and each new song shows in the status bar. You can have new songs read out in Preferences, Speech.
+New feature: if a station's connection drops, it reconnects by itself. If a station can't be reached, you hear why, like "the station isn't there any more".
+New feature: while a station plays, Next track and Previous track move to the next or previous station in the folder.
+
 5.3.0
 New feature: favourite folders. Press Ctrl+D in a folder to make it a favourite, then Ctrl+Shift+1 to Ctrl+Shift+9 takes you straight back to it from anywhere in the window. You can have nine.
 New feature: the Favourites menu (Alt+V) lists your favourites with their numbers, adds or removes the folder you're in, and has Organise favourites, where Alt+Up and Alt+Down change the order, Delete removes one and Enter goes there.

@@ -154,6 +154,8 @@ namespace ExplorerNative
             Live("audio.ended", "Track finished", AudioTransport, Off, "Finished {0}", "your place.flac"),
             Live("audio.failed", "Track would not play", AudioTransport, Say, "Could not play {0}: {1}", "track.flac", "no decoder"),
             Live("audio.handedover", "Opened in its usual app instead", AudioTransport, Bar, "Cannot play {0}, opening it instead", "song.ogg"),
+            Live("audio.stream.song", "A new song on a radio station", AudioTransport, Bar, "{0}", "Daft Punk - Digital Love"),
+            Live("audio.stream.stopped", "A radio station or live stream stopped", AudioTransport, Say, "{0} stopped: {1}", "Groove Salad", "the station stopped answering"),
             Live("audio.repeat.on", "Repeat turned on", AudioTransport, Bar, "Repeat on"),
             Live("audio.repeat.off", "Repeat turned off", AudioTransport, Bar, "Repeat off"),
             Live("audio.restart", "Back to the start", AudioTransport, Bar, "Back to the start"),

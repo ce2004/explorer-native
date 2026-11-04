@@ -70,6 +70,9 @@ namespace ExplorerNative
             System.Runtime.InteropServices.ComTypes.IStream? stream,
             int sampleRate, int channels, out string why)
         {
+            // A live stream (5.4.0): its own decoder choice, and no length or seeking.
+            if (stream is RadioStream radio) return LiveDecoder.Open(radio, path, sampleRate, channels, out why);
+
             var extension = SafeExtension(path);
 
             // Straight to the managed decoder when Windows is known not to have
