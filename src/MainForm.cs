@@ -508,6 +508,53 @@ namespace ExplorerNative
             _availabilityTimer.Tick += (_, _) => RefreshLiveSizes();
 
             AppleMusic.Grew += OnAppleMusicGrew;
+
+            // Apple Music's Now playing row follows the player (Conner, 5.5.0).
+            _nowPlayingTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            _nowPlayingTimer.Tick += (_, _) => RefreshNowPlayingRow();
+            _nowPlayingTimer.Start();
+        }
+
+        private readonly System.Windows.Forms.Timer _nowPlayingTimer;
+        private string _nowPlayingShown = "";
+        private bool _nowPausedShown;
+
+        /// <summary>
+        /// When the song or its paused state changes, panes showing the top of
+        /// Apple Music get the new Now playing row, quietly. Nothing while hidden.
+        /// </summary>
+        private void RefreshNowPlayingRow()
+        {
+            try
+            {
+                if (IsDisposed || !Visible || WindowState == FormWindowState.Minimized) return;
+                var now = AppleMusicPlayer.CurrentPath;
+                bool paused = AppleMusicPlayer.IsActive && !AppleMusicPlayer.IsPlaying;
+                if (now == _nowPlayingShown && paused == _nowPausedShown) return;
+                _nowPlayingShown = now;
+                _nowPausedShown = paused;
+                foreach (var pane in _panes)
+                {
+                    if (!string.Equals(pane.CurrentPath?.TrimEnd('\\'), AppleMusic.Root, StringComparison.OrdinalIgnoreCase) ||
+                        !string.Equals(pane.LastLoadedPath?.TrimEnd('\\'), AppleMusic.Root, StringComparison.OrdinalIgnoreCase)) continue;
+                    var target = pane;
+                    _ = Task.Run(() => AppleMusic.ListAsync(AppleMusic.Root, fresh: false, CancellationToken.None))
+                        .ContinueWith(t =>
+                        {
+                            if (t.Status != TaskStatus.RanToCompletion) return;
+                            try
+                            {
+                                BeginInvoke(() =>
+                                {
+                                    if (IsDisposed || !string.Equals(target.CurrentPath?.TrimEnd('\\'), AppleMusic.Root, StringComparison.OrdinalIgnoreCase)) return;
+                                    try { ShowAppleRowsQuietly(target, AppleMusic.Root, t.Result); } catch (Exception) { }
+                                });
+                            }
+                            catch (InvalidOperationException) { }
+                        }, TaskScheduler.Default);
+                }
+            }
+            catch (Exception) { }
         }
 
         /// <summary>
@@ -2018,7 +2065,10 @@ namespace ExplorerNative
             _appleShuffleItem = Item("&Shuffle", Keys.None, () => Program.RunAudioAction(AudioAction.ToggleShuffle));
             _appleRepeatItem = Item("&Repeat", Keys.None, Program.CycleAppleRepeat);
             _appleUpNextItem = Item("&Up next…", Keys.None, () => Program.RunAudioAction(AudioAction.UpNext));
-            foreach (var item in new[] { _goToArtistItem, _goToAlbumItem, _libraryItem, _appleShuffleItem, _appleRepeatItem, _appleUpNextItem })
+            // 5.5.0 (Conner): a song's link and words, for pasting anywhere.
+            _copySongLinkItem = Item("Copy song lin&k", Keys.None, CopyFocusedAppleSongLink);
+            _copyLyricsItem = Item("C&opy lyrics", Keys.None, CopyFocusedAppleLyrics);
+            foreach (var item in new[] { _goToArtistItem, _goToAlbumItem, _libraryItem, _copySongLinkItem, _copyLyricsItem, _appleShuffleItem, _appleRepeatItem, _appleUpNextItem })
             {
                 item.Visible = false;
                 _contextMenu.Items.Add(item);
@@ -5728,6 +5778,10 @@ namespace ExplorerNative
                 int next = cameFrom.IndexOf('\\', full.Length + 1);
                 preferPath = next < 0 ? cameFrom : cameFrom.Substring(0, next);
             }
+            // Coming into Apple Music from outside it lands on the song playing (Conner, 5.5.0).
+            if (preferPath == null && !keepFocus && full.Equals(AppleMusic.Root, StringComparison.OrdinalIgnoreCase) &&
+                !AppleMusic.Is(cameFrom) && AppleMusicPlayer.CurrentPath is { Length: > 0 } playingNow)
+                preferPath = playingNow;
             preferPath ??= pane.Positions.Recall(full);
 
             pane.Probing = mine;
@@ -5979,6 +6033,13 @@ namespace ExplorerNative
             // A station plays (Conner, 4.1.2): its songs are a stream, not a list
             // anyone wants to read through first.
             if (AppleMusic.ItemAt(entry.Path) is { Kind: "station" }) { PlayAppleStation(entry.Path); return; }
+            // The Now playing row: Enter pauses or resumes it, never starts it over.
+            if (AppleMusic.IsNowPlayingRow(Active.CurrentPath, entry.Path) && AppleMusicPlayer.IsActive &&
+                string.Equals(AppleMusicPlayer.CurrentPath, entry.Path, StringComparison.OrdinalIgnoreCase))
+            {
+                Program.RunAudioAction(AudioAction.PlayPause);
+                return;
+            }
             if (entry.IsDir) { Navigate(entry.Path); return; }
             Program.PlayAppleMusic(entry.Path);
         }
@@ -7158,7 +7219,12 @@ namespace ExplorerNative
 
             // On an Apple Music song, Enter plays it, and the menu says so.
             bool appleSong = focused != null && AppleMusic.ItemAt(focused) is { IsSong: true };
-            _contextOpenItem.Text = appleSong ? "&Play" : "&Open";
+            bool nowPlayingRow = appleSong && AppleMusic.IsNowPlayingRow(Active.CurrentPath, focused) &&
+                                 string.Equals(AppleMusicPlayer.CurrentPath, focused, StringComparison.OrdinalIgnoreCase);
+            _contextOpenItem.Text = nowPlayingRow ? (AppleMusicPlayer.IsPlaying ? "&Pause" : "&Resume")
+                : appleSong ? "&Play" : "&Open";
+            _copySongLinkItem.Visible = appleSong && AppleMusic.SongLink(focused!) != null;
+            _copyLyricsItem.Visible = appleSong;
             _playNextItem.Visible = appleSong;
             _startStationItem.Visible = appleSong;
             bool appleList = AppleMusic.CanPlayAll(focused);
@@ -7297,6 +7363,47 @@ namespace ExplorerNative
             return null;
         }
         private ToolStripMenuItem _playNextItem = null!;
+        private ToolStripMenuItem _copySongLinkItem = null!;
+        private ToolStripMenuItem _copyLyricsItem = null!;
+
+        /// <summary>Copy song link: the song's music.apple.com address.</summary>
+        private void CopyFocusedAppleSongLink()
+        {
+            if (FocusedPath() is not { } path || AppleMusic.SongLink(path) is not { } link) return;
+            if (!ClipboardInterop.SetText(link))
+            {
+                AnnounceAfterMenu("applemusic.failed", "Could not take the clipboard, another application is holding it");
+                return;
+            }
+            AnnounceAfterMenu("clip.path", "Copied the song link");
+        }
+
+        private bool _copyingLyrics;
+
+        /// <summary>Copy lyrics: asks Apple for the song's words and puts them on the clipboard as plain lines.</summary>
+        private async void CopyFocusedAppleLyrics()
+        {
+            if (_copyingLyrics) return;
+            _copyingLyrics = true;
+            try
+            {
+                if (FocusedPath() is not { } path || AppleMusic.ItemAt(path) is not { IsSong: true }) return;
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+                var lines = await AppleMusic.LyricsAsync(path, cts.Token);
+                if (IsDisposed) return;
+                if (lines == null) { AnnounceAfterMenu("applemusic.lyrics", "Apple Music has no lyrics for this song."); return; }
+                if (!ClipboardInterop.SetText(string.Join(Environment.NewLine, lines)))
+                {
+                    AnnounceAfterMenu("applemusic.failed", "Could not take the clipboard, another application is holding it");
+                    return;
+                }
+                AnnounceAfterMenu("applemusic.lyrics", "Copied the lyrics");
+            }
+            catch (AppleMusicException ex) { AnnounceAfterMenu("applemusic.failed", ex.Message); }
+            catch (OperationCanceledException) { AnnounceAfterMenu("applemusic.failed", "Apple Music took too long to answer."); }
+            catch (Exception ex) { AnnounceAfterMenu("applemusic.failed", "Apple Music couldn't get the lyrics: " + ex.Message); }
+            finally { _copyingLyrics = false; }
+        }
         private ToolStripMenuItem _favoriteItem = null!;
         private ToolStripMenuItem _addToPlaylistItem = null!;
         private ToolStripMenuItem _goToArtistItem = null!;
@@ -12369,6 +12476,8 @@ namespace ExplorerNative
             if (disposing)
             {
                 AppleMusic.Grew -= OnAppleMusicGrew;
+                _nowPlayingTimer.Stop();
+                _nowPlayingTimer.Dispose();
                 _availabilityTimer?.Stop();
                 _availabilityTimer?.Dispose();
                 _statusTimer?.Stop();

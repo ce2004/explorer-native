@@ -170,6 +170,7 @@ namespace ExplorerNative
             // speaks through the same catalogue.
             AppleMusicPlayer.BindUiThread();
             AppleMusicPlayer.Say = (id, msg) => PostUi(() => SayAudio(id, msg));
+            AppleMusic.NowPlaying = () => (AppleMusicPlayer.CurrentPath, AppleMusicPlayer.IsActive && !AppleMusicPlayer.IsPlaying);
 
             // The four notification hooks the layers below expose. Each is null
             // until something subscribes, and each layer checks that before
@@ -1133,7 +1134,7 @@ namespace ExplorerNative
             if (taken.Count > 0)
                 Notify("hotkey.failed",
                     "Another application already owns " + string.Join(", ", taken) +
-                    ". Pick different keys in Preferences.");
+                    ". They still work while Explorer Native is in front. To use them everywhere, pick different keys in Preferences.");
 
             if (announce && registered.Count > 0)
                 Notify("hotkey.registered", string.Join(", ", registered) + " registered");

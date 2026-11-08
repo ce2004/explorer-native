@@ -28,6 +28,7 @@ namespace ExplorerNative
             Naming(check, equal);
             PlayOn(check, equal);
             Refreshing(check, equal);
+            await NowPlayingRow(check, equal);
             Wiring(check);
 
             AppleMusic.ResetForTests();
@@ -309,6 +310,43 @@ namespace ExplorerNative
             }, numbered: true);
             equal("an album defaults to Apple's track order", AppleMusic.DefaultSort(album).By.ToString(), "Apple");
             check("an album offers a track-order name", AppleMusic.AppleOrderName(album) == "Track order", AppleMusic.AppleOrderName(album));
+        }
+
+        /// <summary>
+        /// 5.5.0 (Conner): the song playing is the first row of Apple Music,
+        /// with its title, artist and album, and only while something is loaded.
+        /// Its path is the song's, so Shift+F10 acts on the song itself.
+        /// </summary>
+        private static async Task NowPlayingRow(Action<string, bool, string?> check, Action<string, string, string> equal)
+        {
+            const string songs = "::applemusic\\Library\\Songs";
+            var rows = AppleMusic.SeedForTests(songs, new List<AppleMusicItem>
+                { Song("Apathy", "1440", artist: "Someone", album: "Some Album", ms: 192_000) });
+            var song = rows[0].Path;
+            try
+            {
+                AppleMusic.NowPlaying = () => ("", false);
+                var top = await AppleMusic.ListAsync(AppleMusic.Root, fresh: false, CancellationToken.None);
+                equal("nothing playing: Search is first", top[0].Name, "Search");
+
+                AppleMusic.NowPlaying = () => (song, false);
+                top = await AppleMusic.ListAsync(AppleMusic.Root, fresh: false, CancellationToken.None);
+                equal("the playing song is the first row", top[0].Path, song);
+                equal("it says title, artist and album", top[0].Name, "Now playing, Apathy by Someone, from Some Album, 3:12");
+                check("Search comes after it", top[1].Name == "Search", top[1].Name);
+                check("it is the Now playing row", AppleMusic.IsNowPlayingRow(AppleMusic.Root, song), null);
+                check("not in another folder", !AppleMusic.IsNowPlayingRow(songs, song), null);
+
+                AppleMusic.NowPlaying = () => (song, true);
+                top = await AppleMusic.ListAsync(AppleMusic.Root, fresh: false, CancellationToken.None);
+                check("paused says so", top[0].Name.StartsWith("Paused, Apathy", StringComparison.Ordinal), top[0].Name);
+
+                equal("song link", AppleMusic.SongLink(song) ?? "", "https://music.apple.com/us/song/1440");
+                var upload = AppleMusic.SeedForTests(songs, new List<AppleMusicItem>
+                    { new() { Kind = "song", Name = "Demo", Id = "i.abc", IsLibrary = true } })[0].Path;
+                check("an upload has no link", AppleMusic.SongLink(upload) == null, null);
+            }
+            finally { AppleMusic.NowPlaying = null; }
         }
 
         private static void Naming(Action<string, bool, string?> check, Action<string, string, string> equal)

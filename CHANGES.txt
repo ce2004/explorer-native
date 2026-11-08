@@ -1,3 +1,8 @@
+5.5.0
+New feature: when a song is playing from Apple Music, it's the first thing you land on when you open Apple Music, before Search. It says the title, artist, album and length, and whether it's paused, and it updates as the songs change. Press Enter on it to pause or resume.
+New feature: Shift+F10 on the playing song, or any Apple Music song, has everything for that song: go to album, go to artist, favorite, add to playlist, add to library, play next, start station, and two new ones, Copy song link and Copy lyrics.
+New feature: while Explorer Native is the window in front, its own keyboard shortcuts always win, even if another program uses the same keys. When Explorer Native is minimised or another window is in front, nothing changes.
+
 5.4.1
 Bug fixed: some stations, like the 181.fm ones, stopped after a few seconds. They now play on.
 Bug fixed: some AAC stations took up to 20 seconds to make any sound. They now start in a second or two.

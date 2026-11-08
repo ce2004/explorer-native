@@ -89,6 +89,7 @@ namespace ExplorerNative
         {
             if (Environment.CurrentManagedThreadId != _thread) return;
             if (_suspended++ > 0) return;
+            WinKeyHook.FrontPaused++;
             foreach (var id in _registered) { try { UnregisterHotKey(_window.Handle, id); } catch { } }
             foreach (var id in _localClaimed) { try { UnregisterHotKey(_window.Handle, id); } catch { } }
             _localClaimed.Clear();
@@ -100,6 +101,7 @@ namespace ExplorerNative
         {
             if (Environment.CurrentManagedThreadId != _thread) return;
             if (_suspended == 0 || --_suspended > 0) return;
+            WinKeyHook.FrontPaused--;
             foreach (var (id, s) in _globalShortcuts)
             {
                 if (!_registered.Contains(id)) continue;
@@ -122,6 +124,7 @@ namespace ExplorerNative
         {
             Unregister(id);
             if (!shortcut.CanRegister) return false;
+            AddFront(id, shortcut);
 
             // A Windows key combination is caught at the keyboard, and only while
             // one of our windows is in front: registering it on each foreground
@@ -183,6 +186,7 @@ namespace ExplorerNative
         {
             Unregister(id);
             if (!shortcut.CanRegister) return false;
+            AddFront(id, shortcut);
 
             // While paused the key is only noted; Resume claims it.
             // (Windows key ones go on as usual: most fall to the hook, which is never paused.)
@@ -212,8 +216,22 @@ namespace ExplorerNative
         /// <summary>Windows key shortcuts caught by <see cref="WinKeyHook"/> rather than registered.</summary>
         private readonly HashSet<int> _hooked = new();
 
+        /// <summary>
+        /// With this application in front its own keys always win (Conner, 5.5.0):
+        /// the keyboard hook takes them before another program's hotkey of the
+        /// same keys. Windows key combinations already go through the hook.
+        /// </summary>
+        private void AddFront(int id, Shortcut shortcut)
+        {
+            if ((shortcut.Modifiers & MOD_WIN) != 0) return;
+            if (WinKeyHook.AddFront(_window.Handle, id, shortcut)) _front.Add(id);
+        }
+
+        private readonly HashSet<int> _front = new();
+
         public void Unregister(int id)
         {
+            if (_front.Remove(id)) WinKeyHook.RemoveFront(_window.Handle, id);
             _local.Remove(id);
             _globalShortcuts.Remove(id);
             if (_hooked.Remove(id)) WinKeyHook.Remove(_window.Handle, id);
@@ -228,6 +246,8 @@ namespace ExplorerNative
             foreach (int id in new List<int>(_local.Keys))
                 Unregister(id);
             foreach (int id in new List<int>(_hooked))
+                Unregister(id);
+            foreach (int id in new List<int>(_front))
                 Unregister(id);
         }
 

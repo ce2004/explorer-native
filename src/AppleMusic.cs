@@ -185,7 +185,8 @@ namespace ExplorerNative
             // The Search folder is made from the searches themselves, every time:
             // kept like other folders, it went on showing the searches made
             // before it was first opened.
-            bool searchFolder = folder.Equals(SearchFolder, StringComparison.OrdinalIgnoreCase);
+            bool searchFolder = folder.Equals(SearchFolder, StringComparison.OrdinalIgnoreCase) ||
+                                folder.Equals(Root, StringComparison.OrdinalIgnoreCase);   // Now playing changes
             int account;
             lock (Gate)
             {
@@ -244,7 +245,20 @@ namespace ExplorerNative
         private static async Task<List<Row>> BuildAsync(string folder, CancellationToken token)
         {
             if (folder.Equals(Root, StringComparison.OrdinalIgnoreCase))
-                return TopFolders.Select(f => new Row(Root + "\\" + f.Name, f.Name, true, "")).ToList();
+            {
+                var top = TopFolders.Select(f => new Row(Root + "\\" + f.Name, f.Name, true, "")).ToList();
+                // Conner (5.5.0): the song playing, first, so nobody has to go
+                // back into the station or album to find it. Its path is the
+                // song's own, so Shift+F10 works on it like on any song row.
+                var (playing, paused) = NowPlaying?.Invoke() ?? ("", false);
+                if (playing.Length > 0 && ItemAt(playing) is { IsSong: true } song)
+                    lock (Gate)
+                    {
+                        _nowPaused = paused;
+                        top.Insert(0, new Row(playing, RowName(song, Root), false, ""));
+                    }
+                return top;
+            }
 
             var rel = folder.Substring(Root.Length + 1);
             var client = Client();
@@ -617,9 +631,45 @@ namespace ExplorerNative
             return name;
         }
 
+        /// <summary>The player's song and whether it is paused, set by the tray. Empty when nothing is loaded.</summary>
+        public static Func<(string Path, bool Paused)>? NowPlaying { get; set; }
+
+        /// <summary>Paused when the Now playing row was last made. Under Gate.</summary>
+        private static bool _nowPaused;
+
+        /// <summary>True when this row of the top folder is the Now playing row.</summary>
+        public static bool IsNowPlayingRow(string? folder, string? path) =>
+            folder != null && path != null && folder.TrimEnd('\\').Equals(Root, StringComparison.OrdinalIgnoreCase) &&
+            ItemAt(path) is { IsSong: true };
+
+        /// <summary>"Now playing, Apathy by Someone, from Some Album, 3:12, favorited". Called under Gate.</summary>
+        private static string NowPlayingName(AppleMusicItem song)
+        {
+            var parts = new List<string> { _nowPaused ? "Paused" : "Now playing" };
+            parts.Add(song.Subtitle.Length > 0 ? $"{song.Name} by {song.Subtitle}" : song.Name);
+            if (song.AlbumName.Length > 0) parts.Add("from " + song.AlbumName);
+            if (song.DurationMs > 0) parts.Add(Duration(song.DurationMs));
+            var id = CatalogKey(song);
+            if (id.Length > 0 && Favorited.Contains(id)) parts.Add("favorited");
+            return string.Join(", ", parts);
+        }
+
+        /// <summary>The song's address on music.apple.com, or null for an upload Apple's catalogue doesn't have.</summary>
+        public static string? SongLink(string path)
+        {
+            var song = ItemAt(path);
+            if (song == null || !song.IsSong) return null;
+            var id = song.CatalogId.Length > 0 ? song.CatalogId : song.IsLibrary ? "" : song.Id;
+            if (id.Length == 0) return null;
+            string storefront;
+            lock (Gate) storefront = _client?.Storefront ?? "us";
+            return $"https://music.apple.com/{storefront}/song/{Uri.EscapeDataString(id)}";
+        }
+
         /// <summary>What a row says. Called under Gate.</summary>
         private static string RowName(AppleMusicItem item, string folder)
         {
+            if (item.IsSong && folder.Equals(Root, StringComparison.OrdinalIgnoreCase)) return NowPlayingName(item);
             string name = item.IsSong ? SongName(item, folder)
                 : item.Kind == "album" && item.Subtitle.Length > 0 && ItemAt(folder)?.Kind != "artist"
                     ? item.Subtitle + ", " + item.Name

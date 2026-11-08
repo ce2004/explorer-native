@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
 
@@ -82,7 +83,44 @@ namespace ExplorerNative
         [StructLayout(LayoutKind.Sequential)]
         private struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam, lParam; public uint time; public int x, y; }
 
-        private sealed record Entry(IntPtr Window, int Id, Shortcut Shortcut, bool OnlyWhenInFront);
+        private sealed record Entry(IntPtr Window, int Id, Shortcut Shortcut, bool OnlyWhenInFront, bool Front = false);
+
+        /// <summary>Front-only catches of keys with no Windows key: one per id, kept apart from the Windows key ones.</summary>
+        private const int FrontIdBit = 0x40000000;
+
+        /// <summary>
+        /// While above zero (the shortcut page is capturing a key), front catches
+        /// stand aside so the key reaches the box.
+        /// </summary>
+        internal static volatile int FrontPaused;
+
+        private static volatile bool AnyFront;
+
+        /// <summary>
+        /// Catches one of our shortcuts at the keyboard while this application is
+        /// in front, before any other program's hotkey or hook sees it (Conner,
+        /// 5.5.0: with Explorer Native in front its own keys always win). Posts
+        /// WM_HOTKEY with <paramref name="id"/>, so the action is the same.
+        /// </summary>
+        public static bool AddFront(IntPtr window, int id, Shortcut shortcut)
+        {
+            lock (Gate)
+            {
+                var before = _entries;
+                var next = new Dictionary<(IntPtr, int), Entry>(_entries)
+                {
+                    [(window, id | FrontIdBit)] = new Entry(window, id, shortcut, OnlyWhenInFront: true, Front: true)
+                };
+                _entries = next;
+                AnyFront = true;
+                if (EnsureRunning()) return true;
+                _entries = before;
+                AnyFront = before.Values.Any(e => e.Front);
+                return false;
+            }
+        }
+
+        public static void RemoveFront(IntPtr window, int id) => Remove(window, id | FrontIdBit);
 
         private static readonly object Gate = new();
 
@@ -151,6 +189,7 @@ namespace ExplorerNative
                 var next = new Dictionary<(IntPtr, int), Entry>(_entries);
                 next.Remove((window, id));
                 _entries = next;
+                AnyFront = next.Values.Any(e => e.Front);
                 StopIfIdle();
             }
         }
@@ -312,16 +351,21 @@ namespace ExplorerNative
                     return (IntPtr)1;
                 }
 
-                if (IsModifierKey(vk) || !(Down(VK_LWIN) || Down(VK_RWIN)))
+                if (IsModifierKey(vk)) return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
+                bool win = Down(VK_LWIN) || Down(VK_RWIN);
+                // Without the Windows key only our own shortcuts with this
+                // application in front are caught (5.5.0), so any other key
+                // costs nothing more than this look.
+                if (!win && (FrontPaused > 0 || !AnyFront || !OurWindowInFront()))
                     return CallNextHookEx(IntPtr.Zero, code, wParam, lParam);
 
-                uint mods = HotkeyManager.MOD_WIN;
+                uint mods = win ? HotkeyManager.MOD_WIN : 0u;
                 if (Down(VK_CONTROL)) mods |= HotkeyManager.MOD_CONTROL;
                 if (Down(VK_MENU)) mods |= HotkeyManager.MOD_ALT;
                 if (Down(VK_SHIFT)) mods |= HotkeyManager.MOD_SHIFT;
 
                 var capture = _capture;
-                if (capture != null && OurWindowInFront())
+                if (win && capture != null && OurWindowInFront())
                 {
                     Take(vk);
                     capture(mods, (uint)vk);
@@ -332,6 +376,7 @@ namespace ExplorerNative
                 {
                     if (!Matches(entry.Shortcut, mods, (uint)vk)) continue;
                     if (entry.OnlyWhenInFront && !OurWindowInFront()) continue;
+                    if (entry.Front && FrontPaused > 0) continue;
 
                     Take(vk);
                     PostMessage(entry.Window, WM_HOTKEY, (IntPtr)entry.Id, IntPtr.Zero);
