@@ -347,6 +347,20 @@ namespace ExplorerNative
                 check("an upload has no link", AppleMusic.SongLink(upload) == null, null);
             }
             finally { AppleMusic.NowPlaying = null; }
+
+            // 5.6.0: the song playing at quit comes back at the next start, from where it was.
+            var line = AppleMusic.ResumeLine(song, 83.7);
+            check("a playing song is saved", line != null, null);
+            var back = AppleMusic.FromResumeLine(line ?? "");
+            check("and read back", back != null, line);
+            if (back is { } r)
+            {
+                equal("from the same second", r.Seconds.ToString(), "83");
+                equal("with its catalogue id", r.CatalogId, "1440");
+                equal("and named as before", AppleMusic.SpokenName(r.Path) ?? "", "Apathy by Someone");
+                check("as a song", AppleMusic.ItemAt(r.Path) is { IsSong: true }, null);
+            }
+            check("a line that isn't ours is refused", AppleMusic.FromResumeLine("garbage") == null, null);
         }
 
         private static void Naming(Action<string, bool, string?> check, Action<string, string, string> equal)

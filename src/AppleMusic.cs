@@ -666,6 +666,44 @@ namespace ExplorerNative
             return $"https://music.apple.com/{storefront}/song/{Uri.EscapeDataString(id)}";
         }
 
+        /// <summary>
+        /// The playing song as one line for <see cref="Settings.AppleMusicResumeSong"/>:
+        /// catalogue id, title, artist, album, length and second, tab separated. Null when it can't come back.
+        /// </summary>
+        public static string? ResumeLine(string path, double seconds)
+        {
+            var song = ItemAt(path);
+            if (song == null || !song.IsSong) return null;
+            var id = song.CatalogId.Length > 0 ? song.CatalogId : song.IsLibrary ? "" : song.Id;
+            if (id.Length == 0) return null;
+            static string Clean(string s) => s.Replace('\t', ' ').Replace('\n', ' ').Replace('\r', ' ');
+            return string.Join("\t", id, Clean(song.Name), Clean(song.Subtitle), Clean(song.AlbumName),
+                song.DurationMs.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ((long)Math.Max(0, seconds)).ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        /// <summary>
+        /// The song saved by <see cref="ResumeLine"/>, made playable again: its
+        /// path, catalogue id and the second to start from. Null when the line is
+        /// not one of ours.
+        /// </summary>
+        public static (string Path, string CatalogId, double Seconds)? FromResumeLine(string line)
+        {
+            var parts = line.Split('\t');
+            if (parts.Length != 6 || parts[0].Length == 0) return null;
+            if (!long.TryParse(parts[4], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var ms) ||
+                !long.TryParse(parts[5], System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var seconds))
+                return null;
+            var item = new AppleMusicItem
+            {
+                Kind = "song", Id = parts[0], CatalogId = parts[0], Name = parts[1], Subtitle = parts[2],
+                AlbumName = parts[3], DurationMs = Math.Max(0, ms),
+            };
+            var path = Root + "\\Resumed\\" + Safe(parts[0]);
+            lock (Gate) Items[path] = item;
+            return (path, parts[0], Math.Max(0, seconds));
+        }
+
         /// <summary>What a row says. Called under Gate.</summary>
         private static string RowName(AppleMusicItem item, string folder)
         {

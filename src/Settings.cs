@@ -560,6 +560,19 @@ namespace ExplorerNative
         /// </summary>
         public bool AppleMusicAutoplay { get; set; } = true;
 
+        /// <summary>
+        /// The Apple Music song playing when Explorer Native closed comes back
+        /// where it was at the next start (Conner, 5.6.0). Off by default.
+        /// </summary>
+        public bool AppleMusicResumeOnStart { get; set; }
+
+        /// <summary>
+        /// The Apple Music song playing at quit, for <see cref="AppleMusicResumeOnStart"/>:
+        /// catalogue id, title, artist, album, length in ms and the second it had
+        /// reached, separated by tabs. Empty when nothing was playing.
+        /// </summary>
+        public string AppleMusicResumeSong { get; set; } = "";
+
         /// <summary>Apple Music's shuffle and repeat ("off", "all", "one"), kept between runs like Apple's own (4.1.6).</summary>
         public bool AppleMusicShuffle { get; set; }
         public string AppleMusicRepeat { get; set; } = "off";
@@ -703,6 +716,19 @@ namespace ExplorerNative
         /// against whichever file happens to be handy.
         /// </summary>
         public string AudioLastPath { get; set; } = "";
+
+        /// <summary>
+        /// The file playing when Explorer Native closed carries on from the same
+        /// place at the next start (Conner, 5.6.0). Off by default.
+        /// </summary>
+        public bool AudioResumeOnStart { get; set; }
+
+        /// <summary>The file playing at quit and the second it had reached, for <see cref="AudioResumeOnStart"/>. Empty when nothing was.</summary>
+        public string AudioResumePath { get; set; } = "";
+        public int AudioResumeSeconds { get; set; }
+
+        /// <summary>The last quit was an update or a restart, so what was playing comes back even with the resume settings off.</summary>
+        public bool ResumeAfterRestart { get; set; }
 
         // Shortcuts are stored as text — "Ctrl+Alt+P" — so settings.json stays
         // something a person can read and edit. See Shortcut.Parse; anything it
@@ -1425,6 +1451,7 @@ namespace ExplorerNative
             AudioFadeInMilliseconds = Math.Clamp(AudioFadeInMilliseconds, 0, 10000);
             AudioFadeOutMilliseconds = Math.Clamp(AudioFadeOutMilliseconds, 0, 10000);
             AudioRewindOnResumeSeconds = Math.Clamp(AudioRewindOnResumeSeconds, 0, 30);
+            AudioResumeSeconds = Math.Max(0, AudioResumeSeconds);
 
             // Zero is "do not read ahead"; the ceiling is one gigabyte,
             // past which this stops being a read-ahead and starts being a copy.
@@ -1573,6 +1600,7 @@ namespace ExplorerNative
             nameof(WindowX), nameof(WindowY), nameof(WindowWidth), nameof(WindowHeight),
             nameof(LastFolder), nameof(LastFolderTab2), nameof(ActiveTab),
             nameof(FocusedPathTab1), nameof(FocusedPathTab2), nameof(AudioLastPath),
+            nameof(AudioResumePath), nameof(AudioResumeSeconds), nameof(AppleMusicResumeSong), nameof(ResumeAfterRestart),
         };
 
         /// <summary>

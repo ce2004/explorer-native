@@ -1127,6 +1127,8 @@ namespace ExplorerNative
 
             AddCheck(panel, "Repeat the track when it ends", _working.AudioRepeatTrack,
                 v => _working.AudioRepeatTrack = v);
+            AddCheck(panel, "Re&member where I was in a file and carry on playing when Explorer Native starts",
+                _working.AudioResumeOnStart, v => _working.AudioResumeOnStart = v);
 
             AudioVolumeSection(panel);
             AudioSpeechSection(panel);
@@ -1297,6 +1299,8 @@ namespace ExplorerNative
 
             AddCheck(panel, "&Autoplay: when a playlist or album ends, keep playing songs like it",
                 _working.AppleMusicAutoplay, v => _working.AppleMusicAutoplay = v);
+            AddCheck(panel, "Re&member where I was in a song and carry on playing when Explorer Native starts",
+                _working.AppleMusicResumeOnStart, v => _working.AppleMusicResumeOnStart = v);
             AddInfo(panel,
                 "To sign in, export your Apple Music cookies to a cookies.txt file while signed in at " +
                 "music.apple.com (the same file gamdl uses), then load it below. Your sign-in is kept encrypted " +

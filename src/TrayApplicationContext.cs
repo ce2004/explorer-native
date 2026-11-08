@@ -308,6 +308,7 @@ namespace ExplorerNative
             if (_settings.GoogleDriveEnabled) MountGoogleDrive(mayConsent: false);
             ApplyAudioSettings();
             if (_settings.AudioPlayerEnabled) WarmAudio();
+            ResumeAfterStart();
 
             RegisterHotkeys();
 
@@ -2295,7 +2296,95 @@ namespace ExplorerNative
             Notify("applemusic.playnext", said);
         }
 
-        public bool PlayAudioFile(string path)
+        /// <summary>
+        /// What was playing as the app closed, and where it had got to, for the
+        /// next start (5.6.0). Only while its setting is on, and only something
+        /// playing: a paused track is not brought back with sound.
+        /// </summary>
+        private void RememberWhereWeWere()
+        {
+            try
+            {
+                _settings.AudioResumePath = "";
+                _settings.AudioResumeSeconds = 0;
+                _settings.AppleMusicResumeSong = "";
+                _settings.ResumeAfterRestart = _quitToComeBack;
+                if (AppleMusicPlayer.IsActive)
+                {
+                    if ((_settings.AppleMusicResumeOnStart || _quitToComeBack) && AppleMusicPlayer.IsPlaying &&
+                        AppleMusic.ResumeLine(AppleMusicPlayer.CurrentPath, AppleMusicPlayer.Times.Position) is { } line)
+                        _settings.AppleMusicResumeSong = line;
+                    return;
+                }
+                if (!(_settings.AudioResumeOnStart || _quitToComeBack) || !_audio.IsPlaying) return;
+                var path = _audio.NowPlayingPath;
+                if (string.IsNullOrEmpty(path)) return;
+                _settings.AudioResumePath = path;
+                // A station has no place to go back to: it just plays again.
+                _settings.AudioResumeSeconds = _audio.IsLive ? 0 : (int)Math.Max(0, _audio.PositionSeconds);
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// Plays what was playing when the app last closed, from where it was
+        /// (5.6.0). A file is waited for up to half a minute, because the Google
+        /// Drive letter or a share can still be coming up.
+        /// </summary>
+        private void ResumeAfterStart()
+        {
+            if (!_settings.AudioPlayerEnabled) return;
+            // Once: the next quit writes it again.
+            bool afterRestart = _settings.ResumeAfterRestart;
+            _settings.ResumeAfterRestart = false;
+            var file = _settings.AudioResumeOnStart || afterRestart ? _settings.AudioResumePath : "";
+            int seconds = _settings.AudioResumeSeconds;
+            var apple = _settings.AppleMusicResumeOnStart || afterRestart ? _settings.AppleMusicResumeSong : "";
+            if (file.Length == 0 && apple.Length == 0) return;
+
+            System.Threading.Tasks.Task.Run(async () =>
+            {
+                try
+                {
+                    await System.Threading.Tasks.Task.Delay(1500);
+                    if (apple.Length > 0)
+                    {
+                        if (!AppleMusic.IsSetUp || AppleMusic.FromResumeLine(apple) is not { } song) return;
+                        PostUi(() =>
+                        {
+                            // Something chosen since the start wins.
+                            if (_quitting || AppleMusicPlayer.IsActive || _audio.HasTrack) return;
+                            AppleMusicPlayer.SetOutputDevice(OutputDeviceName(_settings.AudioOutputDeviceId));
+                            var name = AppleMusic.SpokenName(song.Path) ?? "";
+                            AppleMusicPlayer.PlayFrom(song.Path, song.CatalogId, name, Math.Min(100, _settings.AudioVolumePercent), song.Seconds);
+                            SayAudio("audio.play", name);
+                        });
+                        return;
+                    }
+
+                    for (int i = 0; i < 15; i++)
+                    {
+                        var probe = System.Threading.Tasks.Task.Run(() => System.IO.File.Exists(file));
+                        if (await System.Threading.Tasks.Task.WhenAny(probe, System.Threading.Tasks.Task.Delay(5000)) == probe && probe.Result)
+                        {
+                            PostUi(() =>
+                            {
+                                if (_quitting || AppleMusicPlayer.IsActive || _audio.HasTrack) return;
+                                PlayAudioFile(file, seconds);
+                            });
+                            return;
+                        }
+                        await System.Threading.Tasks.Task.Delay(2000);
+                    }
+                }
+                catch { }
+            });
+        }
+
+        public bool PlayAudioFile(string path) => PlayAudioFile(path, 0);
+
+        /// <summary>Plays a file, from <paramref name="startAt"/> seconds in when that is above zero.</summary>
+        public bool PlayAudioFile(string path, double startAt)
         {
             if (!_settings.AudioPlayerEnabled) return false;
 
@@ -2334,7 +2423,11 @@ namespace ExplorerNative
                     // From the beginning, always. Enter on a track means play
                     // that track, not resume something you were doing an hour
                     // ago.
-                    try { message = _audio.Play(path); }
+                    try
+                    {
+                        message = _audio.Play(path);
+                        if (message != null && startAt > 0 && !_audio.IsLive) _audio.SeekTo(startAt);
+                    }
                     catch { message = null; }
                 }
 
@@ -2617,6 +2710,7 @@ namespace ExplorerNative
                         // window open, the new copy opens it again where it was
                         // (5.3.0, Conner); in the tray, it stays in the tray.
                         if (_form is { IsDisposed: false, Visible: true }) ReopenAfterUpdate.Mark();
+                        _quitToComeBack = true;   // what is playing carries on in the new copy (5.6.0)
                         Quit();
                         return;
                     }
@@ -2917,7 +3011,14 @@ namespace ExplorerNative
         }
 
         /// <summary>Shuts down without the "hide to tray" behaviour, for Ctrl+R.</summary>
-        public void QuitImmediately() => Quit();
+        public void QuitImmediately()
+        {
+            _quitToComeBack = true;   // Ctrl+R: what is playing carries on after the restart
+            Quit();
+        }
+
+        /// <summary>An update or a restart is closing the app: what is playing comes back whatever the settings say.</summary>
+        private bool _quitToComeBack;
 
         /// <summary>The same quit as the tray's Exit, with its questions.</summary>
         public void QuitAsked() => Quit(ask: true);
@@ -2993,6 +3094,7 @@ namespace ExplorerNative
                 _settings.AudioVolumePercent = _audio.VolumePercent;
                 _settings.AudioPlaybackRatePercent = _audio.PlaybackRatePercent;
                 _settings.AudioRepeatTrack = _audio.RepeatTrack;
+                RememberWhereWeWere();
 
                 _settings = WithWaitingSettings(_settings);
                 // On its own: at the end of a session WinForms may already have

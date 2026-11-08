@@ -164,6 +164,10 @@ namespace ExplorerNative
         public static void Play(string path, string catalogId, string spokenName, int volumePercent = -1) =>
             Start(path, catalogId, spokenName, volumePercent, startAt: 0, retried: false, how: StartKind.Chosen);
 
+        /// <summary>The song playing when the app last closed, from where it had got to (5.6.0).</summary>
+        public static void PlayFrom(string path, string catalogId, string spokenName, int volumePercent, double startAt) =>
+            Start(path, catalogId, spokenName, volumePercent, startAt: Math.Max(0, startAt), retried: false, how: StartKind.Chosen);
+
         /// <summary>Why a song is being started, which decides what happens to the list's place and Play next.</summary>
         private enum StartKind
         {
