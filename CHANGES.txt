@@ -1,7 +1,11 @@
+5.6.1
+New feature: if you update or restart Explorer Native while it is copying, moving or emptying the Google Drive trash, it now asks whether to finish it after the restart, instead of only offering to abandon it. Say yes and it picks up where it stopped, filling in only what is missing. If a folder is on a network share, a USB drive or Google Drive that takes a moment to come back, it waits up to five minutes for it.
+Bug fixed: emptying a big Google Drive trash said it failed after about 30 seconds, because Explorer Native stopped waiting for Google. It now waits for as long as Google takes.
+
 5.6.0
-New feature: Explorer Native can remember where you were in a file when you close it, and carry on playing from that spot the next time it starts. Turn it on in Preferences, Audio: Remember where I was in a file and carry on playing when Explorer Native starts.
+New feature: Explorer Native can remember where you were in a file when you close it, and play from that spot the next time it starts. Turn it on in Preferences, Audio: Resume playing where I left off when Explorer Native starts.
 New feature: the same for Apple Music. Turn it on in Preferences, Apple Music, and the song you were listening to comes back from where you left it.
-New feature: when Explorer Native closes for an update or a restart, whatever was playing carries on afterwards from the same spot, even with those settings off.
+New feature: when Explorer Native closes for an update or a restart, whatever was playing resumes afterwards from the same spot, even with those settings off.
 
 5.5.0
 New feature: when a song is playing from Apple Music, it's the first thing you land on when you open Apple Music, before Search. It says the title, artist, album and length, and whether it's paused, and it updates as the songs change. Press Enter on it to pause or resume.

@@ -928,7 +928,7 @@ namespace ExplorerNative
                     if (ask.ShowDialog(this) != DialogResult.OK) return;
                 }
 
-                if (!ConfirmAbandonTransfers("Update")) return;
+                if (!ConfirmCarryOn("Update")) return;
                 if (!AudioEditorForm.ConfirmEndingEditors(this, "Update")) return;
 
                 string exe;
@@ -946,11 +946,13 @@ namespace ExplorerNative
 
                 // Asked again: a paste or move started during the download
                 // would be cut off by the installer's <exit>, which never asks.
-                if (!ConfirmAbandonTransfers("Update")) return;
+                // Only about what is new since the first answer.
+                if (!ConfirmCarryOn("Update")) return;
                 if (!AudioEditorForm.ConfirmEndingEditors(this, "Update")) return;
                 // The installer's <exit> never asks, so files still on their
                 // way to Google Drive are asked about here.
                 if (!Program.ConfirmUnsavedDrive("updates", "Update anyway?")) return;
+                await CarryOnLaterAsync();
 
                 Announce("Installing update. Explorer Native will restart");
                 CaptureState();
@@ -994,15 +996,28 @@ namespace ExplorerNative
             static string Plain(Exception ex) => NameRules.PlainUpdateFailure(ex);
         }
 
+        /// <summary>Set once the questions were answered and the copies put aside, for the second pass through <see cref="RestartApp"/>.</summary>
+        private bool _restartAgreed;
+
         private void RestartApp()
         {
             // Before the replacement is launched, not after. Quit itself cannot
             // ask on this path: by the time it is reached the new process is
             // already coming up, and answering "no" there would leave two of
             // them fighting over the single-instance lock.
-            if (!ConfirmAbandonTransfers("Restart")) return;
-            if (!AudioEditorForm.ConfirmEndingEditors(this, "Restart")) return;
-            if (!Program.ConfirmUnsavedDrive("restarts", "Restart anyway?")) return;
+            if (!_restartAgreed)
+            {
+                if (!ConfirmCarryOn("Restart")) return;
+                if (!AudioEditorForm.ConfirmEndingEditors(this, "Restart")) return;
+                if (!Program.ConfirmUnsavedDrive("restarts", "Restart anyway?")) return;
+                // Copies to carry on are written down and stopped first, then back here.
+                if (_carryable.Count > 0)
+                {
+                    _ = CarryOnThenRestartAsync();
+                    return;
+                }
+            }
+            _restartAgreed = false;
 
             try
             {
@@ -7800,9 +7815,10 @@ namespace ExplorerNative
 
                 var pane = Active;
                 RunningTransfers++;
+                int job = StartCarryable(new CarryOnTransfers.Job(CarryOnTransfers.Kind.EmptyTrash, Array.Empty<string>(), drive.Letter ?? ""));
                 try { await drive.EmptyTrash(); }
                 catch (Exception) { /* said by the Drive layer */ }
-                finally { RunningTransfers--; }
+                finally { RunningTransfers--; EndCarryable(job); }
                 if (IsDisposed) return;
                 // Only the pane that asked, and only if it is still where it was.
                 bool stillThere = string.Equals(pane.CurrentPath, origin, StringComparison.OrdinalIgnoreCase);
@@ -9562,7 +9578,17 @@ namespace ExplorerNative
             return fromDrive ? 1 : FileOperations.RecommendedThreads;
         }
 
-        private async Task<bool> RunTransfer(string[] paths, string destination, bool move)
+        private async Task<bool> RunTransfer(string[] paths, string destination, bool move,
+            PasteConflictPolicy? forced = null)
+        {
+            // While it runs, an update or a restart can carry it on afterwards (5.6.1).
+            int job = StartCarryable(new CarryOnTransfers.Job(
+                move ? CarryOnTransfers.Kind.Move : CarryOnTransfers.Kind.Copy, paths, destination));
+            try { return await RunTransferCore(paths, destination, move, forced); }
+            finally { EndCarryable(job); }
+        }
+
+        private async Task<bool> RunTransferCore(string[] paths, string destination, bool move, PasteConflictPolicy? forced)
         {
             // Cut and paste into the folder the items are already in is nothing
             // to do. It was a collision of each item with itself, so under keep
@@ -9622,7 +9648,7 @@ namespace ExplorerNative
             }
 
             var asking = System.Diagnostics.Stopwatch.StartNew();
-            var chosen = await ResolveConflictPolicy(paths, destination);
+            var chosen = forced ?? await ResolveConflictPolicy(paths, destination);
             if (Drive != null && Drive.Owns(destination))
                 GoogleDrive.Trace($"window paste: conflict check {asking.ElapsedMilliseconds}ms (includes any question asked)");
             if (chosen == null)
@@ -12442,6 +12468,196 @@ namespace ExplorerNative
                 SynchronizationContext.Current?.Post(_ => Program.QuitForRestart(), null);
 
             base.OnFormClosing(e);
+        }
+
+        // ---- Carrying on after an update or a restart (5.6.1) ----
+
+        /// <summary>Running jobs an update or a restart can carry on afterwards, by a number of their own.</summary>
+        private readonly Dictionary<int, CarryOnTransfers.Job> _carryable = new();
+        private int _nextCarryable;
+
+        /// <summary>How many running operations were already agreed to be carried on, so asking again is only about new ones.</summary>
+        private int _carryOnAgreed = -1;
+
+        private int StartCarryable(CarryOnTransfers.Job job)
+        {
+            int id = ++_nextCarryable;
+            _carryable[id] = job;
+            return id;
+        }
+
+        private void EndCarryable(int id) => _carryable.Remove(id);
+
+        /// <summary>
+        /// Before an update or a restart ends the process under running file
+        /// operations (Conner, 5.6.1): copies, moves and emptying the Google Drive
+        /// trash can carry on afterwards, so that is what is asked. Anything else
+        /// running is said as stopping. True to go ahead.
+        /// </summary>
+        public bool ConfirmCarryOn(string verb)
+        {
+            if (IsDisposed || RunningTransfers <= 0) { _carryOnAgreed = -1; return true; }
+            if (_carryOnAgreed >= RunningTransfers) return true;   // nothing new since the answer
+            int carry = _carryable.Count;
+            if (carry == 0) return ConfirmAbandonTransfers(verb);
+
+            string what = carry == 1 ? DescribeCarryable(_carryable.Values.First()) + " is" : $"{carry} file operations are";
+            int other = Math.Max(0, RunningTransfers - carry);
+            var question = $"{what} still running. {verb} now and finish {(carry == 1 ? "it" : "them")} once Explorer Native has restarted?";
+            if (other > 0)
+                question += other == 1
+                    ? " One other operation can't be finished later and will stop."
+                    : $" {other} other operations can't be finished later and will stop.";
+            question += Environment.NewLine + Environment.NewLine +
+                        $"Choose No to wait and {verb.ToLowerInvariant()} later.";
+
+            if (MessageBox.Show(this, question, "Still working",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+            {
+                _carryOnAgreed = RunningTransfers;
+                return true;
+            }
+            _carryOnAgreed = -1;
+            RestoreListFocus();
+            return false;
+        }
+
+        private static string DescribeCarryable(CarryOnTransfers.Job job) => job.What switch
+        {
+            CarryOnTransfers.Kind.EmptyTrash => "Emptying the Google Drive trash",
+            CarryOnTransfers.Kind.Move => "A move into " + FolderNameForSpeech(job.Destination),
+            _ => "A copy into " + FolderNameForSpeech(job.Destination),
+        };
+
+        private static string FolderNameForSpeech(string folder)
+        {
+            var name = Path.GetFileName(folder.TrimEnd('\\'));
+            return string.IsNullOrEmpty(name) ? folder : name;
+        }
+
+        /// <summary>
+        /// Right before the process goes: writes down what to carry on, then
+        /// stops the copies the way Cancel does, so nothing half written is left
+        /// behind, and waits a little for them to tidy up.
+        /// </summary>
+        private async Task CarryOnLaterAsync()
+        {
+            _carryOnAgreed = -1;
+            var jobs = _carryable.Values.ToList();
+            if (jobs.Count == 0) return;
+            CarryOnTransfers.Save(jobs);
+            foreach (var window in ProgressForm.Running.ToList())
+            {
+                try { window.CancelTransfer(); } catch { }
+            }
+            // Emptying the trash has no window and is left to Google, which
+            // finishes it anyway; the copies tidy up within seconds.
+            var until = Environment.TickCount64 + 20_000;
+            while (_carryable.Values.Any(j => j.What != CarryOnTransfers.Kind.EmptyTrash) &&
+                   Environment.TickCount64 < until && !IsDisposed)
+                await Task.Delay(200);
+        }
+
+        private async Task CarryOnThenRestartAsync()
+        {
+            try
+            {
+                await CarryOnLaterAsync();
+                if (IsDisposed) return;
+                _restartAgreed = true;
+                RestartApp();
+            }
+            catch (Exception ex)
+            {
+                _restartAgreed = false;
+                if (!IsDisposed) Announce($"Could not restart: {ex.Message}", isError: true);
+            }
+        }
+
+        /// <summary>
+        /// At start: carries on what an update or a restart stopped. Each waits
+        /// up to five minutes for its folders (a share waking up, the Drive
+        /// letter coming back), then goes again, filling in only what is missing.
+        /// </summary>
+        public void CarryOnAfterRestart()
+        {
+            List<CarryOnTransfers.Job> jobs;
+            try { jobs = CarryOnTransfers.Take(); } catch { return; }
+            foreach (var job in jobs) _ = CarryOnOneAsync(job);
+        }
+
+        private async Task CarryOnOneAsync(CarryOnTransfers.Job job)
+        {
+            try
+            {
+                var until = DateTime.UtcNow + CarryOnTransfers.WaitForFolders;
+                bool said = false;
+                while (!IsDisposed)
+                {
+                    if (job.What == CarryOnTransfers.Kind.EmptyTrash)
+                    {
+                        if (Drive is { } drive && drive.Letter != null && drive.LetterShown)
+                        {
+                            AnnounceOperation("drive.trash", "Emptying the Google Drive trash");
+                            RunningTransfers++;
+                            int id = StartCarryable(job);
+                            try { await drive.EmptyTrash(); }
+                            catch (Exception) { /* said by the Drive layer */ }
+                            finally { RunningTransfers--; EndCarryable(id); }
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        var (destination, sources) = await Task.Run(() =>
+                        {
+                            bool there = DirectoryAnswers(job.Destination);
+                            var left = job.Paths.Where(PathAnswers).ToArray();
+                            return (there, left);
+                        });
+                        if (destination && sources.Length > 0)
+                        {
+                            AnnounceOperation(job.Move ? "move.start" : "copy.start",
+                                $"Finishing {(job.Move ? "the move" : "the copy")} into {FolderNameForSpeech(job.Destination)}");
+                            await RunTransfer(sources, job.Destination, job.Move, PasteConflictPolicy.FillGaps);
+                            return;
+                        }
+                        // A move whose sources are all gone already finished.
+                        if (destination && job.Move && sources.Length == 0) return;
+                    }
+
+                    if (DateTime.UtcNow >= until)
+                    {
+                        AnnounceOperation("copy.failed", job.What == CarryOnTransfers.Kind.EmptyTrash
+                            ? "Couldn't empty the Google Drive trash: Google Drive isn't connected"
+                            : $"Couldn't finish {(job.Move ? "the move" : "the copy")} into {FolderNameForSpeech(job.Destination)}: the folders aren't there");
+                        return;
+                    }
+                    if (!said)
+                    {
+                        said = true;
+                        Announce("Waiting for the folders to come back");
+                    }
+                    await Task.Delay(5000);
+                }
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) Announce("Couldn't finish it: " + ex.Message, isError: true);
+            }
+        }
+
+        /// <summary>Whether a folder is there, within five seconds (a share that went to sleep answers nothing).</summary>
+        private static bool DirectoryAnswers(string path)
+        {
+            var probe = Task.Run(() => Directory.Exists(path));
+            return probe.Wait(5000) && probe.Result;
+        }
+
+        private static bool PathAnswers(string path)
+        {
+            var probe = Task.Run(() => File.Exists(path) || Directory.Exists(path));
+            return probe.Wait(5000) && probe.Result;
         }
 
         /// <summary>

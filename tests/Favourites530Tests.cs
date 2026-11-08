@@ -145,6 +145,29 @@ namespace ExplorerNative
                 check("reopen: an old note (a quit that never restarted) is ignored, and cleared", !ReopenAfterUpdate.Take() && !File.Exists(ReopenAfterUpdate.NotePath), null);
                 File.WriteAllText(ReopenAfterUpdate.NotePath, "rubbish");
                 check("reopen: a broken note is ignored", !ReopenAfterUpdate.Take(), null);
+
+                // 5.6.1 (Conner): copies, moves and emptying the trash carry on after an update.
+                check("carry on: nothing waiting", !CarryOnTransfers.Waiting() && CarryOnTransfers.Take().Count == 0, null);
+                CarryOnTransfers.Save(new[]
+                {
+                    new CarryOnTransfers.Job(CarryOnTransfers.Kind.Copy, new[] { @"C:\a\one.txt", @"C:\a\Two Folder" }, @"D:\backup"),
+                    new CarryOnTransfers.Job(CarryOnTransfers.Kind.Move, new[] { @"E:\x" }, @"G:\My Drive"),
+                    new CarryOnTransfers.Job(CarryOnTransfers.Kind.EmptyTrash, Array.Empty<string>(), "G:"),
+                });
+                check("carry on: a note is waiting", CarryOnTransfers.Waiting(), null);
+                var back = CarryOnTransfers.Take();
+                check("carry on: all three come back", back.Count == 3, back.Count.ToString());
+                if (back.Count == 3)
+                {
+                    check("carry on: a copy with both sources", back[0].What == CarryOnTransfers.Kind.Copy && back[0].Paths.Length == 2 &&
+                        back[0].Paths[1] == @"C:\a\Two Folder" && back[0].Destination == @"D:\backup", null);
+                    check("carry on: a move", back[1].Move && back[1].Destination == @"G:\My Drive", null);
+                    check("carry on: emptying the trash", back[2].What == CarryOnTransfers.Kind.EmptyTrash, null);
+                }
+                check("carry on: once only", !CarryOnTransfers.Waiting() && CarryOnTransfers.Take().Count == 0, null);
+                CarryOnTransfers.Save(new[] { new CarryOnTransfers.Job(CarryOnTransfers.Kind.Copy, new[] { @"C:\a" }, @"D:\b") },
+                    DateTime.UtcNow - TimeSpan.FromHours(2));
+                check("carry on: an old note is ignored", CarryOnTransfers.Take().Count == 0, null);
             }
             finally
             {
@@ -170,7 +193,8 @@ namespace ExplorerNative
             check("reopen: an install's or update's exit notes an open window before quitting", exit > 0 && mark > exit && mark < quit, null);
             check("reopen: only an open window is noted", tray.Contains("if (_form is { IsDisposed: false, Visible: true }) ReopenAfterUpdate.Mark();", StringComparison.Ordinal), null);
             check("reopen: the next start shows the window for it, even when starting minimised",
-                tray.Contains("if (!_settings.StartMinimised || askedForAFolder || wasOpenBeforeUpdate) ShowWindow();", StringComparison.Ordinal), null);
+                tray.Contains("if (!_settings.StartMinimised || askedForAFolder || wasOpenBeforeUpdate", StringComparison.Ordinal) &&
+                tray.IndexOf("ShowWindow();", tray.IndexOf("|| wasOpenBeforeUpdate", StringComparison.Ordinal), StringComparison.Ordinal) > 0, null);
 
             var main = Source("MainForm.cs");
             check("favourites: Ctrl+D adds", main.Contains("keyData == (Keys.Control | Keys.D)", StringComparison.Ordinal) && main.Contains("AddFavourite();", StringComparison.Ordinal), null);

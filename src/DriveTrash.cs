@@ -272,11 +272,19 @@ namespace ExplorerNative
                 $"delete failed {(int)response.StatusCode}: " + Explain((int)response.StatusCode, body));
         }
 
+        /// <summary>How long emptying the trash is waited for.</summary>
+        internal static readonly TimeSpan EmptyTrashMost = TimeSpan.FromMinutes(30);
+
         /// <summary>Deletes everything in My Drive's trash for good. Asked about first, by the caller.</summary>
         public async Task EmptyTrash(CancellationToken token)
         {
+            // Google answers only once the whole trash is gone, which takes
+            // minutes for a big one: the quick client's fifteen seconds called
+            // that a failure (Conner, 5.6.1: "it gives up after 30 seconds").
+            using var patient = CancellationTokenSource.CreateLinkedTokenSource(token);
+            patient.CancelAfter(EmptyTrashMost);
             using var request = await Request(HttpMethod.Delete, $"{Files}/trash", token);
-            using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token);
+            using var response = await Send(request, HttpCompletionOption.ResponseContentRead, patient.Token, _uploads);
             if (response.IsSuccessStatusCode)
             {
                 EditHeldTrash(l => l.Clear());

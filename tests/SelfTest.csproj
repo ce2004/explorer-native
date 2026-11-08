@@ -167,6 +167,7 @@
     <Compile Include="..\src\Favourites.cs" />
     <Compile Include="..\src\FavouritesForm.cs" />
     <Compile Include="..\src\ReopenAfterUpdate.cs" />
+    <Compile Include="..\src\CarryOnTransfers.cs" />
     <Compile Include="DriveClientCacheTests.cs" />
     <Compile Include="DriveMonitorTests.cs" />
     <Compile Include="SyncDuplicateTests.cs" />

@@ -138,7 +138,8 @@ namespace ExplorerNative
             var context = Body(main, "private void BuildContextMenu()");
             string[] appleOnly = { "_playNextItem", "_favoriteItem", "_addToPlaylistItem", "_goToArtistItem", "_goToAlbumItem",
                                    "_libraryItem", "_appleShuffleItem", "_appleRepeatItem", "_appleUpNextItem",
-                                   "_playAllItem", "_shuffleAllItem", "_playAllNextItem", "_startStationItem" };
+                                   "_playAllItem", "_shuffleAllItem", "_playAllNextItem", "_startStationItem",
+                                   "_copySongLinkItem", "_copyLyricsItem" };
             string[] trashOnly = { "_restoreItem", "_deleteForeverItem", "_emptyTrashItem" };
             Distinct("the Shift+F10 menu's access keys are unique for files, archives and audio",
                 Labels(context, appleOnly.Concat(trashOnly).Append("_testArchiveItem").ToArray()));

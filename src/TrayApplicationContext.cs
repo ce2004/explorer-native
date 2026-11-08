@@ -344,7 +344,10 @@ namespace ExplorerNative
             // put nothing at all on screen.
             bool askedForAFolder = !string.IsNullOrEmpty(_settings.InitialFolderOverride);
             bool wasOpenBeforeUpdate = ReopenAfterUpdate.Take();
-            if (!_settings.StartMinimised || askedForAFolder || wasOpenBeforeUpdate) ShowWindow();
+            // Copies an update or a restart stopped carry on, in their windows (5.6.1).
+            bool carryingOn = CarryOnTransfers.Waiting();
+            if (!_settings.StartMinimised || askedForAFolder || wasOpenBeforeUpdate || carryingOn) ShowWindow();
+            if (carryingOn) PostUi(() => _form?.CarryOnAfterRestart());
 
             // Posted, not said. Everything above is the path to the window, and
             // this application is the shell's handler for every folder on the
