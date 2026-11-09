@@ -221,7 +221,7 @@ namespace ExplorerNative
                 if (root.TryGetProperty("newStartPageToken", out var done) && done.GetString() is { Length: > 0 } next)
                     return (changes, next);
                 if (!(root.TryGetProperty("nextPageToken", out var more) && more.GetString() is { Length: > 0 } np))
-                    throw new InvalidOperationException("the changes feed ended without saying where to carry on");
+                    throw new InvalidOperationException("the changes feed ended without saying where to pick up");
                 page = np;
             }
         }

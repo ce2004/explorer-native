@@ -1401,7 +1401,7 @@ function setupAudio() {
       // Picked up again from here as soon as the connection is back.
       player.failed = true;
       player.failedAt = at0;
-      announce(`Could not play ${t.name}. It carries on when the connection is back.`, true);
+      announce(`Could not play ${t.name}. It tries again when the connection is back.`, true);
     }
   });
   a.addEventListener('playing', () => { retry = 0; skipped = 0; });

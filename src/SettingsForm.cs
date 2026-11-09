@@ -1140,7 +1140,7 @@ namespace ExplorerNative
                 "refused there rather than quietly taking it over.");
 
             AddInfo(panel,
-                "Enter always starts a track from the beginning. There is no carrying on from where " +
+                "Enter always starts a track from the beginning. There is no resuming from where " +
                 "you left off: a player that sometimes begins two minutes in, because of something " +
                 "you did an hour ago, is one you cannot predict.");
 

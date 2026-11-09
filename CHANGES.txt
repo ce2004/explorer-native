@@ -61,7 +61,7 @@ Bug fixed: if you gave a global audio shortcut Ctrl+Alt+T or Ctrl+Alt+Shift+T, i
 
 5.1.0
 New feature: you can now see everything that is copying, moving, compressing, extracting or converting in one list. Press Ctrl+Alt+Shift+T, or choose Running transfers on the Tools menu. Press Enter on a transfer to go to its window, P to pause or resume it, or Delete to cancel it. Press Ctrl+Alt+T to hear how far everything has got without leaving your folder.
-New feature: you can now pause a copy, a move or a Google Drive upload and carry on later. Press P or the Pause button in its progress window, and press it again to resume. Nothing already copied is sent again.
+New feature: you can now pause a copy, a move or a Google Drive upload and finish it later. Press P or the Pause button in its progress window, and press it again to resume. Nothing already copied is sent again.
 New feature: you can now search by size, date and kind. Press F1 and add words like size>100mb, modified:today, modified:7d, modified:2025 or kind:audio to what you type. They work in Google Drive too.
 New feature: you can now filter the folder you're in as you type. Press Ctrl+F (or Go, Filter this folder) and type. The list narrows as you go and tells you how many items it's showing. Press Enter to keep the filter, or Escape to see everything again.
 New feature: you can now open password-protected zip and 7z archives. Explorer Native asks for the password once, tells you plainly if it is wrong, and remembers it until you quit.
@@ -95,7 +95,7 @@ Bug fixed: if you opened the list of drives, the menus offered New folder, Renam
 Bug fixed: if you pressed Shift+F10 in an empty folder, the menu offered commands that said "Nothing selected". Now they are left out. Paste also shows again when the cursor is on the Trash row.
 Bug fixed: if you left the window open past midnight, NVDA still read yesterday's files as modified "today". Now the dates are refreshed when the day changes.
 Bug fixed: if a hidden folder such as .git kept changing while hidden files were off, the whole folder was reloaded again and again. Now it is left alone.
-Bug fixed: if you stopped a search with Escape, folder sizes stopped filling in and updating. Now they carry on.
+Bug fixed: if you stopped a search with Escape, folder sizes stopped filling in and updating. Now they keep going.
 Bug fixed: if you tapped Ctrl+Space and let go of Ctrl quickly, or let go in another tab or a prompt, the selection total was said twice or at the wrong time. Now it is said once, in the right place.
 Bug fixed: if you pressed Delete on an item inside a trashed Drive folder, it asked about deleting forever and then failed on every item. Now it says to restore the folder first. Restore and Delete permanently with nothing selected now say "Nothing selected".
 Bug fixed: if you emptied the Drive trash and switched tabs while it worked, the tab in front was moved to the Trash folder. Now only the tab that asked is touched.
@@ -119,7 +119,7 @@ Bug fixed: if you changed a synced folder's Drive folder to one in a shared driv
 Bug fixed: the sync status could say "trying again in 1 seconds". Now it says "1 second".
 Bug fixed: if a file was open in another program during a first sync of two copies, it could be skipped until the daily check. Now its folder is looked at again on the next pass.
 Bug fixed: if Google refused to let you rename or move a file in a shared drive, nothing was said and the sync looked fine. Now it is counted as a problem and shown in the sync history.
-Bug fixed: if you pressed Pause while the sync was waiting on Google, it carried on listing everything for a minute or more. Now it stops.
+Bug fixed: if you pressed Pause while the sync was waiting on Google, it kept listing everything for a minute or more. Now it stops.
 Bug fixed: if the PC folder was on a sleeping network drive, Keep on Drive only froze the window. Now it waits at most five seconds and says the folder is not answering.
 Bug fixed: if you chose Put back on PC for a folder in an upload-only synced folder, it said it was putting it back but nothing came down. Now it says that an upload-only folder cannot do that.
 Bug fixed: pressing Delete in the synced folders list removed the folder at once. Now it asks first.
@@ -140,7 +140,7 @@ Bug fixed: if you rested the cursor on a network file and then went back to the 
 Bug fixed: the memory-released message said "1 minutes" and said "paused" for a track that had finished. Now it reads naturally.
 Bug fixed: an MP3, AAC or WAV file saved with an .ogg or .opus name could not be played. Now it plays.
 Bug fixed: if you pressed Defaults in the silence dialog, it read out one setting as if only that one had changed. Now it says it is back to the defaults.
-Bug fixed: if a file changed its audio format part way through, playback could stop. Now it carries on.
+Bug fixed: if a file changed its audio format part way through, playback could stop. Now it keeps playing.
 Bug fixed: mono Opus files were treated as stereo. Now they stay mono.
 Bug fixed: half-finished conversion files left after a crash stayed in your music folder and were uploaded by sync. Now sync ignores them and the converter clears old ones.
 Bug fixed: in Convert audio, What is spoken, Audio keyboard shortcuts and Pitch, Tab reached Cancel or skipped a control before the main button. Now Tab follows the screen.
@@ -187,11 +187,11 @@ Bug fixed: if you changed a synced folder while another folder was syncing, or w
 Bug fixed: if you had more than one synced folder on the same Google Drive, something you added in Drive could take up to 15 minutes to reach the PC. Now it comes down within a minute or so.
 Bug fixed: if you renamed a folder on Google Drive in a folder that syncs both ways, an empty copy of it under the old name came back in Drive. Now only the renamed folder is there.
 Bug fixed: in two-way sync with deletes on, if you deleted a folder in Google Drive, it came back empty in Google Drive and an empty copy stayed on the PC. Now the folder goes from the PC too and stays gone.
-Bug fixed: if you unticked Free up space while it was clearing files off the PC, it carried on clearing them. Now it stops.
+Bug fixed: if you unticked Free up space while it was clearing files off the PC, it kept clearing them. Now it stops.
 Bug fixed: if you closed the app while Free up space was clearing files, and later turned on copying deletes, some files that were safe in Google Drive could be moved to the Drive trash. That can't happen any more.
 Bug fixed: for a large folder set to free up space, the number of files on Google Drive kept climbing every sync. Now it stays right.
 Bug fixed: if a very large synced folder was on a shared drive and Google had a brief hiccup at the start of a sync, changes your colleagues made there could go unsynced for up to a day. Now the sync waits the hiccup out, or checks the whole folder if it still cannot tell.
-Bug fixed: if a very large synced folder ended up with two Google Drive folders of the same name side by side, every sync checked all of Google Drive again, taking many minutes each time. Now it carries on checking only what changed.
+Bug fixed: if a very large synced folder ended up with two Google Drive folders of the same name side by side, every sync checked all of Google Drive again, taking many minutes each time. Now it checks only what changed.
 Bug fixed: if your own Google Drive was full, folders synced to a shared drive stopped with Google Drive is full, even though shared drive files don't count against your storage. Now they keep syncing.
 Bug fixed: in a very large synced folder, if you moved a file out of it on Google Drive and then edited the PC copy, your edit went into the moved file. Now the edit goes into the synced folder and the moved file is left alone.
 Bug fixed: if a file couldn't go up to Google Drive and you chose Keep on Drive only, you were told to try again once it had synced, which never helped. Now you hear why the file couldn't be sent.
@@ -221,7 +221,7 @@ Bug fixed: if you were on the drive list and plugged in or ejected a USB stick, 
 Bug fixed: if a network folder or your NAS share dropped for a moment, for example after sleep, new, renamed and deleted files in it stopped showing up until you left the folder. Now it starts watching the folder again by itself.
 Bug fixed: when the app started, it loaded the second tab first, read its row aloud, and kept the window empty until that tab was ready, even with two tabs turned off. Now the tab you were on loads first and is read, and the other loads quietly behind it.
 Bug fixed: if you switched to a tab showing an empty folder, This folder is empty cut off the tab announcement. Now you hear the tab in full first. In Apple Music it says This list is empty.
-Bug fixed: if you were selecting files with Shift and arrows and a file arrived or vanished above them, the next Shift+arrow picked up a file you hadn't chosen. Now the selection carries on from the file you started on.
+Bug fixed: if you were selecting files with Shift and arrows and a file arrived or vanished above them, the next Shift+arrow picked up a file you hadn't chosen. Now the selection continues from the file you started on.
 Bug fixed: if you renamed or deleted something in search results and then pressed Escape, it said Search stopped and left you on out-of-date results. Now Escape takes you out of the results. Deleting or renaming two results quickly no longer leaves the second one behind.
 Bug fixed: if you typed a few letters to jump to a name and then pressed Ctrl+arrow and Ctrl+Space quickly, the item was selected without a word. Now Ctrl+Space always selects and says so, and Space while you're typing a name is part of the name.
 Bug fixed: if you opened a slow folder, such as a Google Drive folder that wasn't cached yet, and typed a name straight away, the letters were often lost. Now your typing waits for the folder and lands on the file you typed.
@@ -263,7 +263,7 @@ Bug fixed: moving files between Google Drive folders from the web app said Moved
 Bug fixed: in the web app, deleting a lot of Google Drive files at once could say the PC couldn't be reached while it was still deleting them. Now it waits longer, and if the PC still doesn't answer it refreshes the folder and tells you to check what's left.
 Bug fixed: in the web app, an upload the PC couldn't store, for example because its disk was full, said waiting for the PC for ever. Now it stops after a few tries and tells you why.
 Bug fixed: in the web app, Stop all transfers only stopped the file going up, and pressing Stop while a transfer waited for the connection didn't stick. Now Stop stops everything and stays stopped.
-Bug fixed: in the web app, a track that couldn't be played stopped the whole folder after about half a minute and blamed the connection. Now it tries playing it through the PC, and if that doesn't work it says why, skips it and carries on.
+Bug fixed: in the web app, a track that couldn't be played stopped the whole folder after about half a minute and blamed the connection. Now it tries playing it through the PC, and if that doesn't work it says why, skips it and plays the next one.
 Bug fixed: in the web app, sending a big file to the PC clipboard gave up after five minutes on a slow connection, and pressing Move here left VoiceOver lost. Both are fixed.
 
 4.3.0
@@ -285,7 +285,7 @@ Bug fixed: if Explorer Native opened your folders and you moved or deleted its p
 Bug fixed: if you set a shortcut that used the Windows key with a letter, such as Windows+E, it did nothing, because Windows keeps almost all of those keys for itself. Now Explorer Native catches the keys before Windows does, so any Windows key shortcut you pick works, and you can press it straight into the shortcut boxes in Preferences.
 
 4.2.7
-Bug fixed: if you copied or cut a big file out of Google Drive on a slow or patchy internet connection, the copy could sit at 100 percent and then fail with error 389 or 379. Every time the connection dropped, Explorer Native threw away the piece it was downloading and started that piece again, and gave up after 20 seconds. Now it keeps what already arrived and carries on from where the connection broke. Tested by copying nvda.7z over a deliberately broken connection: 4.2.6 failed nine times in a row, 4.2.7 copied it first time.
+Bug fixed: if you copied or cut a big file out of Google Drive on a slow or patchy internet connection, the copy could sit at 100 percent and then fail with error 389 or 379. Every time the connection dropped, Explorer Native threw away the piece it was downloading and started that piece again, and gave up after 20 seconds. Now it keeps what already arrived and resumes from where the connection broke. Tested by copying nvda.7z over a deliberately broken connection: 4.2.6 failed nine times in a row, 4.2.7 copied it first time.
 Bug fixed: on a very slow connection, Windows could give up waiting on a Drive file, and after that it refused the file with error 379 every time until Explorer Native was restarted. Explorer Native now hands the file over in smaller pieces as they arrive, so Windows doesn't give up, and if a copy out of Drive still fails, it downloads that file straight from Google instead, checks it against Google's copy, and finishes the copy.
 Bug fixed: a copy out of Google Drive that had failed retried 20 times, 5 seconds apart, sitting at 100 percent the whole time. Now it tries twice, then gets the file straight from Google. And if a file has to start again, the progress window goes back and shows it coming down again.
 
@@ -314,7 +314,7 @@ Bug fixed: if a finished upload to Google Drive could not be shown in its folder
 Bug fixed: if you uploaded into a Google Drive folder while the connection was slow and that folder was being opened at the same moment, the upload could fail. Now the upload waits and reads the folder itself.
 Bug fixed: after you cancelled a copy from Google Drive, another program could later fail every time it read a file from Google Drive, with no explanation. Now those reads work again once the cancelled copy has stopped.
 Bug fixed: if a Google Drive folder took too long to open, NVDA said a confusing message about a task being cancelled, and quitting the app could say it once for every folder still loading. Now it says Google Drive took too long, and quitting says nothing.
-Bug fixed: if your internet dropped for a minute or more while a big file was copying to Google Drive, that file failed after about 20 seconds while the small files waited. Now big files wait for the internet to come back too, then carry on from where they stopped.
+Bug fixed: if your internet dropped for a minute or more while a big file was copying to Google Drive, that file failed after about 20 seconds while the small files waited. Now big files wait for the internet to come back too, then resume from where they stopped.
 Bug fixed: if you pasted two folders with the same name, like Music from two drives, into a Google Drive folder that already had a Music folder and chose Keep both, both trees could end up mixed together in one folder or in two folders with the same name. Now each one gets its own name.
 Bug fixed: if you moved a folder to Google Drive and one of its empty folders could not be created there, that empty folder was still deleted from your PC, so it was gone from both places. Now it stays on your PC.
 Bug fixed: if you pressed Cancel just as an upload to Google Drive was starting on a slow connection, the window could sit on Cancelling for up to two minutes. Now it stops right away.
@@ -324,7 +324,7 @@ Bug fixed: if you synced a folder with lots of new files and Google lost its ans
 Bug fixed: if you paused, resumed or changed a synced folder and then quit, the record of what you had uploaded in the last 24 hours was lost. Status then showed almost nothing used of Google's 750 gigabyte daily limit, and you could hit that limit without warning. Now the record is kept, even for uploads in the last moments before you quit.
 Bug fixed: if you paused or edited a synced folder while a very large folder was saving its sync records, the window could freeze with NVDA silent until the save finished. Now the clean-up happens in the background and the window answers straight away.
 Bug fixed: if a synced PC folder held a shortcut-style folder link (a junction or symbolic link) pointing back to itself or to a folder above it, the sync went round in circles. It could upload up to 63 copies of everything to Google Drive and use huge amounts of memory. Now such a link is left out, nothing under it is deleted, and a folder that two links lead to is only synced once.
-Bug fixed: if you played a WAV, AU or VOC file that Windows can't play on its own (ADPCM, 24-bit, A-law and so on) from Google Drive or another network place and the connection dropped for a moment, the rest of the track could turn into loud noise. Now it carries on playing normally once the connection comes back.
+Bug fixed: if you played a WAV, AU or VOC file that Windows can't play on its own (ADPCM, 24-bit, A-law and so on) from Google Drive or another network place and the connection dropped for a moment, the rest of the track could turn into loud noise. Now it plays normally once the connection comes back.
 Bug fixed: if you played a song from a network share inside a folder whose name ends in a dot or a space, like R.E.M., it was said to be no longer there and then played without read-ahead, so skipping around was slow. Now it streams like any other song.
 Bug fixed: if you played a big song from a network share and then changed track or stopped, the app kept holding up to a gigabyte of memory. Now that memory goes back to Windows soon after.
 Bug fixed: if you played a CD track with a damaged or unreadable stretch and then skipped back, you could hear the wrong part of the track or silence. Now it reads the right part of the disc again.
@@ -351,7 +351,7 @@ Bug fixed: if you extracted several archives into the same folder and files alre
 Bug fixed: if you pressed Shift+Enter on a search result to open it in its own app, it went to the file's folder instead. Now Shift+Enter opens the file, and Enter still takes you to where it is.
 Bug fixed: if you edited an Apple Lossless m4a file and saved it, it was quietly saved as lower-quality AAC, and replacing the original threw the lossless version away. Now the editor asks you which format to save in, and it never swaps a lossless original for a lossy copy.
 Bug fixed: if you typed a year of 0 in the tag editor, it said Tags saved but the year came back blank, and a track number that was too big got a message that didn't say what was wrong. Now it tells you the year must be from 1 to 9999 and the track number from 1 to 99999.
-Bug fixed: in the audio editor, if you changed the volume, normalised, undid or redid while the audio was playing, playback jumped back to where you first pressed Space, and a volume change of 0 stopped playback for good. Now playback carries on from where you were, and an edit that changes nothing leaves playback alone.
+Bug fixed: in the audio editor, if you changed the volume, normalised, undid or redid while the audio was playing, playback jumped back to where you first pressed Space, and a volume change of 0 stopped playback for good. Now playback continues from where you were, and an edit that changes nothing leaves playback alone.
 Bug fixed: in the audio editor, if you pressed Space twice quickly, or an arrow key or a mark key just after starting playback, the editor said 0 seconds, lost your place, and kept playing when it said it had paused. Now those keys act from where you really are, and a quick pause really pauses.
 Bug fixed: if you converted a surround sound file, such as a 5.1 movie soundtrack, to MP3, Opus or AAC, the centre and surround channels could be dropped, so the dialogue went missing. Now the centre and surround channels are mixed into the left and right channels, so you can still hear the dialogue.
 Bug fixed: if you opened Apple Music on a slow or stalled connection, nothing happened and NVDA said nothing. Now the app tells you Apple Music took too long to answer.
@@ -491,11 +491,11 @@ Changed: while Apple Music plays, the Audio menu leaves out speed, pitch, limite
 4.1.0
 New feature: in Apple Music, songs you have favorited say favorited at the end, and Shift+F10 on a song has Favorite or Unfavorite, whichever it isn't yet.
 New feature: Shift+F10 on an Apple Music song has Add to playlist, listing your own playlists. The song goes on the end of the one you pick.
-New feature: Shift+F10 on an Apple Music song has Play next. It plays after the song playing now, and then the list carries on from where it was. With nothing playing, it plays straight away.
+New feature: Shift+F10 on an Apple Music song has Play next. It plays after the song playing now, and then the list continues from where it was. With nothing playing, it plays straight away.
 Bug fixed: Apple Music always played through the Windows default device, and Output device on the Audio menu just said it wasn't available. It now plays through the device you pick, moves as you arrow through the list, and remembers it like your files do.
 Bug fixed: Apple Music songs were slow to start. The player now gets ready while you browse Apple Music, so the first song starts much sooner, and the next song in the list is fetched ahead of time, so one song goes straight into the next instead of pausing for a second or two.
 Bug fixed: skipping through an Apple Music song was slow, and holding a skip key kept moving for seconds after you let go. Skips within what has already downloaded are now instant, and letting go stops where you are.
-Bug fixed: when Apple Music played on into a song Apple no longer offers, the music stopped. It now says that song isn't available, skips it and carries on.
+Bug fixed: when Apple Music played on into a song Apple no longer offers, the music stopped. It now says that song isn't available and skips to the next one.
 Bug fixed: if Apple Music's player crashed or got stuck, the music just stopped. It now starts again by itself where the song was, and a song that won't start is tried once more before you are told.
 Changed: in Apple Music, songs and albums read the artist first, then the title, and lists of songs start in artist order, so typing the first letters of an artist takes you to their songs.
 Changed: Apple Music uses less processor time while it plays, and its player closes itself after five minutes with nothing playing.
@@ -529,24 +529,24 @@ Changed: Explorer Native now runs on .NET 10 and has it built in, so nothing els
 New feature: Google Drive's trash is now a Trash folder on your Google Drive letter, next to My Drive and Shared drives. Press Shift+F10 on something in it to restore it, or to delete it permanently, and use Empty Google Drive trash to delete everything in it for good. Explorer Native always asks before deleting anything for good. You can hide the Trash folder in Preferences, Google Drive.
 New feature: you can export your settings to a file and import them again, on this PC or another one. It is in Preferences, next to Reset, and on the File menu. Importing asks first, keeps this PC's web app pairing code, window and Google sign-in, and pauses any synced folder whose folder is not on this PC.
 New feature: with Free up space on, empty folders are cleared off the PC too, once Google Drive has them. A folder that has just been made is left alone for 10 minutes in case files are still arriving in it. When a new folder turns up with files in it, they go up to Google Drive and the folder is cleared again.
-New feature: if Google Drive has two folders with the same name in the same place and one of them is empty, the sync puts the empty one in the Google Drive trash and carries on. If both have files in them, the status tells you, instead of saying it is a Windows spelling problem.
+New feature: if Google Drive has two folders with the same name in the same place and one of them is empty, the sync puts the empty one in the Google Drive trash and keeps syncing. If both have files in them, the status tells you, instead of saying it is a Windows spelling problem.
 New feature: the Status list for a synced folder shows how much has been uploaded to Google Drive in the last 24 hours, out of the 750 gigabytes Google allows a day.
 New feature: you are told when the drive a synced folder is on gets low on space. Choose how low in Preferences, Google Drive. It is 50 gigabytes unless you change it, and 0 turns it off.
 Bug fixed: with Free up space on, the Status list could say only a few hundred files were on Google Drive when there were thousands. It now counts everything in the Google Drive folder.
 Faster: with Free up space on, a synced folder no longer reads every folder on the PC on every sync. It looks only at what changed, so big folders use much less disk and processor time.
 New feature: Format is on the Shift+F10 menu when you are on a drive in the drives list. It opens the Windows Format window for that drive. It is not offered for the Windows drive or the Google Drive letter.
 Changed: pressing Space now says "Selected" or "Not selected" first, then the name, so you hear what happened straight away.
-Changed: when Google stops your uploads for the day, a synced folder and a copy to Google Drive now say "You've reached your daily upload limit for Google", and carry on by themselves once it resets.
+Changed: when Google stops your uploads for the day, a synced folder and a copy to Google Drive now say "You've reached your daily upload limit for Google", and start again by themselves once it resets.
 Bug fixed: in 3.0.14, while a synced folder waited on Google's limits, its status stopped saying so and it looked stuck, and Pause had to wait for the wait to finish. Now the status says what it is waiting for, and Pause works straight away.
 
 3.0.14
-Bug fixed: when you copied lots of files to Google Drive and Google started limiting how many files could be uploaded, Explorer Native only tried a few more times over about two minutes, then gave up with an error and the files were not copied. Now it waits Google out, for up to an hour if it has to, and carries on copying by itself.
+Bug fixed: when you copied lots of files to Google Drive and Google started limiting how many files could be uploaded, Explorer Native only tried a few more times over about two minutes, then gave up with an error and the files were not copied. Now it waits Google out, for up to an hour if it has to, and finishes copying by itself.
 
 3.0.13
 New feature: Space selects and deselects. Press Space on an item to add it to your selection, and Space again to take it out, without losing anything else you selected. Hold Ctrl and use the arrows to move without selecting, press Space on each item you want, and when you let go of Ctrl you hear how many are selected.
 Changed: Ctrl with the arrows, Home, End, Page Up or Page Down can no longer be a shortcut, because those keys move through the list without selecting. If your volume shortcuts were Ctrl+Up and Ctrl+Down, Explorer Native tells you when it starts, and pressing OK takes you straight to the shortcuts window with the cursor on the first one to change.
 New feature: the Status list for a synced folder says about how long is left at the speed it is going.
-Bug fixed: if Explorer Native started before the internet was ready, such as right after a restart, Google Drive never connected and your synced folders stopped until you restarted Explorer Native yourself. Now it keeps trying until Google answers, and syncing carries on by itself.
+Bug fixed: if Explorer Native started before the internet was ready, such as right after a restart, Google Drive never connected and your synced folders stopped until you restarted Explorer Native yourself. Now it keeps trying until Google answers, and syncing starts again by itself.
 
 3.0.12
 Bug fixed: a synced folder with thousands of empty subfolders, like the ones Resilio Sync makes before its files arrive, could stop sending files for over an hour while each empty folder was made in Google Drive one by one, and new files were not noticed until it finished. Empty folders are now made several at a time.
@@ -617,7 +617,7 @@ Bug fixed: asking to start with Windows could say it would when nothing changed.
 Bug fixed: an emoji near the end of the tray tooltip was cut in half. Now it is whole.
 Bug fixed: names CONIN$ and CONOUT$ were accepted, but Windows treats them as devices. Now they are refused.
 Bug fixed: shortcut targets longer than 260 characters came back cut short. Now they are whole.
-Bug fixed: in the web app, a copy or move could stay waiting for the PC forever after one missed check. Now it carries on.
+Bug fixed: in the web app, a copy or move could stay waiting for the PC forever after one missed check. Now it finishes.
 Bug fixed: in the web app, pressing Stop as a big upload started left it on the PC for a day. Now it is cancelled.
 Bug fixed: in the web app, Forward and Back before a song's length was known jumped to the start, some messages were said twice, and .aac and .m4r files could be refused by Safari. Now all three are right.
 Bug fixed: sending a picture to the PC clipboard from the web app could leak memory, and a stuck clipboard now says another program is holding it.
@@ -627,13 +627,13 @@ Bug fixed: if your sound device was set to 44.1 kHz (CD quality), or 22.05 or 24
 Bug fixed: Apple Lossless sound in a .caf file never played, and said it could not divide by zero. Now it plays.
 Bug fixed: if you opened a folder whose name ends in a dot, such as Backup., Explorer Native said after a few seconds that it was no longer available and went up a level. Backspace went to the wrong folder, New folder and New file made the item in the folder next to it, and the folder was not watched for changes. Now all of these use the folder you are in.
 Bug fixed: in a folder whose name ends in a dot, compressing, extracting, opening an archive, folder sizes and the replace question in Compress all used the folder next to it, and opening such a folder from Windows opened the wrong one. Now they use the right folder. Windows cannot make a shortcut to anything in such a folder, so Create shortcut now says so instead of making one to the wrong item.
-Bug fixed: if a big synced folder met a folder Google Drive did not know about, every sync failed with "Sequence contains no matching element" for up to a day. Now it lists Drive again and carries on.
+Bug fixed: if a big synced folder met a folder Google Drive did not know about, every sync failed with "Sequence contains no matching element" for up to a day. Now it lists Drive again and keeps syncing.
 Bug fixed: if a synced folder had a size limit that is not in the list, such as 250 MB, the Change window showed No limit, and saving any change removed the limit. Now your limit is kept.
 Bug fixed: pressing OK in Add or Change a synced folder froze the window if the PC folder was on a network drive that had gone away. Now it does not.
 Bug fixed: if Google refused your sign-in part way through uploading a small file, the file failed at once. Now it signs in again and tries once more.
 Bug fixed: if a synced download timed out before anything arrived, the whole file failed. Now it is asked for again.
 Bug fixed: if one folder could not be made in Google Drive while uploading a folder, the progress bar never reached the end. Now it does.
-Bug fixed: if you copied a Google Drive file just as Drive was switched off or Explorer Native was quitting, its download could carry on in the background. Now it stops.
+Bug fixed: if you copied a Google Drive file just as Drive was switched off or Explorer Native was quitting, its download could keep running in the background. Now it stops.
 Bug fixed: archives whose names start with ./ (as tar makes them) opened as an empty folder, and xz, 7z, zst and bz2 ones extracted nothing. Now both work.
 Bug fixed: converting a 24-bit TTA, CAF, AU or VOC file, or a 64-bit WAV, to FLAC or WAV same depth came out 16-bit. Saving from the editor did the same. Now the depth is kept.
 Bug fixed: when Windows refused to write tags to a converted file, the summary did not say so. Now it does.
@@ -664,7 +664,7 @@ Bug fixed: pressing Pause or Resume in the Google Drive sync window renamed the 
 Bug fixed: player messages, such as a track ending, never showed as Windows notifications even when turned on. Now they do. The Explorer Native is ready notification also showed only sometimes; now it always does when turned on.
 Bug fixed: searching Google Drive while the connection was down could sit on searching for minutes. Now it gives up quickly and says why.
 Bug fixed: the last bit of some files on the Google Drive letter could fail to read. Now the end of a file reads properly.
-Bug fixed: if Google refused a sign-in that had just gone stale, a delete, move or rename on Google Drive failed once with a 401 error. Now it signs in again and carries on.
+Bug fixed: if Google refused a sign-in that had just gone stale, a delete, move or rename on Google Drive failed once with a 401 error. Now it signs in again and finishes the job.
 Bug fixed: a ZIP made on a Mac or Linux with symbolic links in it was extracted with small text files in place of the links, and said nothing. Now the links are left out and the summary says so.
 Bug fixed: holding skip forward to the very end of a track stopped it instead of starting it over. Now it starts over.
 Bug fixed: in the web app, the Details page never showed a file's size. Now it does.
@@ -677,7 +677,7 @@ Bug fixed: FLV videos with HE-AAC sound would not play. Now they do. A WAV or TT
 New: a whole drive can be a synced folder, such as all of D, for an external drive. Only the drive Windows is on cannot be synced whole.
 New: when choosing the Google Drive side, the list now starts with My Drive, each of your shared drives, and Everything. Pick My Drive or a shared drive to sync all of it. Everything syncs My Drive into a My Drive folder and each shared drive into Shared drives, each as its own synced folder.
 New: Windows notifications. In Preferences, the new Windows notifications page lets any message Explorer Native gives also pop up as a Windows notification, one by one or every Google Drive sync one at once. Every one is off until you turn it on.
-Bug fixed: if you updated Explorer Native while a folder was syncing, the sync could lose its last few seconds of progress and wait 30 seconds before carrying on. Now it saves where it got to as it closes, and carries straight on after the update.
+Bug fixed: if you updated Explorer Native while a folder was syncing, the sync could lose its last few seconds of progress and wait 30 seconds before syncing again. Now it saves where it got to as it closes, and picks up straight away after the update.
 Bug fixed: some WAV files would not play and opened in another app instead, such as ADPCM recordings from voice recorders and phones, and 64-bit WAVs. Explorer Native now plays them itself.
 New: Explorer Native now plays CAF files (Apple's audio files, including Apple Lossless and IMA4), AU and SND, VOC, Wave64, TTA, AIFF-C with IMA4, FLAC inside Ogg, and the sound of FLV videos. They play when you press Enter whatever is in the audio file list in Preferences.
 Changed: when a file cannot be played, the reason says Windows has no decoder for the sound in it, instead of something about float.
@@ -700,7 +700,7 @@ Faster: when nothing has changed, all your synced folders together now ask Googl
 Faster: the full read of a synced folder that happens once a day reads several folders at once, about three to four times faster on a big library.
 Faster: new files coming down from Google Drive now download many at once instead of one at a time, so a first sync of a music library spends minutes waiting on Google instead of hours. Files already on your PC are still replaced one at a time, the old copy going to the Recycle Bin first.
 Faster: new song-sized files on your PC, up to 64 megabytes, now go up to Google Drive many at once instead of one at a time. Small files already did. Each still goes up exactly once, even if Google loses an answer.
-Faster: a big file coming down from Google Drive now downloads in one go, checked as it arrives, instead of in 8 megabyte pieces with a wait between each and a second read at the end to check it. If the connection drops, it carries on from where it stopped.
+Faster: a big file coming down from Google Drive now downloads in one go, checked as it arrives, instead of in 8 megabyte pieces with a wait between each and a second read at the end to check it. If the connection drops, it resumes from where it stopped.
 Faster: when you add a synced folder, the first sync starts from the look it took for the summary, instead of reading the whole Google Drive folder a second time. If anything in that folder changed while you read the summary, it reads it again, to be safe.
 Faster: memory the Google Drive drive letter no longer needs, after you play or copy a big file from it, is given back to Windows within seconds, instead of staying in use until much later.
 
@@ -750,7 +750,7 @@ Bug fixed: downloading a file to your phone from the web app could sit there for
 Better battery life: the Google Drive letter no longer wakes the processor every few seconds when nothing is being downloaded or cleaned up.
 
 2.3.3
-Bug fixed: on some computers, entering a correct Google client ID and secret said Google could not be reached to check them, and nothing was saved, so Google Drive could never be set up. Now the ID and secret are saved and sign-in carries on in the browser, and only a real "wrong ID or secret" answer from Google stops you. If something does go wrong, the message now says exactly what.
+Bug fixed: on some computers, entering a correct Google client ID and secret said Google could not be reached to check them, and nothing was saved, so Google Drive could never be set up. Now the ID and secret are saved and sign-in continues in the browser, and only a real "wrong ID or secret" answer from Google stops you. If something does go wrong, the message now says exactly what.
 Bug fixed: on networks where IPv6 is broken, which is common on home routers, Google Drive could time out even though web browsers worked. It now connects over IPv4 and IPv6 at the same time, like a browser does, and uses whichever answers first.
 Bug fixed: Preferences had a second set of speech tick boxes that fought with Choose what is spoken. For example, Switched tab could say Speak in the list and still never be spoken, because the Announce tab box on the Behaviour page was off. The tick boxes are gone and Choose what is spoken is now the only place to turn each message on or off. Your old choices were carried over, so nothing you hear changes.
 Bug fixed: if you ticked one of the player's speech boxes, such as Say the volume when it changes, nothing was spoken unless the same message was also turned on in Choose what is spoken. Those boxes are gone too; the player's messages are under Playing audio, Volume and Position in a track.
@@ -791,10 +791,10 @@ Bug fixed: Google Drive files larger than 2 gigabytes could fail to open in othe
 Bug fixed: in Google Drive sync, if you edited a file on your PC while Drive's copy of it was downloading, your edit could be overwritten. Your edit is now kept, and you get both copies.
 Bug fixed: in Google Drive sync, Download only and Drive wins could overwrite a changed file on your PC for good. The PC copy now goes to the Recycle Bin first.
 Bug fixed: in Google Drive sync, editing a file in a folder someone shared with you could leave two copies of it in Drive. Edits now update the same file in Drive, keeping its share link and history.
-Bug fixed: pausing or removing a sync pair now stops it straight away, instead of letting a pass that had already started carry on.
+Bug fixed: pausing or removing a sync pair now stops it straight away, instead of letting a pass that had already started keep going.
 Bug fixed: a sync pair no longer starts over as if it were new when its saved state can't be read. It pauses and tells you instead.
 Bug fixed: a file still being written, like a recording in progress, no longer holds up every sync pair. It waits until it is finished.
-Bug fixed: one file that Google kept refusing could stall all syncing for ever. After an hour it is skipped and the rest carry on.
+Bug fixed: one file that Google kept refusing could stall all syncing for ever. After an hour it is skipped and the rest keep syncing.
 Google Drive sync is much faster with big folders, and no longer slows down the more files it has handled.
 Bug fixed: when a folder is moved to Google Drive, the original is only deleted if it did not change during the upload.
 Bug fixed: changes that happened while a big folder was loading, like a download finishing, could be missed until something else changed.
@@ -940,13 +940,13 @@ New: ExplorerNative --help, -h or /? lists the command-line options. A misspelt 
 Bug fixed: opening a lot of folders at once could leave some of them unopened. Every one opens now.
 Bug fixed: pressing OK in Preferences could shorten a window title you set by hand that held unusual characters. The title only changes when you edit it.
 Bug fixed: if every file you chose was in use, re-making an archive could replace the old archive with an empty one. Now the old one is kept and you're told why, and no empty archive is made.
-Bug fixed: if Explorer Native closed unexpectedly while making a 7z, tar.xz, tar.bz2 or tar.zst, the compressing carried on by itself in the background. Now it stops when Explorer Native does.
+Bug fixed: if Explorer Native closed unexpectedly while making a 7z, tar.xz, tar.bz2 or tar.zst, the compressing kept running by itself in the background. Now it stops when Explorer Native does.
 Bug fixed: extracting into a folder that already had files in it could finish with the progress short of 100 percent, or at 0 percent when everything was skipped.
 Bug fixed: an Ogg Vorbis file cut from part way through a longer recording could play nothing at all, and skipping in it landed in the wrong place.
 Bug fixed: a .gz file with a few extra bytes after the end, which some downloads add, was refused as damaged. It extracts now, as it does with gzip.
 Bug fixed: a very short sound on repeat always showed its position as 0. It shows where it is now.
 Bug fixed: a hidden file on your PC could be treated as deleted by a two-way sync, sending the Drive copy to the trash. Hidden and system files, and files in folders that can't be read, are now left alone on both sides.
-Bug fixed: when Google asked the Drive sync to slow down at one particular moment, the sync stopped and said it was offline. Now it waits and carries on.
+Bug fixed: when Google asked the Drive sync to slow down at one particular moment, the sync stopped and said it was offline. Now it waits and then keeps syncing.
 Bug fixed: when Google's daily limit for your account was reached, a Drive sync pair said it could not sync. Now it waits, says so, and tries again every hour.
 Bug fixed: when a file changed in both places and also had a second copy of the same name in Drive, the Drive sync could send a copy with changes your PC never had to the trash. Now that copy is kept.
 Bug fixed: if Google Drive was briefly unavailable while a sync was keeping both copies of a changed file, the sync failed with "Could not find file". Now it waits and finishes.
@@ -979,7 +979,7 @@ New feature: Copy link is always on the Web app page once there is a link. If th
 The tray menu has a Web app item that takes you straight to the Web app page, where the link and the pairing code are.
 The web app's clipboard shows what is on the PC clipboard right now, or says it is empty. It no longer keeps a history of past copies, on the PC or anywhere else.
 If the PC can't be reached, the web app says so plainly and gives you a Retry button, instead of sitting there.
-If your connection drops, uploads, copies and playback carry on by themselves when it comes back.
+If your connection drops, uploads, copies and playback start again by themselves when it comes back.
 Bug fixed: if Tailscale stopped while you were using the web app, some screens waited for ever. Now they tell you what is wrong.
 Bug fixed: if the port the web app used was taken by another program while the PC was off, the web app didn't start. Now it moves back to the usual port and tells you.
 Small files upload from the web app in one go, so they finish faster.
@@ -988,7 +988,7 @@ The web app only listens on this PC itself now. It is reached through Tailscale 
 1.0.6
 Pairing a folder with a Google Drive folder that already holds the same files adopts them instead of copying them again. Files of the same size are compared by checksum first, two at a time and gently, and each checksum is remembered so it is never worked out twice. The monitor says how far it has got.
 A sync pair keeps what it remembers for as long as it exists. Changing its options keeps it; changing either of its folders starts again, still without copying anything that already matches.
-When Google limits requests or has a server problem, the sync waits and tries again for as long as it takes, up to five minutes between tries, and never counts a file as failed for it. It says it is waiting and says when it carries on.
+When Google limits requests or has a server problem, the sync waits and tries again for as long as it takes, up to five minutes between tries, and never counts a file as failed for it. It says it is waiting and says when it starts again.
 The Google Drive sync configurator is on the File menu while Google Drive is on, instead of in Preferences.
 New: Explorer Connect as a web app. Open it in Safari on your iPhone or iPad over Tailscale and add it to your Home Screen; there is nothing else to install.
 Preferences has a new Web app page. It finds Tailscale for you and says what is missing: Install Tailscale, Sign in to Tailscale, or Enable HTTPS in Tailscale. Then tick Turn on the web app and it shows the link to open.
@@ -1010,11 +1010,11 @@ A file changed in both places keeps both copies: the newer keeps the name, the o
 Folders sync while Explorer Native is running and Google Drive is connected: a moment after anything changes on the PC, and every minute for changes in Drive. Sync now syncs straight away.
 Each monitored folder can include or leave out its subfolders, skip file types you list, skip files over a size, choose what happens when a file changed in both places (keep both, this PC wins, or Google Drive wins), and choose how often Drive is checked, from every minute to only when you press Sync now.
 Changes made while offline, or while Explorer Native was closed, are found and synced as soon as Google Drive is back, on either side.
-Big transfers carry on where they stopped after the connection drops, instead of starting again. Downloads are checked against Google Drive's copy before they replace anything.
-Before adding a folder, and before each file, the monitor checks there is room: it never fills the PC's disk past a margin, the larger of 2 gigabytes or 5 percent of the disk, and never asks for more than Google Drive has free. When a folder runs out of room it pauses, says so, and carries on by itself when there is space again.
+Big transfers resume where they stopped after the connection drops, instead of starting again. Downloads are checked against Google Drive's copy before they replace anything.
+Before adding a folder, and before each file, the monitor checks there is room: it never fills the PC's disk past a margin, the larger of 2 gigabytes or 5 percent of the disk, and never asks for more than Google Drive has free. When a folder runs out of room it pauses, says so, and starts again by itself when there is space again.
 A big sync says how much there is to do when it starts and again at a quarter, half and three quarters, and the monitor window shows how far each folder has got.
 Deleting a folder that is part of a sync pair warns first and says what will happen on the other side. You can remove the sync and delete only here, delete anyway, or cancel.
-If a monitored folder disappears on either side, because a USB drive was unplugged or the folder was deleted outside Explorer Native or trashed in Google Drive, the sync pauses and says so instead of deleting anything. It carries on by itself when the folder is back.
+If a monitored folder disappears on either side, because a USB drive was unplugged or the folder was deleted outside Explorer Native or trashed in Google Drive, the sync pauses and says so instead of deleting anything. It starts again by itself when the folder is back.
 The Google Drive account button in Preferences says what it will do: Connect, Disconnect while Drive is working, or Reconnect when Google needs you to sign in again. Disconnect keeps you signed in.
 
 1.0.4

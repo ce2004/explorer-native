@@ -1445,12 +1445,12 @@ namespace ExplorerNative
                     }
                     SetStatus(pair.Id, StatusOf(pair.Id) with
                     {
-                        Problem = "offline, will carry on when Google Drive is back", Running = false,
+                        Problem = "offline, will start again when Google Drive is back", Running = false,
                     });
                     if (!_saidOffline)
                     {
                         _saidOffline = true;
-                        _notify("sync.offline", "You are offline, so syncing has paused. It carries on when you are back");
+                        _notify("sync.offline", "You are offline, so syncing has paused. It starts again when you are back");
                     }
                     return false;
                 }
@@ -1616,7 +1616,7 @@ namespace ExplorerNative
         {
             SetStatus(pair.Id, StatusOf(pair.Id) with { Problem = null });
             if (Interlocked.Exchange(ref _waitingEpisode, 0) != 0)
-                _notify("sync.ratelimited", $"Google is answering again, so {DisplayName(pair)} is carrying on");
+                _notify("sync.ratelimited", $"Google is answering again, so {DisplayName(pair)} is syncing again");
         }
 
         private static string Seconds(TimeSpan wait)

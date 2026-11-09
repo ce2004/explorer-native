@@ -258,7 +258,7 @@ namespace ExplorerNative
             Live("sync.done", "Synced folder finished", DriveOperations, Say, "Synced {0}: {1}", "Music", "3 uploaded, 1 downloaded"),
             Live("sync.conflict", "Changed in both places", DriveOperations, Say, "{0} in {1} changed in both places, so both copies were kept", "notes.txt", "Music"),
             Live("sync.error", "Synced folder could not sync", DriveOperations, Loud, "{0} could not sync: {1}", "Music", "access denied"),
-            Live("sync.offline", "Sync paused while offline", DriveOperations, Say, "You are offline, so syncing has paused. It carries on when you are back"),
+            Live("sync.offline", "Sync paused while offline", DriveOperations, Say, "You are offline, so syncing has paused. It starts again when you are back"),
             Live("sync.paused", "Synced folder is gone", DriveOperations, Loud, "{0} is paused: its {1} folder is gone. Remove the sync or restore the folder.", "Music", "Google Drive"),
             Live("sync.start","A big sync is starting", DriveOperations, Say, "Starting a big sync of {0}: {1} files, {2}", "Music", "3,120", "214 gigabytes to download"),
             Live("sync.progress", "Big sync progress", DriveOperations, Say, "{0} is {1} percent synced", "Music", 50),
@@ -285,14 +285,14 @@ namespace ExplorerNative
             // report a problem that is being dealt with.
             Live("drive.upload.retrying", "Upload being retried", DriveOperations, Bar, "Retrying {0}: {1}", "album.flac", "Google Drive is temporarily unavailable"),
             // Spoken: a copy waiting out the day's limit looks hung otherwise.
-            Live("drive.upload.dailylimit", "Daily upload limit reached", DriveOperations, Say, "{0}", "You've reached your daily upload limit for Google. Copying carries on by itself when it resets"),
+            Live("drive.upload.dailylimit", "Daily upload limit reached", DriveOperations, Say, "{0}", "You've reached your daily upload limit for Google. Copying starts again by itself when it resets"),
             // Spoken, unlike the retries. A transfer that has stopped and is
             // waiting for the internet looks exactly like one that has hung, and
             // this is the sentence that tells them apart — it is worth
             // interrupting for, because the alternative is somebody watching a
             // progress window that has not moved for four minutes.
             Live("drive.offline.waiting", "Waiting for the internet", DriveOperations, Say, "Waiting for the internet to come back before {0}", "sending anything more to Google Drive"),
-            Live("drive.offline.back", "Back online", DriveOperations, Say, "Back online, carrying on"),
+            Live("drive.offline.back", "Back online", DriveOperations, Say, "Back online, picking up where it stopped"),
             Live("drive.upload.cancelled", "Upload cancelled", DriveOperations, Say, "Upload of {0} cancelled", "album.flac"),
             Live("drive.download.start", "Fetching a file", DriveOperations, Off, "Fetching {0}", "song.flac"),
             Live("drive.download.done", "File fetched", DriveOperations, Off, "{0} ready", "song.flac"),

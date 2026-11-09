@@ -186,7 +186,7 @@ namespace ExplorerNative
                 long now = Environment.TickCount64, last = Interlocked.Read(ref _dailySaidAt);
                 if ((last == 0 || now - last > 3_600_000) &&
                     Interlocked.CompareExchange(ref _dailySaidAt, now, last) == last)
-                    Say("drive.upload.dailylimit", DailyUploadLimitSaid + ". Copying carries on by itself when it resets");
+                    Say("drive.upload.dailylimit", DailyUploadLimitSaid + ". Copying starts again by itself when it resets");
             }
             await Pause(wait, token);
             return true;
@@ -328,7 +328,7 @@ namespace ExplorerNative
                 {
                     // The first waiter to see it come back says so; the rest carry on quietly.
                     if (Interlocked.Exchange(ref _saidOffline, 0) == 1)
-                        Say("drive.offline.back", "Back online, carrying on");
+                        Say("drive.offline.back", "Back online, picking up where it stopped");
                     return true;
                 }
 
