@@ -968,6 +968,7 @@ namespace ExplorerNative
                 {
                     MessageBox.Show(this, $"The update could not be started. {Plain(ex)}",
                         "Update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    _ = CarryOnHereAsync();
                     return;
                 }
 
@@ -984,12 +985,14 @@ namespace ExplorerNative
                             "locked to this account. To read it, run Explorer Native from a command prompt " +
                             "with the option --read-log.",
                             "Update", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                        _ = CarryOnHereAsync();
                     }
                 }
             }
             finally
             {
                 _checkingForUpdates = false;
+                _carryOnAgreed = null;   // an answer is for this update only
                 if (!IsDisposed) RestoreListFocus();
             }
 
@@ -1008,8 +1011,8 @@ namespace ExplorerNative
             if (!_restartAgreed)
             {
                 if (!ConfirmCarryOn("Restart")) return;
-                if (!AudioEditorForm.ConfirmEndingEditors(this, "Restart")) return;
-                if (!Program.ConfirmUnsavedDrive("restarts", "Restart anyway?")) return;
+                if (!AudioEditorForm.ConfirmEndingEditors(this, "Restart")) { _carryOnAgreed = null; return; }
+                if (!Program.ConfirmUnsavedDrive("restarts", "Restart anyway?")) { _carryOnAgreed = null; return; }
                 // Copies to carry on are written down and stopped first, then back here.
                 if (_carryable.Count > 0)
                 {
@@ -1036,6 +1039,7 @@ namespace ExplorerNative
             catch (Exception ex)
             {
                 Announce($"Could not restart: {ex.Message}", isError: true);
+                _ = CarryOnHereAsync();
                 return;
             }
 
@@ -9583,12 +9587,12 @@ namespace ExplorerNative
         {
             // While it runs, an update or a restart can carry it on afterwards (5.6.1).
             int job = StartCarryable(new CarryOnTransfers.Job(
-                move ? CarryOnTransfers.Kind.Move : CarryOnTransfers.Kind.Copy, paths, destination));
-            try { return await RunTransferCore(paths, destination, move, forced); }
+                move ? CarryOnTransfers.Kind.Move : CarryOnTransfers.Kind.Copy, paths, destination, CarryOnTransfers.NotChosen));
+            try { return await RunTransferCore(paths, destination, move, forced, job); }
             finally { EndCarryable(job); }
         }
 
-        private async Task<bool> RunTransferCore(string[] paths, string destination, bool move, PasteConflictPolicy? forced)
+        private async Task<bool> RunTransferCore(string[] paths, string destination, bool move, PasteConflictPolicy? forced, int carryId)
         {
             // Cut and paste into the folder the items are already in is nothing
             // to do. It was a collision of each item with itself, so under keep
@@ -9657,6 +9661,28 @@ namespace ExplorerNative
                 return false;
             }
             var conflicts = chosen.Value;
+
+            // An update or a restart came while this was still at its question:
+            // it was written down to be started afresh, so it must not start here.
+            if (_carryStopped.Contains(carryId)) return false;
+
+            // What finishing this after a restart needs to know (6.0.0): the
+            // answer for names already there, and which names those were, looked
+            // up before anything of ours is in the destination.
+            string[]? clashedSources = null;
+            if (conflicts != PasteConflictPolicy.FillGaps)
+            {
+                var (names, looked) = await Task.Run(() => CollidingNames(paths, destination));
+                if (_carryStopped.Contains(carryId)) return false;
+                if (looked)
+                {
+                    var set = new HashSet<string>(names, StringComparer.OrdinalIgnoreCase);
+                    clashedSources = paths.Where(p => set.Contains(Path.GetFileName(
+                        p.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)))).ToArray();
+                }
+            }
+            if (_carryable.TryGetValue(carryId, out var noted))
+                _carryable[carryId] = noted with { Paths = paths, Policy = conflicts.ToString(), Clashed = clashedSources };
 
             // Drive is not a filesystem robocopy can write to. There are two
             // shapes of that, and only one of them used to be caught.
@@ -12476,8 +12502,17 @@ namespace ExplorerNative
         private readonly Dictionary<int, CarryOnTransfers.Job> _carryable = new();
         private int _nextCarryable;
 
-        /// <summary>How many running operations were already agreed to be carried on, so asking again is only about new ones.</summary>
-        private int _carryOnAgreed = -1;
+        /// <summary>
+        /// Which operations were already agreed to be finished later (and how
+        /// many others to be stopped), so asking again is only about new ones.
+        /// The operations themselves, not a count: a count went stale, and a
+        /// later restart then ended something else without asking.
+        /// </summary>
+        private HashSet<int>? _carryOnAgreed;
+        private int _carryOnAgreedOthers;
+
+        /// <summary>Pastes written down for the next start before they had begun copying: they must not begin now.</summary>
+        private readonly HashSet<int> _carryStopped = new();
 
         private int StartCarryable(CarryOnTransfers.Job job)
         {
@@ -12486,7 +12521,7 @@ namespace ExplorerNative
             return id;
         }
 
-        private void EndCarryable(int id) => _carryable.Remove(id);
+        private void EndCarryable(int id) { _carryable.Remove(id); _carryStopped.Remove(id); }
 
         /// <summary>
         /// Before an update or a restart ends the process under running file
@@ -12496,13 +12531,15 @@ namespace ExplorerNative
         /// </summary>
         public bool ConfirmCarryOn(string verb)
         {
-            if (IsDisposed || RunningTransfers <= 0) { _carryOnAgreed = -1; return true; }
-            if (_carryOnAgreed >= RunningTransfers) return true;   // nothing new since the answer
+            // A paste still at its conflict check is not counted as running yet, but it is about to be.
+            if (IsDisposed || (RunningTransfers <= 0 && _carryable.Count == 0)) { _carryOnAgreed = null; return true; }
             int carry = _carryable.Count;
+            int other = Math.Max(0, RunningTransfers - carry);
+            // Nothing new since the answer.
+            if (_carryOnAgreed != null && _carryable.Keys.All(_carryOnAgreed.Contains) && other <= _carryOnAgreedOthers) return true;
             if (carry == 0) return ConfirmAbandonTransfers(verb);
 
             string what = carry == 1 ? DescribeCarryable(_carryable.Values.First()) + " is" : $"{carry} file operations are";
-            int other = Math.Max(0, RunningTransfers - carry);
             var question = $"{what} still running. {verb} now and finish {(carry == 1 ? "it" : "them")} once Explorer Native has restarted?";
             if (other > 0)
                 question += other == 1
@@ -12514,10 +12551,11 @@ namespace ExplorerNative
             if (MessageBox.Show(this, question, "Still working",
                     MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
             {
-                _carryOnAgreed = RunningTransfers;
+                _carryOnAgreed = new HashSet<int>(_carryable.Keys);
+                _carryOnAgreedOthers = other;
                 return true;
             }
-            _carryOnAgreed = -1;
+            _carryOnAgreed = null;
             RestoreListFocus();
             return false;
         }
@@ -12542,10 +12580,11 @@ namespace ExplorerNative
         /// </summary>
         private async Task CarryOnLaterAsync()
         {
-            _carryOnAgreed = -1;
+            _carryOnAgreed = null;
             var jobs = _carryable.Values.ToList();
             if (jobs.Count == 0) return;
             CarryOnTransfers.Save(jobs);
+            foreach (var id in _carryable.Keys) _carryStopped.Add(id);
             foreach (var window in ProgressForm.Running.ToList())
             {
                 try { window.CancelTransfer(); } catch { }
@@ -12586,6 +12625,75 @@ namespace ExplorerNative
             foreach (var job in jobs) _ = CarryOnOneAsync(job);
         }
 
+        /// <summary>
+        /// The update or the restart did not happen after all (the installer
+        /// would not start or failed, the new copy would not launch): the copies
+        /// were already stopped to be finished later, so they are finished here,
+        /// and the note is taken so no later start runs them unasked. Emptying
+        /// the trash was never stopped, so it is not started again.
+        /// </summary>
+        private async Task CarryOnHereAsync()
+        {
+            try
+            {
+                _carryOnAgreed = null;
+                if (!CarryOnTransfers.Waiting()) return;
+                var until = Environment.TickCount64 + 60_000;
+                while (_carryable.Values.Any(j => j.What != CarryOnTransfers.Kind.EmptyTrash) &&
+                       Environment.TickCount64 < until && !IsDisposed)
+                    await Task.Delay(200);
+                if (IsDisposed) return;
+                foreach (var job in CarryOnTransfers.Take())
+                    if (job.What != CarryOnTransfers.Kind.EmptyTrash) _ = CarryOnOneAsync(job);
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) Announce("Couldn't finish it: " + ex.Message, isError: true);
+            }
+        }
+
+        /// <summary>
+        /// Where a job's folders stand. Not ready: something gave no answer in
+        /// five seconds (a share waking up) or a source's own folder is not
+        /// there yet (a USB drive, the Drive letter), so wait rather than take
+        /// part of the selection for all of it. Ready: Present is what is still
+        /// to do; a source missing from a folder that is there has gone already.
+        /// </summary>
+        private static (bool Ready, string[] Present) LookForCarryOn(CarryOnTransfers.Job job)
+        {
+            var notReady = (false, Array.Empty<string>());
+            if (AnswerOf(() => Directory.Exists(job.Destination)) != true) return notReady;
+            var parents = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+            var present = new List<string>();
+            foreach (var path in job.Paths)
+            {
+                var here = AnswerOf(() => File.Exists(path) || Directory.Exists(path));
+                if (here == null) return notReady;
+                if (here == true) { present.Add(path); continue; }
+                var parent = Path.GetDirectoryName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+                if (string.IsNullOrEmpty(parent)) return notReady;
+                if (!parents.TryGetValue(parent, out bool there))
+                {
+                    var answer = AnswerOf(() => Directory.Exists(parent));
+                    if (answer == null) return notReady;
+                    parents[parent] = there = answer.Value;
+                }
+                if (!there) return notReady;
+            }
+            return (true, present.ToArray());
+        }
+
+        /// <summary>Yes or no within five seconds, or null for no answer (a share that went to sleep answers nothing).</summary>
+        private static bool? AnswerOf(Func<bool> ask)
+        {
+            try
+            {
+                var probe = Task.Run(ask);
+                return probe.Wait(5000) ? probe.Result : null;
+            }
+            catch { return null; }
+        }
+
         private async Task CarryOnOneAsync(CarryOnTransfers.Job job)
         {
             try
@@ -12609,21 +12717,27 @@ namespace ExplorerNative
                     }
                     else
                     {
-                        var (destination, sources) = await Task.Run(() =>
+                        var (ready, sources) = await Task.Run(() => LookForCarryOn(job));
+                        if (IsDisposed) return;
+                        if (ready && sources.Length > 0)
                         {
-                            bool there = DirectoryAnswers(job.Destination);
-                            var left = job.Paths.Where(PathAnswers).ToArray();
-                            return (there, left);
-                        });
-                        if (destination && sources.Length > 0)
-                        {
-                            AnnounceOperation(job.Move ? "move.start" : "copy.start",
-                                $"Finishing {(job.Move ? "the move" : "the copy")} into {FolderNameForSpeech(job.Destination)}");
-                            await RunTransfer(sources, job.Destination, job.Move, PasteConflictPolicy.FillGaps);
+                            var (runs, leftOut) = CarryOnTransfers.Plan(job, sources);
+                            if (runs.Count > 0)
+                                AnnounceOperation(job.Move ? "move.start" : "copy.start",
+                                    $"Finishing {(job.Move ? "the move" : "the copy")} into {FolderNameForSpeech(job.Destination)}");
+                            foreach (var run in runs)
+                            {
+                                if (IsDisposed) return;
+                                await RunTransfer(run.Paths, job.Destination, job.Move, run.Forced);
+                            }
+                            if (leftOut.Length > 0 && !IsDisposed)
+                                AnnounceOperation(job.Move ? "move.failed" : "copy.failed", leftOut.Length == 1
+                                    ? $"{Path.GetFileName(leftOut[0].TrimEnd('\\'))} was being kept as a second copy, so it could not be finished. Paste it again"
+                                    : $"{leftOut.Length} items were being kept as second copies, so they could not be finished. Paste them again");
                             return;
                         }
-                        // A move whose sources are all gone already finished.
-                        if (destination && job.Move && sources.Length == 0) return;
+                        // A move whose sources have all gone from folders that are there already finished.
+                        if (ready && job.Move) return;
                     }
 
                     if (DateTime.UtcNow >= until)
@@ -12645,19 +12759,6 @@ namespace ExplorerNative
             {
                 if (!IsDisposed) Announce("Couldn't finish it: " + ex.Message, isError: true);
             }
-        }
-
-        /// <summary>Whether a folder is there, within five seconds (a share that went to sleep answers nothing).</summary>
-        private static bool DirectoryAnswers(string path)
-        {
-            var probe = Task.Run(() => Directory.Exists(path));
-            return probe.Wait(5000) && probe.Result;
-        }
-
-        private static bool PathAnswers(string path)
-        {
-            var probe = Task.Run(() => File.Exists(path) || Directory.Exists(path));
-            return probe.Wait(5000) && probe.Result;
         }
 
         /// <summary>

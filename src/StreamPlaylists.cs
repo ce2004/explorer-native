@@ -169,6 +169,10 @@ namespace ExplorerNative
 
         public static string Decode(ReadOnlySpan<byte> bytes)
         {
+            // Notepad's "Unicode" and some Windows tools save UTF-16 with a mark in front.
+            if (bytes.Length >= 2 && bytes[0] == 0xFF && bytes[1] == 0xFE) return Encoding.Unicode.GetString(bytes[2..]);
+            if (bytes.Length >= 2 && bytes[0] == 0xFE && bytes[1] == 0xFF) return Encoding.BigEndianUnicode.GetString(bytes[2..]);
+            if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF) bytes = bytes[3..];
             try { return new UTF8Encoding(false, true).GetString(bytes); }
             catch (DecoderFallbackException) { return Encoding.Latin1.GetString(bytes); }
         }

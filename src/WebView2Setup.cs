@@ -81,6 +81,8 @@ namespace ExplorerNative
                 setup = Path.Combine(folder, "MicrosoftEdgeWebview2Setup.exe");
                 window.Downloading(0);
                 await DownloadAsync(setup, window, window.Token).ConfigureAwait(true);
+                // Cancel pressed as the last bytes came in still means cancel.
+                window.Token.ThrowIfCancellationRequested();
 
                 window.InstallingNow();
                 int code = await Task.Run(() => RunInstaller(setup)).ConfigureAwait(true);
@@ -98,7 +100,7 @@ namespace ExplorerNative
             {
                 failure = "It couldn't be downloaded. Check the internet connection. " + GoogleNet.Reason(ex);
             }
-            catch (TaskCanceledException)
+            catch (OperationCanceledException)
             {
                 failure = "The download took too long. Check the internet connection and try again.";
             }
@@ -130,8 +132,13 @@ namespace ExplorerNative
             }
         }
 
-        private static async Task DownloadAsync(string path, SetupWindow window, CancellationToken token)
+        private static async Task DownloadAsync(string path, SetupWindow window, CancellationToken cancel)
         {
+            // The client's timeout ends with the headers: this covers the
+            // file itself, so a connection that stalls part way is said.
+            var limit = CancellationTokenSource.CreateLinkedTokenSource(cancel);
+            limit.CancelAfter(TimeSpan.FromMinutes(5));
+            var token = limit.Token;
             using var http = new HttpClient(GoogleNet.Handler, disposeHandler: false) { Timeout = TimeSpan.FromMinutes(5) };
             using var response = await http.GetAsync(BootstrapperUrl, HttpCompletionOption.ResponseHeadersRead, token).ConfigureAwait(true);
             if (!response.IsSuccessStatusCode)

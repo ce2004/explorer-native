@@ -90,6 +90,12 @@ namespace ExplorerNative
         /// <summary>Whether a live stream is what is playing or opening: no length, no skipping.</summary>
         public bool IsLive { get { lock (_gate) return _radio != null && (_path.Length > 0 || _startingPath.Length > 0); } }
 
+        /// <summary>A station that stopped: play means connecting again, which is the caller's to do off the window's thread.</summary>
+        public bool LiveEnded
+        {
+            get { try { return IsLive && HasTrack && _direct is { Ended: true }; } catch { return false; } }
+        }
+
         /// <summary>The station and the song on it, for "what is playing".</summary>
         internal static string RadioDisplayName(RadioStream radio) =>
             radio.Song is { Length: > 0 } song ? $"{song} on {radio.Name}" : radio.Name;
@@ -101,7 +107,8 @@ namespace ExplorerNative
                 if (_radio != radio || _path.Length == 0) return;
                 _displayName = RadioDisplayName(radio);
             }
-            Raise("audio.stream.song", radio.Song ?? "");
+            // A title taken away (adverts, talk) changes the name quietly.
+            if (radio.Song is { Length: > 0 } song) Raise("audio.stream.song", song);
         }
 
         private const string LiveCannotSkip = "This is a live stream, so it can't be skipped through";
@@ -1832,12 +1839,17 @@ namespace ExplorerNative
                 // off too, and never installed.
                 // The open, if there is one, is called off first: the start
                 // checks this number under the same lock it installs under.
+                bool openingRadio;
                 lock (_gate)
                 {
+                    // A station still connecting: its reads go on waiting for
+                    // sound, holding up the next Enter, unless it is let go here.
+                    openingRadio = starting && _radio != null && _path.Length == 0;
                     _openGeneration++;
                     _startingPath = "";
                     _pauseOnStart = false;
                 }
+                if (openingRadio) ForgetRadio();
 
                 CancelFade();
                 ForgetSeekTarget();

@@ -730,6 +730,24 @@ namespace ExplorerNative
         /// <summary>The last quit was an update or a restart, so what was playing comes back even with the resume settings off.</summary>
         public bool ResumeAfterRestart { get; set; }
 
+        /// <summary>
+        /// When that quit was (UTC ticks; 0 from 5.6, which wrote none). The
+        /// app can also be closed that way and not started again for days, and
+        /// a song starting by itself then is nobody's wish: good for ten minutes.
+        /// </summary>
+        public long ResumeAfterRestartAt { get; set; }
+
+        internal static readonly TimeSpan ResumeAfterRestartFor = TimeSpan.FromMinutes(10);
+
+        /// <summary>Whether the last quit's "come back playing" still stands at <paramref name="nowUtc"/>.</summary>
+        internal bool ResumeAfterRestartStands(DateTime nowUtc)
+        {
+            if (!ResumeAfterRestart) return false;
+            if (ResumeAfterRestartAt <= 0 || ResumeAfterRestartAt > DateTime.MaxValue.Ticks) return ResumeAfterRestartAt == 0;
+            var age = nowUtc - new DateTime(ResumeAfterRestartAt, DateTimeKind.Utc);
+            return age > TimeSpan.FromMinutes(-1) && age < ResumeAfterRestartFor;
+        }
+
         // Shortcuts are stored as text — "Ctrl+Alt+P" — so settings.json stays
         // something a person can read and edit. See Shortcut.Parse; anything it
         // does not understand is simply not registered.
@@ -1451,7 +1469,8 @@ namespace ExplorerNative
             AudioFadeInMilliseconds = Math.Clamp(AudioFadeInMilliseconds, 0, 10000);
             AudioFadeOutMilliseconds = Math.Clamp(AudioFadeOutMilliseconds, 0, 10000);
             AudioRewindOnResumeSeconds = Math.Clamp(AudioRewindOnResumeSeconds, 0, 30);
-            AudioResumeSeconds = Math.Max(0, AudioResumeSeconds);
+            // A place in a file: thirty days in is past any recording.
+            AudioResumeSeconds = Math.Clamp(AudioResumeSeconds, 0, 30 * 24 * 3600);
 
             // Zero is "do not read ahead"; the ceiling is one gigabyte,
             // past which this stops being a read-ahead and starts being a copy.
@@ -1600,7 +1619,7 @@ namespace ExplorerNative
             nameof(WindowX), nameof(WindowY), nameof(WindowWidth), nameof(WindowHeight),
             nameof(LastFolder), nameof(LastFolderTab2), nameof(ActiveTab),
             nameof(FocusedPathTab1), nameof(FocusedPathTab2), nameof(AudioLastPath),
-            nameof(AudioResumePath), nameof(AudioResumeSeconds), nameof(AppleMusicResumeSong), nameof(ResumeAfterRestart),
+            nameof(AudioResumePath), nameof(AudioResumeSeconds), nameof(AppleMusicResumeSong), nameof(ResumeAfterRestart), nameof(ResumeAfterRestartAt),
         };
 
         /// <summary>

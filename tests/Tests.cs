@@ -355,6 +355,13 @@ namespace ExplorerNative
                 Console.WriteLine($"\n{_passed} passed, {_failed} failed");
                 return _failed == 0 ? 0 : 1;
             }
+            // The 6.0.0 review of everything added since 5.1.0.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "release600")
+            {
+                await Guard("Release600Tests", () => Release600Tests.RunAll(Check, Equal));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
             // Favourite folders, and the window coming back after an update (5.3.0).
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "favourites")
             {
@@ -680,6 +687,7 @@ namespace ExplorerNative
             await Guard("Perf522OpsTests", () => Perf522OpsTests.RunAll(Check, Equal));
             await Guard("Favourites530Tests", () => Favourites530Tests.RunAll(Check, Equal));
             await Guard("Radio540Tests", () => Radio540Tests.RunAll(Check, Equal));
+            await Guard("Release600Tests", () => Release600Tests.RunAll(Check, Equal));
             await Guard("DriveClientCacheTests", () => DriveClientCacheTests.RunAll(Check, Equal));
             await Guard("TagEditTests", () => { TagEditTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("AudioConvertTests", () => AudioConvertTests.RunAll(Check, Equal));
@@ -5816,6 +5824,8 @@ namespace ExplorerNative
                 for (int i = 0; i < a.Length; i++) if (a[i] != b[i]) return false;
                 return true;
             }
+
+            if (wanted is List<string> la && got is List<string> lb) return la.SequenceEqual(lb);
 
             if (wanted is List<DriveSyncPair> || got is List<DriveSyncPair>)
                 return System.Text.Json.JsonSerializer.Serialize(wanted) == System.Text.Json.JsonSerializer.Serialize(got);

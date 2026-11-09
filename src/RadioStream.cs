@@ -368,8 +368,12 @@ namespace ExplorerNative
                 (playlistByName && type?.StartsWith("audio/", StringComparison.OrdinalIgnoreCase) != true))
             {
                 var text = StreamPlaylists.Decode(response.ReadAll(2 * 1024 * 1024));
-                if (StreamPlaylists.IsHls(text)) { RunHls(response.Url, text); return; }
-                var inner = StreamPlaylists.WebEntries(StreamPlaylists.Parse(text, response.Url));
+                // The playlist has been read: let its connection go now, not
+                // when the station it names stops hours later.
+                var from = response.Url;
+                response.Dispose();
+                if (StreamPlaylists.IsHls(text)) { RunHls(from, text); return; }
+                var inner = StreamPlaylists.WebEntries(StreamPlaylists.Parse(text, from));
                 if (inner.Count == 0) throw new StreamGone("the playlist on the web has no streams in it");
                 lock (_gate) _playlistTitle ??= inner.Select(e => e.Title).FirstOrDefault(t => !string.IsNullOrWhiteSpace(t));
                 TryEntries(inner, depth + 1);
@@ -428,8 +432,9 @@ namespace ExplorerNative
             bool changed;
             lock (_gate)
             {
-                changed = song.Length > 0 && song != _song;
-                if (changed) _song = song;
+                // An empty title (adverts, news, talk) takes the last song's name away.
+                changed = song.Length > 0 ? song != _song : _song != null;
+                if (changed) _song = song.Length > 0 ? song : null;
             }
             if (changed) try { SongChanged?.Invoke(this); } catch { }
         }
@@ -757,7 +762,24 @@ namespace ExplorerNative
             final = response.RequestMessage?.RequestUri ?? uri;
             using var body = response.Content.ReadAsStream(_cancel.Token);
             var all = new MemoryStream();
-            body.CopyTo(all);
+            // The client's timeout ends with the headers. A body that stops
+            // arriving must not hold the network thread for good: each read
+            // gets StallMilliseconds, and closing the station ends it at once.
+            var buffer = new byte[64 * 1024];
+            while (true)
+            {
+                var stall = CancellationTokenSource.CreateLinkedTokenSource(_cancel.Token);
+                stall.CancelAfter(StallMilliseconds);
+                int n;
+                try { n = body.ReadAsync(buffer, stall.Token).AsTask().GetAwaiter().GetResult(); }
+                catch (OperationCanceledException) when (!_cancel.IsCancellationRequested)
+                {
+                    throw new IOException("the station stopped sending part way through");
+                }
+                finally { stall.CancelAfter(Timeout.Infinite); }
+                if (n <= 0) break;
+                all.Write(buffer, 0, n);
+            }
             return all.ToArray();
         }
 
@@ -895,6 +917,10 @@ namespace ExplorerNative
             catch { return null; }
         }
 
+        private long _hlsLast = -1;
+        private string _hlsPlace = "";
+        private const int GoneSegmentsMost = 3;
+
         private void RunHls(Uri? baseUri, string text)
         {
             if (text.Contains("#EXT-X-STREAM-INF", StringComparison.OrdinalIgnoreCase))
@@ -905,8 +931,13 @@ namespace ExplorerNative
             }
             var playlistUri = baseUri;
 
-            long last = -1;
-            bool first = true;
+            // Where this station had got to survives a reconnect, so a dropped
+            // connection does not play the last three segments over again.
+            string place = playlistUri == null ? "" : playlistUri.Host + playlistUri.AbsolutePath;
+            if (place != _hlsPlace) { _hlsPlace = place; _hlsLast = -1; }
+            long last = _hlsLast;
+            bool first = last < 0;
+            int gone = 0;
             var keys = new Dictionary<Uri, byte[]>();
             Uri? mapSent = null;
             var demux = new TsAudio();
@@ -923,21 +954,38 @@ namespace ExplorerNative
                     first = false;
                 }
                 // Numbered again from the start (a station restarted): carry on with the new numbers.
-                if (list.Segments.Count > 0 && list.Segments[^1].Sequence < last - list.Segments.Count) last = list.Segments[0].Sequence - 1;
+                if (list.Segments.Count > 0 && list.Segments[^1].Sequence < last - list.Segments.Count) last = _hlsLast = list.Segments[0].Sequence - 1;
 
                 bool fresh = false;
                 for (int i = from; i < list.Segments.Count && !Disposed; i++)
                 {
                     var segment = list.Segments[i];
                     if (segment.Sequence <= last) continue;
+                    long waitFrom = Environment.TickCount64;
                     WaitForRoom();
-                    var bytes = Get(segment.Uri, out _, segment.Range);
-                    if (segment.KeyMethod != null)
+                    // Paused a good while on a live station: this list is old
+                    // and its segments may be gone. Ask for the list again.
+                    if (!list.EndList && Environment.TickCount64 - waitFrom > Math.Max(list.TargetDuration, 6) * 3000) break;
+                    if (segment.KeyMethod != null && (segment.KeyMethod != "AES-128" || segment.KeyUri == null))
+                        throw new StreamGone("the stream is copy protected, so it can't be played here");
+                    byte[] bytes;
+                    byte[]? key = null;
+                    try
                     {
-                        if (segment.KeyMethod != "AES-128" || segment.KeyUri == null)
-                            throw new StreamGone("the stream is copy protected, so it can't be played here");
-                        if (!keys.TryGetValue(segment.KeyUri, out var key))
+                        bytes = Get(segment.Uri, out _, segment.Range);
+                        if (segment.KeyMethod != null && segment.KeyUri != null && !keys.TryGetValue(segment.KeyUri, out key))
                             keys[segment.KeyUri] = key = Get(segment.KeyUri, out _);
+                        gone = 0;
+                    }
+                    catch (StreamGone) when (!list.EndList && ++gone <= GoneSegmentsMost)
+                    {
+                        // One segment the server no longer has is not the
+                        // station gone: step over it. Several in a row is.
+                        last = _hlsLast = segment.Sequence;
+                        continue;
+                    }
+                    if (segment.KeyMethod != null && key != null)
+                    {
                         var iv = segment.Iv ?? SequenceIv(segment.Sequence);
                         using var aes = Aes.Create();
                         aes.Key = key;
@@ -958,7 +1006,7 @@ namespace ExplorerNative
                         Push(sound.GetBuffer().AsSpan(0, (int)sound.Length));
                     }
                     else FeedSegment(demux, bytes);
-                    last = segment.Sequence;
+                    last = _hlsLast = segment.Sequence;
                     fresh = true;
                 }
 
@@ -1068,7 +1116,7 @@ namespace ExplorerNative
 
             private void ReadPat(ReadOnlySpan<byte> s)
             {
-                if (s.Length < 1) return;
+                if (s.Length < 1 || 1 + s[0] > s.Length) return;
                 s = s[(1 + s[0])..];
                 if (s.Length < 8) return;
                 int length = ((s[1] & 0x0F) << 8) | s[2];
@@ -1084,7 +1132,7 @@ namespace ExplorerNative
 
             private void ReadPmt(ReadOnlySpan<byte> s)
             {
-                if (s.Length < 1) return;
+                if (s.Length < 1 || 1 + s[0] > s.Length) return;
                 s = s[(1 + s[0])..];
                 if (s.Length < 12) return;
                 int length = ((s[1] & 0x0F) << 8) | s[2];

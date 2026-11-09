@@ -343,6 +343,11 @@ namespace ExplorerNative
         {
             try
             {
+                // A file only. The check before this saw a file, and if a folder
+                // has taken its name since, deleting that for good with all
+                // inside it is not what Drive's delete of one file means.
+                if ((File.GetAttributes(NameRules.LiteralPath(path)) & FileAttributes.Directory) != 0)
+                    return "it is a folder now";
                 ShellDelete.DeletePermanently(path);
                 return null;
             }

@@ -242,6 +242,8 @@ namespace ExplorerNative
         }
 
         /// <summary>Reads and prepares the picture once. False (and said) when it cannot be.</summary>
+        private bool _saidLooking;
+
         private async Task<bool> LoadPictureAsync()
         {
             if (_picture != null) return true;
@@ -249,6 +251,7 @@ namespace ExplorerNative
             try
             {
                 Say("ai.looking", _speaker + " is looking at the picture", interrupt: false);
+                _saidLooking = true;
                 ShowPending(_speaker + " is looking at the picture…");
                 var token = _closing.Token;
                 var picture = await Task.Run(async () =>
@@ -328,8 +331,12 @@ namespace ExplorerNative
                 if (_picture == null && !await LoadPictureAsync()) { _retry = question; return; }
                 _busy = true;
                 _retry = null;
-                Say("ai.looking", _turns.Count == 0 && !fromPerson ? _speaker + " is looking at the picture" : _speaker + " is thinking",
-                    interrupt: retrying || fromPerson);
+                // Loading the picture has just said "is looking at the picture": once is enough.
+                bool firstLook = _turns.Count == 0 && !fromPerson;
+                if (!(firstLook && _saidLooking))
+                    Say("ai.looking", firstLook ? _speaker + " is looking at the picture" : _speaker + " is thinking",
+                        interrupt: retrying || fromPerson);
+                _saidLooking = false;
                 ShowPending(_speaker + " is thinking…");
 
                 if (string.IsNullOrWhiteSpace(_model))
@@ -345,7 +352,8 @@ namespace ExplorerNative
                 _turns.Add(new AiTurn(true, question));
                 _turns.Add(new AiTurn(false, reply.Text));
                 _answers++;
-                var price = _price == null ? null : await _price;
+                // The answer never waits for the price list: what is held will do.
+                var price = _price is { IsCompletedSuccessfully: true } known ? known.Result : null;
                 var cost = AiDescriber.CostOf(reply, price ?? AiDescriber.PriceNow(_provider, _model));
                 if (cost is { } c) _spent += c; else _priceUnknown = true;
                 _cost.Text = AiDescriber.CostSentence(_spent, _priceUnknown, _answers);

@@ -543,6 +543,7 @@ namespace ExplorerNative
                 "audio", "realtime", "transcribe", "tts", "search", "embedding", "image", "dall-e", "whisper",
                 "moderation", "codex", "instruct", "davinci", "babbage", "gpt-3.5", "gpt-4-0", "gpt-4-32k", "gpt-4-1106",
                 "computer-use", "deep-research", "sora", "omni-moderation",
+                "o1-mini", "o1-preview", "o3-mini",   // text only
             };
             foreach (var m in json?["data"]?.AsArray() ?? new JsonArray())
             {
@@ -642,7 +643,7 @@ namespace ExplorerNative
                     {
                         var url = "https://generativelanguage.googleapis.com/v1beta/models/" + Uri.EscapeDataString(model) + ":generateContent";
                         var json = await SendAsync(provider, model, HttpMethod.Post, url, Headers(provider, key),
-                            GeminiBody(system, picture, turns), limit.Token).ConfigureAwait(false);
+                            GeminiBody(system, picture, turns, model), limit.Token).ConfigureAwait(false);
                         return GeminiReply(json);
                     }
                     case AiProvider.OpenAI:
@@ -722,8 +723,11 @@ namespace ExplorerNative
                 Number(usage?["cache_creation_input_tokens"]), Number(usage?["cache_read_input_tokens"]), null, stop == "max_tokens");
         }
 
-        internal static JsonObject GeminiBody(string system, AiPicture picture, IReadOnlyList<AiTurn> turns)
+        internal static JsonObject GeminiBody(string system, AiPicture picture, IReadOnlyList<AiTurn> turns, string model = "")
         {
+            // Google refuses a system instruction for Gemma ("Developer
+            // instruction is not enabled"), so there it leads the first message.
+            bool inline = model.StartsWith("gemma", StringComparison.OrdinalIgnoreCase);
             var contents = new JsonArray();
             for (int i = 0; i < turns.Count; i++)
             {
@@ -738,15 +742,16 @@ namespace ExplorerNative
                             ["data"] = Convert.ToBase64String(picture.Bytes),
                         },
                     });
-                parts.Add(new JsonObject { ["text"] = turn.Text });
+                parts.Add(new JsonObject { ["text"] = inline && i == 0 ? system + "\n\n" + turn.Text : turn.Text });
                 contents.Add(new JsonObject { ["role"] = turn.FromPerson ? "user" : "model", ["parts"] = parts });
             }
-            return new JsonObject
+            var body = new JsonObject
             {
-                ["system_instruction"] = new JsonObject { ["parts"] = new JsonArray { new JsonObject { ["text"] = system } } },
                 ["contents"] = contents,
                 ["generationConfig"] = new JsonObject { ["maxOutputTokens"] = 8192 },
             };
+            if (!inline) body["system_instruction"] = new JsonObject { ["parts"] = new JsonArray { new JsonObject { ["text"] = system } } };
+            return body;
         }
 
         internal static AiReply GeminiReply(JsonNode? json)
@@ -975,7 +980,7 @@ namespace ExplorerNative
                 lower.Contains("invalid x-api-key") || lower.Contains("invalid_api_key") || lower.Contains("incorrect api key"))
                 return new AiException($"{who} didn't accept the API key. It may have a typing mistake, or it was deleted. Check it in {where}.", keyRefused: true);
             if (status == 402 || lower.Contains("credit balance") || lower.Contains("insufficient_quota") ||
-                lower.Contains("insufficient credits") || lower.Contains("billing") || lower.Contains("exceeded your current quota"))
+                lower.Contains("insufficient credits"))
                 return new AiException($"Your {who} account is out of credit. Add some on {who}'s website, then try again.", outOfCredit: true);
             if (status == 403)
                 return lower.Contains("flagged") || lower.Contains("moderation")
@@ -1023,7 +1028,10 @@ namespace ExplorerNative
         /// "models/gemini-2.5-flash" all come down to one spelling, so a model
         /// from any provider finds its price in OpenRouter's list.
         /// </summary>
-        internal static string Normalise(string id)
+        internal static string Normalise(string id) => Normalise(id, keepDate: false);
+
+        /// <summary>With keepDate, a dated snapshot keeps its date, so it can have a price of its own.</summary>
+        internal static string Normalise(string id, bool keepDate)
         {
             var s = (id ?? "").Trim().ToLowerInvariant().TrimStart('~');
             if (s.StartsWith("models/", StringComparison.Ordinal)) s = s[7..];
@@ -1032,13 +1040,14 @@ namespace ExplorerNative
             int slash = s.LastIndexOf('/');
             if (slash >= 0) s = s[(slash + 1)..];
             s = s.Replace('.', '-').Replace('_', '-');
-            s = Regex.Replace(s, @"-(\d{8}|\d{4}-\d{2}-\d{2})$", "");
+            if (!keepDate) s = Regex.Replace(s, @"-(\d{8}|\d{4}-\d{2}-\d{2})$", "");
             return s;
         }
 
         internal static void RememberOpenRouterPrices(JsonNode? json)
         {
             var prices = new Dictionary<string, AiPrice>(StringComparer.Ordinal);
+            var undated = new HashSet<string>(StringComparer.Ordinal);
             foreach (var m in json?["data"]?.AsArray() ?? new JsonArray())
             {
                 var id = Text(m?["id"]);
@@ -1050,7 +1059,17 @@ namespace ExplorerNative
                 var price = new AiPrice(input, output, read, write);
                 prices[id] = price;
                 var normal = Normalise(id);
-                if (!id.StartsWith("~", StringComparison.Ordinal) && !prices.ContainsKey("=" + normal)) prices["=" + normal] = price;
+                if (id.StartsWith("~", StringComparison.Ordinal)) continue;
+                // "gpt-4o-2024-05-13" costs twice what "gpt-4o" does: a dated
+                // snapshot keeps its own price, and the undated name is the
+                // one that speaks for the family whatever order they come in.
+                var dated = Normalise(id, keepDate: true);
+                if (dated == normal) { prices["=" + normal] = price; undated.Add(normal); }
+                else
+                {
+                    prices.TryAdd("=" + dated, price);
+                    if (!undated.Contains(normal)) prices.TryAdd("=" + normal, price);
+                }
             }
             if (prices.Count == 0) return;
             lock (PricesGate) { _openRouterPrices = prices; _openRouterPricesAt = DateTime.UtcNow; }
@@ -1095,6 +1114,7 @@ namespace ExplorerNative
                 var normal = Normalise(model);
                 if (provider != AiProvider.OpenRouter)
                 {
+                    if (prices.TryGetValue("=" + Normalise(model, keepDate: true), out var snapshot)) return snapshot;
                     // Trimmed a part at a time: "gemini-2-5-flash-preview-09-2025" finds gemini-2-5-flash.
                     for (var name = normal; name.Length > 0;)
                     {

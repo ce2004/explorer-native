@@ -1,3 +1,28 @@
+6.0.0
+This version is a bug hunt through everything added since 5.1: internet radio, the AI image describer, resuming playback, and finishing copies after an update. 25 bugs fixed.
+Bug fixed: if you updated or restarted during a copy or move and chose to finish it afterwards, it forgot what you had chosen for files that were already there. Replace did not replace, Skip was not skipped, and with Keep both, the rest of a folder could be mixed into the folder that was already there. Now Replace still replaces and Skip still skips. Anything that was being kept as a second copy is left alone, and you are told to paste it again.
+Bug fixed: if the update could not be installed, or the restart failed, the copies you had agreed to finish later stayed stopped. They now resume right away. They also no longer start by themselves the next time Explorer Native opens.
+Bug fixed: when finishing a copy or move after a restart, a network share that was slow to wake up could make it copy only some of the files, or decide a move was already done. It now waits until every folder answers.
+Bug fixed: after answering Yes to finishing a copy later, a later update or restart could stop a different operation, such as a delete or an extract, without asking.
+Bug fixed: a paste that was still checking for files with the same name when you restarted could start copying just as Explorer Native closed.
+Bug fixed: pressing play on a radio station that had stopped could freeze the window and every shortcut for up to 45 seconds while it reconnected.
+Bug fixed: if you pressed Stop while a station was still connecting, the next thing you played could take half a minute to start.
+Bug fixed: some radio stations stopped for good after one short glitch, or after being paused for a few minutes. They now skip the missing piece and keep playing.
+Bug fixed: when a radio station reconnected, you could hear the last 10 to 20 seconds again.
+Bug fixed: a radio station whose connection stalled could stay silent for a long time before reconnecting.
+Bug fixed: when a station stopped sending a song title, for adverts or news, What is playing kept saying the last song.
+Bug fixed: playlist files saved as Unicode text by Notepad were not recognized as stations.
+Bug fixed: resuming playback after a start could replace something you had just chosen to play, or start again after you pressed Stop.
+Bug fixed: if Explorer Native closed for an update and was not opened again until much later, it started playing by itself. That now only happens within ten minutes. It also no longer plays the same song from the same place on every start after a crash.
+Bug fixed: the AI image describer said your account was out of credit when you had only sent too many requests in a minute. It now waits and tries again.
+Bug fixed: Google's Gemma models were offered for describing pictures but always failed. They work now.
+Bug fixed: three OpenAI models that cannot look at pictures were offered. They are gone from the list.
+Bug fixed: the AI image describer said that it was looking at the picture twice each time it opened.
+Bug fixed: an AI answer could be held back for up to 15 seconds while prices were being looked up, and could be spoken after you had closed the window.
+Bug fixed: the cost shown for some dated OpenAI models was another model's price.
+Bug fixed: pressing Cancel just as the WebView2 download finished still installed it, and a stalled download waited forever.
+Bug fixed: in folder sync, when a file was deleted on Google Drive and a folder had just taken its name on the PC, that folder could have been deleted. Sync now only ever deletes the file.
+
 5.6.2
 Changed: some spoken messages and older changelog entries are worded more plainly, such as "Back online, picking up where it stopped" when the internet comes back.
 

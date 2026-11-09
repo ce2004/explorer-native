@@ -21,9 +21,55 @@ namespace ExplorerNative
         internal enum Kind { Copy, Move, EmptyTrash }
 
         /// <summary>A paste (Copy or Move of Paths into Destination), or emptying the Google Drive trash.</summary>
-        internal sealed record Job(Kind What, string[] Paths, string Destination)
+        /// <remarks>
+        /// Policy is what was chosen for names already there: a
+        /// PasteConflictPolicy's name, <see cref="NotChosen"/> when it was
+        /// stopped before that was settled, or empty for a note written by 5.6
+        /// (finished with Fill gaps, as 5.6 did). Clashed is the sources whose
+        /// name the destination already had when it began; null when unknown.
+        /// </remarks>
+        internal sealed record Job(Kind What, string[] Paths, string Destination, string Policy = "", string[]? Clashed = null)
         {
             public bool Move => What == Kind.Move;
+        }
+
+        internal const string NotChosen = "none";
+
+        /// <summary>One paste of the finishing: these sources, with this answer for names already there (null: decide as any paste does).</summary>
+        internal sealed record Run(string[] Paths, PasteConflictPolicy? Forced);
+
+        /// <summary>
+        /// How a paste that stopped part way is finished, given the sources
+        /// still there. What was new at the destination is ours, so only what is
+        /// missing is filled in. What clashed keeps the answer it was given:
+        /// Replace replaces, Skip stays skipped. A second copy ("X (2)") cannot
+        /// be found again by name, so those are left out and said (6.0.0: every
+        /// finish ran as Fill gaps, which merged them into the folder already
+        /// there and left Replace's files unreplaced).
+        /// </summary>
+        internal static (List<Run> Runs, string[] LeftOut) Plan(Job job, IReadOnlyList<string> present)
+        {
+            var runs = new List<Run>();
+            if (present.Count == 0) return (runs, Array.Empty<string>());
+            if (job.Policy == NotChosen) { runs.Add(new Run(present.ToArray(), null)); return (runs, Array.Empty<string>()); }
+            if (!Enum.TryParse<PasteConflictPolicy>(job.Policy, out var policy) || policy == PasteConflictPolicy.FillGaps)
+            {
+                runs.Add(new Run(present.ToArray(), PasteConflictPolicy.FillGaps));
+                return (runs, Array.Empty<string>());
+            }
+
+            var clashedSet = job.Clashed == null ? null : new HashSet<string>(job.Clashed, StringComparer.OrdinalIgnoreCase);
+            var fresh = clashedSet == null ? Array.Empty<string>() : present.Where(p => !clashedSet.Contains(p)).ToArray();
+            var clashed = clashedSet == null ? present.ToArray() : present.Where(clashedSet.Contains).ToArray();
+            if (fresh.Length > 0) runs.Add(new Run(fresh, PasteConflictPolicy.FillGaps));
+            var leftOut = Array.Empty<string>();
+            if (clashed.Length > 0)
+            {
+                if (policy == PasteConflictPolicy.Overwrite) runs.Add(new Run(clashed, PasteConflictPolicy.Overwrite));
+                else if (policy == PasteConflictPolicy.Skip && clashedSet != null) { /* skipped then, skipped now */ }
+                else leftOut = clashed;
+            }
+            return (runs, leftOut);
         }
 
         /// <summary>Longer than a quit can take, short enough that nobody is surprised by it.</summary>
@@ -65,7 +111,17 @@ namespace ExplorerNative
         /// <summary>Whether a note is waiting, without taking it: the window opens for it.</summary>
         public static bool Waiting()
         {
-            try { return File.Exists(NotePath); } catch { return false; }
+            try
+            {
+                var note = new FileInfo(NotePath);
+                if (!note.Exists) return false;
+                // A note nobody took in time (an update that failed, then a
+                // quit) must not open the window on some later start.
+                if (DateTime.UtcNow - note.LastWriteTimeUtc < GoodFor) return true;
+                note.Delete();
+                return false;
+            }
+            catch { return false; }
         }
 
         // One line with the time, then per job "J", move flag and destination,
@@ -78,7 +134,10 @@ namespace ExplorerNative
             {
                 char kind = job.What switch { Kind.Move => '1', Kind.EmptyTrash => 'T', _ => '0' };
                 text.Append("J\t").Append(kind).Append('\t').Append(job.Destination).Append('\n');
+                if (job.Policy.Length > 0)
+                    text.Append("O\t").Append(job.Policy).Append('\t').Append(job.Clashed == null ? '0' : '1').Append('\n');
                 foreach (var path in job.Paths) text.Append("P\t").Append(path).Append('\n');
+                foreach (var path in job.Clashed ?? Array.Empty<string>()) text.Append("C\t").Append(path).Append('\n');
             }
             return text.ToString();
         }
@@ -97,11 +156,18 @@ namespace ExplorerNative
             Kind kind = Kind.Copy;
             bool open = false;
             var paths = new List<string>();
+            var clashed = new List<string>();
+            string policy = "";
+            bool clashKnown = false;
             void Finish()
             {
                 if (open && kind == Kind.EmptyTrash) jobs.Add(new Job(kind, Array.Empty<string>(), destination ?? ""));
-                else if (open && destination != null && paths.Count > 0) jobs.Add(new Job(kind, paths.ToArray(), destination));
+                else if (open && destination != null && paths.Count > 0)
+                    jobs.Add(new Job(kind, paths.ToArray(), destination, policy, clashKnown ? clashed.ToArray() : null));
                 paths.Clear();
+                clashed.Clear();
+                policy = "";
+                clashKnown = false;
                 open = false;
             }
             foreach (var line in lines.Skip(1))
@@ -114,7 +180,9 @@ namespace ExplorerNative
                     destination = parts[2].Length > 0 ? parts[2] : null;
                     open = parts[1] is "0" or "1" or "T";
                 }
+                else if (parts.Length == 3 && parts[0] == "O") { policy = parts[1]; clashKnown = parts[2] == "1"; }
                 else if (parts.Length == 2 && parts[0] == "P" && parts[1].Length > 0) paths.Add(parts[1]);
+                else if (parts.Length == 2 && parts[0] == "C" && parts[1].Length > 0) clashed.Add(parts[1]);
             }
             Finish();
             return jobs;

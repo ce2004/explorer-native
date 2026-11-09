@@ -1495,6 +1495,15 @@ namespace ExplorerNative
                 return;
             }
 
+            // Play on a station that stopped connects to it again. Through the
+            // worker every Enter uses: done inline it held the window and every
+            // key for as long as the station took to answer, up to 45 seconds.
+            if (action == AudioAction.PlayPause && _audio.LiveEnded)
+            {
+                PlayAudioFile(_audio.NowPlayingPath);
+                return;
+            }
+
             string message = action switch
             {
                 AudioAction.PlayPause => _audio.TogglePlayPause(),
@@ -2312,6 +2321,7 @@ namespace ExplorerNative
                 _settings.AudioResumeSeconds = 0;
                 _settings.AppleMusicResumeSong = "";
                 _settings.ResumeAfterRestart = _quitToComeBack;
+                _settings.ResumeAfterRestartAt = _quitToComeBack ? DateTime.UtcNow.Ticks : 0;
                 if (AppleMusicPlayer.IsActive)
                 {
                     if ((_settings.AppleMusicResumeOnStart || _quitToComeBack) && AppleMusicPlayer.IsPlaying &&
@@ -2338,18 +2348,32 @@ namespace ExplorerNative
         {
             if (!_settings.AudioPlayerEnabled) return;
             // Once: the next quit writes it again.
-            bool afterRestart = _settings.ResumeAfterRestart;
+            bool wasRestart = _settings.ResumeAfterRestart;
+            bool afterRestart = _settings.ResumeAfterRestartStands(DateTime.UtcNow);
             _settings.ResumeAfterRestart = false;
+            _settings.ResumeAfterRestartAt = 0;
             var file = _settings.AudioResumeOnStart || afterRestart ? _settings.AudioResumePath : "";
             int seconds = _settings.AudioResumeSeconds;
             var apple = _settings.AppleMusicResumeOnStart || afterRestart ? _settings.AppleMusicResumeSong : "";
-            if (file.Length == 0 && apple.Length == 0) return;
+            // Used up, on disk too: a copy that is killed before its next quit
+            // must not play the same thing from the same place at every start.
+            // What the resume settings keep for themselves stays.
+            if (wasRestart)
+            {
+                if (!_settings.AudioResumeOnStart) { _settings.AudioResumePath = ""; _settings.AudioResumeSeconds = 0; }
+                if (!_settings.AppleMusicResumeOnStart) _settings.AppleMusicResumeSong = "";
+            }
+            if (file.Length == 0 && apple.Length == 0 && !wasRestart) return;
+            // Anything chosen from here on wins over the resume, playing yet or not.
+            int asked = System.Threading.Volatile.Read(ref _playRequest);
 
             System.Threading.Tasks.Task.Run(async () =>
             {
                 try
                 {
                     await System.Threading.Tasks.Task.Delay(1500);
+                    if (wasRestart) PostUi(() => { try { if (!_quitting) _settings.Save(); } catch { } });
+                    if (file.Length == 0 && apple.Length == 0) return;
                     if (apple.Length > 0)
                     {
                         if (!AppleMusic.IsSetUp || AppleMusic.FromResumeLine(apple) is not { } song) return;
@@ -2357,6 +2381,7 @@ namespace ExplorerNative
                         {
                             // Something chosen since the start wins.
                             if (_quitting || AppleMusicPlayer.IsActive || _audio.HasTrack) return;
+                            if (System.Threading.Volatile.Read(ref _playRequest) != asked) return;
                             AppleMusicPlayer.SetOutputDevice(OutputDeviceName(_settings.AudioOutputDeviceId));
                             var name = AppleMusic.SpokenName(song.Path) ?? "";
                             AppleMusicPlayer.PlayFrom(song.Path, song.CatalogId, name, Math.Min(100, _settings.AudioVolumePercent), song.Seconds);
@@ -2373,6 +2398,7 @@ namespace ExplorerNative
                             PostUi(() =>
                             {
                                 if (_quitting || AppleMusicPlayer.IsActive || _audio.HasTrack) return;
+                                if (System.Threading.Volatile.Read(ref _playRequest) != asked) return;
                                 PlayAudioFile(file, seconds);
                             });
                             return;

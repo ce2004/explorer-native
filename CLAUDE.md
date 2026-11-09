@@ -414,6 +414,19 @@ Every area was reviewed and the high and medium findings fixed, each pinned in `
 - Exact dates go through `TimeFormatter.WindowsDateTime`: InvariantGlobalization makes .NET's "g" always MM/dd/yyyy in the shipped exe.
 - Parallel work in git worktrees: never use `git stash` (every worktree shares one stash list, and two fixers popped each other's changes). In PowerShell, `[IO.File]` calls with a relative path resolve against the process folder, not Set-Location.
 
+## The 6.0.0 review (rules it added)
+
+Five read-only reviews of everything added since 5.1.0 found 25 bugs; each is pinned in `tests\Release600Tests.cs` (`EXPLORERNATIVE_SELFTEST_ONLY=release600`, seconds).
+- Finishing a paste after a restart: the note (`CarryOnTransfers.Job`) carries the conflict answer (`Policy`, written in `RunTransferCore` once known) and which sources clashed at the start (`Clashed`, null = not known). `CarryOnTransfers.Plan` decides the re-run: what was new at the destination is Fill gaps, what clashed keeps Replace or stays skipped, and a Keep both clash is left out and said (its "X (2)" cannot be found again by name). Never re-run everything as Fill gaps. A 5.6 note (no Policy) still does, as 5.6 did.
+- `LookForCarryOn` is three-state: no answer in 5 s, or a source whose own folder is not there, means wait; only a source missing from a folder that is there has gone. Never take part of a selection for all of it.
+- Once `CarryOnLaterAsync` has stopped the copies, every way the update or restart can still fail must call `CarryOnHereAsync` (takes the note, finishes them in this copy). `CarryOnTransfers.Waiting` deletes a note older than `GoodFor`.
+- `_carryOnAgreed` is the set of operations agreed, not a count, and is cleared when the update or restart ends either way. `_carryStopped` keeps a paste that was still at its conflict check from starting under the restart.
+- Radio: only the playlist is fatal in HLS; up to `GoneSegmentsMost` missing segments in a row are stepped over, a long `WaitForRoom` on a live list reloads it, `_hlsLast` survives a reconnect, and `Get` times each body read (`StallMilliseconds`). With `ResponseHeadersRead`, HttpClient's timeout and token end at the headers: every body read needs its own.
+- Anything in the player that can connect to a network runs through `PlayAudioFile`'s worker, never inline from `RunAudioActionCore` (`AudioPlayer.LiveEnded`). `Stop` forgets a radio still opening.
+- Resume after start gives way to any play request since (`_playRequest` compared with the value at start), and the after-restart resume stands for ten minutes (`Settings.ResumeAfterRestartStands`) and is cleared on disk once used.
+- AI: only 402, "credit balance", "insufficient_quota" and "insufficient credits" mean out of credit; "quota" and "billing" also appear in ordinary rate limits. Gemma takes no system instruction (`GeminiBody(model:)`). Dated price ids keep their own entry (`Normalise(keepDate:)`).
+- The sync's `DeleteForGood` deletes a file only, never a folder that took its name.
+
 ## Testing and probing the running app
 
 - Assert behaviour, not this machine's setup. Registry tests snapshot and restore.
