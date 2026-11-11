@@ -1768,6 +1768,172 @@ namespace ExplorerNative
         /// null when it is not one. Its size comes from the entry on the letter, which
         /// reads no data.
         /// </summary>
+        /// <summary>
+        /// What is at a path on the letter, from the listings already held: no
+        /// request, no read of the letter. Null when nothing is known there (or
+        /// its folder was never listed).
+        /// </summary>
+        internal (bool Folder, long Size)? Known(string path)
+        {
+            DriveMount? mount;
+            lock (_gate) mount = _mount;
+            if (mount == null || string.IsNullOrEmpty(path)) return null;
+            try
+            {
+                if (!Owns(mount, path)) return null;
+                return mount.Describe(path) is { } known ? (known.Folder, known.Size) : null;
+            }
+            catch { return null; }
+        }
+
+        /// <summary>
+        /// Asks Google whether the file at <paramref name="path"/> is the same
+        /// as <paramref name="localCopy"/>: there, not trashed, the same size
+        /// and (when Google gives one) the same MD5. Null when it is, otherwise
+        /// why not. Throws when Google cannot be asked.
+        /// </summary>
+        internal async Task<string?> WhyNotUploaded(string path, string localCopy, CancellationToken token)
+        {
+            DriveMount? mount;
+            DriveClient? client;
+            lock (_gate) { mount = _mount; client = _client; }
+            if (mount == null || client == null || !Owns(mount, path)) return "Google Drive is not connected";
+
+            var id = mount.IdFor(path);
+            if (id == null) return "Google Drive does not list it";
+
+            var remote = await client.FileNow(id, token).ConfigureAwait(false);
+            if (remote == null) return "Google Drive does not have it";
+
+            long size = new FileInfo(localCopy).Length;
+            if (remote.Size != size) return "Google Drive's copy is not the size of the file made here";
+
+            if (remote.Md5 != null)
+            {
+                using var md5 = System.Security.Cryptography.MD5.Create();
+                await using var file = new FileStream(localCopy, FileMode.Open, FileAccess.Read, FileShare.Read,
+                    1 << 16, FileOptions.Asynchronous | FileOptions.SequentialScan);
+                var hash = await md5.ComputeHashAsync(file, token).ConfigureAwait(false);
+                if (!string.Equals(Convert.ToHexString(hash), remote.Md5, StringComparison.OrdinalIgnoreCase))
+                    return "Google Drive's copy does not match the file made here";
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Makes a file in <paramref name="destinationFolder"/> from whatever
+        /// <paramref name="write"/> writes, sent to Google in pieces as it is
+        /// written: nothing touches this PC's disk, however big the file
+        /// (6.1.0, a 20 GB recording converted on Drive). It goes up under a
+        /// temporary name and is given its own only once whole.
+        ///
+        /// A writer that went back over bytes already sent (an encoder
+        /// finishing its header) costs a second pass: Google's copy is read
+        /// back a piece at a time, the changes put in, and sent again as the
+        /// same file's new contents. Either way the result is checked against
+        /// Google's size and MD5 before it is named. Returns the name it was
+        /// placed under; throws when it did not go, leaving nothing behind
+        /// but, at worst, the temporary file in the Drive trash.
+        /// </summary>
+        internal string StreamInto(string destinationFolder, string name, bool replace, Action<Stream> write,
+            Action<string>? stage, Action<long>? sent, CancellationToken token)
+        {
+            DriveMount? mount;
+            DriveClient? client;
+            lock (_gate) { mount = _mount; client = _client; }
+            if (mount == null || client == null || !Owns(destinationFolder))
+                throw new IOException("Google Drive is not connected");
+            if (InTrash(mount, destinationFolder))
+                throw new InvalidOperationException("nothing can be put in the Google Drive trash");
+
+            var wanted = DriveMount.Sanitise(name);
+            var target = Path.Combine(destinationFolder, wanted);
+            string? replacing = replace && mount.FolderIdFor(target) == null ? mount.IdFor(target) : null;
+            var parentId = mount.FolderIdFor(destinationFolder)
+                           ?? throw new IOException("its folder is not part of the mounted Drive");
+
+            var temp = AudioConverter.TempMarker + Guid.NewGuid().ToString("N")[..8] + Path.GetExtension(wanted);
+            var stamp = DateTime.UtcNow;
+            string session = client.BeginStream(temp, parentId, stamp, null, token).GetAwaiter().GetResult();
+
+            DriveClient.DriveUploaded? done = null;
+            string md5;
+            long length;
+            IReadOnlyList<(long Offset, byte[] Bytes)> late;
+            using (var spool = new SpoolStream((offset, buffer, count, total) =>
+                   {
+                       var answer = client.SendPiece(session, offset, buffer, count, total, wanted, token)
+                           .GetAwaiter().GetResult();
+                       if (total != null) done = answer;
+                       sent?.Invoke(offset + count);
+                   }, token))
+            {
+                write(spool);
+                spool.Complete();
+                md5 = spool.Md5Hex;
+                length = spool.Length;
+                late = spool.Late;
+            }
+
+            if (done == null || string.IsNullOrEmpty(done.Id)) throw new IOException("Google Drive gave back no file");
+            string id = done.Id;
+            try
+            {
+                if (late.Count > 0)
+                {
+                    // The header was finished after its piece had gone.
+                    Note($"stream {wanted}: {late.Count} late write(s), second pass over {length:N0} bytes");
+                    stage?.Invoke("Finishing the file on Google Drive");
+                    string again = client.BeginStream(temp, parentId, stamp, id, token).GetAwaiter().GetResult();
+                    using var hash = System.Security.Cryptography.IncrementalHash.CreateHash(
+                        System.Security.Cryptography.HashAlgorithmName.MD5);
+                    done = null;
+                    for (long at = 0; at < length; at += SpoolStream.PieceBytes)
+                    {
+                        token.ThrowIfCancellationRequested();
+                        int n = (int)Math.Min(SpoolStream.PieceBytes, length - at);
+                        var bytes = client.ReadRange(id, at, n, token).GetAwaiter().GetResult();
+                        if (bytes.Length < n) throw new IOException("Google Drive gave back less of the file than it holds");
+
+                        foreach (var (offset, patch) in late)
+                        {
+                            long from = Math.Max(offset, at), to = Math.Min(offset + patch.Length, at + n);
+                            if (from < to) Buffer.BlockCopy(patch, (int)(from - offset), bytes, (int)(from - at), (int)(to - from));
+                        }
+
+                        hash.AppendData(bytes, 0, n);
+                        bool last = at + n >= length;
+                        var answer = client.SendPiece(again, at, bytes, n, last ? length : null, wanted, token)
+                            .GetAwaiter().GetResult();
+                        if (last) done = answer;
+                        sent?.Invoke(at + n);
+                    }
+                    md5 = Convert.ToHexString(hash.GetHashAndReset());
+                    if (done == null) throw new IOException("Google Drive gave back no file");
+                }
+
+                if (done.Size is { } size && size != length)
+                    throw new IOException("Google Drive's copy is not the size of the file made here");
+                if (done.Md5 != null && !string.Equals(done.Md5, md5, StringComparison.OrdinalIgnoreCase))
+                    throw new IOException("Google Drive's copy does not match the file made here");
+
+                client.MoveOrRename(id, wanted, null, null, token, retry: true).GetAwaiter().GetResult();
+            }
+            catch
+            {
+                // Never left under a name that reads as a finished file.
+                try { client.Trash(id, CancellationToken.None, retry: true).GetAwaiter().GetResult(); } catch { }
+                throw;
+            }
+
+            var entry = new DriveEntry(id, wanted, "application/octet-stream", length, done.ModifiedUtc ?? stamp);
+            var placed = mount.PlaceOne(destinationFolder, entry);
+            if (replacing != null)
+                placed = Replace(mount, client, destinationFolder, wanted, placed, entry, replacing, token)
+                    .GetAwaiter().GetResult();
+            return placed ?? wanted;
+        }
+
         public IRangeSource? OpenRange(string path)
         {
             DriveMount? mount;

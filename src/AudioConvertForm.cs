@@ -7,7 +7,7 @@ using System.Windows.Forms;
 namespace ExplorerNative
 {
     /// <summary>What the Convert audio dialog was answered with.</summary>
-    internal sealed record ConvertRequest(AudioFormatChoice Choice, bool Subfolders);
+    internal sealed record ConvertRequest(AudioFormatChoice Choice, bool Subfolders, bool DeleteOriginals = false);
 
     /// <summary>
     /// The question converting asks: which format, how good, and for a folder,
@@ -24,6 +24,7 @@ namespace ExplorerNative
         private readonly ComboBox _format;
         private readonly ComboBox _quality;
         private readonly CheckBox? _subfolders;
+        private readonly CheckBox? _delete;
         private readonly IReadOnlyDictionary<AudioFormatKind, string?> _unavailable;
         private List<AudioFormatChoice> _qualities = new();
 
@@ -33,7 +34,7 @@ namespace ExplorerNative
         /// <param name="offerSubfolders">Show the subfolder box, because the selection has a folder in it.</param>
         public AudioConvertForm(string title, string what, AudioFormatChoice start,
             IReadOnlyDictionary<AudioFormatKind, string?> unavailable, bool offerSubfolders, bool subfolders,
-            string acceptText = "C&onvert")
+            string acceptText = "C&onvert", bool offerDelete = false)
         {
             _unavailable = unavailable;
 
@@ -87,6 +88,22 @@ namespace ExplorerNative
                 };
                 layout.Controls.Add(_subfolders);
                 layout.SetColumnSpan(_subfolders, 2);
+            }
+
+            // Never ticked to begin with, and never remembered: each original
+            // goes (to the Recycle Bin, or the Drive trash) only once its
+            // converted file is whole and in place.
+            if (offerDelete)
+            {
+                _delete = new SpokenCheckBox
+                {
+                    Text = "&Delete original files after converting",
+                    Checked = false,
+                    AutoSize = true,
+                    Margin = new Padding(3, 8, 3, 3),
+                };
+                layout.Controls.Add(_delete);
+                layout.SetColumnSpan(_delete, 2);
             }
 
             var buttons = new FlowLayoutPanel
@@ -158,15 +175,16 @@ namespace ExplorerNative
             }
 
             var choice = _qualities[Math.Clamp(_quality.SelectedIndex, 0, _qualities.Count - 1)];
-            Result = new ConvertRequest(choice, _subfolders?.Checked ?? false);
+            Result = new ConvertRequest(choice, _subfolders?.Checked ?? false, _delete?.Checked ?? false);
             DialogResult = DialogResult.OK;
         }
 
         public static ConvertRequest? Ask(IWin32Window owner, string title, string what, AudioFormatChoice start,
             IReadOnlyDictionary<AudioFormatKind, string?> unavailable, bool offerSubfolders, bool subfolders,
-            string acceptText = "C&onvert")
+            string acceptText = "C&onvert", bool offerDelete = false)
         {
-            using var dialog = new AudioConvertForm(title, what, start, unavailable, offerSubfolders, subfolders, acceptText);
+            using var dialog = new AudioConvertForm(title, what, start, unavailable, offerSubfolders, subfolders,
+                acceptText, offerDelete);
             return dialog.ShowDialog(owner) == DialogResult.OK ? dialog.Result : null;
         }
 

@@ -120,6 +120,7 @@ namespace ExplorerNative
             });
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add("E&xit", null, (_, _) => Quit(ask: true));
+            RegisterCommands();
 
             var settings = loadSettings();
             _settings = settings;
@@ -2495,6 +2496,11 @@ namespace ExplorerNative
         /// seconds and about 0.6. Reading the whole thing on the off chance would
         /// be minutes of traffic for a folder somebody is only arrowing through.
         /// </summary>
+        public void CancelAudioPrepare()
+        {
+            try { _audio.CancelPrepare(); } catch { }
+        }
+
         public void PrefetchAudioFile(string path)
         {
             if (!_settings.AudioPlayerEnabled || !_settings.PlayAudioInApp) return;
@@ -2609,12 +2615,95 @@ namespace ExplorerNative
         /// </summary>
         private readonly System.Collections.Concurrent.ConcurrentQueue<string> _unserved = new();
 
+        /// <summary>
+        /// The commands that need no window (see <see cref="Commands"/>): every
+        /// audio action, and what the tray menu does. Whatever is added to
+        /// <see cref="AudioActions.All"/> is a command without anything here
+        /// changing; a new tray item needs a line of its own.
+        /// </summary>
+        private void RegisterCommands()
+        {
+            foreach (var info in AudioActions.All)
+            {
+                var action = info.Action;
+                Commands.Register(Commands.IdFor(action), info.Label, _ => RunAudioAction(action), window: false);
+            }
+
+            Commands.Register("show-window", "Open the Explorer Native window", _ => ShowWindow(), window: false);
+            Commands.Register("toggle-window", "Show the window, or put it away when it is in front", _ => ToggleWindow(), window: false);
+            Commands.Register("sync-all", "Sync all Google Drive folders now",
+                _ => { if (_monitor != null) Notify("sync.all", _monitor.SyncAllNow()); }, window: false);
+            Commands.Register("pause-all-syncing", "Pause every synced Google Drive folder",
+                _ => { if (_monitor != null && !_monitor.AllPaused) Notify("sync.all", _monitor.PauseAll(true)); }, window: false);
+            Commands.Register("resume-all-syncing", "Resume every synced Google Drive folder",
+                _ => { if (_monitor != null && _monitor.AllPaused) Notify("sync.all", _monitor.PauseAll(false)); }, window: false);
+            Commands.Register("web-app", "Open Preferences on the Web app page", _ =>
+            {
+                if (_audioDialogOpen || _form?.PreferencesOpen == true) return;
+                ShowWindow();
+                _form?.OpenPreferencesExternally("Web app");
+            }, window: false);
+            Commands.Register("quit", "Quit Explorer Native, asking first when something is unsaved", _ => Quit(ask: true), window: false);
+            Commands.Register("play", "Play an audio file or a station: play <file>",
+                given => { if (given.Length > 0) PlayAudioFile(given[0]); }, window: false);
+            Commands.Register("repeat", "Apple Music: change repeat between off, all and this song",
+                _ => CycleAppleRepeat(), window: false);
+        }
+
+        /// <summary>
+        /// A command from another launch (ExplorerNative --do name ...): looked
+        /// up, run, and answered in the file the sender named. "ok" means it was
+        /// started, not that it has finished: most of them say how they went
+        /// themselves, as they do from the keyboard.
+        /// </summary>
+        private void RunCommand(string request)
+        {
+            if (!Commands.TryDecode(request, out var name, out var given, out var reply)) return;
+            string answer;
+            try { answer = RunCommand(name, given); }
+            catch (Exception ex) { answer = $"{name} failed: {ex.Message}"; }
+            Commands.WriteReply(reply, answer);
+        }
+
+        private string RunCommand(string name, string[] given)
+        {
+            // The window's commands exist once the window has been made. Made
+            // for this if it has not been, and shown only if the command needs it.
+            if (_form == null || _form.IsDisposed) _form = new MainForm(_settings) { Drive = _drive };
+
+            if (Commands.IdFor(name) == Commands.ListName) return Commands.List();
+
+            var command = Commands.Find(name);
+            if (command == null)
+            {
+                var near = Commands.Near(name);
+                return $"\"{name}\" is not a command." +
+                       (near.Count > 0 ? " Close to it: " + string.Join(", ", near) + "." : "") +
+                       " Run ExplorerNative --commands for the whole list.";
+            }
+
+            if (!command.NeedsWindow)
+            {
+                command.Run(given);
+                return "ok";
+            }
+
+            // Not underneath a dialog: it would run inside the dialog's own wait.
+            foreach (Form open in Application.OpenForms)
+                if (open.Modal) return "Explorer Native has a dialog open. Close it and try again.";
+
+            ShowWindow();
+            _form!.RunCommandFromOutside(command, given);
+            return "ok";
+        }
+
         private static bool IsFolderRequest(string request) =>
             request != SingleInstance.ReloadSettingsCommand &&
             request != SingleInstance.ReleaseFoldersCommand &&
             request != SingleInstance.ReleaseAllCommand &&
             request != SingleInstance.ExitCommand &&
-            request != SingleInstance.ShowCommand;
+            request != SingleInstance.ShowCommand &&
+            !Commands.Is(request);
 
         private static bool IsSettingsRequest(string request) =>
             request == SingleInstance.ReloadSettingsCommand ||
@@ -2674,6 +2763,13 @@ namespace ExplorerNative
         {
             if (_quitting)
             {
+                // A command is for this copy, not the next one: said, not kept.
+                if (Commands.Is(request))
+                {
+                    if (Commands.TryDecode(request, out _, out _, out var reply))
+                        Commands.WriteReply(reply, "Explorer Native is closing. Try again in a moment.");
+                    return;
+                }
                 if (IsFolderRequest(request) || request == SingleInstance.ShowCommand) _unserved.Enqueue(request);
                 else if (IsSettingsRequest(request)) _settingsWhileQuitting.Enqueue(request);
                 return;
@@ -2730,6 +2826,12 @@ namespace ExplorerNative
                     if (IsSettingsRequest(request))
                     {
                         ApplySettings(SettingsAfter(request, _settings), reload: true);
+                        return;
+                    }
+
+                    if (Commands.Is(request))
+                    {
+                        RunCommand(request);
                         return;
                     }
 

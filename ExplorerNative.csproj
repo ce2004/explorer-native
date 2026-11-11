@@ -12,7 +12,7 @@
     <!-- ARM64 by default; "dotnet publish -r win-x64" builds the x64 copy.
          Release builds stamp Version from the git tag (see .github\workflows). -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-arm64</RuntimeIdentifier>
-    <Version>6.0.0</Version>
+    <Version>6.1.0</Version>
     <!-- .NET 9+ checks properties for the forms designer, which nothing here uses. -->
     <NoWarn>$(NoWarn);WFO1000</NoWarn>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
@@ -151,6 +151,22 @@
     </EmbeddedResource>
     <EmbeddedResource Include="native\win-x64\7za.exe" Condition="'$(RuntimeIdentifier)' == 'win-x64'">
       <LogicalName>7za.exe</LogicalName>
+    </EmbeddedResource>
+    <!-- libopus 1.6.1 (Xiph, BSD), built here with a static runtime: the Opus
+         encoder converting audio uses, three times as fast a core as the
+         managed one (measured 132 against 45 times real time). Beside the
+         runtime's own native libraries, like the NVDA client; the managed
+         encoder is still there for when it will not load. -->
+    <None Include="native\win-arm64\opus.dll" Condition="'$(RuntimeIdentifier)' == 'win-arm64'">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>opus.dll</Link>
+    </None>
+    <None Include="native\win-x64\opus.dll" Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>opus.dll</Link>
+    </None>
+    <EmbeddedResource Include="native\Opus-LICENSE.txt">
+      <LogicalName>Opus-LICENSE.txt</LogicalName>
     </EmbeddedResource>
     <EmbeddedResource Include="native\7-Zip-LICENSE.txt">
       <LogicalName>7-Zip-LICENSE.txt</LogicalName>

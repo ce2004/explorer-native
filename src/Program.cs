@@ -94,6 +94,13 @@ namespace ExplorerNative
 
             if (IsCommandLineRun(args)) AttachToParentConsole();
 
+            // A command for the copy that is running (6.1.0): sent, answered, done.
+            if (Commands.FromArguments(args) is { } wanted)
+            {
+                Environment.ExitCode = SendCommand(wanted.Name, wanted.Arguments);
+                return;
+            }
+
             // Registration flags do their work and exit without starting a UI, so
             // the takeover can be undone from a command line even if the app
             // itself will not start.
@@ -694,6 +701,7 @@ namespace ExplorerNative
             "Concentus-LICENSE.txt",
             "NVorbis-LICENSE.txt",
             "7-Zip-LICENSE.txt",
+            "Opus-LICENSE.txt",
         };
 
         private static void WriteLicenceBeside()
@@ -958,6 +966,91 @@ namespace ExplorerNative
         private static void TellRunningInstanceSettingsChanged() =>
             TellRunningInstance(SingleInstance.ReloadSettingsCommand);
 
+        /// <summary>
+        /// Gives a command to the running copy (started first when there is
+        /// none) and waits for its answer, which it writes in a file of ours
+        /// in the temporary folder: the pipe only goes one way. 0 when it ran.
+        /// </summary>
+        private static int SendCommand(string name, string[] arguments)
+        {
+            // Paths as the running copy will read them: it is not in this folder.
+            var given = arguments.Select(a =>
+            {
+                try
+                {
+                    if (!a.StartsWith("::", StringComparison.Ordinal) && (File.Exists(a) || Directory.Exists(a)))
+                        return Path.GetFullPath(a);
+                }
+                catch { }
+                return a;
+            }).ToArray();
+
+            var reply = Commands.NewReplyPath();
+            var line = Commands.Encode(name, given, reply);
+            bool sent = SingleInstance.SendToRunningInstance(line);
+            if (!sent)
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo(Environment.ProcessPath ?? Application.ExecutablePath) { UseShellExecute = true });
+                }
+                catch { }
+                for (int i = 0; i < 30 && !sent; i++)
+                {
+                    Thread.Sleep(1000);
+                    sent = SingleInstance.SendToRunningInstance(line);
+                }
+            }
+            if (!sent)
+            {
+                Deliver("Explorer Native", "The command could not be given to Explorer Native: it is not running and did not start.", failed: true);
+                return 1;
+            }
+
+            string? answer = null;
+            var until = DateTime.UtcNow.AddSeconds(30);
+            while (DateTime.UtcNow < until)
+            {
+                try
+                {
+                    if (File.Exists(reply)) { answer = File.ReadAllText(reply); break; }
+                }
+                catch { }
+                Thread.Sleep(50);
+            }
+            try { File.Delete(reply); } catch { }
+
+            if (answer == null)
+            {
+                Deliver("Explorer Native", $"{name} was sent, but Explorer Native did not answer.", failed: true);
+                return 1;
+            }
+
+            bool list = Commands.IdFor(name) == Commands.ListName;
+            if (answer != "ok" && !list)
+            {
+                Deliver("Explorer Native", answer, failed: true);
+                return 1;
+            }
+
+            if (_console)
+            {
+                try { Console.Out.WriteLine(list ? answer : "Done: " + Commands.IdFor(name)); } catch { }
+            }
+            else if (list && !_quiet)
+            {
+                // No console to print in: the list as a text file, opened.
+                try
+                {
+                    var file = Path.Combine(Path.GetTempPath(), "Explorer Native commands.txt");
+                    File.WriteAllText(file, answer);
+                    Process.Start(new ProcessStartInfo(file) { UseShellExecute = true });
+                }
+                catch { }
+            }
+            return 0;
+        }
+
         private static void TellRunningInstance(string command)
         {
             try { SingleInstance.SendToRunningInstance(command); }
@@ -1043,6 +1136,9 @@ namespace ExplorerNative
         /// before anyone presses Enter on it.
         /// </summary>
         public static void PrefetchAudioFile(string path) => _context?.PrefetchAudioFile(path);
+
+        /// <summary>Lets go of a track the player was readying and nothing is playing.</summary>
+        public static void CancelAudioPrepare() => _context?.CancelAudioPrepare();
 
         /// <summary>What the player is doing, for the Audio menu's labels.</summary>
         public static AudioSnapshot? AudioState => _context?.AudioState;

@@ -35,7 +35,7 @@
     <Compile Include="..\src\Resampler.cs" /><Compile Include="..\src\PitchForm.cs" />    <Compile Include="..\src\AudioDecoder.cs" /><Compile Include="..\src\TrackDecoder.cs" /><Compile Include="..\src\LocalByteStream.cs" /><Compile Include="..\src\OggDecoder.cs" /><Compile Include="..\src\OggOpusReader.cs" /><Compile Include="..\src\OggPages.cs" /><Compile Include="..\src\OggVorbisPackets.cs" /><Compile Include="..\src\ExactSeek.cs" /><Compile Include="..\src\VirtualStream.cs" /><Compile Include="..\src\FlacSeek.cs" /><Compile Include="..\src\Mp3Seek.cs" /><Compile Include="..\src\AiffStream.cs" /><Compile Include="..\src\CdTrackStream.cs" />
     <Compile Include="..\src\WasapiPlayback.cs" />
     <Compile Include="..\src\AudioTags.cs" /><Compile Include="..\src\TagEditing.cs" /><Compile Include="..\src\TagEditorForm.cs" /><Compile Include="..\src\FileDetails.cs" />
-    <Compile Include="..\src\AudioEncoders.cs" /><Compile Include="..\src\AudioConvert.cs" /><Compile Include="..\src\AudioEdit.cs" />
+    <Compile Include="..\src\AudioEncoders.cs" /><Compile Include="..\src\OpusFileEncoder.cs" /><Compile Include="..\src\AudioConvert.cs" /><Compile Include="..\src\AudioEdit.cs" />
     <Compile Include="..\src\AudioPrefetch.cs" />
     <Compile Include="..\src\StreamingSource.cs" />
     <Compile Include="..\src\HoldRepeat.cs" />
@@ -128,7 +128,7 @@
     <Compile Include="..\src\DriveMount.cs" />
     <Compile Include="..\src\DriveMount.Volume.cs" />
     <Compile Include="..\src\DriveMount.Writes.cs" />
-    <Compile Include="..\src\DriveStreams.cs" />
+    <Compile Include="..\src\DriveStreams.cs" /><Compile Include="..\src\Commands.cs" /><Compile Include="..\src\DriveSpool.cs" />
     <Compile Include="..\src\GoogleSignInRequiredException.cs" />
     <Compile Include="..\src\DriveQuotaException.cs" />
     <Compile Include="..\src\DriveSearch.cs" />
@@ -161,6 +161,7 @@
     <Compile Include="DriveSizeTests.cs" />
     <Compile Include="Perf522OpsTests.cs" />
     <Compile Include="Favourites530Tests.cs" />
+    <Compile Include="CommandsTests.cs" />
     <Compile Include="Radio540Tests.cs" />
     <Compile Include="Release600Tests.cs" />
     <Compile Include="..\src\StreamPlaylists.cs" />
@@ -221,6 +222,8 @@
   <ItemGroup>
     <EmbeddedResource Include="..\web\*.*" LogicalName="web/%(Filename)%(Extension)" />
     <EmbeddedResource Include="..\CHANGES.txt" LogicalName="CHANGES.txt" />
+    <None Include="..\native\win-arm64\opus.dll" Link="opus.dll" CopyToOutputDirectory="PreserveNewest" Condition="'$(RuntimeIdentifier)' == 'win-arm64'" />
+    <None Include="..\native\win-x64\opus.dll" Link="opus.dll" CopyToOutputDirectory="PreserveNewest" Condition="'$(RuntimeIdentifier)' == 'win-x64'" />
     <EmbeddedResource Include="..\native\win-arm64\7za.exe" LogicalName="7za.exe" Condition="'$(RuntimeIdentifier)' == 'win-arm64'" />
     <EmbeddedResource Include="..\native\win-x64\7za.exe" LogicalName="7za.exe" Condition="'$(RuntimeIdentifier)' == 'win-x64'" />
   </ItemGroup>

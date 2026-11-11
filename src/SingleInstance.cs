@@ -511,6 +511,7 @@ namespace ExplorerNative
         {
             "--licence", "--license", "--install", "--install-only", "--update", "--uninstall", "--read-log",
             "--register-default", "--unregister-default", "--unregister-all",
+            Commands.DoSwitch, Commands.ListSwitch,
         };
 
         /// <summary>
@@ -552,6 +553,8 @@ namespace ExplorerNative
                 bool afterReadLog = previous != null &&
                                     previous.Equals("--read-log", StringComparison.OrdinalIgnoreCase);
                 previous = a;
+                // Everything after --do is the command and what it is given.
+                if (a.Equals(Commands.DoSwitch, StringComparison.OrdinalIgnoreCase)) return null;
                 if (a.Length == 0 || IsKnown(a) || IsHelp(a)) continue;
                 if (!a.StartsWith('-') && !a.StartsWith('/')) continue;
                 if (afterReadLog && !a.StartsWith("--", StringComparison.Ordinal)) continue;
@@ -585,6 +588,8 @@ namespace ExplorerNative
             "  --unregister-all      remove every registry entry Explorer Native made" + Environment.NewLine +
             "  --read-log [name]     print a log (install.log when no name is given)" + Environment.NewLine +
             "  --licence             write out the licences" + Environment.NewLine +
+            "  --commands            list everything --do can run" + Environment.NewLine +
+            "  --do <command> [...]  run a command in the running copy, on the files or folders given" + Environment.NewLine +
             "  --quiet               no notice window for a command-line run" + Environment.NewLine +
             "  --help, -h, /?        show this list";
 

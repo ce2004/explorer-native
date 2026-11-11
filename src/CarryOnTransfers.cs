@@ -18,7 +18,34 @@ namespace ExplorerNative
     /// </summary>
     internal static class CarryOnTransfers
     {
-        internal enum Kind { Copy, Move, EmptyTrash }
+        internal enum Kind { Copy, Move, EmptyTrash, Convert }
+
+        /// <summary>
+        /// A Convert audio batch as a job (6.1.0): Paths is source then target
+        /// for each file, Destination the folder it was started from, Policy the
+        /// format's id (with <see cref="DeletesOriginals"/> after it when the
+        /// originals go), Clashed the sources whose target is being replaced.
+        /// </summary>
+        internal const string DeletesOriginals = "+delete";
+
+        internal static Job ForConvert(IReadOnlyList<ConvertJob> jobs, string folder, string formatId, bool deleteOriginals) =>
+            new(Kind.Convert,
+                jobs.SelectMany(j => new[] { j.Source, j.Target }).ToArray(),
+                folder,
+                formatId + (deleteOriginals ? DeletesOriginals : ""),
+                jobs.Where(j => j.Replace).Select(j => j.Source).ToArray());
+
+        /// <summary>A Convert job read back: its files, the format's id and whether the originals go.</summary>
+        internal static (List<ConvertJob> Jobs, string FormatId, bool DeleteOriginals) AsConvert(Job job)
+        {
+            bool delete = job.Policy.EndsWith(DeletesOriginals, StringComparison.Ordinal);
+            var id = delete ? job.Policy[..^DeletesOriginals.Length] : job.Policy;
+            var replaced = new HashSet<string>(job.Clashed ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
+            var jobs = new List<ConvertJob>();
+            for (int i = 0; i + 1 < job.Paths.Length; i += 2)
+                jobs.Add(new ConvertJob(job.Paths[i], job.Paths[i + 1], 0, replaced.Contains(job.Paths[i])));
+            return (jobs, id, delete);
+        }
 
         /// <summary>A paste (Copy or Move of Paths into Destination), or emptying the Google Drive trash.</summary>
         /// <remarks>
@@ -132,7 +159,7 @@ namespace ExplorerNative
             text.Append(atUtc.Ticks.ToString(CultureInfo.InvariantCulture)).Append('\n');
             foreach (var job in jobs)
             {
-                char kind = job.What switch { Kind.Move => '1', Kind.EmptyTrash => 'T', _ => '0' };
+                char kind = job.What switch { Kind.Move => '1', Kind.EmptyTrash => 'T', Kind.Convert => 'A', _ => '0' };
                 text.Append("J\t").Append(kind).Append('\t').Append(job.Destination).Append('\n');
                 if (job.Policy.Length > 0)
                     text.Append("O\t").Append(job.Policy).Append('\t').Append(job.Clashed == null ? '0' : '1').Append('\n');
@@ -176,9 +203,9 @@ namespace ExplorerNative
                 if (parts.Length == 3 && parts[0] == "J")
                 {
                     Finish();
-                    kind = parts[1] switch { "1" => Kind.Move, "T" => Kind.EmptyTrash, _ => Kind.Copy };
+                    kind = parts[1] switch { "1" => Kind.Move, "T" => Kind.EmptyTrash, "A" => Kind.Convert, _ => Kind.Copy };
                     destination = parts[2].Length > 0 ? parts[2] : null;
-                    open = parts[1] is "0" or "1" or "T";
+                    open = parts[1] is "0" or "1" or "T" or "A";
                 }
                 else if (parts.Length == 3 && parts[0] == "O") { policy = parts[1]; clashKnown = parts[2] == "1"; }
                 else if (parts.Length == 2 && parts[0] == "P" && parts[1].Length > 0) paths.Add(parts[1]);

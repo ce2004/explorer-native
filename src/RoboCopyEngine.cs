@@ -23,7 +23,9 @@ namespace ExplorerNative
         bool ItemsKnown = false,
         long PerItemWork = 0,
         bool ItemIsStatus = false,
-        bool FromGoogle = false)
+        bool FromGoogle = false,
+        string? Tally = null,
+        string? Detail = null)
     {
         public bool TotalKnown => BytesTotal > 0 || (PerItemWork > 0 && ItemsTotal > 0);
 

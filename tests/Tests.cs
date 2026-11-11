@@ -139,7 +139,7 @@ namespace ExplorerNative
             KeepDriveTraceToItself();
 
             // The live sync run is hours of real uploads, with no checks between.
-            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") is not ("livesync" or "syncmemory" or "playprobe" or "archivebench" or "sizebench")) StartWatchdog();
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") is not ("livesync" or "syncmemory" or "playprobe" or "archivebench" or "sizebench" or "convertprobe")) StartWatchdog();
 
             // Just the window timings, for measuring one change at a time.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "speed")
@@ -362,6 +362,13 @@ namespace ExplorerNative
                 Console.WriteLine($"\n{_passed} passed, {_failed} failed");
                 return _failed == 0 ? 0 : 1;
             }
+            // Every action by name from the command line (6.1.0).
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "commands")
+            {
+                await Guard("CommandsTests", () => CommandsTests.RunAll(Check, Equal));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
             // Favourite folders, and the window coming back after an update (5.3.0).
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "favourites")
             {
@@ -556,6 +563,14 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "convertprobe")
+            {
+                await AudioConvertTests.Probe(Check, Equal);
+                Console.WriteLine();
+                Console.WriteLine($"{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             // Just the audio converter and editor.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "convert")
             {
@@ -686,6 +701,7 @@ namespace ExplorerNative
             await Guard("DriveSizeTests", () => DriveSizeTests.RunAll(Check, Equal));
             await Guard("Perf522OpsTests", () => Perf522OpsTests.RunAll(Check, Equal));
             await Guard("Favourites530Tests", () => Favourites530Tests.RunAll(Check, Equal));
+            await Guard("CommandsTests", () => CommandsTests.RunAll(Check, Equal));
             await Guard("Radio540Tests", () => Radio540Tests.RunAll(Check, Equal));
             await Guard("Release600Tests", () => Release600Tests.RunAll(Check, Equal));
             await Guard("DriveClientCacheTests", () => DriveClientCacheTests.RunAll(Check, Equal));

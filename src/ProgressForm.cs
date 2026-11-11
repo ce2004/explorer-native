@@ -56,6 +56,15 @@ namespace ExplorerNative
         private readonly TextBox _elapsed;
         private readonly TextBox _remaining;
 
+        /// <summary>
+        /// Only for a transfer that reports them (converting audio): how many
+        /// files are done, in progress, waiting and failed, and a box of lines,
+        /// one for each file being worked on and what is happening to it.
+        /// </summary>
+        private readonly TextBox? _tally;
+        private readonly TextBox? _detail;
+        private string _detailLatest = "";
+
         private int _lastSpokenTenth = -1;
 
         /// <summary>
@@ -86,7 +95,7 @@ namespace ExplorerNative
         private readonly TableLayoutPanel _layout;
         private readonly Button _cancel;
 
-        public ProgressForm(string title, Settings settings, CancellationTokenSource cts)
+        public ProgressForm(string title, Settings settings, CancellationTokenSource cts, bool detailed = false)
         {
             _cts = cts;
             _settings = settings;
@@ -125,6 +134,22 @@ namespace ExplorerNative
             _speed = AddField(layout, "Speed", "calculating");
             _elapsed = AddField(layout, "Elapsed", "0 seconds");
             _remaining = AddField(layout, "Time remaining", "calculating");
+
+            if (detailed)
+            {
+                _tally = AddField(layout, "Files", "calculating");
+                _detail = AddField(layout, "Working on", "");
+                _detail.Multiline = true;
+                _detail.WordWrap = false;
+                _detail.ScrollBars = ScrollBars.Vertical;
+                _detail.MinimumSize = new Size(0, 120);
+                _detail.Height = 120;
+                // A real read-only edit box here: its lines are arrowed through.
+                _detail.AccessibleRole = AccessibleRole.Default;
+                // Still while somebody is reading it: text changing under the
+                // cursor moves it. Tabbing in shows the latest.
+                _detail.Enter += (_, _) => _detail.Text = _detailLatest;
+            }
 
             var cancel = new Button { Text = "&Cancel", Dock = DockStyle.Bottom, Height = 36 };
             cancel.Click += (_, _) => RequestCancel();
@@ -460,6 +485,13 @@ namespace ExplorerNative
                 _progress.Text = $"{NameRules.Items(p.ItemsDone)} so far, total not yet known";
                 _size.Text = done;
                 _remaining.Text = "calculating";
+            }
+
+            if (_tally != null && p.Tally != null && _tally.Text != p.Tally) _tally.Text = p.Tally;
+            if (_detail != null && p.Detail != null)
+            {
+                _detailLatest = p.Detail;
+                if (!_detail.Focused && _detail.Text != p.Detail) _detail.Text = p.Detail;
             }
 
             _speed.Text = RoboCopyEngine.FormatSpeed(p.BytesPerSecond, _settings.SizeUnits);

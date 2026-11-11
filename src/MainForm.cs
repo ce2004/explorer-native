@@ -472,6 +472,7 @@ namespace ExplorerNative
             BuildLayout();
             BuildMenu();
             BuildContextMenu();
+            RegisterCommands();
             ApplySettingsToUi();
             RestoreWindowGeometry();
 
@@ -1328,6 +1329,9 @@ namespace ExplorerNative
 
         private void BuildMenu()
         {
+            // Every item made from here on is a command too (see Commands).
+            Commands.ForgetWindow();
+            _commandItems.Clear();
             var menu = new MenuStrip();
 
             // A menu does not take the keyboard from the list, so the list's
@@ -1625,6 +1629,7 @@ namespace ExplorerNative
             _audioShortcutItems.Add((item, action));
 
             item.Click += (_, _) => Program.RunAudioAction(action);
+            _commandItems.Add(item);    // its command is the audio action's own
             return item;
         }
 
@@ -2243,7 +2248,194 @@ namespace ExplorerNative
                 item.ShowShortcutKeys = true;
             }
             item.Click += (_, _) => action();
+
+            // And a command of the same name for the command line: nothing else
+            // has to be done for a new menu item to have one (see Commands).
+            Commands.RegisterMenu(text, action);
+            _commandItems.Add(item);
             return item;
+        }
+
+        // ---------- Commands (ExplorerNative --do name) ----------
+
+        /// <summary>Menu items that already have their command, so the walk does not give them a second name.</summary>
+        private static readonly HashSet<ToolStripMenuItem> _commandItems = new();
+
+        /// <summary>
+        /// The window's commands that are not simply a menu item made with
+        /// <see cref="Item"/>: keys with no menu entry, things that take a
+        /// value, and then a walk of both menus for any item made some other
+        /// way. Add a line here for a new key or action that has no menu item.
+        /// </summary>
+        private void RegisterCommands()
+        {
+            void Add(string id, string does, Action run, bool items = false) =>
+                Commands.Register(id, does, _ => run(), window: true, items: items);
+
+            Add("switch-tab", "Switch to the other tab", SwitchTab);
+            Add("context-menu", "Open the context menu for the selection", ShowOurContextMenu, items: true);
+            Add("activate", "Open the focused item, as Enter does", () => ActivateFocused(openExternally: false), items: true);
+            Add("open-in-its-own-app", "Open the focused item in its own app, as Shift+Enter does",
+                () => ActivateFocused(openExternally: true), items: true);
+            Add("toggle-selection", "Select or unselect the focused row, as Space does", () => ToggleFocusedRow(Active), items: true);
+            Add("escape", "Cancel a search, show a filtered list whole again, or leave search results, as Escape does", () =>
+            {
+                var pane = Active;
+                if (pane.Searching && !pane.SearchQuietly) CancelSearch();
+                else if (pane.Filter != null) ClearFilter(pane, say: true);
+                else if (pane.SearchTerm != null) LeaveSearch();
+            });
+            Add("add-favourite", "Add this folder to the favourites", AddFavourite);
+            Add("remove-favourite", "Take this folder out of the favourites", RemoveFavouriteHere);
+            Add("organise-favourites", "Open the favourites list to reorder or remove", OrganiseFavourites);
+            for (int n = 1; n <= Favourites.Most; n++)
+            {
+                int number = n;
+                Add($"favourite-{number}", $"Go to favourite folder {number}", () => GoToFavourite(number));
+            }
+
+            Commands.Register("go", "Go to a folder, or to a file's folder with the file picked out: go <path>",
+                given => { if (given.Length > 0) ShowFolderFromOutside(given[0]); }, window: true);
+            Commands.Register("select", "Go to the items given and select them: select <path> [<path> ...]",
+                _ => { }, window: true, items: true);
+            Commands.Register("menu", "Choose any menu item by its names, lists that fill in as they open included: menu <menu> <item> [<item> ...]",
+                RunMenuPath, window: true);
+            Commands.Register("add-to-playlist", "Apple Music: add the focused song to a playlist of yours: add-to-playlist <playlist name>",
+                given =>
+                {
+                    if (given.Length == 0) { Announce("Say which playlist: add-to-playlist, then its name", isError: true); return; }
+                    var playlist = AppleMusic.EditablePlaylists?.FirstOrDefault(p =>
+                        string.Equals(p.Name, given[0], StringComparison.OrdinalIgnoreCase));
+                    if (playlist == null) { Announce($"There is no playlist of yours called {given[0]}", isError: true); return; }
+                    AddFocusedAppleSongToPlaylist(playlist);
+                }, window: true);
+
+            // Anything on a menu that was made some other way.
+            void Walk(ToolStripItemCollection items, string prefix)
+            {
+                foreach (ToolStripItem each in items)
+                {
+                    if (each is not ToolStripMenuItem item || string.IsNullOrWhiteSpace(item.Text)) continue;
+                    var id = prefix + Commands.IdFor(item.Text);
+                    if (item.DropDownItems.Count > 0) { Walk(item.DropDownItems, id + "-"); continue; }
+                    if (_commandItems.Contains(item) || !item.Enabled) continue;
+                    Commands.Register(id, Commands.Plain(item.Text), _ => ClickFromOutside(item), window: true, items: true);
+                }
+            }
+            if (MainMenuStrip != null)
+                foreach (ToolStripItem top in MainMenuStrip.Items)
+                    if (top is ToolStripMenuItem menu) Walk(menu.DropDownItems, "");
+            if (_contextMenu != null) Walk(_contextMenu.Items, "");
+        }
+
+        /// <summary>Chooses a menu item whether or not its menu would show it just now: what it does refuses for itself.</summary>
+        private void ClickFromOutside(ToolStripMenuItem item)
+        {
+            if (!item.Enabled) { Announce($"{Commands.Plain(item.Text)} is not available here", isError: true); return; }
+            bool was = item.Available;
+            try
+            {
+                item.Available = true;
+                item.PerformClick();
+            }
+            finally { item.Available = was; }
+        }
+
+        /// <summary>
+        /// "menu File Sort Name": each name is found on the menu before it,
+        /// opening that menu for a moment so a list that is filled in as it
+        /// opens (favourites, Apple Music's sorts, your playlists) is there.
+        /// </summary>
+        private void RunMenuPath(string[] names)
+        {
+            if (names.Length == 0 || MainMenuStrip == null) { Announce("Say which menu and which item", isError: true); return; }
+
+            ToolStripItemCollection level = MainMenuStrip.Items;
+            ToolStripMenuItem? found = null;
+            var opened = new List<ToolStripMenuItem>();
+            try
+            {
+                for (int i = 0; i < names.Length; i++)
+                {
+                    var wanted = Commands.IdFor(names[i]);
+                    found = level.OfType<ToolStripMenuItem>().FirstOrDefault(m => Commands.IdFor(m.Text ?? "") == wanted);
+                    if (found == null) { Announce($"There is no {names[i]} on that menu", isError: true); return; }
+                    if (i == names.Length - 1) break;
+                    found.ShowDropDown();
+                    opened.Add(found);
+                    level = found.DropDownItems;
+                }
+            }
+            finally
+            {
+                for (int i = opened.Count - 1; i >= 0; i--)
+                    try { opened[i].HideDropDown(); } catch { }
+            }
+            if (found != null) ClickFromOutside(found);
+        }
+
+        /// <summary>
+        /// Runs a command that came from another launch. Paths given with one
+        /// that works on a selection are gone to and selected first.
+        /// </summary>
+        internal async void RunCommandFromOutside(Commands.Command command, string[] given)
+        {
+            try
+            {
+                for (int waited = 0; _initialising && waited < 200; waited++) await Task.Delay(50);
+                if (IsDisposed) return;
+                if (command.ActsOnItems && given.Length > 0 && !await SelectFromOutside(given)) return;
+                if (IsDisposed) return;
+                command.Run(given);
+            }
+            catch (Exception ex)
+            {
+                if (!IsDisposed) Announce($"Could not run {command.Id}: {ex.Message}", isError: true);
+            }
+        }
+
+        private async Task<bool> SelectFromOutside(string[] given)
+        {
+            var paths = given.Select(g => AppleMusic.Is(g) ? g : NameRules.NormaliseLaunchPath(g))
+                .Where(p => p.Length > 0).ToList();
+            if (paths.Count == 0) return false;
+
+            var folder = Path.GetDirectoryName(paths[0].TrimEnd('\\'));
+            if (string.IsNullOrEmpty(folder))
+            {
+                // A drive or a top folder: gone to, with nothing to select in it.
+                await NavigateAsync(paths[0]);
+                return !IsDisposed;
+            }
+
+            var pane = Active;
+            await NavigateAsync(folder, preferPath: paths[0], onPane: pane);
+            if (IsDisposed) return false;
+
+            var wanted = new HashSet<string>(paths.Select(p => p.TrimEnd('\\')), StringComparer.OrdinalIgnoreCase);
+            var rows = new List<int>();
+            for (int i = 0; i < pane.Entries.Count; i++)
+                if (wanted.Contains(pane.Entries[i].Path.TrimEnd('\\'))) rows.Add(i);
+            if (rows.Count == 0)
+            {
+                Announce($"{Path.GetFileName(paths[0].TrimEnd('\\'))} is not in {FolderDisplayName(folder)}", isError: true);
+                return false;
+            }
+
+            SelectIndex(pane, rows[0]);
+            if (rows.Count > 1 && pane.List.IsHandleCreated)
+            {
+                _suppressStatus++;
+                try
+                {
+                    var also = new LVITEM { mask = LVIF_STATE, state = LVIS_SELECTED, stateMask = LVIS_SELECTED };
+                    foreach (int row in rows.Skip(1))
+                        SendMessage(pane.List.Handle, LVM_SETITEMSTATE, new IntPtr(row), ref also);
+                }
+                finally { _suppressStatus--; }
+                ScheduleStatusUpdate();
+            }
+            return true;
         }
 
         private void ApplySettingsToUi()
@@ -7311,7 +7503,10 @@ namespace ExplorerNative
             _editAudioItem.Visible = local && focusedAudio;
             _describeItem.Visible = focused != null && !inArchive && !AppleMusic.Is(focused) &&
                                     !IsDirectoryInView(focused) && AiDescriber.IsPicture(focused);
-            _convertAudioItem.Visible = local && focused != null &&
+            // Converting works on Google Drive too (downloaded, converted, uploaded
+            // beside the original), only not in its trash.
+            bool convertHere = !IsDrivesView && !inArchive && !InDriveTrash(Active.CurrentPath);
+            _convertAudioItem.Visible = convertHere && focused != null &&
                 SelectedPaths().Any(p => IsDirectoryInView(p) ||
                     (AudioFiles.IsAudio(p, _settings.AudioExtensions) && !CdTrackStream.IsCdaName(Path.GetExtension(p))));
 
@@ -7914,7 +8109,11 @@ namespace ExplorerNative
                     // file touches the disk on this thread.
                     // Not inside an archive, where the path is not a file yet.
                     var path = FocusedPath();
-                    if (path != null && Active.Archive == null && !AppleMusic.Is(path)) Program.PrefetchAudioFile(path);
+                    // Not while audio is converting: the row under the cursor is then
+                    // usually what is being converted, and readying it to play held up
+                    // to a gigabyte of it in memory beside the conversion (measured).
+                    if (path != null && Active.Archive == null && !AppleMusic.Is(path) && _converting == 0)
+                        Program.PrefetchAudioFile(path);
                 };
             }
 
@@ -10101,6 +10300,10 @@ namespace ExplorerNative
         /// </summary>
         private bool _convertPlanning;
 
+        /// <summary>Whether a path is Google Drive's Trash folder or in it, from the mount's own map: no reads.</summary>
+        private bool InDriveTrash(string path) =>
+            Drive is { } drive && drive.Owns(path) && (drive.IsTrashFolder(path) || drive.IsInTrash(path));
+
         private async void ConvertAudio()
         {
             if (RefuseInArchive()) return;
@@ -10119,10 +10322,19 @@ namespace ExplorerNative
                     return;
                 }
 
-                if (Drive != null && (Drive.Owns(Active.CurrentPath) || selected.Any(p => Drive.Owns(p))))
+                // On Google Drive each file is downloaded, converted on this PC
+                // and uploaded beside the original (AudioConverter.ConvertOnDrive).
+                // Nothing can be put in its trash, and nothing moves while offline.
+                var drive = Drive;
+                if (drive != null && (InDriveTrash(Active.CurrentPath) || selected.Any(InDriveTrash)))
                 {
-                    Announce("Audio on Google Drive cannot be converted in place. " +
-                             "Copy it to a local folder first.", isError: true);
+                    Announce("Audio in the Google Drive trash cannot be converted. Restore it first.", isError: true);
+                    RestoreListFocus();
+                    return;
+                }
+                if (drive != null && !drive.LetterShown && selected.Any(drive.Owns))
+                {
+                    Announce("Google Drive is offline, so nothing on it can be converted right now.", isError: true);
                     RestoreListFocus();
                     return;
                 }
@@ -10148,7 +10360,7 @@ namespace ExplorerNative
                     : $"Converting {NameRules.Items(selected.Length)}";
                 var request = AudioConvertForm.Ask(this, "Convert audio", what,
                     AudioFormats.ById(_settings.AudioConvertFormat), unavailable, hasFolder,
-                    _settings.AudioConvertSubfolders);
+                    _settings.AudioConvertSubfolders, offerDelete: true);
                 if (request == null) { RestoreListFocus(); return; }
 
                 // Remembered once answered, like Compress.
@@ -10165,17 +10377,25 @@ namespace ExplorerNative
                 _convertPlanning = true;
                 Announce("Looking for audio to convert. This may take a moment.");
                 ConvertPlan plan;
+                int already = 0;
                 try
                 {
+                    // Files already in the format asked for are left alone.
                     plan = await Task.Run(() => AudioConverter.Plan(
-                        AudioConverter.Gather(selected, request.Subfolders, extensions, CancellationToken.None), choice));
+                        AudioConverter.NotAlready(
+                            AudioConverter.Gather(selected, request.Subfolders, extensions, CancellationToken.None, drive),
+                            choice, out already),
+                        choice, drive));
                 }
                 finally { _convertPlanning = false; }
                 if (IsDisposed) return;
 
                 if (plan.Jobs.Count == 0)
                 {
-                    AnnounceOperation("convert.nothing", $"There are no audio files in {FolderDisplayName(selected[0])}");
+                    AnnounceOperation("convert.nothing", already == 0
+                        ? $"There are no audio files in {FolderDisplayName(selected[0])}"
+                        : already == 1 ? $"Nothing to convert: that file is already {choice.FormatName}"
+                        : $"Nothing to convert: all {already} files are already {choice.FormatName}");
                     RestoreListFocus();
                     return;
                 }
@@ -10193,7 +10413,7 @@ namespace ExplorerNative
 
                 var (jobs, skipped) = await Task.Run(() =>
                 {
-                    var resolved = AudioConverter.Resolve(plan, answer, out int left);
+                    var resolved = AudioConverter.Resolve(plan, answer, out int left, drive);
                     return (resolved, left);
                 });
                 if (IsDisposed) return;
@@ -10205,53 +10425,7 @@ namespace ExplorerNative
                     return;
                 }
 
-                var title = jobs.Count == 1
-                    ? $"Converting {Path.GetFileName(jobs[0].Source)} to {choice.FormatName}"
-                    : $"Converting {NameRules.Items(jobs.Count, "file")} to {choice.FormatName}";
-
-                var cts = new CancellationTokenSource();   // cancelled, never disposed: a worker may still hold its token
-                using var window = new ProgressForm(title, _settings, cts);
-                var progress = new Progress<TransferProgress>(p => window.Update(p));
-
-                BeginTransferTo(here);
-                RunningTransfers++;
-                try
-                {
-                    AnnounceOperation("convert.start", $"Converting {NameRules.Items(jobs.Count, "file")} to {choice.Label}");
-
-                    var task = AudioConverter.RunAsync(jobs, choice, progress, cts.Token);
-                    window.Show();
-
-                    ConvertResult result;
-                    try { result = await task; }
-                    catch (Exception ex)
-                    {
-                        window.Finish();
-                        AnnounceOperation("convert.failed", $"Could not convert: {ex.Message}");
-                        await RefreshDestination(here);
-                        RestoreListFocus();
-                        return;
-                    }
-
-                    window.Finish();
-                    result.Skipped += skipped;
-
-                    // Every folder something landed in, not just the one on screen.
-                    foreach (var folder in result.Written.Select(SafeParent).Append(here)
-                                 .Where(f => !string.IsNullOrEmpty(f)).Distinct(StringComparer.OrdinalIgnoreCase))
-                        await RefreshDestination(folder!);
-
-                    var summary = result.Summary(choice);
-                    if (result.Cancelled) AnnounceOperation("convert.cancelled", summary);
-                    else if (result.Failures.Count > 0)
-                    {
-                        AnnounceOperation("convert.failed", summary);
-                        if (result.Failures.Count > 3)
-                            ShowErrors(result.Failures.Select(f => $"{f.Name}: {f.Reason}").ToList());
-                    }
-                    else AnnounceOperation("convert.done", summary);
-                }
-                finally { RunningTransfers--; EndTransferTo(here); }
+                await RunConvertAsync(jobs, choice, here, skipped, request.DeleteOriginals, drive, finishing: false, already);
             }
             catch (Exception ex)
             {
@@ -10259,6 +10433,117 @@ namespace ExplorerNative
                 AnnounceOperation("convert.failed", $"Could not convert: {ex.Message}");
                 RestoreListFocus();
             }
+        }
+
+        /// <summary>
+        /// Runs a planned conversion behind its progress window and says how it
+        /// went. While it runs it is something an update or a restart can
+        /// finish afterwards (<see cref="FinishConvertAsync"/>).
+        /// </summary>
+        private async Task RunConvertAsync(IReadOnlyList<ConvertJob> jobs, AudioFormatChoice choice, string here,
+            int skipped, bool deleteOriginals, GoogleDrive? drive, bool finishing, int already = 0)
+        {
+            var title = jobs.Count == 1
+                ? $"Converting {Path.GetFileName(jobs[0].Source)} to {choice.FormatName}"
+                : $"Converting {NameRules.Items(jobs.Count, "file")} to {choice.FormatName}";
+
+            var cts = new CancellationTokenSource();   // cancelled, never disposed: a worker may still hold its token
+            using var window = new ProgressForm(title, _settings, cts, detailed: true);
+            var progress = new Progress<TransferProgress>(p => window.Update(p));
+
+            BeginTransferTo(here);
+            RunningTransfers++;
+            _converting++;
+            Program.CancelAudioPrepare();
+            int carryId = StartCarryable(CarryOnTransfers.ForConvert(jobs, here, choice.Id, deleteOriginals));
+            try
+            {
+                AnnounceOperation("convert.start", finishing
+                    ? $"Finishing the conversion in {FolderNameForSpeech(here)}, {NameRules.Items(jobs.Count, "file")} to go"
+                    : $"Converting {NameRules.Items(jobs.Count, "file")} to {choice.Label}");
+
+                var task = AudioConverter.RunAsync(jobs, choice, progress, cts.Token, drive: drive,
+                    deleteOriginals: deleteOriginals);
+                window.Show();
+
+                ConvertResult result;
+                try { result = await task; }
+                catch (Exception ex)
+                {
+                    window.Finish();
+                    AnnounceOperation("convert.failed", $"Could not convert: {ex.Message}");
+                    await RefreshDestination(here);
+                    RestoreListFocus();
+                    return;
+                }
+
+                window.Finish();
+                result.Skipped += skipped;
+                result.AlreadyFormat = already;
+
+                // Every folder something landed in, not just the one on screen.
+                foreach (var folder in result.Written.Select(SafeParent).Append(here)
+                             .Where(f => !string.IsNullOrEmpty(f)).Distinct(StringComparer.OrdinalIgnoreCase))
+                    await RefreshDestination(folder!);
+
+                // Stopped to be finished after the update or the restart: that
+                // has been agreed, and "cancelled" would be the wrong word for it.
+                if (result.Cancelled && _carryStopped.Contains(carryId)) return;
+
+                var summary = result.Summary(choice);
+                if (result.Cancelled) AnnounceOperation("convert.cancelled", summary);
+                else if (result.Failures.Count > 0 || result.OriginalsKept.Count > 0)
+                {
+                    AnnounceOperation("convert.failed", summary);
+                    if (result.Failures.Count > 3 || result.OriginalsKept.Count > 3)
+                        ShowErrors(result.Failures.Select(f => $"{f.Name}: {f.Reason}")
+                            .Concat(result.OriginalsKept.Select(k => $"{k.Name}: converted, but the original was kept: {k.Reason}"))
+                            .ToList());
+                }
+                else AnnounceOperation("convert.done", summary);
+            }
+            finally { _converting--; RunningTransfers--; EndCarryable(carryId); EndTransferTo(here); }
+        }
+
+        /// <summary>Conversions running, so the player readies no track meanwhile.</summary>
+        private int _converting;
+
+        /// <summary>
+        /// After an update or a restart stopped a conversion: works out which
+        /// files were already done (<see cref="AudioConverter.Remaining"/>),
+        /// removes the originals of any converted just before the stop when
+        /// that was asked for, and converts the rest.
+        /// </summary>
+        private async Task FinishConvertAsync(CarryOnTransfers.Job job)
+        {
+            var (all, formatId, deleteOriginals) = CarryOnTransfers.AsConvert(job);
+            var choice = AudioFormats.All.FirstOrDefault(c => c.Id == formatId);
+            string where = FolderNameForSpeech(job.Destination);
+            if (choice == null || all.Count == 0)
+            {
+                AnnounceOperation("convert.failed", $"Couldn't finish the conversion in {where}: its format was not understood");
+                return;
+            }
+
+            var drive = Drive;
+            var (left, converted) = await Task.Run(() => AudioConverter.Remaining(all, drive));
+            if (IsDisposed) return;
+
+            if (deleteOriginals && converted.Count > 0)
+                await Task.Run(() =>
+                {
+                    foreach (var done in converted) AudioConverter.RemoveOriginal(done, done.Target, drive);
+                });
+            if (IsDisposed) return;
+
+            if (left.Count == 0)
+            {
+                AnnounceOperation("convert.done", $"The conversion in {where} had already finished");
+                await RefreshDestination(job.Destination);
+                return;
+            }
+
+            await RunConvertAsync(left, choice, job.Destination, 0, deleteOriginals, drive, finishing: true);
         }
 
         /// <summary>
@@ -12564,6 +12849,7 @@ namespace ExplorerNative
         {
             CarryOnTransfers.Kind.EmptyTrash => "Emptying the Google Drive trash",
             CarryOnTransfers.Kind.Move => "A move into " + FolderNameForSpeech(job.Destination),
+            CarryOnTransfers.Kind.Convert => "Converting audio in " + FolderNameForSpeech(job.Destination),
             _ => "A copy into " + FolderNameForSpeech(job.Destination),
         };
 
@@ -12715,6 +13001,18 @@ namespace ExplorerNative
                             return;
                         }
                     }
+                    else if (job.What == CarryOnTransfers.Kind.Convert)
+                    {
+                        // Its folder answering is enough (on Google Drive that is
+                        // the letter being back); which files are left is worked
+                        // out from what is there.
+                        if (await Task.Run(() => AnswerOf(() => Directory.Exists(job.Destination))) == true)
+                        {
+                            if (IsDisposed) return;
+                            await FinishConvertAsync(job);
+                            return;
+                        }
+                    }
                     else
                     {
                         var (ready, sources) = await Task.Run(() => LookForCarryOn(job));
@@ -12744,6 +13042,8 @@ namespace ExplorerNative
                     {
                         AnnounceOperation("copy.failed", job.What == CarryOnTransfers.Kind.EmptyTrash
                             ? "Couldn't empty the Google Drive trash: Google Drive isn't connected"
+                            : job.What == CarryOnTransfers.Kind.Convert
+                            ? $"Couldn't finish the conversion in {FolderNameForSpeech(job.Destination)}: the folder isn't there"
                             : $"Couldn't finish {(job.Move ? "the move" : "the copy")} into {FolderNameForSpeech(job.Destination)}: the folders aren't there");
                         return;
                     }

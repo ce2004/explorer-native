@@ -42,6 +42,9 @@ namespace ExplorerNative
         /// <summary>The highest bit rate an AAC .m4a has; anything above it is Apple Lossless.</summary>
         public const int MostAacKbps = 320;
 
+        /// <summary>The highest bit rate Opus has, for stereo; the encoder takes at most 300 for one channel.</summary>
+        public const int MostOpusKbps = 510;
+
         public static readonly IReadOnlyList<AudioFormatChoice> All = new[]
         {
             new AudioFormatChoice("mp3-128", AudioFormatKind.Mp3, 128, 0),
@@ -55,6 +58,11 @@ namespace ExplorerNative
             new AudioFormatChoice("opus-96", AudioFormatKind.Opus, 96, 0),
             new AudioFormatChoice("opus-128", AudioFormatKind.Opus, 128, 0),
             new AudioFormatChoice("opus-160", AudioFormatKind.Opus, 160, 0),
+            new AudioFormatChoice("opus-192", AudioFormatKind.Opus, 192, 0),
+            new AudioFormatChoice("opus-256", AudioFormatKind.Opus, 256, 0),
+            new AudioFormatChoice("opus-320", AudioFormatKind.Opus, 320, 0),
+            // The most an Opus stream holds: 1275 bytes a packet, fifty packets a second.
+            new AudioFormatChoice("opus-510", AudioFormatKind.Opus, AudioFormats.MostOpusKbps, 0),
             new AudioFormatChoice("flac", AudioFormatKind.Flac, 0, 0),
             new AudioFormatChoice("wav-16", AudioFormatKind.Wav, 0, 16),
             new AudioFormatChoice("wav-keep", AudioFormatKind.Wav, 0, 0),
@@ -259,26 +267,31 @@ namespace ExplorerNative
         /// <paramref name="notes"/> ("M4A at 256 is not offered; used 192").
         /// Throws <see cref="AudioEncodeException"/> with the reason in words.
         /// </summary>
+        /// <param name="output">
+        /// Written to instead of a file at <paramref name="path"/>, which then
+        /// only names the format (a conversion sent straight to Google Drive).
+        /// The caller owns it.
+        /// </param>
         public static IAudioEncoder Create(AudioFormatChoice choice, string path, int rate, int channels,
-            int sourceBits, AudioTagSet? tags, ICollection<string> notes)
+            int sourceBits, AudioTagSet? tags, ICollection<string> notes, Stream? output = null, long expectedFrames = 0)
         {
             switch (choice.Kind)
             {
                 case AudioFormatKind.Wav:
-                    return new WavEncoder(path, rate, channels, LosslessBits(choice, sourceBits), tags);
+                    return new WavEncoder(path, rate, channels, LosslessBits(choice, sourceBits), tags, output, expectedFrames);
 
                 case AudioFormatKind.Opus:
-                    return new OpusFileEncoder(path, channels, choice.Kbps, tags);
+                    return new OpusFileEncoder(path, channels, choice.Kbps, tags, output);
 
                 case AudioFormatKind.Flac:
                 {
                     int bits = LosslessBits(choice, sourceBits);
                     if (MediaFoundationEncoder.HasEncoder(AudioFormatKind.Flac))
                     {
-                        try { return new MediaFoundationEncoder(path, AudioFormatKind.Flac, rate, channels, 0, bits); }
-                        catch (AudioEncodeException) { TryDelete(path); }
+                        try { return new MediaFoundationEncoder(path, AudioFormatKind.Flac, rate, channels, 0, bits, output); }
+                        catch (AudioEncodeException) when (output == null) { TryDelete(path); }
                     }
-                    return new FlacEncoder(path, rate, channels, bits, tags);
+                    return new FlacEncoder(path, rate, channels, bits, tags, output);
                 }
 
                 default:
@@ -288,12 +301,13 @@ namespace ExplorerNative
 
                     try
                     {
-                        return new MediaFoundationEncoder(path, choice.Kind, rate, channels, choice.Kbps, 16);
+                        return new MediaFoundationEncoder(path, choice.Kind, rate, channels, choice.Kbps, 16, output);
                     }
                     catch (AudioEncodeException ex) when (ex.TypeRefused)
                     {
                         // The encoder is there and will not take this rate. The
                         // next one down that it will, rather than nothing.
+                        if (output != null) throw;      // nothing can be started over on a stream already begun
                         TryDelete(path);
                         foreach (var lower in AudioFormats.QualitiesOf(choice.Kind)
                                      .Where(c => c.Kbps < choice.Kbps).OrderByDescending(c => c.Kbps))
@@ -315,6 +329,12 @@ namespace ExplorerNative
                     }
                 }
             }
+        }
+
+        internal static void FlushToDisk(Stream file)
+        {
+            if (file is FileStream onDisk) onDisk.Flush(true);
+            else file.Flush();
         }
 
         internal static void TryDelete(string path)
@@ -344,7 +364,8 @@ namespace ExplorerNative
     /// </summary>
     internal sealed class WavEncoder : IAudioEncoder
     {
-        private readonly FileStream _file;
+        private readonly Stream _file;
+        private readonly bool _owns;
         private readonly int _channels, _bits;
         private readonly long _dataSizeAt;
         private long _dataBytes;
@@ -352,11 +373,13 @@ namespace ExplorerNative
 
         public bool TagsAfterwards => true;
 
-        public WavEncoder(string path, int rate, int channels, int bits, AudioTagSet? tags)
+        public WavEncoder(string path, int rate, int channels, int bits, AudioTagSet? tags, Stream? output = null,
+            long expectedFrames = 0)
         {
             _channels = channels;
             _bits = bits;
-            _file = new FileStream(NameRules.ExactPath(path), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read, 1 << 16);
+            _file = output ?? new FileStream(NameRules.ExactPath(path), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read, 1 << 16);
+            _owns = output == null;
 
             using var w = new BinaryWriter(_file, Encoding.ASCII, leaveOpen: true);
             int blockAlign = channels * bits / 8;
@@ -378,6 +401,21 @@ namespace ExplorerNative
             w.Write("data"u8);
             _dataSizeAt = _file.Position;
             w.Write(0u);
+            w.Flush();
+
+            // The sizes now, when the length is known: Finish then writes the
+            // same numbers, and a file being sent to Google Drive as it is
+            // written does not have to be sent a second time for its header.
+            long expected = expectedFrames * blockAlign;
+            if (expectedFrames > 0 && expected < uint.MaxValue - 1024)
+            {
+                long end = _file.Position;
+                _file.Position = 4;
+                _file.Write(BitConverter.GetBytes((uint)(end + expected + (expected & 1) - 8)));
+                _file.Position = _dataSizeAt;
+                _file.Write(BitConverter.GetBytes((uint)expected));
+                _file.Position = end;
+            }
         }
 
         /// <summary>LIST/INFO with the tags Windows reads from a WAV, or nothing.</summary>
@@ -453,75 +491,12 @@ namespace ExplorerNative
             _file.Write(BitConverter.GetBytes((uint)(end - 8)));
             _file.Position = _dataSizeAt;
             _file.Write(BitConverter.GetBytes((uint)_dataBytes));
-            _file.Flush(true);
+            AudioEncoders.FlushToDisk(_file);
         }
 
         public void Dispose()
         {
-            try { _file.Dispose(); } catch { }
-        }
-    }
-
-    // ---------------------------------------------------------------- Opus
-
-    /// <summary>
-    /// Ogg Opus through Concentus, which the player already uses to decode it.
-    /// Always 48k; the tags go into the OpusTags header as Vorbis comments.
-    /// </summary>
-    internal sealed class OpusFileEncoder : IAudioEncoder
-    {
-        private readonly FileStream _file;
-        private readonly Concentus.Oggfile.OpusOggWriteStream _writer;
-        private readonly int _channels;
-        private float[] _copy = Array.Empty<float>();
-
-        public bool TagsAfterwards => false;
-
-        public OpusFileEncoder(string path, int channels, int kbps, AudioTagSet? tags)
-        {
-            _channels = channels;
-            _file = new FileStream(NameRules.ExactPath(path), FileMode.CreateNew, FileAccess.Write, FileShare.Read, 1 << 16);
-
-            try
-            {
-                var encoder = Concentus.OpusCodecFactory.CreateEncoder(
-                    48000, channels, Concentus.Enums.OpusApplication.OPUS_APPLICATION_AUDIO, null);
-                encoder.Bitrate = kbps * 1000;
-                encoder.Complexity = 10;
-
-                var head = new Concentus.Oggfile.OpusTags();
-                if (tags != null)
-                    foreach (var (key, value) in tags.VorbisFields())
-                        head.Fields[key] = value;
-
-                _writer = new Concentus.Oggfile.OpusOggWriteStream(encoder, _file, head, 48000, 5, true);
-            }
-            catch
-            {
-                _file.Dispose();
-                throw;
-            }
-        }
-
-        public void Write(float[] interleaved, int frames)
-        {
-            // Copied, because the writer may keep what it is handed until it has
-            // a whole packet, and the caller reuses its buffer.
-            int count = frames * _channels;
-            if (_copy.Length < count) _copy = new float[count];
-            Array.Copy(interleaved, _copy, count);
-            _writer.WriteSamples(_copy, 0, count);
-        }
-
-        public void Finish()
-        {
-            _writer.Finish();
-            _file.Flush(true);
-        }
-
-        public void Dispose()
-        {
-            try { _file.Dispose(); } catch { }
+            if (_owns) try { _file.Dispose(); } catch { }
         }
     }
 
@@ -538,7 +513,8 @@ namespace ExplorerNative
         private const int BlockSize = 4096;
         private const int MaxPartitionOrder = 8;
 
-        private readonly FileStream _file;
+        private readonly Stream _file;
+        private readonly bool _owns;
         private readonly int _rate, _channels, _bits;
         private readonly int[][] _block;
         private int _filled;
@@ -554,7 +530,7 @@ namespace ExplorerNative
 
         public bool TagsAfterwards => false;
 
-        public FlacEncoder(string path, int rate, int channels, int bits, AudioTagSet? tags)
+        public FlacEncoder(string path, int rate, int channels, int bits, AudioTagSet? tags, Stream? output = null)
         {
             if (rate <= 0 || rate > 655350) throw new AudioEncodeException($"FLAC cannot hold audio at {rate} hertz");
             if (channels < 1 || channels > 8) throw new AudioEncodeException($"FLAC cannot hold {channels} channels");
@@ -565,7 +541,8 @@ namespace ExplorerNative
             _block = new int[channels][];
             for (int c = 0; c < channels; c++) _block[c] = new int[BlockSize];
 
-            _file = new FileStream(NameRules.ExactPath(path), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read, 1 << 16);
+            _file = output ?? new FileStream(NameRules.ExactPath(path), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.Read, 1 << 16);
+            _owns = output == null;
             _file.Write("fLaC"u8);
 
             // STREAMINFO, written now with the counts unknown and again at the end.
@@ -641,12 +618,12 @@ namespace ExplorerNative
             _md5Bytes = _md5.GetHashAndReset();
             _file.Position = _streamInfoAt;
             _file.Write(StreamInfo());
-            _file.Flush(true);
+            AudioEncoders.FlushToDisk(_file);
         }
 
         public void Dispose()
         {
-            try { _file.Dispose(); } catch { }
+            if (_owns) try { _file.Dispose(); } catch { }
             _md5.Dispose();
         }
 
@@ -1045,6 +1022,12 @@ namespace ExplorerNative
         private static extern int MFTEnumEx(Guid category, uint flags, IntPtr inputType,
             ref RegisterTypeInfo outputType, out IntPtr activates, out uint count);
 
+        [DllImport("mfplat.dll")]
+        private static extern int MFCreateMFByteStreamOnStream(
+            [MarshalAs(UnmanagedType.Interface)] System.Runtime.InteropServices.ComTypes.IStream stream, out IntPtr byteStream);
+
+        private WritableIStream? _through;
+
         [DllImport("mfreadwrite.dll", CharSet = CharSet.Unicode)]
         private static extern int MFCreateSinkWriterFromURL(string url, IntPtr byteStream,
             IntPtr attributes, out IMFSinkWriter writer);
@@ -1125,7 +1108,8 @@ namespace ExplorerNative
 
         public bool TagsAfterwards => true;
 
-        public MediaFoundationEncoder(string path, AudioFormatKind kind, int rate, int channels, int kbps, int bits)
+        public MediaFoundationEncoder(string path, AudioFormatKind kind, int rate, int channels, int kbps, int bits,
+            Stream? through = null)
         {
             _rate = rate;
             _channels = channels;
@@ -1169,7 +1153,20 @@ namespace ExplorerNative
                 input.SetUINT32(ref BlockAlignment, (uint)(bits / 8 * channels));
                 input.SetUINT32(ref BytesPerSecond, (uint)(rate * bits / 8 * channels));
 
-                int hr = MFCreateSinkWriterFromURL(NameRules.ExactPath(path), IntPtr.Zero, IntPtr.Zero, out var writer);
+                int hr;
+                IMFSinkWriter? writer;
+                if (through == null)
+                    hr = MFCreateSinkWriterFromURL(NameRules.ExactPath(path), IntPtr.Zero, IntPtr.Zero, out writer);
+                else
+                {
+                    // Through our own stream; the name only tells Windows the container.
+                    _through = new WritableIStream(through);
+                    hr = MFCreateMFByteStreamOnStream(_through, out IntPtr bytes);
+                    if (hr != 0 || bytes == IntPtr.Zero)
+                        throw new AudioEncodeException($"Windows could not write the {_format} file through a stream (0x{hr:X8})");
+                    try { hr = MFCreateSinkWriterFromURL(Path.GetFileName(path), bytes, IntPtr.Zero, out writer); }
+                    finally { Marshal.Release(bytes); }
+                }
                 if (hr != 0 || writer == null)
                     throw new AudioEncodeException($"Windows could not create the {_format} file (0x{hr:X8})");
                 _writer = writer;
@@ -1253,6 +1250,7 @@ namespace ExplorerNative
                 sample.SetSampleDuration(end - start);
 
                 int hr = writer.WriteSample(_stream, sample);
+                if (_through?.Failure is { } failure) throw new IOException(failure.Message, failure);
                 if (hr != 0) throw new AudioEncodeException($"Windows' {_format} encoder stopped (0x{hr:X8})");
                 _frames += frames;
             }
@@ -1267,6 +1265,7 @@ namespace ExplorerNative
         {
             var writer = _writer ?? throw new ObjectDisposedException(nameof(MediaFoundationEncoder));
             int hr = writer.DoFinalize();
+            if (_through?.Failure is { } failure) throw new IOException(failure.Message, failure);
             if (hr != 0) throw new AudioEncodeException($"Windows could not finish the {_format} file (0x{hr:X8})");
         }
 
