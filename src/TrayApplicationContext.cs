@@ -1474,8 +1474,11 @@ namespace ExplorerNative
                     case AudioAction.Mute:
                         id = m == "Muted" ? "volume.muted" : "volume.unmuted";
                         break;
-                    case AudioAction.VolumeUp when AppleMusicPlayer.VolumePercent == 100:
+                    case AudioAction.VolumeUp when AppleMusicPlayer.VolumePercent == AudioPlayer.LoudestPercent:
                         id = "volume.max";
+                        break;
+                    case AudioAction.VolumeUp when m.Contains("boosted", StringComparison.Ordinal):
+                        id = "volume.gain";
                         break;
                     case AudioAction.VolumeDown when AppleMusicPlayer.VolumePercent == 0:
                         id = "volume.min";
@@ -1990,8 +1993,8 @@ namespace ExplorerNative
         /// </summary>
         /// <summary>
         /// Apple's player has one volume with the built-in one: it starts at the
-        /// saved level (to at most 100, as loud as Apple goes) and a change made
-        /// while it plays is the level files play at afterwards too.
+        /// saved level, over the same range and on the same curve, and a change
+        /// made while it plays is the level files play at afterwards too.
         /// </summary>
         private string ChangeAppleVolume(int delta)
         {
@@ -2181,7 +2184,7 @@ namespace ExplorerNative
             // answers "Nothing is loaded" out loud, and every Enter on a song said it.
             if (_audio.HasTrack) _audio.Stop();
             AppleMusicPlayer.SetOutputDevice(OutputDeviceName(_settings.AudioOutputDeviceId));
-            if (AppleMusicPlayer.PlayRow(path, Math.Min(100, _settings.AudioVolumePercent)))
+            if (AppleMusicPlayer.PlayRow(path, _settings.AudioVolumePercent))
                 SayAudio("audio.play", AppleMusic.SpokenName(path) ?? System.IO.Path.GetFileName(path));
         }
 
@@ -2291,7 +2294,7 @@ namespace ExplorerNative
             _audio.CancelOpening();
             if (_audio.HasTrack) _audio.Stop();
             AppleMusicPlayer.SetOutputDevice(OutputDeviceName(_settings.AudioOutputDeviceId));
-            if (AppleMusicPlayer.PlayList(songs, folder, shuffle, Math.Min(100, _settings.AudioVolumePercent)))
+            if (AppleMusicPlayer.PlayList(songs, folder, shuffle, _settings.AudioVolumePercent))
                 Notify("applemusic.playall", said);
         }
 
@@ -2385,7 +2388,7 @@ namespace ExplorerNative
                             if (System.Threading.Volatile.Read(ref _playRequest) != asked) return;
                             AppleMusicPlayer.SetOutputDevice(OutputDeviceName(_settings.AudioOutputDeviceId));
                             var name = AppleMusic.SpokenName(song.Path) ?? "";
-                            AppleMusicPlayer.PlayFrom(song.Path, song.CatalogId, name, Math.Min(100, _settings.AudioVolumePercent), song.Seconds);
+                            AppleMusicPlayer.PlayFrom(song.Path, song.CatalogId, name, _settings.AudioVolumePercent, song.Seconds);
                             SayAudio("audio.play", name);
                         });
                         return;

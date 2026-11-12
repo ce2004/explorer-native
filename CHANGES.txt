@@ -1,3 +1,9 @@
+6.1.1
+Bug fixed: Apple Music was much louder than your own files at the same volume number. At 50 percent it was twice as loud, and at low numbers many times as loud. Now a number sounds the same in Apple Music as it does for a file.
+Bug fixed: the volume stopped at 100 percent in Apple Music while files go up to 1000 percent. Apple Music now goes up to 1000 percent too, and says boosted and maximum the same way.
+Bug fixed: if your volume was above 100 percent and you changed it while Apple Music was playing, your files came back at 100 or less afterwards. The volume now stays where you put it.
+Bug fixed: Next track and Previous track were slow in Apple Music, between half a second and a second and a half. They now take about a third of a second.
+
 6.1.0
 New: Convert audio now works on Google Drive. Pick files or a whole folder there and convert them like anywhere else. Each file is downloaded, converted on this PC, and the new file is uploaded next to the original. Nothing is left on your PC afterwards.
 New: converting on Google Drive never uses more than about one gigabyte of your disk at a time, however big the recording. A recording too big for that, even one of a hundred gigabytes, is not put on your disk at all: it is read from Google Drive as it converts, and the new file is sent to Google Drive in pieces as it is made and put together there.

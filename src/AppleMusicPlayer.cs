@@ -212,7 +212,7 @@ namespace ExplorerNative
                 _displacedPath = null; _displacedId = null;
                 _playing = false; _wantPlaying = !paused; _ended = false;
                 _positionSeconds = startAt; _durationSeconds = 0; _seekTarget = -1;
-                if (volumePercent >= 0) { _volumePercent = Math.Clamp(volumePercent, 0, 100); _unmutedPercent = -1; }
+                if (volumePercent >= 0) { _volumePercent = Math.Clamp(volumePercent, 0, AudioPlayer.LoudestPercent); _unmutedPercent = -1; }
             }
             if (paused) Volatile.Write(ref _startedGen, mine);   // no sound is wanted, so none is waited for
             Interlocked.Increment(ref _idleTicket);   // something is loaded: no closing for idleness
@@ -915,12 +915,23 @@ namespace ExplorerNative
 
         public static string SeekToStart() => Seek(-int.MaxValue / 2);
 
+        /// <summary>
+        /// The same dial as the built-in player's: the same numbers, the same
+        /// words, the same loudness at each number (Conner, 6.1.1: "the volume of
+        /// apple music doesn't match the volume of the normal file audio... and
+        /// the volume range isn't the same").
+        /// </summary>
         public static string SetVolumePercent(int percent)
         {
-            percent = Math.Clamp(percent, 0, 100);
-            lock (Gate) { _volumePercent = percent; if (percent > 0) _unmutedPercent = -1; }
+            int before;
+            percent = Math.Clamp(percent, 0, AudioPlayer.LoudestPercent);
+            lock (Gate) { before = _volumePercent; _volumePercent = percent; if (percent > 0) _unmutedPercent = -1; }
             OnUi(() => _ = CallAsync("volume", Gain(percent)));
-            return percent == 100 ? "Volume 100 percent, as loud as Apple Music goes" : $"Volume {percent} percent";
+            if (before <= 100 && percent > 100)
+                return $"Volume {percent} percent, boosted {AudioPlayer.GainFor(percent):0.0} times";
+            string edge = percent == AudioPlayer.LoudestPercent && percent > before ? ", maximum"
+                        : percent == 0 && percent < before ? ", minimum" : "";
+            return $"Volume {percent} percent{edge}";
         }
 
         /// <summary>Mute goes back to the level it came from, not to full.</summary>
@@ -949,8 +960,15 @@ namespace ExplorerNative
         /// </summary>
         public static int VolumeToStepFrom { get { lock (Gate) return _unmutedPercent >= 0 ? _unmutedPercent : _volumePercent; } }
 
+        /// <summary>
+        /// The multiplier the page plays at: the built-in player's own curve
+        /// (squared up to 100, the plain number above it), so a percent sounds the
+        /// same in both. It was percent / 100, which at 70 is twice the amplitude
+        /// a file plays at.
+        /// </summary>
         private static string Gain(int percent) =>
-            (percent / 100.0).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+            AudioPlayer.DirectGain(percent, VolumeCurve.Perceptual)
+                .ToString("0.####", System.Globalization.CultureInfo.InvariantCulture);
 
         /// <summary>"Title by Artist, 1 minute 20 of 3 minutes 5", like the built-in player's.</summary>
         public static string Describe()
@@ -1660,11 +1678,42 @@ let holdPaused = false, pendingRequeue = null, pendingClear = false, resumeAt = 
 // unstarted: loaded paused and never played, so a seek only moves resumeAt.
 // pendingSeek: a seek that came while a song was being put in.
 let unstarted = false, pendingSeek = null;
+// stepping: a promise while a step to the queue's next or previous song is
+// landing. replacing: how many plays are putting in a new queue right now.
+let stepping = null, replacing = 0;
 // MusicKit can reset the volume when it builds the audio for a new song (it
 // started at 0, silent), so the level asked for is kept and put back.
-function applyVolume() { if (music && wantVolume !== null && music.volume !== wantVolume) music.volume = wantVolume; }
+// wantVolume is a multiplier and may be above 1 (the app's volume goes to ten
+// times, as it does for files). MusicKit's own volume stops at 1, so the rest
+// is a gain the sound passes through on its way out, made the first time
+// anything above 1 is asked for and left at exactly 1 otherwise.
+let boostContext = null, boostGain = null;
+const boosted = new WeakSet();
 function post(obj) { try { window.chrome.webview.postMessage(JSON.stringify(obj)); } catch (e) {} }
 function audio() { return document.querySelector("audio"); }
+function wireBoost() {
+  try {
+    if (!boostContext) {
+      boostContext = new AudioContext({ latencyHint: "playback" });
+      boostGain = boostContext.createGain();
+      boostGain.connect(boostContext.destination);
+      post({ kind: "log", message: "boost ready at " + boostContext.sampleRate });
+    }
+    document.querySelectorAll("audio").forEach(a => {
+      if (boosted.has(a)) return;
+      boosted.add(a);
+      boostContext.createMediaElementSource(a).connect(boostGain);
+    });
+    if (boostContext.state !== "running") boostContext.resume().catch(() => {});
+  } catch (e) { post({ kind: "log", message: "boost: " + e }); }
+}
+function applyVolume() {
+  if (!music || wantVolume === null) return;
+  const base = Math.min(1, wantVolume), over = Math.max(1, wantVolume);
+  if (over > 1 || boostContext) wireBoost();   // once made, every new audio element goes through it
+  if (boostGain && boostGain.gain.value !== over) boostGain.gain.value = over;
+  if (music.volume !== base) music.volume = base;
+}
 function sendState() {
   // Not while a new song is being put in: what MusicKit says then is the old one's.
   if (!music || switching) return;
@@ -1702,6 +1751,11 @@ async function applySink() {
     try { await a.setSinkId(id); post({ kind: "log", message: "sink " + (id ? wantSink : "default") }); }
     catch (e) { post({ kind: "log", message: "setSinkId: " + e }); }
   }
+  // Sound that goes through the boost comes out where the boost does.
+  if (boostContext && boostContext.setSinkId && boostContext.sinkId !== id) {
+    try { await boostContext.setSinkId(id); }
+    catch (e) { post({ kind: "log", message: "boost setSinkId: " + e }); }
+  }
 }
 function inBuffer(a, t) {
   for (let i = 0; i < a.buffered.length; i++)
@@ -1711,6 +1765,11 @@ function inBuffer(a, t) {
 // A skip inside what is already downloaded moves the audio itself, at once.
 // Anything further goes through MusicKit, one at a time, newest target only:
 // each of its seeks downloads again, and a held key used to queue dozens.
+function ranges(a) {
+  let s = "";
+  for (let i = 0; i < a.buffered.length; i++) s += a.buffered.start(i).toFixed(1) + "-" + a.buffered.end(i).toFixed(1) + " ";
+  return s.trim();
+}
 async function seekTo(t) {
   const a = audio();
   if (a && inBuffer(a, t)) { seekWant = null; a.currentTime = t; return; }
@@ -1722,7 +1781,11 @@ async function seekTo(t) {
       const target = seekWant; seekWant = null;
       const b = audio();
       if (b && inBuffer(b, target)) b.currentTime = target;
-      else await music.seekToTime(target);
+      else {
+        const t0 = performance.now(), had = b ? ranges(b) : "none";
+        await music.seekToTime(target);
+        post({ kind: "log", message: "seek " + target + " by MusicKit " + Math.round(performance.now() - t0) + "ms, had " + had + ", elements " + document.querySelectorAll("audio").length });
+      }
     }
   } finally { seeking = false; }
 }
@@ -1795,13 +1858,55 @@ window.amCommand = async function (c) {
     current = mine; switching = true; queuedNext = null; seekWant = null;
     holdPaused = !!c.paused; pendingRequeue = null; pendingClear = false; resumeAt = 0;
     unstarted = false; pendingSeek = null;
+    let counted = false;
+    const began = performance.now();
     try {
+      // Next track and Previous track: the song wanted is usually the one
+      // MusicKit already holds beside the one playing, and stepping to it
+      // takes 0.3 to 0.4 of a second where a new queue took 0.55 to 1.4
+      // (measured live, 6.1.1: a new queue asks Apple where the song is all
+      // over again). Only while playing, and only if MusicKit lands on it.
+      // One step at a time, and never beside a queue being replaced: a
+      // second press that came while a step was still landing replaced the
+      // queue under it, and the page played one song while the app named
+      // another. A newer press waits for the step, and only the newest goes on.
+      let stepped = false;
+      if (stepping) { await stepping; if (mine !== current) return; }
+      if (replacing === 0 && !holdPaused && !(c.at > 1) && music.isPlaying) {
+        let landed; stepping = new Promise(r => landed = r);
+        try {
+          const q = music.queue, at = q.position, want = String(c.arg);
+          const idAt = i => (i >= 0 && i < q.items.length) ? String(q.items[i].id) : null;
+          if (idAt(at + 1) === want) await music.skipToNextItem();
+          else if (idAt(at - 1) === want) await music.skipToPreviousItem();
+          if (mine !== current) return;
+          const now = music.nowPlayingItem;
+          stepped = !!now && String(now.id) === want;
+          if (stepped) {
+            // What comes after it is the app's to say, not what the queue happened to hold.
+            const after = idAt(q.position + 1);
+            if (after !== (c.next ? String(c.next) : null)) {
+              if (after !== null) q.clearAfterCurrent();
+              if (c.next) await music.playLater({ items: [item(c.next)] });
+            }
+            if (mine !== current) return;
+            queuedNext = c.next ? String(c.next) : null;
+          }
+        } catch (e) {
+          if (mine !== current) return;
+          post({ kind: "log", message: "step: " + e });
+          stepped = false;
+        } finally { stepping = null; landed(); }
+      }
       const items = [item(c.arg)];
       if (c.next) items.push(item(c.next));
-      try { await music.setQueue({ items }); }
-      catch (e) { if (mine !== current) return; await music.setQueue({ song: c.arg }); items.length = 1; }
-      if (mine !== current) return;
-      if (items.length > 1) queuedNext = String(c.next);
+      if (!stepped) {
+        replacing++; counted = true;   // until this play is through, in the finally below
+        try { await music.setQueue({ items }); }
+        catch (e) { if (mine !== current) return; await music.setQueue({ song: c.arg }); items.length = 1; }
+        if (mine !== current) return;
+        if (items.length > 1) queuedNext = String(c.next);
+      }
       // Up next changed while this song was being put in: nothing after it now.
       if (pendingClear) { music.queue.clearAfterCurrent(); queuedNext = null; pendingClear = false; }
       // A Play next chosen while this song was being put in.
@@ -1815,13 +1920,21 @@ window.amCommand = async function (c) {
       // A seek made while the song was being put in wins over where it was asked to start.
       const startAt = pendingSeek !== null ? pendingSeek : (c.at > 1 ? c.at : 0);
       pendingSeek = null;
-      if (holdPaused) {
+      if (holdPaused && !(stepped && music.isPlaying)) {
         // Paused before it started (Space right after Enter, or a crash while
         // paused): loaded, silent, and going on from the right place on resume.
+        // (A song stepped to is already sounding, so that one is paused below.)
         resumeAt = startAt; unstarted = true;
       } else {
         unstarted = false;
-        await music.play();
+        if (!stepped || !music.isPlaying) await music.play();
+        // After quick presses MusicKit answers play() before the song is going
+        // (measured: 15ms, sound 0.45s later), and the page then reported
+        // "stopped" for a song that was starting. Normally this waits for nothing.
+        for (let i = 0; i < 100 && mine === current && !holdPaused && !music.isPlaying; i++)
+          await new Promise(r => setTimeout(r, 20));
+        if (mine !== current) return;
+        post({ kind: "log", message: (stepped ? "stepped" : "queued") + " in " + Math.round(performance.now() - began) + "ms" });
         applyVolume();
         if (startAt > 0 && mine === current) await music.seekToTime(startAt);
         if (holdPaused && mine === current) await music.pause();   // paused while play() was starting
@@ -1829,6 +1942,7 @@ window.amCommand = async function (c) {
     } catch (e) {
       if (mine === current) post({ kind: "error", gen: mine, code: codeOf(e), message: String(e && e.message || e) });
     } finally {
+      if (counted) replacing--;
       if (mine === current) { switching = false; lastState = ""; sendState(); }
     }
     return;
@@ -1858,12 +1972,14 @@ window.amCommand = async function (c) {
       case "stop":
         current++; switching = false; queuedNext = null; seekWant = null;
         unstarted = false; resumeAt = 0; pendingSeek = null;
+        // A step still landing would start its song after the stop.
+        if (stepping) await stepping;
         await music.stop(); break;
       case "seekto":
         // Not playing yet: MusicKit ignores a seek then, so the place is kept for resume.
         if (unstarted) { resumeAt = Math.max(0, parseFloat(c.arg || "0") || 0); break; }
         await seekTo(parseFloat(c.arg || "0")); break;
-      case "volume": wantVolume = parseFloat(c.arg || "1"); music.volume = wantVolume; break;
+      case "volume": wantVolume = parseFloat(c.arg || "1"); applyVolume(); if (boostContext) await applySink(); break;
       case "device": wantSink = c.arg || ""; await applySink(); break;
       case "append":
         if (c.gen !== current) break;
