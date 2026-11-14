@@ -179,7 +179,14 @@ namespace ExplorerNative
         /// (unless <paramref name="fresh"/>), otherwise from Apple. Throws
         /// AppleMusicException with a sentence to say.
         /// </summary>
-        public static async Task<List<Row>> ListAsync(string folder, bool fresh, CancellationToken token)
+        /// <remarks>
+        /// <paramref name="firstPageFirst"/> is for showing a folder: a long
+        /// list comes back as its first page (a hundred rows) at once, and the
+        /// whole of it follows by <see cref="Grew"/>. Everything else (Play all,
+        /// the queue, a refresh) gets the whole list, waiting for it if it is
+        /// still arriving.
+        /// </remarks>
+        public static async Task<List<Row>> ListAsync(string folder, bool fresh, CancellationToken token, bool firstPageFirst = false)
         {
             folder = folder.TrimEnd('\\');
             // The Search folder is made from the searches themselves, every time:
@@ -188,19 +195,34 @@ namespace ExplorerNative
             bool searchFolder = folder.Equals(SearchFolder, StringComparison.OrdinalIgnoreCase) ||
                                 folder.Equals(Root, StringComparison.OrdinalIgnoreCase);   // Now playing changes
             int account;
+            Task<List<Row>>? filling;
             lock (Gate)
             {
                 account = _account;
-                if (!fresh && !searchFolder && Listings.TryGetValue(folder, out var known)) return known;
+                Filling.TryGetValue(folder, out filling);
+                if (!fresh && !searchFolder && Listings.TryGetValue(folder, out var known) && (filling == null || firstPageFirst))
+                    return known;
+            }
+            // Its first page is shown and the rest is on its way: that is the answer, whole.
+            if (filling != null)
+            {
+                try { return await filling.WaitAsync(token).ConfigureAwait(false); }
+                catch (OperationCanceledException) { throw; }
+                catch (Exception) { }   // the rest never came: asked for again below
             }
 
-            var rows = await BuildAsync(folder, token).ConfigureAwait(false);
+            long began = Environment.TickCount64;
+            Task<List<Row>>? later = null;
+            var rows = await BuildAsync(folder, token, firstPageFirst ? t => later = t : null).ConfigureAwait(false);
+            AppleMusic.Trace?.Invoke($"rows for {folder}: {rows.Count}{(later != null ? " to begin with" : "")} in {Environment.TickCount64 - began}ms");
             lock (Gate)
             {
                 if (account != _account) return rows;   // signed in as someone else meanwhile
                 Listings[folder] = rows;
                 Fetched[folder] = Environment.TickCount64;
+                if (later != null) Filling[folder] = later;
             }
+            if (later != null) _ = FillAsync(folder, later, account);
             // Which are favorited comes after, so the list is not held up for it.
             _ = RateAsync(folder);
             if (folder.Equals(Root + "\\Library\\Playlists", StringComparison.OrdinalIgnoreCase))
@@ -242,7 +264,39 @@ namespace ExplorerNative
                 return !Fetched.TryGetValue(folder, out var at) || Environment.TickCount64 - at >= RefreshAfterMs;
         }
 
-        private static async Task<List<Row>> BuildAsync(string folder, CancellationToken token)
+        /// <summary>Folders whose first page is on screen while the whole list arrives, and that whole list.</summary>
+        private static readonly Dictionary<string, Task<List<Row>>> Filling = new(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// The whole of a list whose first page was shown: it takes the first
+        /// page's place in memory, and panes showing it are told (they put the
+        /// rest in without a word, the cursor staying on its row). If it never
+        /// comes, what is shown stays and the folder is asked for again next time.
+        /// </summary>
+        private static async Task FillAsync(string folder, Task<List<Row>> later, int account)
+        {
+            List<Row>? whole = null;
+            try { whole = await later.ConfigureAwait(false); }
+            catch (Exception ex) { AppleMusic.Trace?.Invoke($"the rest of {folder} did not come: {ex.Message}"); }
+            lock (Gate)
+            {
+                if (Filling.TryGetValue(folder, out var mine) && ReferenceEquals(mine, later)) Filling.Remove(folder);
+                if (account != _account) return;
+                if (whole == null) { Listings.Remove(folder); Fetched.Remove(folder); return; }
+                Listings[folder] = whole;
+                Fetched[folder] = Environment.TickCount64;
+            }
+            AppleMusic.Trace?.Invoke($"rows for {folder}: all {whole.Count} now");
+            try { Grew?.Invoke(folder); } catch (Exception) { }
+            WholeListArrived?.Invoke(folder);
+            _ = RateAsync(folder);
+        }
+
+        /// <param name="later">
+        /// Given when a first page will do for now: called with the whole list,
+        /// still on its way, when there is more than the page returned.
+        /// </param>
+        private static async Task<List<Row>> BuildAsync(string folder, CancellationToken token, Action<Task<List<Row>>>? later = null)
         {
             if (folder.Equals(Root, StringComparison.OrdinalIgnoreCase))
             {
@@ -320,12 +374,21 @@ namespace ExplorerNative
                 var top = LibraryFolders.FirstOrDefault(f => f.Name.Equals(parts[1], StringComparison.OrdinalIgnoreCase));
                 if (top.Path != null)
                 {
-                    var items = top.Path.Contains("recently-added", StringComparison.Ordinal)
-                        ? await client.ListAsync(top.Path, token, most: 100).ConfigureAwait(false)
-                        : await client.ListAllAsync(top.Path, token).ConfigureAwait(false);
-                    if (top.Path.Contains("dateAdded", StringComparison.Ordinal))
-                        for (int i = 0; i < items.Count; i++) items[i].AddedRank = i;
-                    return RowsFor(folder, items, sort: false);
+                    bool ranked = top.Path.Contains("dateAdded", StringComparison.Ordinal);
+                    List<Row> Made(List<AppleMusicItem> got)
+                    {
+                        if (ranked) for (int i = 0; i < got.Count; i++) got[i].AddedRank = i;
+                        return RowsFor(folder, got, sort: false);
+                    }
+                    if (top.Path.Contains("recently-added", StringComparison.Ordinal))
+                        return Made(await client.ListAsync(top.Path, token, most: 100).ConfigureAwait(false));
+                    // Not the list of playlists: the Add to playlist menu is made from it, whole.
+                    if (later == null || parts[1].Equals("Playlists", StringComparison.OrdinalIgnoreCase))
+                        return Made(await client.ListAllAsync(top.Path, token).ConfigureAwait(false));
+                    var (firstPage, wholeList) = await client.ListStartAsync(top.Path, token, CancellationToken.None).ConfigureAwait(false);
+                    var firstRows = Made(firstPage);
+                    if (wholeList != null) later(WholeAsync(wholeList, Made));
+                    return firstRows;
                 }
             }
 
@@ -345,13 +408,32 @@ namespace ExplorerNative
             var path = client.ChildrenPath(item);
             if (path.Length == 0) throw new AppleMusicException("That can't be opened.");
             List<AppleMusicItem> children;
-            try { children = await client.ListAllAsync(path, token).ConfigureAwait(false); }
+            Task<List<AppleMusicItem>>? rest = null;
+            try
+            {
+                if (later == null) children = await client.ListAllAsync(path, token).ConfigureAwait(false);
+                else (children, rest) = await client.ListStartAsync(path, token, CancellationToken.None).ConfigureAwait(false);
+            }
             catch (AppleMusicException ex) when (ex.NotFound && item.Kind == "playlist")
             {
                 // Apple answers an empty playlist with "not found".
                 children = new List<AppleMusicItem>();
             }
-            return RowsFor(folder, children, sort: false, numbered: item.Kind == "album");
+            bool numbered = item.Kind == "album";
+            var listed = RowsFor(folder, children, sort: false, numbered: numbered);
+            if (rest != null) later!(WholeAsync(rest, got => RowsFor(folder, got, sort: false, numbered: numbered)));
+            return listed;
+        }
+
+        /// <summary>
+        /// The whole list's rows, once it is in. Made after the first page's rows
+        /// are the folder's listing, so every song of that page keeps its path.
+        /// </summary>
+        private static async Task<List<Row>> WholeAsync(Task<List<AppleMusicItem>> whole, Func<List<AppleMusicItem>, List<Row>> made)
+        {
+            var got = await whole.ConfigureAwait(false);
+            await Task.Yield();
+            return made(got);
         }
 
         /// <summary>A station's next handful, added to the end of its folder. For playing on past the end.</summary>
@@ -562,6 +644,12 @@ namespace ExplorerNative
         /// Raised on whichever thread did the fetching.
         /// </summary>
         public static event Action<string>? Grew;
+
+        /// <summary>A line for the player's log (EXPLORERNATIVE_APPLEMUSICLOG): how long sign-in and each list took.</summary>
+        internal static Action<string>? Trace;
+
+        /// <summary>A list shown from its first page is whole now: the player adds the rest to a queue made from that page.</summary>
+        internal static Action<string>? WholeListArrived;
 
         private static List<Row> RowsFor(string folder, List<AppleMusicItem> items, bool sort, bool numbered = false,
             int startAt = 0, List<Row>? taken = null)

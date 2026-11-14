@@ -101,8 +101,11 @@ namespace ExplorerNative
             try
             {
                 if (_developerToken != null && _storefront != null) return;
+                long began = Environment.TickCount64;
                 _developerToken ??= await DeveloperTokenAsync(token).ConfigureAwait(false);
+                long tokenAt = Environment.TickCount64;
                 using var doc = await GetAsync("/v1/me/account?meta=subscription", token).ConfigureAwait(false);
+                AppleMusic.Trace?.Invoke($"sign-in: token {tokenAt - began}ms, account {Environment.TickCount64 - tokenAt}ms");
                 var sub = doc.RootElement.TryGetProperty("meta", out var meta) && meta.TryGetProperty("subscription", out var s) ? s : default;
                 if (sub.ValueKind == JsonValueKind.Object)
                 {
@@ -224,33 +227,63 @@ namespace ExplorerNative
         /// </summary>
         public async Task<List<AppleMusicItem>> ListAllAsync(string path, CancellationToken token, int most = 50000)
         {
+            var (first, whole) = await ListStartAsync(path, token, token, most).ConfigureAwait(false);
+            return whole == null ? first : await whole.ConfigureAwait(false);
+        }
+
+        /// <summary>How many pages are asked for at once.</summary>
+        internal const int PagesAtOnce = 16;
+
+        /// <summary>
+        /// The first page of a list, and the whole of it still on its way (null
+        /// when the first page was all there is). A long playlist is shown from
+        /// its first page while the rest arrives (Conner, 6.2.0: "I want loading a
+        /// playlist to be fast"; a playlist of 4,770 songs took six seconds to
+        /// show anything). <paramref name="rest"/> cancels the rest: not the
+        /// navigation's own token when the list is being kept for later.
+        /// </summary>
+        public async Task<(List<AppleMusicItem> First, Task<List<AppleMusicItem>>? Whole)> ListStartAsync(
+            string path, CancellationToken token, CancellationToken rest, int most = 50000)
+        {
             await StartAsync(token).ConfigureAwait(false);
             path = path.Replace("{sf}", Storefront);
+            long began = Environment.TickCount64;
             var first = await PageAsync(path, token).ConfigureAwait(false);
-            if (first.Next == null) return first.Items;
-            if (first.Total <= first.Raw || first.Raw == 0)
-                return await ListAsync(path, token, most).ConfigureAwait(false);
-
-            // Apple's page size, counted before anything was dropped: a playlist's
-            // music video is skipped by Parse, and paging by what was kept made
-            // every page start one early, so songs showed twice and played twice.
-            int pageSize = first.Raw;
-            int total = Math.Min(first.Total, most);
-            var offsets = new List<int>();
-            for (int o = pageSize; o < total; o += pageSize) offsets.Add(o);
-            var pages = new List<AppleMusicItem>[offsets.Count];
-            using var gate = new SemaphoreSlim(8);
-            string sep = path.Contains('?') ? "&" : "?";
-            await Task.WhenAll(offsets.Select(async (offset, index) =>
+            long firstMs = Environment.TickCount64 - began;
+            if (first.Next == null)
             {
-                await gate.WaitAsync(token).ConfigureAwait(false);
-                try { pages[index] = (await PageAsync($"{path}{sep}offset={offset}", token).ConfigureAwait(false)).Items; }
-                finally { gate.Release(); }
-            })).ConfigureAwait(false);
-            var all = new List<AppleMusicItem>(total);
-            all.AddRange(first.Items);
-            foreach (var page in pages) all.AddRange(page);
-            return all;
+                AppleMusic.Trace?.Invoke($"list {path}: {first.Items.Count} in one page, {firstMs}ms");
+                return (first.Items, null);
+            }
+            if (first.Total <= first.Raw || first.Raw == 0)
+                return (first.Items, ListAsync(path, rest, most));
+
+            return (first.Items, RestAsync());
+
+            async Task<List<AppleMusicItem>> RestAsync()
+            {
+                // Apple's page size, counted before anything was dropped: a playlist's
+                // music video is skipped by Parse, and paging by what was kept made
+                // every page start one early, so songs showed twice and played twice.
+                int pageSize = first.Raw;
+                int total = Math.Min(first.Total, most);
+                var offsets = new List<int>();
+                for (int o = pageSize; o < total; o += pageSize) offsets.Add(o);
+                var pages = new List<AppleMusicItem>[offsets.Count];
+                using var gate = new SemaphoreSlim(PagesAtOnce);
+                string sep = path.Contains('?') ? "&" : "?";
+                await Task.WhenAll(offsets.Select(async (offset, index) =>
+                {
+                    await gate.WaitAsync(rest).ConfigureAwait(false);
+                    try { pages[index] = (await PageAsync($"{path}{sep}offset={offset}", rest).ConfigureAwait(false)).Items; }
+                    finally { gate.Release(); }
+                })).ConfigureAwait(false);
+                var all = new List<AppleMusicItem>(total);
+                all.AddRange(first.Items);
+                foreach (var page in pages) all.AddRange(page);
+                AppleMusic.Trace?.Invoke($"list {path}: {all.Count} of {first.Total}, page size {pageSize}, first page {firstMs}ms, {offsets.Count} more pages, {Environment.TickCount64 - began}ms in all");
+                return all;
+            }
         }
 
         private async Task<(List<AppleMusicItem> Items, string? Next, int Total, int Raw)> PageAsync(string path, CancellationToken token)

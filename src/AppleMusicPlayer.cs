@@ -233,8 +233,10 @@ namespace ExplorerNative
                     if (Volatile.Read(ref _generation) != mine) return;   // a newer Enter already
                     // Read now, not when Start began: a pause or a Play next chosen
                     // while the player was still starting has to go with the song.
-                    int volume; string device; string? queued; bool hold;
-                    lock (Gate) { volume = _volumePercent; device = _deviceName; }
+                    int volume; string device; string? queued; bool hold; string? effects;
+                    lock (Gate) { volume = _volumePercent; device = _deviceName; effects = _effectsJson; }
+                    // Before the volume: the page decides from both whether the sound goes through its effects.
+                    if (effects != null) await CallAsync("effects", effects).ConfigureAwait(true);
                     await CallAsync("volume", Gain(volume)).ConfigureAwait(true);
                     await CallAsync("device", device).ConfigureAwait(true);
                     // A seek pressed while the player was starting never reached the page
@@ -337,6 +339,48 @@ namespace ExplorerNative
                 _listQueue = songs;
             }
             else _listQueue = songs.Skip(at + 1).ToList();
+        }
+
+        /// <summary>
+        /// A list that was shown from its first page is now whole. If a song of
+        /// it was started meanwhile, the queue was made from that first page
+        /// only: the songs that have arrived since go on the end of it (mixed
+        /// into what is left, when shuffling), so the list does not stop after
+        /// its first hundred songs. The song already handed to the page as the
+        /// next one stays next.
+        /// </summary>
+        internal static void ListGrew(string folder)
+        {
+            var songs = AppleMusic.SongsShown(folder);
+            if (songs == null) return;
+            lock (Gate)
+            {
+                if (_listQueue == null || _listFolder == null ||
+                    !string.Equals(_listFolder.TrimEnd('\\'), folder.TrimEnd('\\'), StringComparison.OrdinalIgnoreCase)) return;
+                var have = new HashSet<string>(_listQueue, StringComparer.OrdinalIgnoreCase);
+                foreach (var p in _history) have.Add(p);
+                if (_currentPath.Length > 0) have.Add(_currentPath);
+                if (_shuffle)
+                {
+                    var added = songs.Where(p => !have.Contains(p)).ToList();
+                    if (added.Count == 0) return;
+                    // All but the first, which the page may already hold as the next song.
+                    var rest = _listQueue.Skip(1).Concat(added).ToList();
+                    Shuffled(rest);
+                    _listQueue = _listQueue.Take(1).Concat(rest).ToList();
+                }
+                else
+                {
+                    // In the list's own order, from after the last song of it that is queued or playing.
+                    string? last = _listQueue.Count > 0 ? _listQueue[^1] : _anchor ?? _currentPath;
+                    int at = last == null ? -1 : songs.FindIndex(p => string.Equals(p, last, StringComparison.OrdinalIgnoreCase));
+                    if (at < 0) return;
+                    var added = songs.Skip(at + 1).Where(p => !have.Contains(p)).ToList();
+                    if (added.Count == 0) return;
+                    _listQueue.AddRange(added);
+                }
+                Log($"queue grew to {_listQueue.Count} with the rest of {folder}");
+            }
         }
 
         /// <summary>
@@ -932,6 +976,47 @@ namespace ExplorerNative
             string edge = percent == AudioPlayer.LoudestPercent && percent > before ? ", maximum"
                         : percent == 0 && percent < before ? ", minimum" : "";
             return $"Volume {percent} percent{edge}";
+        }
+
+        /// <summary>
+        /// The built-in player's processing, as it is set right now, for Apple's
+        /// player to do the same to its own sound (Conner, 6.2.0: "I want all my
+        /// existing audio effects to work"). Speed is 1 for normal, pitch is a
+        /// frequency ratio, the limiter's times are in seconds.
+        /// </summary>
+        public sealed record Effects(
+            double Speed, double Pitch, bool PitchMovesTempo,
+            bool Equaliser, int[] Bands,
+            bool Limiter, bool LimiterWholeRange, double LimiterCeiling, double LimiterAttackSeconds, double LimiterReleaseSeconds,
+            bool Silence, int SilenceThresholdDecibels, int SilenceMinimumMilliseconds, int SilenceLeaveMilliseconds,
+            int SilenceFadeOutMilliseconds, int SilenceFadeInMilliseconds,
+            int FadeInMilliseconds, int FadeOutMilliseconds);
+
+        private static string? _effectsJson;
+
+        /// <summary>
+        /// Hands the page the effects to play through. Kept, so a page made
+        /// later (the first song, or after a crash) starts with them; sent only
+        /// when something changed, because the dialogs call this on every arrow.
+        /// </summary>
+        public static void SetEffects(Effects e)
+        {
+            string json = JsonSerializer.Serialize(new
+            {
+                speed = e.Speed, pitch = e.Pitch, pitchTempo = e.PitchMovesTempo,
+                eqOn = e.Equaliser, eq = e.Bands,
+                limOn = e.Limiter, limWhole = e.LimiterWholeRange, limCeil = e.LimiterCeiling,
+                limAttack = e.LimiterAttackSeconds, limRelease = e.LimiterReleaseSeconds,
+                silOn = e.Silence, silThresh = e.SilenceThresholdDecibels, silMin = e.SilenceMinimumMilliseconds,
+                silLeave = e.SilenceLeaveMilliseconds, silOut = e.SilenceFadeOutMilliseconds, silIn = e.SilenceFadeInMilliseconds,
+                fadeIn = e.FadeInMilliseconds, fadeOut = e.FadeOutMilliseconds,
+            });
+            lock (Gate)
+            {
+                if (_effectsJson == json) return;
+                _effectsJson = json;
+            }
+            OnUi(() => _ = CallAsync("effects", json));
         }
 
         /// <summary>Mute goes back to the level it came from, not to full.</summary>
@@ -1635,7 +1720,7 @@ namespace ExplorerNative
             Say?.Invoke("applemusic.failed", message);
         }
 
-        private static void Log(string line)
+        internal static void Log(string line)
         {
             var path = LogPath;
             if (string.IsNullOrEmpty(path)) return;
@@ -1665,12 +1750,418 @@ namespace ExplorerNative
 <link rel="preconnect" href="https://universal-activity-service.itunes.apple.com" crossorigin>
 </head>
 <body>
+<!-- The effects, as an audio worklet (loaded by makeFx below). The limiter and
+     the equaliser are AudioPlayer's own arithmetic (WasapiRenderer.ApplyGainAndMeasure,
+     Equaliser), and pitch is TimeStretch followed by Resampler, as it is for a file:
+     the same numbers in the same order, so a setting sounds the same in both players. -->
+<script type="text/plain" id="fxsrc">
+const CH = 2, HOP = 1024, OVER = 1024, SEARCH = 640, MAXHOP = HOP * 16, COARSE = 8, STRIDE = 4;
+const BANDS = 20, COLD = 1e-5;
+const FREQ = [32, 45, 63, 90, 125, 180, 250, 355, 500, 710, 1000, 1400, 2000, 2800, 4000, 5600, 8000, 11200, 16000, 20000];
+const WIN = new Float32Array(OVER);
+for (let i = 0; i < OVER; i++) WIN[i] = 0.5 - 0.5 * Math.cos(Math.PI * i / (OVER - 1));
+function coef(seconds) {
+  const samples = seconds * sampleRate;
+  return seconds <= 0 || samples < 1 ? 1 : 1 - Math.exp(-1 / samples);
+}
+// Changes the length without the pitch (TimeStretch.cs, the stretching half).
+class Stretch {
+  constructor() {
+    this.inb = new Float32Array((2 * SEARCH + HOP + OVER + MAXHOP + 256) * CH);
+    this.out = new Float32Array(HOP * CH);
+    this.tail = new Float32Array(OVER * CH);
+    this.tailMono = new Float32Array(OVER);
+    this.inMono = new Float32Array(2 * SEARCH + OVER + 1);
+    this.rate = 1;
+    this.reset();
+  }
+  reset() { this.inN = 0; this.haveTail = false; this.plain = true; this.debt = 0; }
+  push(src, frames) {
+    const n = Math.min(frames, this.inb.length / CH - this.inN);
+    if (n <= 0) return;
+    this.inb.set(src.subarray(0, n * CH), this.inN * CH);
+    this.inN += n;
+  }
+  consume(frames) {
+    if (frames >= this.inN) { this.inN = 0; return; }
+    this.inb.copyWithin(0, frames * CH, this.inN * CH);
+    this.inN -= frames;
+  }
+  // One hop of output in this.out, or 0 when there is not enough to make it from yet.
+  produce() {
+    const want = HOP * this.rate + this.debt;
+    let step = Math.floor(want);
+    const debt = want - step;
+    step = Math.min(Math.max(step, 1), MAXHOP);
+    if (this.inN < Math.max(2 * SEARCH + HOP + OVER, step)) return 0;
+    this.debt = debt;
+    const inb = this.inb, out = this.out, tail = this.tail;
+    let at = SEARCH;
+    if (this.plain) {
+      this.plain = false;
+      at = 0;
+      out.set(inb.subarray(0, OVER * CH));
+    } else if (this.haveTail) {
+      at = SEARCH + this.bestOffset();
+      for (let i = 0; i < OVER; i++) {
+        const w = WIN[i], back = 1 - w, from = (at + i) * CH, to = i * CH;
+        out[to] = tail[to] * back + inb[from] * w;
+        out[to + 1] = tail[to + 1] * back + inb[from + 1] * w;
+      }
+    } else out.set(inb.subarray(at * CH, (at + OVER) * CH));
+    tail.set(inb.subarray((at + HOP) * CH, (at + HOP + OVER) * CH));
+    this.haveTail = true;
+    for (let i = 0; i < OVER; i++) this.tailMono[i] = tail[i * CH] + tail[i * CH + 1];
+    this.consume(step);
+    return HOP;
+  }
+  bestOffset() {
+    const m = this.inMono, inb = this.inb, span = Math.min(m.length, this.inN);
+    for (let i = 0; i < span; i++) m[i] = inb[i * CH] + inb[i * CH + 1];
+    for (let i = span; i < m.length; i++) m[i] = 0;
+    let best = 0, top = -Infinity;
+    for (let off = -SEARCH; off <= SEARCH; off += COARSE) {
+      const s = this.score(SEARCH + off, STRIDE);
+      if (s > top) { top = s; best = off; }
+    }
+    const from = Math.max(-SEARCH, best - COARSE), to = Math.min(SEARCH, best + COARSE);
+    let refined = best;
+    top = -Infinity;
+    for (let off = from; off <= to; off++) {
+      const s = this.score(SEARCH + off, 1);
+      if (s > top) { top = s; refined = off; }
+    }
+    return refined;
+  }
+  score(at, stride) {
+    const t = this.tailMono, m = this.inMono;
+    let dot = 0, energy = 0;
+    for (let i = 0; i < OVER; i += stride) { const b = m[at + i]; dot += t[i] * b; energy += b * b; }
+    return energy > 1e-12 ? dot / Math.sqrt(energy) : 0;
+  }
+}
+// Changes the pitch and the length together (Resampler.cs).
+class Resamp {
+  constructor() {
+    this.buf = new Float32Array(16384 * CH);
+    this.have = 0; this.pos = 0; this.ratio = 1;
+    this.lp = new Float64Array(CH * 4); this.sec = new Float64Array(10);
+    this.filtering = false; this.designed = NaN;
+  }
+  reset() { this.have = 0; this.pos = 0; this.lp.fill(0); }
+  design(ratio) {
+    if (!(ratio > 1.0001)) {
+      if (this.filtering) { this.filtering = false; this.lp.fill(0); }
+      this.designed = NaN;
+      return;
+    }
+    if (this.filtering && Math.abs(ratio - this.designed) < 1e-9) return;
+    this.designed = ratio; this.filtering = true;
+    let cutoff = 0.45 * sampleRate / ratio;
+    if (cutoff > sampleRate * 0.49) cutoff = sampleRate * 0.49;
+    const w0 = 2 * Math.PI * cutoff / sampleRate, cos = Math.cos(w0), sin = Math.sin(w0), qs = [0.54119610, 1.30656296];
+    for (let n = 0; n < 2; n++) {
+      const alpha = sin / (2 * qs[n]), a0 = 1 + alpha;
+      this.sec[n * 5] = (1 - cos) / 2 / a0;
+      this.sec[n * 5 + 1] = (1 - cos) / a0;
+      this.sec[n * 5 + 2] = (1 - cos) / 2 / a0;
+      this.sec[n * 5 + 3] = -2 * cos / a0;
+      this.sec[n * 5 + 4] = (1 - alpha) / a0;
+    }
+  }
+  filter(block, frames) {
+    for (let n = 0; n < 2; n++) {
+      const b0 = this.sec[n * 5], b1 = this.sec[n * 5 + 1], b2 = this.sec[n * 5 + 2], a1 = this.sec[n * 5 + 3], a2 = this.sec[n * 5 + 4];
+      for (let c = 0; c < CH; c++) {
+        const state = (c * 2 + n) * 2;
+        let s1 = this.lp[state], s2 = this.lp[state + 1];
+        for (let f = 0; f < frames; f++) {
+          const i = f * CH + c, x = block[i], y = b0 * x + s1;
+          s1 = b1 * x - a1 * y + s2;
+          s2 = b2 * x - a2 * y;
+          block[i] = y;
+        }
+        this.lp[state] = isFinite(s1) && Math.abs(s1) >= 1e-20 ? s1 : 0;
+        this.lp[state + 1] = isFinite(s2) && Math.abs(s2) >= 1e-20 ? s2 : 0;
+      }
+    }
+  }
+  feed(block, frames) {
+    const keepFrom = Math.floor(this.pos) - 1;
+    if (keepFrom > 1) {
+      const keep = this.have - keepFrom;
+      if (keep > 0) this.buf.copyWithin(0, keepFrom * CH, this.have * CH);
+      this.have = keep < 0 ? 0 : keep;
+      this.pos -= keepFrom;
+    }
+    if (this.filtering) this.filter(block, frames);
+    if (this.buf.length < (this.have + frames) * CH) {
+      const bigger = new Float32Array((this.have + frames) * 2 * CH);
+      bigger.set(this.buf.subarray(0, this.have * CH));
+      this.buf = bigger;
+    }
+    this.buf.set(block.subarray(0, frames * CH), this.have * CH);
+    this.have += frames;
+  }
+  available() { return Math.max(0, Math.floor((this.have - 3 - this.pos) / this.ratio)); }
+  read(dest, frames) {
+    const buf = this.buf, ratio = this.ratio;
+    let made = 0;
+    while (made < frames) {
+      const at = Math.floor(this.pos);
+      if (at + 2 >= this.have) break;
+      const t = this.pos - at;
+      for (let c = 0; c < CH; c++) {
+        const p0 = buf[(at - 1 < 0 ? 0 : at - 1) * CH + c], p1 = buf[at * CH + c], p2 = buf[(at + 1) * CH + c], p3 = buf[(at + 2) * CH + c];
+        const a = 0.5 * (-p0 + 3 * p1 - 3 * p2 + p3), b = 0.5 * (2 * p0 - 5 * p1 + 4 * p2 - p3), d = 0.5 * (-p0 + p2);
+        dest[made * CH + c] = ((a * t + b) * t + d) * t + p1;
+      }
+      this.pos += ratio;
+      made++;
+    }
+    return made;
+  }
+}
+class Fx extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.p = { gain: 1, pitch: 1, tempo: 1, eqOn: false, eq: [], limOn: false, limWhole: false, limCeil: 0.9,
+               limAttack: 0.0005, limRelease: 0.25, silOn: false, silThresh: -48, silMin: 400, silLeave: 150, silOut: 20, silIn: 20 };
+    this.io = new Float32Array(128 * CH);
+    this.st = new Stretch(); this.rs = new Resamp();
+    this.pitchOn = false; this.started = false; this.wait = -1;
+    this.env = 0; this.boost = 1;
+    this.eqCur = new Float64Array(BANDS); this.eqCo = new Float64Array(BANDS * 5);
+    this.eqState = new Float64Array(BANDS * CH * 2); this.eqStale = true;
+    for (let b = 0; b < BANDS; b++) this.eqCo[b * 5] = 1;
+    this.fade = 1; this.fadeTo = 1; this.fadeStep = 0;
+    this.gate = 1; this.gateTo = 1; this.gateStep = 0;
+    this.skipping = false; this.silentMs = 0;
+    this.port.onmessage = e => this.take(e.data);
+  }
+  take(d) {
+    if (d.set) Object.assign(this.p, d.set);
+    if (d.fade) {
+      this.fadeTo = d.fade.to;
+      if (!(d.fade.ms > 0)) { this.fade = this.fadeTo; this.fadeStep = 0; }
+      else this.fadeStep = Math.abs(this.fadeTo - this.fade) / (d.fade.ms / 1000 * sampleRate);
+    }
+    if (d.calm) { this.skipping = false; this.silentMs = 0; this.gate = this.gateTo = 1; this.gateStep = 0; }
+  }
+  setGate(to, ms) {
+    this.gateTo = to;
+    if (!(ms > 0)) { this.gate = to; this.gateStep = 0; }
+    else this.gateStep = Math.abs(to - this.gate) / (ms / 1000 * sampleRate);
+  }
+  process(inputs, outputs) {
+    const inp = inputs[0], out = outputs[0], n = out[0].length, p = this.p;
+    if (this.io.length < n * CH) this.io = new Float32Array(n * CH);
+    const io = this.io, live = !!inp && inp.length > 0;
+    if (live) {
+      const L = inp[0], R = inp[1] || inp[0];
+      for (let i = 0; i < n; i++) {
+        const l = L[i], r = R[i];
+        // A sample that is not a number is silence.
+        io[i * CH] = isFinite(l) ? l : 0;
+        io[i * CH + 1] = isFinite(r) ? r : 0;
+      }
+    } else io.fill(0, 0, n * CH);
+
+    // MusicKit's own volume (up to 1) has already been applied to what arrives.
+    const gain = p.gain, base = gain < 1 ? gain : 1, over = gain > 1 ? gain : 1, undo = base > 0 ? 1 / base : 0;
+
+    // Silence shortening: after a silence has lasted long enough, the page
+    // runs the song fast until sound comes back, and nothing is let out meanwhile.
+    if (p.silOn && live && base > 0) {
+      let peak = 0;
+      for (let i = 0; i < n * CH; i++) { const m = io[i] < 0 ? -io[i] : io[i]; if (m > peak) peak = m; }
+      if (peak * undo < Math.pow(10, p.silThresh / 20)) {
+        if (!this.skipping) {
+          this.silentMs += n / sampleRate * 1000 * p.tempo;
+          if (this.silentMs >= Math.max(p.silMin, p.silLeave)) {
+            this.skipping = true;
+            this.setGate(0, p.silOut);
+            this.port.postMessage({ skip: true });
+          }
+        }
+      } else {
+        this.silentMs = 0;
+        if (this.skipping) { this.skipping = false; this.setGate(1, p.silIn); this.port.postMessage({ skip: false }); }
+      }
+    } else {
+      this.silentMs = 0;
+      if (this.skipping) { this.skipping = false; this.setGate(1, 0); this.port.postMessage({ skip: false }); }
+    }
+
+    // Pitch: stretched by one over the ratio, then resampled by the ratio, so the length comes out unchanged.
+    const ratio = p.pitch > 0 ? p.pitch : 1;
+    if (ratio !== 1) {
+      if (!this.pitchOn) { this.pitchOn = true; this.st.reset(); this.rs.reset(); this.started = false; this.wait = -1; }
+      this.st.rate = 1 / ratio; this.rs.ratio = ratio; this.rs.design(ratio);
+      this.st.push(io, n);
+      let made;
+      while ((made = this.st.produce()) > 0) this.rs.feed(this.st.out, made);
+      // The stretcher makes its sound a block at a time; a few blocks of head start keep the output from running dry between them.
+      if (!this.started && this.rs.available() > 0) {
+        if (this.wait < 0) this.wait = 4;
+        else if (--this.wait <= 0) this.started = true;
+      }
+      let got = 0;
+      if (this.started) {
+        got = this.rs.read(io, n);
+        if (got < n) { this.started = false; this.wait = -1; }
+      }
+      io.fill(0, got * CH, n * CH);
+    } else this.pitchOn = false;
+
+    // The volume above 1 and the limiter (WasapiRenderer.ApplyGainAndMeasure).
+    const limit = p.limOn && (p.limWhole || gain > 1) && base > 0;
+    const most = p.limWhole ? 512 : 8 * over * over;
+    const attack = coef(p.limAttack), release = coef(p.limRelease), settle = coef(0.005), aim = p.limCeil;
+    let env = limit && isFinite(this.env) ? this.env : 0, boost = isFinite(this.boost) ? this.boost : 1;
+    for (let f = 0; f < n; f++) {
+      const at = f * CH;
+      if (limit) {
+        const a = io[at] < 0 ? -io[at] : io[at], b = io[at + 1] < 0 ? -io[at + 1] : io[at + 1];
+        const loudest = (a > b ? a : b) * undo * over;
+        if (env < COLD) env = loudest;
+        else env += (loudest - env) * (loudest > env ? attack : release);
+        let wanted = env >= COLD ? aim / env : boost;
+        if (wanted < 1) wanted = 1;
+        if (wanted > most) wanted = most;
+        boost = wanted < boost ? wanted : boost + (wanted - boost) * release;
+      } else if (boost !== 1) {
+        boost += (1 - boost) * settle;
+        if (boost > 0.9999 && boost < 1.0001) boost = 1;
+      }
+      const m = over * boost;
+      io[at] *= m; io[at + 1] *= m;
+    }
+    this.env = env; this.boost = boost;
+
+    this.equalise(io, n);
+
+    // Fades, and the gate that closes over a silence being run through.
+    for (let f = 0; f < n; f++) {
+      if (this.fade !== this.fadeTo) {
+        if (this.fadeStep <= 0 || Math.abs(this.fade - this.fadeTo) <= this.fadeStep) this.fade = this.fadeTo;
+        else this.fade += this.fade < this.fadeTo ? this.fadeStep : -this.fadeStep;
+      }
+      if (this.gate !== this.gateTo) {
+        if (this.gateStep <= 0 || Math.abs(this.gate - this.gateTo) <= this.gateStep) this.gate = this.gateTo;
+        else this.gate += this.gate < this.gateTo ? this.gateStep : -this.gateStep;
+      }
+      const m = this.fade * this.gate;
+      if (m !== 1) { io[f * CH] *= m; io[f * CH + 1] *= m; }
+    }
+
+    const oL = out[0], oR = out.length > 1 ? out[1] : null;
+    for (let i = 0; i < n; i++) { oL[i] = io[i * CH]; if (oR) oR[i] = io[i * CH + 1]; }
+    return true;
+  }
+  // The twenty tone controls, after the gain and the limiter (Equaliser.cs).
+  equalise(io, n) {
+    const p = this.p, cur = this.eqCur, co = this.eqCo, st = this.eqState;
+    if (!p.eqOn) { st.fill(0); return; }
+    let flat = true;
+    for (let b = 0; b < BANDS; b++) if ((p.eq[b] || 0) !== 0 || cur[b] !== 0) { flat = false; break; }
+    if (flat) return;
+    // Each band glides to where it was asked to be, over about twenty milliseconds.
+    let step = 1 - Math.exp(-n / (0.02 * sampleRate));
+    if (step > 1) step = 1;
+    for (let b = 0; b < BANDS; b++) {
+      const target = Math.max(-24, Math.min(24, p.eq[b] || 0)), now = cur[b];
+      if (now === target) continue;
+      let next = now + (target - now) * step;
+      if (Math.abs(target - next) < 0.001) next = target;
+      cur[b] = next;
+      this.eqStale = true;
+    }
+    if (this.eqStale) this.design();
+    for (let b = 0; b < BANDS; b++) {
+      const c0 = b * 5, b0 = co[c0], b1 = co[c0 + 1], b2 = co[c0 + 2], a1 = co[c0 + 3], a2 = co[c0 + 4];
+      if (b0 === 1 && b1 === 0 && b2 === 0 && a1 === 0 && a2 === 0) continue;
+      for (let c = 0; c < CH; c++) {
+        const s = (b * CH + c) * 2;
+        let s1 = st[s], s2 = st[s + 1];
+        for (let f = 0; f < n; f++) {
+          const i = f * CH + c, x = io[i], y = b0 * x + s1;
+          s1 = b1 * x - a1 * y + s2;
+          s2 = b2 * x - a2 * y;
+          io[i] = y;
+        }
+        st[s] = isFinite(s1) && Math.abs(s1) >= 1e-20 ? s1 : 0;
+        st[s + 1] = isFinite(s2) && Math.abs(s2) >= 1e-20 ? s2 : 0;
+      }
+    }
+  }
+  design() {
+    this.eqStale = false;
+    const co = this.eqCo, st = this.eqState, limit = sampleRate * 0.45;
+    for (let b = 0; b < BANDS; b++) {
+      const at = b * 5, db = this.eqCur[b], low = b === 0, high = b === BANDS - 1;
+      let frequency = FREQ[b];
+      // A shelf's corner goes between the two bands, not on the band.
+      if (low) frequency = Math.sqrt(frequency * FREQ[1]);
+      if (high) frequency = Math.min(Math.sqrt(frequency * FREQ[BANDS - 2]), limit);
+      if (db === 0 || (!low && !high && frequency >= limit)) {
+        co[at] = 1; co[at + 1] = 0; co[at + 2] = 0; co[at + 3] = 0; co[at + 4] = 0;
+        for (let c = 0; c < CH; c++) { st[(b * CH + c) * 2] = 0; st[(b * CH + c) * 2 + 1] = 0; }
+        continue;
+      }
+      const a = Math.pow(10, db / 40), w0 = 2 * Math.PI * frequency / sampleRate, cos = Math.cos(w0), sin = Math.sin(w0);
+      let b0, b1, b2, a0, a1, a2;
+      if (low || high) {
+        const alpha = sin / 2 * Math.sqrt(2), beta = 2 * Math.sqrt(a) * alpha;
+        if (low) {
+          b0 = a * ((a + 1) - (a - 1) * cos + beta);
+          b1 = 2 * a * ((a - 1) - (a + 1) * cos);
+          b2 = a * ((a + 1) - (a - 1) * cos - beta);
+          a0 = (a + 1) + (a - 1) * cos + beta;
+          a1 = -2 * ((a - 1) + (a + 1) * cos);
+          a2 = (a + 1) + (a - 1) * cos - beta;
+        } else {
+          b0 = a * ((a + 1) + (a - 1) * cos + beta);
+          b1 = -2 * a * ((a - 1) + (a + 1) * cos);
+          b2 = a * ((a + 1) + (a - 1) * cos - beta);
+          a0 = (a + 1) - (a - 1) * cos + beta;
+          a1 = 2 * ((a - 1) - (a + 1) * cos);
+          a2 = (a + 1) - (a - 1) * cos - beta;
+        }
+      } else {
+        const alpha = sin / (2 * 2.0);
+        b0 = 1 + alpha * a; b1 = -2 * cos; b2 = 1 - alpha * a;
+        a0 = 1 + alpha / a; a1 = -2 * cos; a2 = 1 - alpha / a;
+      }
+      co[at] = b0 / a0; co[at + 1] = b1 / a0; co[at + 2] = b2 / a0; co[at + 3] = a1 / a0; co[at + 4] = a2 / a0;
+    }
+  }
+}
+registerProcessor("fx", Fx);
+</script>
 <script>
 // The page may name speakers (that needs the microphone permission), but it
 // never listens: nothing here may open a microphone.
 try {
   if (navigator.mediaDevices) navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException("Not allowed", "NotAllowedError"));
   navigator.getUserMedia = navigator.webkitGetUserMedia = undefined;
+} catch (e) {}
+// MusicKit's own seek throws away everything before the place it goes to
+// (sourceBuffer.remove(0, target), seen live in 6.2.0), though the whole song
+// had been downloaded. After one such seek (a song resumed part-way, or a skip
+// past what had arrived on a slow connection) every skip backward had to be
+// MusicKit's again: a third of a second of silence each, where a skip inside
+// what is downloaded has none. So the song is kept: that removal is turned
+// into one of nothing. A removal to the end (a song being cleared out) is real.
+try {
+  const realRemove = SourceBuffer.prototype.remove;
+  SourceBuffer.prototype.remove = function (from, to) {
+    try {
+      const n = this.buffered.length, end = n ? this.buffered.end(n - 1) : 0;
+      if (from === 0 && isFinite(to) && to < end - 1) return realRemove.call(this, end, end + 0.001);
+    } catch (e) {}
+    return realRemove.call(this, from, to);
+  };
 } catch (e) {}
 let music = null, current = 0, switching = false, endedFor = -1, wantVolume = null, wantSink = null;
 let queuedNext = null, lastState = "", seekWant = null, seeking = false, advances = 0;
@@ -1685,34 +2176,147 @@ let stepping = null, replacing = 0;
 // started at 0, silent), so the level asked for is kept and put back.
 // wantVolume is a multiplier and may be above 1 (the app's volume goes to ten
 // times, as it does for files). MusicKit's own volume stops at 1, so the rest
-// is a gain the sound passes through on its way out, made the first time
-// anything above 1 is asked for and left at exactly 1 otherwise.
-let boostContext = null, boostGain = null;
-const boosted = new WeakSet();
+// is done by the effects below, on the sound's way out.
+//
+// The effects: the built-in player's own limiter, equaliser, pitch, silence
+// shortening and fades, done to this page's sound by the code in "fxsrc"
+// (an audio worklet). The sound only goes through it once something needs it
+// (a volume above 1 or an effect switched on); until then the audio element
+// plays straight out, untouched. Speed is the audio element's own.
+// "interactive", not "playback": 6.1.1's boost asked for "playback", which
+// buffers a tenth of a second or more, and every skip, pause and volume step
+// was heard that much late by anyone listening above 100 percent.
+let eff = { speed: 1, pitch: 1, pitchTempo: false, eqOn: false, eq: [], limOn: false, limWhole: false,
+            limCeil: 0.9, limAttack: 0.0005, limRelease: 0.25, silOn: false, silThresh: -48, silMin: 400,
+            silLeave: 150, silOut: 20, silIn: 20, fadeIn: 0, fadeOut: 0 };
+let fxContext = null, fxNode = null, fxMaking = null, skipping = false, settling = false;
+const wired = new WeakSet(), rated = new WeakSet();
+// How fast a silence is run through. Chromium plays no sound above 4 times,
+// and the end of the silence has to be heard to stop at it.
+const SKIP_RATE = 4;
 function post(obj) { try { window.chrome.webview.postMessage(JSON.stringify(obj)); } catch (e) {} }
 function audio() { return document.querySelector("audio"); }
-function wireBoost() {
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+// The pitch the worklet has to make. Pitch that takes the tempo with it at
+// normal speed is the audio element simply playing faster or slower.
+function fxPitch() { return eff.pitchTempo && eff.speed === 1 ? 1 : eff.pitch; }
+function tempo() { return Math.min(16, Math.max(0.0625, eff.speed * (eff.pitchTempo ? eff.pitch : 1))); }
+function fxWanted() {
+  return (wantVolume !== null && wantVolume > 1) || eff.eqOn || eff.limOn || eff.silOn ||
+         eff.fadeIn > 0 || eff.fadeOut > 0 || fxPitch() !== 1;
+}
+async function makeFx() {
+  const ctx = new AudioContext({ latencyHint: "interactive" });
+  const url = URL.createObjectURL(new Blob([document.getElementById("fxsrc").textContent], { type: "application/javascript" }));
+  await ctx.audioWorklet.addModule(url);
+  const node = new AudioWorkletNode(ctx, "fx", { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [2],
+    channelCount: 2, channelCountMode: "explicit", channelInterpretation: "speakers" });
+  node.connect(ctx.destination);
+  node.port.onmessage = e => onFx(e.data);
+  fxContext = ctx; fxNode = node;
+  post({ kind: "log", message: "effects ready at " + ctx.sampleRate + ", latency " + Math.round((ctx.baseLatency || 0) * 1000) + "ms" });
+}
+function wireFx() {
   try {
-    if (!boostContext) {
-      boostContext = new AudioContext({ latencyHint: "playback" });
-      boostGain = boostContext.createGain();
-      boostGain.connect(boostContext.destination);
-      post({ kind: "log", message: "boost ready at " + boostContext.sampleRate });
+    if (!fxContext) {
+      if (!fxMaking) fxMaking = makeFx().then(() => { pushFx(); wireFx(); applySink(); })
+        .catch(e => post({ kind: "log", message: "effects: " + e }));
+      return;
     }
     document.querySelectorAll("audio").forEach(a => {
-      if (boosted.has(a)) return;
-      boosted.add(a);
-      boostContext.createMediaElementSource(a).connect(boostGain);
+      if (wired.has(a)) return;
+      wired.add(a);
+      fxContext.createMediaElementSource(a).connect(fxNode);
     });
-    if (boostContext.state !== "running") boostContext.resume().catch(() => {});
-  } catch (e) { post({ kind: "log", message: "boost: " + e }); }
+    if (fxContext.state !== "running") fxContext.resume().catch(() => {});
+  } catch (e) { post({ kind: "log", message: "effects: " + e }); }
+}
+function pushFx() {
+  if (!fxNode) return;
+  fxNode.port.postMessage({ set: { gain: wantVolume === null ? 1 : wantVolume, pitch: fxPitch(), tempo: tempo(),
+    eqOn: eff.eqOn, eq: eff.eq, limOn: eff.limOn, limWhole: eff.limWhole, limCeil: eff.limCeil,
+    limAttack: eff.limAttack, limRelease: eff.limRelease, silOn: eff.silOn, silThresh: eff.silThresh,
+    silMin: eff.silMin, silLeave: eff.silLeave, silOut: eff.silOut, silIn: eff.silIn } });
+}
+function fxFade(to, ms) { if (fxNode) fxNode.port.postMessage({ fade: { to, ms } }); }
+function fxCalm() { skipping = false; if (fxNode) fxNode.port.postMessage({ calm: true }); }
+// The worklet heard a silence long enough to shorten, or the end of one.
+function onFx(d) {
+  if (d.skip === undefined) return;
+  if (d.skip && (!music || !music.isPlaying || holdPaused || switching || !eff.silOn)) { fxCalm(); applyRate(); return; }
+  skipping = !!d.skip;
+  applyRate();
+}
+// Speed, and pitch that moves the tempo, are the audio element's own rate.
+function applyRate() {
+  const a = audio();
+  if (!a) return;
+  if (!rated.has(a)) {
+    rated.add(a);
+    // MusicKit sets the rate back when it readies a song.
+    a.addEventListener("ratechange", () => { if (a === audio()) applyRate(); });
+  }
+  const keep = !(eff.pitchTempo && eff.speed === 1);
+  const rate = skipping ? Math.max(SKIP_RATE, tempo()) : tempo();
+  try {
+    if (a.preservesPitch !== keep) a.preservesPitch = keep;
+    if (Math.abs(a.playbackRate - rate) > 1e-6) a.playbackRate = rate;
+  } catch (e) { post({ kind: "log", message: "rate: " + e }); }
 }
 function applyVolume() {
   if (!music || wantVolume === null) return;
-  const base = Math.min(1, wantVolume), over = Math.max(1, wantVolume);
-  if (over > 1 || boostContext) wireBoost();   // once made, every new audio element goes through it
-  if (boostGain && boostGain.gain.value !== over) boostGain.gain.value = over;
+  // Up to 1 is MusicKit's own volume, so the level is right even on an audio
+  // element the effects have not been joined to yet; the rest is the worklet's.
+  const base = Math.min(1, wantVolume);
+  if (fxWanted() || fxContext) wireFx();   // once made, every new audio element goes through it
+  pushFx();
   if (music.volume !== base) music.volume = base;
+}
+// Pause and play, one at a time, ending on whatever was asked for last. Sent
+// one after another (a held Play/Pause key is thirty a second), MusicKit
+// dropped a pause that came while a play was starting, and the song went on
+// playing with the app saying "Paused".
+async function settle() {
+  if (settling) return;
+  settling = true;
+  try {
+    // By the clock, not by a count: a pause MusicKit drops answers at once,
+    // and sixty of them were over before the play it was waiting on had begun.
+    const until = performance.now() + 5000;
+    for (let i = 0; performance.now() < until && !switching; i++) {
+      if (i > 0) await sleep(25);
+      if (holdPaused) {
+        if (!music.isPlaying) break;
+        if (fxNode && eff.fadeOut > 0) {
+          fxFade(0, eff.fadeOut);
+          await sleep(eff.fadeOut);
+          if (!holdPaused) { fxFade(1, eff.fadeIn); continue; }
+        }
+        await music.pause();
+        // After a burst of presses MusicKit says it is playing and ignores
+        // every pause for seconds (seen live: forty in a row, each answered
+        // at once). The audio element's own pause always takes, and MusicKit
+        // follows it.
+        if (music.isPlaying) { const a = audio(); if (a && !a.paused) a.pause(); }
+        fxFade(1, 0);
+        fxCalm(); applyRate();
+      } else {
+        if (music.isPlaying) break;
+        // Never played yet: it starts where it was loaded for, or where it was moved to since.
+        const t = unstarted ? resumeAt : 0;
+        unstarted = false; resumeAt = 0;
+        if (fxNode && eff.fadeIn > 0) fxFade(0, 0);
+        await music.play();
+        applyVolume(); applyRate();
+        if (t > 0) await music.seekToTime(t);
+        // play() answers before the song is going; looking again at once started it twice.
+        for (let k = 0; k < 50 && !holdPaused && !switching && !music.isPlaying; k++) await sleep(20);
+        if (fxNode && eff.fadeIn > 0) fxFade(1, eff.fadeIn);
+      }
+    }
+  } catch (e) {
+    post({ kind: "log", message: "pause or play failed: " + codeOf(e) + " " + String(e && e.message || e) });
+  } finally { settling = false; fxFade(1, eff.fadeIn > 0 && !holdPaused ? eff.fadeIn : 0); }
 }
 function sendState() {
   // Not while a new song is being put in: what MusicKit says then is the old one's.
@@ -1751,10 +2355,10 @@ async function applySink() {
     try { await a.setSinkId(id); post({ kind: "log", message: "sink " + (id ? wantSink : "default") }); }
     catch (e) { post({ kind: "log", message: "setSinkId: " + e }); }
   }
-  // Sound that goes through the boost comes out where the boost does.
-  if (boostContext && boostContext.setSinkId && boostContext.sinkId !== id) {
-    try { await boostContext.setSinkId(id); }
-    catch (e) { post({ kind: "log", message: "boost setSinkId: " + e }); }
+  // Sound that goes through the effects comes out where they do.
+  if (fxContext && fxContext.setSinkId && fxContext.sinkId !== id) {
+    try { await fxContext.setSinkId(id); }
+    catch (e) { post({ kind: "log", message: "effects setSinkId: " + e }); }
   }
 }
 function inBuffer(a, t) {
@@ -1817,8 +2421,12 @@ window.amConfigure = async function (cfg) {
     music.addEventListener(E.playbackStateDidChange, sendState);
     music.addEventListener(E.playbackTimeDidChange, sendState);
     music.addEventListener(E.playbackDurationDidChange, sendState);
+    // A pause that MusicKit dropped while a play was starting is made again.
+    music.addEventListener(E.playbackStateDidChange, function () {
+      if (holdPaused && music.isPlaying && !switching && !unstarted) settle();
+    });
     music.addEventListener(E.nowPlayingItemDidChange, function () {
-      applyVolume(); applySink();
+      fxCalm(); applyVolume(); applyRate(); applySink();
       // MusicKit moved on to the song queued after this one by itself: the app
       // takes it as the one playing and queues the next.
       const now = music.nowPlayingItem;
@@ -1927,7 +2535,12 @@ window.amCommand = async function (c) {
         resumeAt = startAt; unstarted = true;
       } else {
         unstarted = false;
+        const fadeUp = fxNode && eff.fadeIn > 0 && !(stepped && music.isPlaying);
+        fxFade(fadeUp ? 0 : 1, 0);
+        fxCalm();
         if (!stepped || !music.isPlaying) await music.play();
+        applyRate();
+        if (fadeUp) fxFade(1, eff.fadeIn);
         // After quick presses MusicKit answers play() before the song is going
         // (measured: 15ms, sound 0.45s later), and the page then reported
         // "stopped" for a song that was starting. Normally this waits for nothing.
@@ -1958,17 +2571,13 @@ window.amCommand = async function (c) {
   if (switching && c.command === "seekto") { pendingSeek = Math.max(0, parseFloat(c.arg || "0") || 0); return; }
   try {
     switch (c.command) {
-      case "pause": holdPaused = true; await music.pause(); break;
-      case "resume": {
-        holdPaused = false;
-        // Never played yet: it starts where it was loaded for, or where it was moved to since.
-        const t = unstarted ? resumeAt : 0;
-        unstarted = false; resumeAt = 0;
-        await music.play();
-        applyVolume();
-        if (t > 0) await music.seekToTime(t);
+      case "pause": holdPaused = true; await settle(); break;
+      case "resume": holdPaused = false; await settle(); break;
+      case "effects":
+        try { Object.assign(eff, JSON.parse(c.arg || "{}")); } catch (e) { post({ kind: "log", message: "effects: " + e }); }
+        if (!eff.silOn && skipping) fxCalm();
+        applyVolume(); applyRate();
         break;
-      }
       case "stop":
         current++; switching = false; queuedNext = null; seekWant = null;
         unstarted = false; resumeAt = 0; pendingSeek = null;
@@ -1979,7 +2588,7 @@ window.amCommand = async function (c) {
         // Not playing yet: MusicKit ignores a seek then, so the place is kept for resume.
         if (unstarted) { resumeAt = Math.max(0, parseFloat(c.arg || "0") || 0); break; }
         await seekTo(parseFloat(c.arg || "0")); break;
-      case "volume": wantVolume = parseFloat(c.arg || "1"); applyVolume(); if (boostContext) await applySink(); break;
+      case "volume": wantVolume = parseFloat(c.arg || "1"); applyVolume(); break;
       case "device": wantSink = c.arg || ""; await applySink(); break;
       case "append":
         if (c.gen !== current) break;

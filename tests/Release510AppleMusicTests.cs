@@ -33,6 +33,8 @@ namespace ExplorerNative
                 await PlayAllFromRow();
                 await StationFromSong();
                 await Lyrics();
+                await LongListShowsItsFirstPageFirst();
+                EffectsReachApplesPlayer();
             }
             finally
             {
@@ -113,6 +115,93 @@ namespace ExplorerNative
             var main = SourceText("MainForm.cs");
             Check("the menu has Play all, Shuffle all and Play all next",
                 main.Contains("\"&Play all\"") && main.Contains("\"S&huffle all\"") && main.Contains("\"Play all ne&xt\""), null);
+        }
+
+        /// <summary>
+        /// 6.2.0: a long playlist is shown from its first page, the whole of it
+        /// follows, the first page's songs keep their paths, and anything that
+        /// needs every song (Play all) gets every song.
+        /// </summary>
+        private static async Task LongListShowsItsFirstPageFirst()
+        {
+            AppleMusic.ResetForTests();
+            AppleMusic.ConfigureForTests();
+            const int total = 250;
+            var asked = new List<string>();
+            AppleMusicClient.FakeForTests = req =>
+            {
+                var path = req.RequestUri!.AbsolutePath;
+                if (path.Contains("/me/account")) return Answer(HttpStatusCode.OK, "{\"meta\":{\"subscription\":{\"active\":true,\"storefront\":\"us\"}}}");
+                if (!path.EndsWith("/playlists/p.big/tracks")) return Answer(HttpStatusCode.OK);
+                var offsetAt = System.Text.RegularExpressions.Regex.Match(req.RequestUri.Query, "offset=(\\d+)");
+                int offset = offsetAt.Success ? int.Parse(offsetAt.Groups[1].Value) : 0;
+                lock (asked) asked.Add("offset " + offset);
+                var page = Enumerable.Range(offset, Math.Min(100, total - offset)).Select(i => ("i." + i, "Song " + i)).ToArray();
+                var body = SongsJson("library-songs", page);
+                string next = offset + 100 < total ? $",\"next\":\"/v1/me/library/playlists/p.big/tracks?offset={offset + 100}\"" : "";
+                return Answer(HttpStatusCode.OK, body.Substring(0, body.Length - 1) + next + $",\"meta\":{{\"total\":{total}}}}}");
+            };
+            var folder = AppleMusic.SeedForTests("::applemusic\\Library\\Playlists", new List<AppleMusicItem>
+                { new() { Kind = "playlist", Id = "p.big", Name = "Big", IsLibrary = true } })[0].Path;
+
+            var grew = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            void OnGrew(string f) { if (string.Equals(f, folder, StringComparison.OrdinalIgnoreCase)) grew.TrySetResult(f); }
+            AppleMusic.Grew += OnGrew;
+            try
+            {
+                var first = await AppleMusic.ListAsync(folder, fresh: false, CancellationToken.None, firstPageFirst: true);
+                Equal("a long playlist is shown from its first page", "100", first.Count.ToString());
+                Check("the whole playlist follows, and panes showing it are told",
+                    await Task.WhenAny(grew.Task, Task.Delay(5000)) == grew.Task, null);
+
+                var whole = await AppleMusic.ListAsync(folder, fresh: false, CancellationToken.None, firstPageFirst: true);
+                Equal("then the folder is the whole playlist", total.ToString(), whole.Count.ToString());
+                Check("the songs of the first page keep their paths",
+                    first.Select(r => r.Path).SequenceEqual(whole.Take(100).Select(r => r.Path)), null);
+                Equal("in Apple's order to the end", "Song 249", AppleMusic.ItemAt(whole[^1].Path)?.Name ?? "(none)");
+                Equal("every page was asked for once", "offset 0; offset 100; offset 200",
+                    string.Join("; ", asked.OrderBy(a => a.Length).ThenBy(a => a)));
+            }
+            finally { AppleMusic.Grew -= OnGrew; }
+
+            // Play all on a row never opened: every song, not a first page.
+            AppleMusic.ResetForTests();
+            AppleMusic.ConfigureForTests();
+            folder = AppleMusic.SeedForTests("::applemusic\\Library\\Playlists", new List<AppleMusicItem>
+                { new() { Kind = "playlist", Id = "p.big", Name = "Big", IsLibrary = true } })[0].Path;
+            var all = await AppleMusic.SongsOfAsync(folder, CancellationToken.None);
+            Equal("Play all plays the whole playlist", total.ToString(), all.Songs.Count.ToString());
+        }
+
+        /// <summary>6.2.0: the built-in player's effects are handed to Apple's player, and its page does them.</summary>
+        private static void EffectsReachApplesPlayer()
+        {
+            var tray = SourceText("TrayApplicationContext.cs");
+            var player = SourceText("AppleMusicPlayer.cs");
+            Check("nothing says an effect is not available for Apple Music any more",
+                !tray.Contains("That isn't available for Apple Music"), null);
+            foreach (var dialog in new[] { "ShowSpeedDialog()", "ShowLimiterDialog()", "ShowEqualiserDialog()", "ShowPitchDialog()", "ShowSilenceDialog()" })
+            {
+                int apple = tray.IndexOf("if (AppleMusicPlayer.IsActive)\r\n            {\r\n                if (action == AudioAction.ToggleRepeat)", StringComparison.Ordinal);
+                if (apple < 0) apple = tray.IndexOf("if (AppleMusicPlayer.IsActive)\n            {\n                if (action == AudioAction.ToggleRepeat)", StringComparison.Ordinal);
+                int end = apple < 0 ? -1 : tray.IndexOf("string message = action switch", apple, StringComparison.Ordinal);
+                Check("Apple Music opens " + dialog, apple >= 0 && end > apple && tray.Substring(apple, end - apple).Contains(dialog), null);
+            }
+            Check("every effect change is handed to Apple's player",
+                System.Text.RegularExpressions.Regex.Matches(tray, "PushAppleEffects\\(\\);").Count >= 8, null);
+            Check("the page has the effects worklet and takes the effects command",
+                player.Contains("registerProcessor(\"fx\", Fx)") && player.Contains("case \"effects\":"), null);
+            Check("the effects run at interactive latency",
+                player.Contains("new AudioContext({ latencyHint: \"interactive\" })") && !player.Contains("new AudioContext({ latencyHint: \"playback\" })"), null);
+            Check("MusicKit's seek no longer throws the downloaded song away",
+                player.Contains("SourceBuffer.prototype.remove = function (from, to)"), null);
+            Check("pause and play are settled one at a time",
+                player.Contains("case \"pause\": holdPaused = true; await settle(); break;") &&
+                player.Contains("case \"resume\": holdPaused = false; await settle(); break;"), null);
+
+            // The worklet's equaliser is the built-in player's: same centres, same Q.
+            Check("the worklet's bands are the equaliser's bands",
+                player.Contains("const FREQ = [" + string.Join(", ", Equaliser.Frequencies) + "];"), null);
         }
 
         /// <summary>Feature C: Start station on a song plays Apple's "ra." station made from it.</summary>

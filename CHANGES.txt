@@ -1,3 +1,11 @@
+6.2.0
+New: speed, pitch, the equaliser, the limiter and fades now work on Apple Music. They use the same settings as your own files, the same keys and the same windows in the Audio menu, and a setting sounds the same in both. Before, they all said they were not available for Apple Music.
+New: silence reduction works on Apple Music too. It cannot cut a silence out the way it does for a file, so it plays the silence at four times the speed until the sound comes back.
+New: a long Apple Music playlist, or your whole song library, now shows its first hundred songs in about half a second. The rest arrive behind them without a word, and your place in the list is kept. Before, a playlist of 4,700 songs showed nothing for about four seconds. Fetching the whole list is faster as well.
+Bug fixed: if you held the Play or pause key in Apple Music, it could end up playing while Explorer Native said Paused. It now always ends on the last one you asked for.
+Bug fixed: skipping backward in an Apple Music song could go silent for a third of a second on every press. This happened after you resumed a song part-way, or skipped ahead on a slow connection. Skips inside a song that has downloaded are now instant in both directions.
+Bug fixed: with the volume above 100 percent in Apple Music, every skip, pause and volume change was heard about a tenth of a second late.
+
 6.1.1
 Bug fixed: Apple Music was much louder than your own files at the same volume number. At 50 percent it was twice as loud, and at low numbers many times as loud. Now a number sounds the same in Apple Music as it does for a file.
 Bug fixed: the volume stopped at 100 percent in Apple Music while files go up to 1000 percent. Apple Music now goes up to 1000 percent too, and says boosted and maximum the same way.

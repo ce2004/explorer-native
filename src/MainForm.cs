@@ -1704,12 +1704,12 @@ namespace ExplorerNative
                 ? ((playing ? "Playing " : "Paused: ") + state.Name).Replace("&", "&&")
                 : "Nothing is playing";
 
-            // Apple Music's sound is sealed: what changes the sound itself, and
-            // repeat, could only say "That isn't available for Apple Music", so
-            // they are left off while it plays. Output device stays: it works.
+            // Speed, pitch, limiter, equaliser and silence work on Apple Music
+            // too since 6.2.0 (they were left off this menu while it played,
+            // when all they could say was that they were not available).
             bool apple = AppleMusicPlayer.IsActive;
             foreach (var item in new[] { _speedItem, _pitchItem, _limiterItem, _equaliserItem, _silenceItem })
-                item.Visible = !apple;
+                item.Visible = true;
 
             // Repeat is Apple's own while it plays: off, all, or this song.
             _shuffleItem.Visible = _upNextItem.Visible = _lyricsItem.Visible = apple;
@@ -6016,7 +6016,8 @@ namespace ExplorerNative
             }, TaskScheduler.Default);
             try
             {
-                rows = await AppleMusic.ListAsync(full, fresh: false, token);
+                // A long list is shown from its first page; the rest follows (OnAppleMusicGrew).
+                rows = await AppleMusic.ListAsync(full, fresh: false, token, firstPageFirst: true);
             }
             catch (OperationCanceledException) { return false; }
             catch (AppleMusicException ex)

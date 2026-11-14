@@ -150,9 +150,13 @@ it.
 Next track and Previous track have no keys until you choose them in
 Preferences, Audio, Configure keyboard shortcuts. In Apple Music they move
 through the song's list; for your own files, through the audio files in the
-track's folder. Because Apple keeps the sound sealed,
-the speed, pitch, equaliser and silence-removal tools do not apply to Apple
-Music.
+track's folder.
+
+The speed, pitch, equaliser, limiter and fades work on Apple Music the same
+way they do for your own files, with the same settings and the same keys.
+Silence reduction works too, with one difference: a file has its silences cut
+out, while in Apple Music a silence is played through at four times the speed
+until the sound comes back.
 
 
 Internet radio and live streams

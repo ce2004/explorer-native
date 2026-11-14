@@ -172,6 +172,8 @@ namespace ExplorerNative
             AppleMusicPlayer.BindUiThread();
             AppleMusicPlayer.Say = (id, msg) => PostUi(() => SayAudio(id, msg));
             AppleMusic.NowPlaying = () => (AppleMusicPlayer.CurrentPath, AppleMusicPlayer.IsActive && !AppleMusicPlayer.IsPlaying);
+            AppleMusic.Trace = AppleMusicPlayer.Log;
+            AppleMusic.WholeListArrived = AppleMusicPlayer.ListGrew;
 
             // The four notification hooks the layers below expose. Each is null
             // until something subscribes, and each layer checks that before
@@ -1395,8 +1397,14 @@ namespace ExplorerNative
             // run an action from inside another one.
             int previousThread = _actionThread;
             _actionThread = Environment.CurrentManagedThreadId;
+            long tracedAt = Environment.TickCount64;
             try { RunAudioActionCore(action, repeat); }
-            finally { _actionThread = previousThread; }
+            finally
+            {
+                _actionThread = previousThread;
+                // For EXPLORERNATIVE_HOTKEYLOG: how a held key really ran, both players.
+                HotkeyTrace($"{action} repeat {repeat} took {Environment.TickCount64 - tracedAt}ms, volume {_audio.VolumePercent}, apple {(AppleMusicPlayer.IsActive ? AppleMusicPlayer.VolumePercent : -1)}");
+            }
         }
 
         private void RunAudioActionCore(AudioAction action, int repeat)
@@ -1425,13 +1433,24 @@ namespace ExplorerNative
             }
 
             // Apple Music plays in its own player, so the same keys drive it while
-            // it is the thing playing. The sound is sealed, so the processing
-            // commands (speed, pitch, EQ, silence) have nothing to act on.
+            // it is the thing playing. The processing (speed, pitch, equaliser,
+            // limiter, silence) is the built-in player's own settings, which
+            // Apple's player is handed and does to its own sound (6.2.0).
             if (AppleMusicPlayer.IsActive)
             {
                 if (action == AudioAction.ToggleRepeat)
                 {
                     CycleAppleRepeat();
+                    return;
+                }
+                if (action is AudioAction.SpeedUp or AudioAction.SpeedDown)
+                {
+                    // Said as the built-in player says it: the finer name
+                    // ("Speed normal", "Already at 400 percent") once per hold.
+                    string said = StepSpeed(action == AudioAction.SpeedUp ? 1 : -1);
+                    var (finer, finerSaid) = TakePlayerNotification();
+                    if (finer != null && !_saidThisHold.Add(finer)) SayAudio(null, finerSaid ?? said, speak: false);
+                    else SayAudio(finer ?? AudioActions.For(action).NotificationId, finerSaid ?? said);
                     return;
                 }
                 string m = action switch
@@ -1454,10 +1473,13 @@ namespace ExplorerNative
                     AudioAction.Mute => AppleMusicPlayer.ToggleMute(),
                     // The output device is the one thing here both players share.
                     AudioAction.DeviceDialog => ShowDeviceDialog(),
-                    AudioAction.SpeedUp or AudioAction.SpeedDown
-                        or AudioAction.SpeedDialog or AudioAction.LimiterDialog
-                        or AudioAction.EqualiserDialog or AudioAction.PitchDialog or AudioAction.SilenceDialog
-                        => "That isn't available for Apple Music",
+                    // The same dialogs, on the same settings; each change is
+                    // handed to Apple's player as it is made (PushAppleEffects).
+                    AudioAction.SpeedDialog => ShowSpeedDialog(),
+                    AudioAction.LimiterDialog => ShowLimiterDialog(),
+                    AudioAction.EqualiserDialog => ShowEqualiserDialog(),
+                    AudioAction.PitchDialog => ShowPitchDialog(),
+                    AudioAction.SilenceDialog => ShowSilenceDialog(),
                     _ => "",
                 };
                 if (m.Length == 0) return;
@@ -1627,7 +1649,29 @@ namespace ExplorerNative
         {
             var message = _audio.StepSpeed(direction);
             _settings.AudioPlaybackRatePercent = _audio.PlaybackRatePercent;
+            PushAppleEffects();
             return message;
+        }
+
+        /// <summary>
+        /// Hands Apple's player the built-in player's processing as it stands:
+        /// speed, pitch, equaliser, limiter, silence shortening and fades. Called
+        /// wherever one of them changes (each arrow press in a dialog included),
+        /// so Apple Music is heard through the same settings as a file. The
+        /// settings live in the built-in player, which holds them with nothing
+        /// loaded; nothing is sent when nothing changed.
+        /// </summary>
+        private void PushAppleEffects()
+        {
+            AppleMusicPlayer.SetEffects(new AppleMusicPlayer.Effects(
+                _audio.PlaybackRatePercent / 100.0,
+                Resampler.RatioForSemitones(_audio.PitchSemitones), _audio.PitchMovesTempo,
+                _audio.Equaliser, _audio.EqualiserGains,
+                _audio.Limiter, _audio.LimiterWholeRange, _audio.LimiterCeilingPercent / 100.0,
+                _audio.LimiterAttackMicroseconds / 1_000_000.0, _audio.LimiterReleaseMilliseconds / 1000.0,
+                _audio.SilenceReduction, _audio.SilenceThresholdDecibels, _audio.SilenceMinimumMilliseconds,
+                _audio.SilenceLeaveMilliseconds, _audio.SilenceFadeOutMilliseconds, _audio.SilenceFadeInMilliseconds,
+                _audio.FadeInMilliseconds, _audio.FadeOutMilliseconds));
         }
 
         /// <summary>
@@ -1642,12 +1686,13 @@ namespace ExplorerNative
         {
             using var dialog = new SpeedForm(
                 _audio.PlaybackRatePercent,
-                percent => _audio.PlaybackRatePercent = percent);
+                percent => { _audio.PlaybackRatePercent = percent; PushAppleEffects(); });
 
             if (_form is { IsDisposed: false, Visible: true }) dialog.ShowDialog(_form);
             else dialog.ShowDialog();
 
             _settings.AudioPlaybackRatePercent = _audio.PlaybackRatePercent;
+            PushAppleEffects();
 
             // Anything modal leaves the keyboard on the form, where no key does
             // anything. Put it back in the list.
@@ -1790,6 +1835,7 @@ namespace ExplorerNative
                     _audio.LimiterCeilingPercent = ceiling;
                     _audio.LimiterWholeRange = wholeRange;
                     _audio.Limiter = on;
+                    PushAppleEffects();
                 });
 
             var answer = _form is { IsDisposed: false, Visible: true }
@@ -1839,6 +1885,7 @@ namespace ExplorerNative
                     _audio.SilenceFadeOutMilliseconds = fadeOut;
                     _audio.SilenceFadeInMilliseconds = fadeIn;
                     _audio.SilenceReduction = on;
+                    PushAppleEffects();
                 })
             {
                 MaySpeak = () => _settings.SpeakEnabled,
@@ -1882,8 +1929,8 @@ namespace ExplorerNative
             using var dialog = new EqualiserForm(
                 _audio.EqualiserGains,
                 _audio.Equaliser,
-                (band, decibels) => _audio.SetEqualiserBand(band, decibels),
-                on => _audio.Equaliser = on);
+                (band, decibels) => { _audio.SetEqualiserBand(band, decibels); PushAppleEffects(); },
+                on => { _audio.Equaliser = on; PushAppleEffects(); });
 
             var answer = _form is { IsDisposed: false, Visible: true }
                 ? dialog.ShowDialog(_form)
@@ -1919,6 +1966,7 @@ namespace ExplorerNative
                 {
                     _audio.PitchSemitones = semitones;
                     _audio.PitchMovesTempo = movesTempo;
+                    PushAppleEffects();
                 });
 
             var answer = _form is { IsDisposed: false, Visible: true }
@@ -2133,6 +2181,9 @@ namespace ExplorerNative
             _audio.RewindOnResumeSeconds = _settings.AudioRewindOnResumeSeconds;
             _audio.PlaybackRatePercent = _settings.AudioPlaybackRatePercent;
             _audio.RepeatTrack = _settings.AudioRepeatTrack;
+
+            // And Apple's player plays through the same ones.
+            PushAppleEffects();
         }
 
         /// <summary>
