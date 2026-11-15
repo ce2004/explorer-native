@@ -41,6 +41,8 @@ namespace ExplorerNative
                 await WatcherIgnoresLeftOutChangesTests(sandbox);
                 await FastLaneReplacementHistoryTests(sandbox);
                 await OpenFileWaitsTests(sandbox);
+                await HiddenThingsSyncTests(sandbox);
+                await ManyDeletesGoTogetherTests(sandbox);
             }
             finally
             {
@@ -156,7 +158,7 @@ namespace ExplorerNative
             File.WriteAllText(Path.Combine(root, "US", "Book", "01.mp3"), "x");
             var hiddenFile = Path.Combine(root, "US", "Book", "secret.txt");
             File.WriteAllText(hiddenFile, "x");
-            File.SetAttributes(hiddenFile, FileAttributes.Hidden);
+            File.SetAttributes(hiddenFile, FileAttributes.System);
 
             var plain = new SyncRules(SyncMode.UploadOnly, false);
             var skipping = new SyncRules(SyncMode.UploadOnly, false, SkipExtensions: ".sync");
@@ -265,6 +267,92 @@ namespace ExplorerNative
             problem = await rig.Pass();
             Check("once the program lets go, Drive's edit comes down", File.ReadAllText(path) == "edited in Drive" && problem == null,
                 problem);
+        }
+
+        // ---------------- 7.0.0: hidden folders, and deletes many at once ----------------
+
+        /// <summary>
+        /// Git hides the .git folder it makes, and hidden things were left out:
+        /// a repository made on this PC never reached the other one (827 files
+        /// of one, on Conner's). Hidden alone syncs now; system things and
+        /// Resilio's .sync folder (by name, hidden or not) still stay out.
+        /// </summary>
+        private static async Task HiddenThingsSyncTests(string sandbox)
+        {
+            using var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true);
+            rig.Write("repo/.git/HEAD", "ref: refs/heads/main", T0);
+            rig.Write("repo/.git/objects/ab/cdef", "blob", T0);
+            rig.Write("repo/code.cs", "class A {}", T0);
+            new DirectoryInfo(Path.Combine(rig.Local, "repo", ".git")).Attributes |= FileAttributes.Hidden;
+            File.SetAttributes(rig.Write("repo/.hidden-note", "note", T0), FileAttributes.Hidden);
+            File.SetAttributes(rig.Write("repo/AlbumArt.jpg", "art", T0), FileAttributes.Hidden | FileAttributes.System);
+            rig.Write("share/.sync/ID", "resilio", T0);
+            rig.Write("share/book.mp3", "chapter", T0);
+            rig.Write("sys/inside.txt", "x", T0);
+            new DirectoryInfo(Path.Combine(rig.Local, "sys")).Attributes |= FileAttributes.System;
+
+            var problem = await rig.Pass();
+            var tree = rig.DriveTree();
+            Check("a hidden .git folder goes up whole",
+                tree.ContainsKey("repo/.git/HEAD") && tree.ContainsKey("repo/.git/objects/ab/cdef") && problem == null,
+                problem ?? string.Join(", ", tree.Keys));
+            Check("and so does a hidden file", tree.ContainsKey("repo/.hidden-note"));
+            Check("a hidden system file still stays on the PC", !tree.ContainsKey("repo/AlbumArt.jpg"));
+            Check("and so does everything in a system folder", !tree.Keys.Any(k => k.StartsWith("sys/")));
+            Check("Resilio's .sync folder stays out by name, hidden or not",
+                !tree.Keys.Any(k => k.Contains(".sync")) && tree.ContainsKey("share/book.mp3"), string.Join(", ", tree.Keys));
+
+            var root = rig.Local;
+            var plain = new SyncRules(SyncMode.TwoWay, true);
+            Check("a change inside a hidden folder is news now",
+                !DriveMonitor.NotNews(root, Path.Combine(root, "repo", ".git", "HEAD"), plain));
+            Check("one inside an unhidden .sync is still not",
+                DriveMonitor.NotNews(root, Path.Combine(root, "share", ".sync", "ID"), plain));
+            Check("nor one inside a system folder",
+                DriveMonitor.NotNews(root, Path.Combine(root, "sys", "inside.txt"), plain));
+
+            // Nothing left out reads as deleted on the next pass.
+            problem = await rig.Pass();
+            Check("a second pass changes nothing",
+                problem == null && File.Exists(Path.Combine(root, "repo", "AlbumArt.jpg")) &&
+                File.Exists(Path.Combine(root, "share", ".sync", "ID")) && rig.DriveTree().Count == tree.Count,
+                problem);
+        }
+
+        /// <summary>
+        /// Deletes made on the PC went to Drive's trash one at a time, two
+        /// round trips each: a cleared build folder of 400 files held every
+        /// other change back for minutes. They go many at once now, with the
+        /// careful loop's checks.
+        /// </summary>
+        private static async Task ManyDeletesGoTogetherTests(string sandbox)
+        {
+            using var rig = new Rig(sandbox, SyncMode.TwoWay, deletes: true);
+            const int count = 40;
+            for (int i = 0; i < count; i++) rig.Write($"obj/{i:D3}.dll", "built " + i, T0);
+            rig.Write("src/keep.cs", "kept", T0);
+            await rig.Pass();
+            Check("deletes rig: everything went up", rig.DriveTree().Count == count + 1, rig.DriveTree().Count.ToString());
+
+            Directory.Delete(Path.Combine(rig.Local, "obj"), true);
+            int most = 0, now = 0;
+            rig.Drive.BeforeAnswer = (_, _) =>
+            {
+                int n = Interlocked.Increment(ref now);
+                int seen;
+                while (n > (seen = Volatile.Read(ref most)) && Interlocked.CompareExchange(ref most, n, seen) != seen) { }
+                Thread.Sleep(20);
+                Interlocked.Decrement(ref now);
+            };
+            var problem = await rig.Pass();
+            rig.Drive.BeforeAnswer = null;
+            var tree = rig.DriveTree();
+            Check("every delete made on the PC reaches Drive's trash, and nothing else does",
+                tree.Count == 1 && tree.ContainsKey("src/keep.cs") && problem == null && rig.Drive.Trashes == count,
+                problem ?? $"{tree.Count} left, {rig.Drive.Trashes} trashed");
+            Check("more than one at a time", most > 1, most.ToString());
+            var lines = SyncHistory.Read(rig.Pair.Id).Where(e => e.What == "Moved to the Drive trash").ToList();
+            Check("each is in the history once", lines.Count == count, lines.Count.ToString());
         }
 
         // ---------------- history ----------------

@@ -46,10 +46,10 @@ namespace ExplorerNative
             var hidden = Path.Combine(root, "Artist 5", "Hidden");
             Directory.CreateDirectory(hidden);
             File.WriteAllText(Path.Combine(hidden, "inside.txt"), "x");
-            new DirectoryInfo(hidden).Attributes |= FileAttributes.Hidden;
+            new DirectoryInfo(hidden).Attributes |= FileAttributes.System;
             var hiddenFile = Path.Combine(root, "Artist 7", "Album 2", "secret.txt");
             File.WriteAllText(hiddenFile, "x");
-            File.SetAttributes(hiddenFile, FileAttributes.Hidden);
+            File.SetAttributes(hiddenFile, FileAttributes.System);
             File.WriteAllText(Path.Combine(root, "Artist 9", "Album 1", "café.txt"), "one");
             File.WriteAllText(Path.Combine(root, "Artist 9", "Album 1", "café.txt"), "two");
 
@@ -176,16 +176,16 @@ namespace ExplorerNative
             Case("a whole tree moved in, its parent marked",
                 () => { Write(root, "D/New/n1.txt", "n1"); Write(root, "D/New/Deeper/n2.txt", "n2"); }, m => m.Folders.Add("D"));
             Case("a folder hidden",
-                () => File.SetAttributes(Path.Combine(root, @"A\B"), FileAttributes.Directory | FileAttributes.Hidden),
+                () => File.SetAttributes(Path.Combine(root, @"A\B"), FileAttributes.Directory | FileAttributes.System),
                 m => m.Folders.Add("A"));
             Case("a file hidden",
-                () => File.SetAttributes(Path.Combine(root, @"A\a1.txt"), FileAttributes.Hidden), m => m.Folders.Add("A"));
+                () => File.SetAttributes(Path.Combine(root, @"A\a1.txt"), FileAttributes.System), m => m.Folders.Add("A"));
             Case("a folder that is gone, marked itself",
                 () => Directory.Delete(Path.Combine(root, "D"), true), m => m.Folders.Add("D"));
             Case("a mark under a hidden folder reaches nothing a walk would not",
                 () =>
                 {
-                    File.SetAttributes(Path.Combine(root, @"A\B"), FileAttributes.Directory | FileAttributes.Hidden);
+                    File.SetAttributes(Path.Combine(root, @"A\B"), FileAttributes.Directory | FileAttributes.System);
                     Write(root, "A/B/C/c3.txt", "c3");
                 },
                 m => { m.Folders.Add("A"); m.Folders.Add("A/B/C"); m.Deep.Add("A/B/C"); });
@@ -458,7 +458,7 @@ namespace ExplorerNative
                     Directory.CreateDirectory(Path.Combine(rig.Local, ".sync"));
                     rig.Write("Deep/a/b/c.txt", "deep", T0);
                     rig.Write("Keep/hidden.txt", "kept", T0);
-                    File.SetAttributes(Path.Combine(rig.Local, "Keep", "hidden.txt"), FileAttributes.Hidden);
+                    File.SetAttributes(Path.Combine(rig.Local, "Keep", "hidden.txt"), FileAttributes.System);
                     await rig.Pass();
                     await rig.Pass();
                     var left = Directory.EnumerateDirectories(rig.Local).Select(Path.GetFileName).OrderBy(n => n).ToList();

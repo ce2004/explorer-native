@@ -214,7 +214,7 @@ namespace ExplorerNative
                 rig.Write(".sync/ID", "resilio", T0);
                 rig.Write("US/book.mp3.!sync", "half", T0);
                 var hidden = Directory.CreateDirectory(Path.Combine(rig.Local, "Hidden"));
-                hidden.Attributes |= FileAttributes.Hidden;
+                hidden.Attributes |= FileAttributes.System;
                 rig.Write("a.txt", "", T0);
 
                 Equal("empty folders: the first pass has no problem", "", await rig.Pass() ?? "");
@@ -285,7 +285,7 @@ namespace ExplorerNative
                 rig.Write("song.partial", "half a download", T0);
                 rig.Write("~$report.docx", "office lock", T0);
                 rig.Write("hidden.txt", "hidden", T0);
-                File.SetAttributes(Path.Combine(rig.Local, "hidden.txt"), FileAttributes.Hidden);
+                File.SetAttributes(Path.Combine(rig.Local, "hidden.txt"), FileAttributes.System);
                 rig.Write("fresh.txt", "saved a moment ago", DateTime.UtcNow);
                 rig.Write("open.txt", "still being written", T0);
                 using (var writer = new FileStream(Path.Combine(rig.Local, "open.txt"), FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite))
@@ -1004,15 +1004,15 @@ namespace ExplorerNative
                 rig.Write("dir/b.txt", "b", T0);
                 rig.Write("c.txt", "c", T0);
                 await rig.Pass();
-                File.SetAttributes(Path.Combine(rig.Local, "a.txt"), FileAttributes.Hidden);
-                new DirectoryInfo(Path.Combine(rig.Local, "dir")).Attributes |= FileAttributes.Hidden;
+                File.SetAttributes(Path.Combine(rig.Local, "a.txt"), FileAttributes.System);
+                new DirectoryInfo(Path.Combine(rig.Local, "dir")).Attributes |= FileAttributes.System;
                 await rig.Pass();
                 await rig.Pass();
                 Check("a hidden file or folder on the PC is not taken for deleted",
                     rig.Drive.Trashes == 0 && Names(rig.DriveTree()) == "a.txt,c.txt,dir/b.txt",
                     $"{rig.Drive.Trashes} trashed; Drive holds {Names(rig.DriveTree())}");
                 File.SetAttributes(Path.Combine(rig.Local, "a.txt"), FileAttributes.Normal);
-                new DirectoryInfo(Path.Combine(rig.Local, "dir")).Attributes &= ~FileAttributes.Hidden;
+                new DirectoryInfo(Path.Combine(rig.Local, "dir")).Attributes &= ~FileAttributes.System;
                 int uploads = rig.Drive.Uploads;
                 var problem = await rig.Pass();
                 Check("and when it is shown again it is still in step, with nothing sent",
@@ -1970,7 +1970,7 @@ namespace ExplorerNative
                     rig.Write("Work/three.txt", "three", T0);
                     var hidden = Path.Combine(rig.Local, "School", "desktop.ini");
                     File.WriteAllText(hidden, "[.ShellClassInfo]");
-                    File.SetAttributes(hidden, FileAttributes.Hidden | FileAttributes.System);
+                    File.SetAttributes(hidden, FileAttributes.System | FileAttributes.System);
                     await rig.Pass();
                     Equal("drive only: everything went up first" + how, "School/2024/two.txt,School/one.txt,Work/three.txt", Names(rig.DriveTree()));
                     rig.Monitor.Reload(new[] { rig.Pair });

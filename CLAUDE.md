@@ -1,6 +1,6 @@
 # Explorer Native
 
-Keyboard- and NVDA-first file manager for Windows (ARM64 + x64). WinForms, .NET 8. Two goals settle every argument: be fast, and read well under NVDA. The only packages are Concentus and NVorbis (pure IL, for Ogg/Opus). Add no others. The one bundled program is 7-Zip's 7za.exe (4.2.1, see Compressing), and the one bundled library besides the NVDA client is libopus (opus.dll, 6.1.0, see Converting).
+Keyboard- and NVDA-first file manager for Windows (ARM64 + x64). WinForms, .NET 8. Two goals settle every argument: be fast, and read well under NVDA. The only packages are Concentus and NVorbis (pure IL, for Ogg/Opus), WebView2 (Apple Music) and SMBLibrary with SMBLibrary.Win32 (pure IL, LGPL, the SMB server, 7.0.0). Add no others. The one bundled program is 7-Zip's 7za.exe (4.2.1, see Compressing), and the one bundled library besides the NVDA client is libopus (opus.dll, 6.1.0, see Converting).
 
 ## Build and test
 
@@ -107,6 +107,7 @@ $p.WaitForExit(120000)
 | AlacDecoder / TtaDecoder / Rewrap | Apple Lossless packets / TTA files / FLAC-in-Ogg and FLV audio rewrapped for Media Foundation |
 | SyncHistory / MemoryGiveBack | Per-pair history of what a sync did / handing freed memory back to Windows |
 | Connect{Server,Files,Uploads,Audio,Clipboard,Details} / WebAssets / TailscaleWeb | Web app API / embedded web\ / Tailscale Serve |
+| FileServers (.Sftp) / SmbFileServer / FtpServer / SftpServer / ServedFolder | Which servers run, their rules and keys / SMB over SMBLibrary / our FTP / our SFTP / path safety and sign-in throttle |
 | AiDescriber / AiDescriberForm / AiSetupForm | Picture describer: providers, prices, pictures / its window / key wizard |
 
 ## Settings
@@ -454,6 +455,28 @@ Five read-only reviews of everything added since 5.1.0 found 25 bugs; each is pi
 - The window shortcut left the keyboard on the desktop: `ShowWindow` ends with `Foreground.Take` (tray), which joins the front window's input queue for SetForegroundWindow, falls back to an unassigned key (0xE8), and focuses the list when the window is in front with focus nowhere. Never rely on `Form.Activate` alone to come to the front.
 - Preferences, Audio: unticking Enable the audio player hides every other control on the page (`ShowRest` in `BuildAudioTab`); hidden controls still apply what they held.
 - Update window: `Updater.Release.Behind` is every version newer than this build, newest first (`BehindAsync`, the releases list, best effort: any trouble gives the latest alone). `UpdateForm.Sentence` starts "You're N versions out of date" and `UpdateForm.Rows` puts each version under a "Version X" row; Ctrl+Up/Down jump between them as in Help, Changelog. Tests in the updates group.
+
+## File servers: SMB, FTP, SFTP (7.0.0)
+
+Conner: "can you add samba or something to this? you choose the port, the drive or folder to host, and set things? its a setting tab. called smb server. add other types too... make it work on the google drive thing too", then "no webdav. its old and going away anyways". Never add WebDAV.
+
+- Three Preferences pages, one shape (`SettingsForm.BuildServerTab(kind)`): SMB server, FTP server, SFTP server. Settings are plain scalars per kind (`SmbServerEnabled`, `...Folder`, `...Port`, `...User`, `...Password`, `...ReadOnly`, `SmbServerShare`), all off by default, ports 4450 / 2121 / 2222 (`FileServers.Default*Port`). `SftpServerHostKey` and `FtpServerCertificate` are `ThisPcOnly` and made by `FileServers.EnsureKeys` the first time that server is on. A reset turns the servers off.
+- `FileServers` (src\FileServers.cs, owned by the tray) decides what runs: `Apply(settings, announce)` queues a reconcile on a worker; any change to a server's `Config` is a restart; `WhyNot` is the one rule set (folder, whole path, port, user, password of `ShortestPassword` 8, share name, two servers on one port), asked by Preferences before OK and again before starting. A folder that is not there (the Drive letter at start-up) is waited for: looked for every `LookAgainEvery` (15 s), silent at start-up for `SayWaitingAfter` (2 min), then said once. Never `Directory.Exists` for it on the UI thread. Messages are `server.started`, `server.stopped`, `server.failed`. Commands: smb-server-on/off, ftp-server-on/off, sftp-server-on/off (`SetFileServer`).
+- The servers open files through the ordinary file system on worker threads, so the Drive letter is a folder like any other (it is answered by this same process: never from the UI thread). Windows' own SMB sharing was not an option: port 445 only, an administrator per share, and it will not share a WinFsp network volume.
+- SMB is `SmbFileServer` over SMBLibrary 1.5.8.1 and SMBLibrary.Win32 1.5.8 (pinned exactly). Two reaches into the library, each with a test that fails if an update removes it: `SMBServer`'s private `Start(address, transport, port, smb1, smb2, smb3, timeout)` (the public ones only do 445 and 139), and `NTDirectoryFileSystem`'s private `CreateFile(nativePath, ...)` for `DriveRootStore`: the library builds paths as folder + "\" + rest, and a drive's folder already ends in "\" ("G:\"), so every open on a shared drive failed with STATUS_OBJECT_NAME_INVALID. SMB 1 is never offered. Sign-in is the library's own NTLM with its lockout (10 tries in 10 minutes). Read only is the share's `AccessRequested`. Verified live with Windows' own client: `net use \\127.0.0.1\share /user:name pw /TCPPORT:4450` (Windows 11 24H2 and later take a port), list, read, write, rename, delete, wrong password, read only, and G:\ listed.
+- FTP (`FtpServer`) and SFTP (`SftpServer`) are our own, on the BCL only, sharing `ServedFolder` (src\ServedFolder.cs): `Resolve` is the one way a client's path becomes a path on this PC (no "..", no colon, no device names, no trailing dot or space, containment checked again after GetFullPath, links that leave the folder not followed), plus the failed sign-in throttle. FTP is passive only (PASV, EPSV), with explicit TLS (AUTH TLS, PROT P) when it has a certificate; uploads go to a temporary name and are moved into place. SFTP is SSH-2 with ecdh-sha2-nistp256, an ecdsa-sha2-nistp256 host key, AES-CTR and HMAC-SHA2, password sign-in only, and only the sftp subsystem (no shell, exec or forwarding), SFTP version 3. Verified live in the installed app: curl for FTP plain and with --ssl-reqd, Windows' own sftp.exe for SFTP (with -b it needs -o BatchMode=no or it never offers a password; the password comes from SSH_ASKPASS with SSH_ASKPASS_REQUIRE=force), each also reading a file off G:.
+- The firewall button adds one rule for the executable (`FileServers.AllowThroughFirewall`, one elevated cmd running netsh by full path), so FTP's passive data ports are covered.
+- Tests: `EXPLORERNATIVE_SELFTEST_ONLY=release700` (rules, SMB over a real socket with the library's own client on a free port, a whole drive through subst, the manager) and `fileservers` (FTP and SFTP, FileServerTests). The test project references the SMB packages too.
+
+## Folder sync, 7.0.0 (Conner: "syncs that are huge don't sync the moment they should... the code folder isn't entirely completely synced")
+
+Found by comparing the code pair's records with its PC folder and reading its history (scratch scripts, not kept):
+- Hidden things were left out, and Git hides the .git it makes: 827 files of one repository had never gone up, while a repository that came down from Drive (unhidden) synced both ways. Now only `DriveMonitor.LeftOutAttributes` (System) leaves a file or folder out; hidden alone syncs. Resilio's `.sync` folder is left out by name (`IsResilioFolder`), since it used to be left out for being hidden. Empty hidden folders are still never cleared (`kept` in the two clear-folder routines) and hidden files are never freed by Free up space. `PcWalkKeyOf` Walk is 4, so every pair walks whole once and finds them.
+- PC deletes went to Drive's trash one at a time, two requests each (242 files, 130 s, everything else waiting): `TrashGoneAsync` sends them through the adaptive lanes with the careful loop's checks; anything not a plain trash is left for that loop. `FastTrashMinimum` 4.
+- `FastLaneMinimum` is 8 (was 64): ten edited files took 53 s one at a time.
+- `Soon` waited for three quiet seconds with no limit, so a build writing files kept the pass from starting: `BurstMost` (12 s) from the first change.
+- `SettleTime` is 5 s (was 10); a file still open for writing waits whatever its age.
+- Tests in SyncHardeningTests (`HiddenThingsSyncTests`, `ManyDeletesGoTogetherTests`). The sync tests that used Hidden to mean "left out" now use System.
 
 ## Testing and probing the running app
 

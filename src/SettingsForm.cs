@@ -252,6 +252,9 @@ namespace ExplorerNative
                 ("Apple Music", BuildAppleMusicTab),
                 ("AI image describer", BuildAiTab),
                 ("Web app", BuildWebAppTab),
+                ("SMB server", () => BuildServerTab(FileServers.Kind.Smb)),
+                ("FTP server", () => BuildServerTab(FileServers.Kind.Ftp)),
+                ("SFTP server", () => BuildServerTab(FileServers.Kind.Sftp)),
                 ("Integration", BuildIntegrationTab),
             };
 
@@ -1925,6 +1928,239 @@ namespace ExplorerNative
             var code = _working.ConnectCode ?? "";
             return code.Length == 8 ? code[..4] + " " + code[4..] : "shown here once Explorer Native has made one";
         }
+
+        /// <summary>One line on a server for its page: running where, or why not. Set by the tray.</summary>
+        internal static Func<FileServers.Kind, string>? ServerStatus;
+
+        /// <summary>Each server page's boxes as they stand, for the "two servers, one port" check.</summary>
+        private readonly Dictionary<FileServers.Kind, Func<FileServers.Config>> _serverTyped = new();
+
+        /// <summary>
+        /// SMB server, FTP server, SFTP server (7.0.0): one page each, all the
+        /// same shape. A folder or drive, a port, one user name and password.
+        /// Nothing is checked or started until OK.
+        /// </summary>
+        private FlowLayoutPanel BuildServerTab(FileServers.Kind kind)
+        {
+            var panel = NewPage();
+            string name = FileServers.NameOf(kind);
+            string page = name + " server";
+            var was = FileServers.Read(_working, kind);
+            string pc = Environment.MachineName;
+
+            AddInfo(panel, kind switch
+            {
+                FileServers.Kind.Smb =>
+                    "Shares a folder or a whole drive from this PC the way Windows and Samba share files, so other " +
+                    "computers, phones and media players can open it as a network drive. Your Google Drive letter can " +
+                    "be shared too. Only the user name and password you set here get in.",
+                FileServers.Kind.Ftp =>
+                    "Shares a folder or a whole drive from this PC over FTP, which nearly every device and file " +
+                    "program understands. Programs that ask for it get an encrypted connection (FTP over TLS); " +
+                    "plain FTP sends the password unprotected, so keep that to your own network or Tailscale.",
+                _ =>
+                    "Shares a folder or a whole drive from this PC over SFTP, the file transfer that comes with SSH. " +
+                    "Everything is encrypted, the password included. Only files are offered: nobody gets a command " +
+                    "line on this PC.",
+            });
+
+            var status = new TextBox
+            {
+                ReadOnly = true, Multiline = true, BorderStyle = BorderStyle.None, BackColor = SystemColors.Control,
+                Width = 540, Height = 48, AccessibleName = page + " status", Margin = new Padding(3, 8, 3, 4),
+                Text = ServerStatus?.Invoke(kind) ?? $"The {name} server is off.",
+            };
+            panel.Controls.Add(status);
+
+            var enable = new SpokenCheckBox
+            {
+                Text = $"&Turn on the {name} server", Checked = was.Enabled, AutoSize = true, Margin = new Padding(3, 8, 3, 4),
+                AccessibleName = $"Turn on the {name} server",
+            };
+            panel.Controls.Add(enable);
+
+            var folderBox = new TextBox { Text = was.Folder, Width = 360, AccessibleName = "Folder or drive to share" };
+            var browse = new Button { Text = "&Browse...", AutoSize = true, AccessibleName = "Browse", Margin = new Padding(6, 0, 0, 0) };
+            browse.Click += (_, _) =>
+            {
+                using var dialog = new FolderBrowserDialog
+                {
+                    Description = $"The folder or drive the {name} server shares",
+                    UseDescriptionForTitle = true,
+                    ShowNewFolderButton = false,
+                };
+                // Only a typed path that looks like one: asking Windows whether
+                // it is there can wait on a drive that has stopped answering.
+                if (System.IO.Path.IsPathFullyQualified(folderBox.Text.Trim())) dialog.SelectedPath = folderBox.Text.Trim();
+                if (dialog.ShowDialog(this) == DialogResult.OK) folderBox.Text = dialog.SelectedPath;
+                folderBox.Focus();
+            };
+            var folderRow = new FlowLayoutPanel
+            {
+                FlowDirection = FlowDirection.LeftToRight, AutoSize = true, WrapContents = false, Margin = new Padding(3, 4, 3, 4),
+            };
+            folderRow.Controls.Add(new Label { Text = "&Folder or drive to share:", AutoSize = true, Margin = new Padding(0, 6, 6, 0) });
+            folderRow.Controls.Add(folderBox);
+            folderRow.Controls.Add(browse);
+            panel.Controls.Add(folderRow);
+
+            int defaultPort = kind switch
+            {
+                FileServers.Kind.Smb => FileServers.DefaultSmbPort,
+                FileServers.Kind.Ftp => FileServers.DefaultFtpPort,
+                _ => FileServers.DefaultSftpPort,
+            };
+            string portWas = was.Port.ToString(System.Globalization.CultureInfo.InvariantCulture);
+            var portBox = new TextBox
+            {
+                Text = portWas, Width = 90, MaxLength = 5, AccessibleName = "Port",
+                AccessibleDescription = $"The port the {name} server listens on, 1 to 65535. Normally {defaultPort}.",
+            };
+            portBox.KeyPress += (_, e) => { if (!char.IsControl(e.KeyChar) && !char.IsDigit(e.KeyChar)) e.Handled = true; };
+            AddLabelled(panel, "&Port", portBox);
+
+            TextBox? shareBox = null;
+            if (kind == FileServers.Kind.Smb)
+            {
+                shareBox = new TextBox { Text = was.Share, Width = 200, MaxLength = 80, AccessibleName = "Share name" };
+                AddLabelled(panel, "Share &name", shareBox);
+            }
+
+            var userBox = new TextBox { Text = was.User, Width = 200, MaxLength = 64, AccessibleName = "User name" };
+            AddLabelled(panel, "&User name", userBox);
+            var passwordBox = new TextBox
+            {
+                Text = was.Password, Width = 200, MaxLength = 128, UseSystemPasswordChar = true, AccessibleName = "Password",
+                AccessibleDescription = $"At least {FileServers.ShortestPassword} characters.",
+            };
+            AddLabelled(panel, "Pa&ssword", passwordBox);
+
+            var readOnly = new SpokenCheckBox
+            {
+                Text = "Read onl&y: nothing can be changed or deleted through this server", Checked = was.ReadOnly, AutoSize = true,
+                Margin = new Padding(3, 4, 3, 4), AccessibleName = "Read only: nothing can be changed or deleted through this server",
+            };
+            panel.Controls.Add(readOnly);
+
+            AddInfo(panel, kind switch
+            {
+                FileServers.Kind.Smb =>
+                    $"The port is {FileServers.DefaultSmbPort} unless you change it, not the usual 445, because Windows keeps 445 " +
+                    "for its own file sharing. So the other device has to be told the port. " +
+                    $"On Windows 11 (24H2 or later), in a command prompt: net use Z: \\\\{pc}\\{was.Share} /user:{Shown(was.User)} * /tcpport:{was.Port}. " +
+                    $"On a Mac, in Finder choose Go, Connect to Server, and enter smb://{pc}:{was.Port}/{was.Share}. " +
+                    "On Linux, iPhone or Android, put the port in the file program's port box. " +
+                    "Older Windows cannot connect to an SMB server on another port: use FTP or SFTP from those.",
+                FileServers.Kind.Ftp =>
+                    $"Other devices connect to ftp://{pc}:{was.Port} with the user name and password above. " +
+                    "The server only takes passive connections, which is what every current program uses. " +
+                    "Ask for explicit FTP over TLS in the program if it offers it; the certificate is this PC's own, " +
+                    "so the program will ask you to accept it the first time.",
+                _ =>
+                    $"Other devices connect with: sftp -P {was.Port} {Shown(was.User)}@{pc}, or sftp://{pc}:{was.Port} in a file program. " +
+                    "The first time, the program shows this PC's key fingerprint and asks whether to trust it." +
+                    (ServerFingerprint?.Invoke() is { Length: > 0 } print ? " The fingerprint is " + print + "." : ""),
+            });
+
+            var firewall = new Button
+            {
+                Text = "Allow through Windows Fire&wall...", AutoSize = true, Margin = new Padding(3, 10, 3, 4),
+                AccessibleName = "Allow through Windows Firewall",
+            };
+            firewall.Click += async (_, _) =>
+            {
+                firewall.Enabled = false;
+                string? problem;
+                try { problem = await System.Threading.Tasks.Task.Run(FileServers.AllowThroughFirewall); }
+                catch (Exception ex) { problem = ex.Message; }
+                if (IsDisposed) return;
+                firewall.Enabled = true;
+                MessageBox.Show(this,
+                    problem == null
+                        ? "Windows Firewall now lets other devices reach Explorer Native's servers."
+                        : "Windows Firewall was not changed. " + problem,
+                    page, MessageBoxButtons.OK, problem == null ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
+                firewall.Focus();
+            };
+            panel.Controls.Add(firewall);
+            AddInfo(panel,
+                "Windows Firewall blocks other devices until it is told to let them in. Windows usually asks the " +
+                "first time a server starts; this button does it for you, once, and asks for an administrator.");
+
+            static string Shown(string user) => user.Length == 0 ? "name" : user;
+
+            FileServers.Config Typed()
+            {
+                int port = int.TryParse(portBox.Text.Trim(), System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture, out var p) ? p : -1;
+                return new FileServers.Config(kind, enable.Checked, folderBox.Text.Trim(), port,
+                    shareBox?.Text.Trim() ?? "", userBox.Text.Trim(), passwordBox.Text, readOnly.Checked, was.Key);
+            }
+            _serverTyped[kind] = Typed;
+
+            _beforeOkChecks.Add(() =>
+            {
+                var typed = Typed();
+                // Off, or exactly as it was saved: nothing to refuse. OK on
+                // another page must not stop over a server nobody touched.
+                if (!typed.Enabled || typed == was) return System.Threading.Tasks.Task.FromResult(true);
+
+                var others = new List<FileServers.Config>();
+                foreach (var other in FileServers.All)
+                    others.Add(_serverTyped.TryGetValue(other, out var read) ? read() : FileServers.Read(_working, other));
+                var refusal = FileServers.WhyNot(typed, others);
+                if (refusal == null) return System.Threading.Tasks.Task.FromResult(true);
+
+                MessageBox.Show(this, refusal, page, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                _showCategory?.Invoke(page);
+                Control at = refusal.Contains("port", StringComparison.OrdinalIgnoreCase) ? portBox
+                    : refusal.Contains("password", StringComparison.OrdinalIgnoreCase) ? passwordBox
+                    : refusal.Contains("user name", StringComparison.OrdinalIgnoreCase) ? userBox
+                    : refusal.Contains("share", StringComparison.OrdinalIgnoreCase) && shareBox != null ? shareBox
+                    : folderBox;
+                at.Focus();
+                return System.Threading.Tasks.Task.FromResult(false);
+            });
+
+            _applies.Add(() =>
+            {
+                var typed = Typed();
+                int port = typed.Port > 0 ? typed.Port : was.Port;
+                switch (kind)
+                {
+                    case FileServers.Kind.Smb:
+                        _working.SmbServerEnabled = typed.Enabled;
+                        _working.SmbServerFolder = typed.Folder;
+                        _working.SmbServerPort = port;
+                        _working.SmbServerShare = typed.Share;
+                        _working.SmbServerUser = typed.User;
+                        _working.SmbServerPassword = typed.Password;
+                        _working.SmbServerReadOnly = typed.ReadOnly;
+                        break;
+                    case FileServers.Kind.Ftp:
+                        _working.FtpServerEnabled = typed.Enabled;
+                        _working.FtpServerFolder = typed.Folder;
+                        _working.FtpServerPort = port;
+                        _working.FtpServerUser = typed.User;
+                        _working.FtpServerPassword = typed.Password;
+                        _working.FtpServerReadOnly = typed.ReadOnly;
+                        break;
+                    default:
+                        _working.SftpServerEnabled = typed.Enabled;
+                        _working.SftpServerFolder = typed.Folder;
+                        _working.SftpServerPort = port;
+                        _working.SftpServerUser = typed.User;
+                        _working.SftpServerPassword = typed.Password;
+                        _working.SftpServerReadOnly = typed.ReadOnly;
+                        break;
+                }
+            });
+
+            return panel;
+        }
+
+        /// <summary>The SFTP server's key fingerprint, when it has a key. Set by the tray.</summary>
+        public static Func<string>? ServerFingerprint;
 
         private FlowLayoutPanel BuildIntegrationTab()
         {

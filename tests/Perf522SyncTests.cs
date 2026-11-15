@@ -114,7 +114,7 @@ namespace ExplorerNative
             File.WriteAllText(file, "x");
             var hidden = Path.Combine(root, "hid");
             Directory.CreateDirectory(hidden);
-            File.SetAttributes(hidden, File.GetAttributes(hidden) | FileAttributes.Hidden);
+            File.SetAttributes(hidden, File.GetAttributes(hidden) | FileAttributes.System);
             var inHidden = Path.Combine(hidden, "x.txt");
             File.WriteAllText(inHidden, "x");
 

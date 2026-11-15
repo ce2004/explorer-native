@@ -702,6 +702,7 @@ namespace ExplorerNative
             "NVorbis-LICENSE.txt",
             "7-Zip-LICENSE.txt",
             "Opus-LICENSE.txt",
+            "SMBLibrary-LICENSE.txt",
         };
 
         private static void WriteLicenceBeside()

@@ -668,6 +668,45 @@ namespace ExplorerNative
         /// </summary>
         public int WebAppPort { get; set; } = ConnectServer.Port;
 
+        // ---------- File servers (7.0.0; Preferences: SMB server, FTP server, SFTP server) ----------
+        // One folder or drive each, to one user name and password. All off by
+        // default, and none starts without a folder, a name and a password.
+
+        /// <summary>Share a folder over SMB, the way Windows and Samba share files.</summary>
+        public bool SmbServerEnabled { get; set; }
+        /// <summary>The folder or drive shared; the Google Drive letter is fine.</summary>
+        public string SmbServerFolder { get; set; } = "";
+        /// <summary>Not 445: Windows' own file sharing holds that on every PC.</summary>
+        public int SmbServerPort { get; set; } = FileServers.DefaultSmbPort;
+        /// <summary>The share's name: \\this-pc\name.</summary>
+        public string SmbServerShare { get; set; } = "files";
+        public string SmbServerUser { get; set; } = "";
+        public string SmbServerPassword { get; set; } = "";
+        public bool SmbServerReadOnly { get; set; }
+
+        public bool FtpServerEnabled { get; set; }
+        public string FtpServerFolder { get; set; } = "";
+        public int FtpServerPort { get; set; } = FileServers.DefaultFtpPort;
+        public string FtpServerUser { get; set; } = "";
+        public string FtpServerPassword { get; set; } = "";
+        public bool FtpServerReadOnly { get; set; }
+
+        public bool SftpServerEnabled { get; set; }
+        public string SftpServerFolder { get; set; } = "";
+        public int SftpServerPort { get; set; } = FileServers.DefaultSftpPort;
+        public string SftpServerUser { get; set; } = "";
+        public string SftpServerPassword { get; set; } = "";
+        public bool SftpServerReadOnly { get; set; }
+
+        /// <summary>
+        /// This PC's own keys for the encrypted servers, made the first time
+        /// one starts and kept, so the programs that connect see the same
+        /// server every time: SFTP's host key (PKCS#8) and FTP's certificate
+        /// for TLS (PFX), both as Base64.
+        /// </summary>
+        public string SftpServerHostKey { get; set; } = "";
+        public string FtpServerCertificate { get; set; } = "";
+
         // ---------- What is spoken ----------
 
         /// <summary>
@@ -1386,6 +1425,9 @@ namespace ExplorerNative
 
             FontSize = Math.Clamp(FontSize, 7, 24);
             if (WebAppPort < ConnectServer.LowestPort || WebAppPort > ConnectServer.HighestPort) WebAppPort = ConnectServer.Port;
+            if (!FileServers.IsPort(SmbServerPort)) SmbServerPort = FileServers.DefaultSmbPort;
+            if (!FileServers.IsPort(FtpServerPort)) FtpServerPort = FileServers.DefaultFtpPort;
+            if (!FileServers.IsPort(SftpServerPort)) SftpServerPort = FileServers.DefaultSftpPort;
 
             // A date in the future would outrank every release for good.
             FoldersTakenAt = Math.Clamp(FoldersTakenAt, 0, DateTime.UtcNow.Ticks);
@@ -1620,6 +1662,8 @@ namespace ExplorerNative
             nameof(LastFolder), nameof(LastFolderTab2), nameof(ActiveTab),
             nameof(FocusedPathTab1), nameof(FocusedPathTab2), nameof(AudioLastPath),
             nameof(AudioResumePath), nameof(AudioResumeSeconds), nameof(AppleMusicResumeSong), nameof(ResumeAfterRestart), nameof(ResumeAfterRestartAt),
+            // Each PC is its own server, with its own keys.
+            nameof(SftpServerHostKey), nameof(FtpServerCertificate),
         };
 
         /// <summary>

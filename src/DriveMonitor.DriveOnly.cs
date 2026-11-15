@@ -188,7 +188,7 @@ namespace ExplorerNative
             // Each folder carries whether the scan would leave it out: it skips a
             // hidden or system folder whole (ScanLocalFolder), so nothing inside
             // one is ever uploaded, whatever the file's own attributes say.
-            const FileAttributes leftOut = FileAttributes.Hidden | FileAttributes.System;
+            const FileAttributes leftOut = LeftOutAttributes;
             bool topLeftOut = false;
             try { topLeftOut = (File.GetAttributes(pcFolder) & leftOut) != 0; } catch { }
             var folders = new Stack<(string Path, bool LeftOut)>();
@@ -362,7 +362,7 @@ namespace ExplorerNative
                 if (check.NotOnDrive.Count == 0 && folderId != null) break;
                 if (check.NeverSynced.Count > 0)
                 {
-                    var hidden = NameRules.Counted(check.NeverSynced.Count, "hidden file");
+                    var hidden = NameRules.Counted(check.NeverSynced.Count, "system file");
                     return new(false, $"{hidden} in {name} {(check.NeverSynced.Count == 1 ? "is" : "are")} never synced ({SomeOf(check.NeverSynced)}), " +
                                       "so it can't be kept on Google Drive only. Nothing was removed");
                 }

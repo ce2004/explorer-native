@@ -374,7 +374,12 @@ namespace ExplorerNative
         internal TimeSpan PatienceLimit { get; set; } = TimeSpan.FromHours(1);
 
         /// <summary>A PC file modified this recently may still be being written, and waits for a later pass.</summary>
-        internal TimeSpan SettleTime { get; set; } = TimeSpan.FromSeconds(10);
+        /// <remarks>
+        /// Five seconds since 7.0.0 (it was ten): a file still open for writing
+        /// is held back by the open handle whatever its age, and with the three
+        /// quiet seconds before a pass a saved file waited a quarter of a minute.
+        /// </remarks>
+        internal TimeSpan SettleTime { get; set; } = TimeSpan.FromSeconds(5);
 
         public DriveMonitor(GoogleDrive drive, Action<string, string> notify, Action<List<DriveSyncPair>> save)
         {
@@ -643,6 +648,23 @@ namespace ExplorerNative
         /// system, or inside a hidden or system folder, which a walk never
         /// reaches. A path that cannot be looked at (gone already) is news.
         /// </summary>
+        /// <summary>
+        /// The attributes that keep a file or folder out of the sync: system
+        /// only. Hidden was here too until 7.0.0, and Git hides the .git
+        /// folder it makes, so a repository made on one PC never reached the
+        /// other while one that came down from Drive (unhidden) synced both
+        /// ways (Conner: "the code folder isn't entirely completely synced";
+        /// 827 files of one repository had never gone up). Windows' own
+        /// clutter is hidden and system both, and stays out.
+        /// </summary>
+        internal const FileAttributes LeftOutAttributes = FileAttributes.System;
+
+        /// <summary>
+        /// Resilio Sync's own folder, left out by name wherever it is: it used
+        /// to be left out for being hidden.
+        /// </summary>
+        internal static bool IsResilioFolder(string name) => name.Equals(".sync", StringComparison.OrdinalIgnoreCase);
+
         internal static bool NotNews(string root, string fullPath, SyncRules? rules, VisibleFolders? visible = null)
         {
             string relative;
@@ -657,10 +679,13 @@ namespace ExplorerNative
             {
                 at = Path.Combine(at, parts[i]);
                 bool folderAbove = i < parts.Length - 1;
+                if (folderAbove && IsResilioFolder(parts[i])) return true;
                 if (folderAbove && visible?.Knows(at, now) == true) continue;
                 try
                 {
-                    if ((File.GetAttributes(at) & (FileAttributes.Hidden | FileAttributes.System)) != 0) return true;
+                    var attributes = File.GetAttributes(at);
+                    if ((attributes & LeftOutAttributes) != 0) return true;
+                    if (!folderAbove && (attributes & FileAttributes.Directory) != 0 && IsResilioFolder(parts[i])) return true;
                 }
                 catch { return false; }
                 if (folderAbove) visible?.Note(at, now);
@@ -1006,10 +1031,28 @@ namespace ExplorerNative
             lock (_gate)
             {
                 _due.Add(pairId);
-                _debounce ??= new System.Threading.Timer(_ => Wake());
-                _debounce.Change(TimeSpan.FromSeconds(3), Timeout.InfiniteTimeSpan);
+                _debounce ??= new System.Threading.Timer(_ =>
+                {
+                    lock (_gate) _burstSince = 0;
+                    Wake();
+                });
+                // Three quiet seconds, but never more than BurstMost from the
+                // first change: a build writing files for a minute put the
+                // pass off for all of it, and the edit saved before the build
+                // waited with it (7.0.0).
+                long now = Environment.TickCount64;
+                if (_burstSince == 0) _burstSince = now;
+                var left = BurstMost - TimeSpan.FromMilliseconds(now - _burstSince);
+                var quiet = TimeSpan.FromSeconds(3);
+                _debounce.Change(left < quiet ? (left > TimeSpan.Zero ? left : TimeSpan.Zero) : quiet, Timeout.InfiniteTimeSpan);
             }
         }
+
+        /// <summary>When the burst of changes now being waited out began (tick count), 0 for none.</summary>
+        private long _burstSince;
+
+        /// <summary>The longest a run of changes can put a pass off.</summary>
+        internal static TimeSpan BurstMost { get; set; } = TimeSpan.FromSeconds(12);
 
         /// <summary>A pair again once what a pass left for later has settled (see <see cref="SettleTime"/>).</summary>
         private void SoonAfter(string pairId, TimeSpan delay)
@@ -2139,7 +2182,7 @@ namespace ExplorerNative
         /// every pair walks once after the update.
         /// </summary>
         internal static string PcWalkKeyOf(DriveSyncPair pair) =>
-            JsonSerializer.Serialize(new { pair.LocalFolder, pair.DriveFolderId, Rules = SyncRules.For(pair), Walk = 3 });
+            JsonSerializer.Serialize(new { pair.LocalFolder, pair.DriveFolderId, Rules = SyncRules.For(pair), Walk = 4 });
 
         /// <summary>What a pass knows about the PC side before it looks: see <see cref="LookAtPc"/>.</summary>
         private sealed class PcLook
@@ -4253,6 +4296,12 @@ namespace ExplorerNative
                 downloaded += gotFast.Count;
                 sentFast.UnionWith(gotFast);
 
+                // And PC deletes copied to Drive, many at once (see TrashGoneAsync).
+                var trashedFast = await TrashGoneAsync(client, pair, state, plan, remote, folders, root, generation, token)
+                    .ConfigureAwait(false);
+                deleted += trashedFast.Count;
+                sentFast.UnionWith(trashedFast);
+
                 for (int i = 0; i < plan.Count; i++)
                 {
                     if (sentFast.Contains(plan[i].Path)) continue;
@@ -5101,8 +5150,8 @@ namespace ExplorerNative
                 lines.Add($"{Files(p.BothKept)} {Are(p.BothKept)} different in each place. Both copies will be kept.");
             if (p.Deletes > 0) lines.Add($"{Files(p.Deletes)} will be deleted.");
             if (p.LeftOut > 0)
-                lines.Add($"{Files(p.LeftOut)} will be skipped, because {(p.LeftOut == 1 ? "it is" : "they are")} hidden, " +
-                          "system files, or named in a way Windows cannot use.");
+                lines.Add($"{Files(p.LeftOut)} will be skipped, because {(p.LeftOut == 1 ? "it is a system file" : "they are system files")}, " +
+                          "or named in a way Windows cannot use.");
             return string.Join(Environment.NewLine, lines);
         }
 
@@ -5349,7 +5398,7 @@ namespace ExplorerNative
                     catch (DirectoryNotFoundException) { gone = true; return null; }
                     catch { return string.Join('/', parts[..(i + 1)]); }
                     if ((attributes & FileAttributes.Directory) == 0) { gone = true; return null; }
-                    if ((attributes & (FileAttributes.Hidden | FileAttributes.System)) != 0) return string.Join('/', parts[..(i + 1)]);
+                    if ((attributes & LeftOutAttributes) != 0 || IsResilioFolder(parts[i])) return string.Join('/', parts[..(i + 1)]);
                 }
                 return null;
             }
@@ -5526,7 +5575,7 @@ namespace ExplorerNative
             List<(DirectoryInfo Folder, string Relative)> subfoldersOut, Action<int>? found = null, Action<string>? linked = null,
             HashSet<string>? linkTargets = null)
         {
-            const FileAttributes leftOut = FileAttributes.Hidden | FileAttributes.System;
+            const FileAttributes leftOut = LeftOutAttributes;
 
             List<FileSystemInfo> entries;
             try { entries = folder.EnumerateFileSystemInfos("*", LocalScanOptions).ToList(); }
@@ -5569,7 +5618,7 @@ namespace ExplorerNative
                     if (!subfolders) continue;
 
                     // Not walked, as before, and now known to be there.
-                    if ((attributes & leftOut) != 0)
+                    if ((attributes & leftOut) != 0 || IsResilioFolder(entry.Name))
                     {
                         skipped?.Folder(relative);
                         continue;
@@ -5986,8 +6035,89 @@ namespace ExplorerNative
         /// <summary>Files up to this size go in the fast lane; bigger ones resume, so they go one at a time.</summary>
         internal const long FastLaneMaxBytes = 4L * 1024 * 1024;
 
-        /// <summary>Below this many new small files the fast lane is not worth what it costs in Pause latency.</summary>
-        internal const int FastLaneMinimum = 64;
+        /// <summary>
+        /// Below this many small files the fast lane is not worth it. It was
+        /// 64 until 7.0.0: a build that changed forty files then went up one
+        /// file a second, and the edit made after it waited behind them
+        /// (Conner: "don't sync the moment they should").
+        /// </summary>
+        internal const int FastLaneMinimum = 8;
+
+        /// <summary>Below this many deletes to copy to Drive they go one at a time.</summary>
+        internal const int FastTrashMinimum = 4;
+
+        /// <summary>
+        /// Copies the plan's PC deletes to Drive many at once, and returns the
+        /// paths done. One at a time each was two round trips, half a second:
+        /// clearing a build folder of 400 files held every other change of
+        /// the pair back for four minutes (7.0.0). The checks are the careful
+        /// loop's own, in its order; anything that is not a plain "still as
+        /// scanned, trashed" (changed in Drive since, put back on the PC, a
+        /// failure) is left for that loop, which decides and says why.
+        /// Records are changed only under _fastGate.
+        /// </summary>
+        private async Task<HashSet<string>> TrashGoneAsync(
+            DriveClient client, DriveSyncPair pair, PairState state, List<SyncAction> plan,
+            Dictionary<string, SyncFile> remote, Dictionary<string, string> folders,
+            string root, int generation, CancellationToken token)
+        {
+            var gone = new HashSet<string>(SyncNameComparer.Instance);
+            var batch = new List<string>();
+            foreach (var action in plan)
+            {
+                if (action.Kind != SyncActionKind.DeleteRemote) continue;
+                if (!remote.TryGetValue(action.Path, out var file) || file.Id == null) continue;
+                batch.Add(action.Path);
+            }
+            if (batch.Count < FastTrashMinimum) return gone;
+
+            int done = 0;
+            int goneBefore = StatusOf(pair.Id).Deleted;
+            var lanes = new AdaptiveLanes(FastLanes, FastLanesMin, FastLanesMax);
+            await Parallel.ForEachAsync(batch,
+                new ParallelOptions { MaxDegreeOfParallelism = FastLanesMax, CancellationToken = token },
+                async (path, ct) =>
+                {
+                    await lanes.EnterAsync(ct).ConfigureAwait(false);
+                    var clock = Stopwatch.StartNew();
+                    bool trashed = false;
+                    try { trashed = await One(path, ct).ConfigureAwait(false); }
+                    finally { lanes.Leave(trashed && clock.ElapsedMilliseconds < SlowAnswerMilliseconds); }
+                }).ConfigureAwait(false);
+            return gone;
+
+            async Task<bool> One(string path, CancellationToken ct)
+            {
+                if (Stopped(pair) || GenerationOf(pair.Id) != generation) return false;
+                var scanned = remote[path];
+                try
+                {
+                    if (!LocalStillAsScanned(LocalPathFor(root, path), null)) return false;
+                    var now = await client.FileNow(scanned.Id!, ct).ConfigureAwait(false);
+                    if (now == null || !SameAsScanned(now, scanned)) return false;
+                    string? recordedFolder;
+                    if (SyncMoves.Parent(path) is { Length: > 0 } up)
+                        lock (folders) recordedFolder = folders.TryGetValue(up, out var upId) ? upId : null;
+                    else recordedFolder = pair.DriveFolderId;
+                    if (now.Parent != null && recordedFolder != null && now.Parent != recordedFolder) return false;
+                    await client.Trash(scanned.Id!, ct).ConfigureAwait(false);
+                }
+                catch (Exception) when (!ct.IsCancellationRequested) { return false; }
+
+                lock (_fastGate)
+                {
+                    state.Files.Remove(path);
+                    gone.Add(path);
+                    done++;
+                    SaveSoon(pair.Id, state);
+                    int count = done;
+                    Report(pair.Id, s => s with { Deleted = goneBefore + count });
+                }
+                SyncHistory.Add(pair.Id, "Moved to the Drive trash", path, "deleted on the PC");
+                Kill("trashed " + path);
+                return true;
+            }
+        }
 
         /// <summary>
         /// Uploads the plan's small files, new ones and in-place replacements,

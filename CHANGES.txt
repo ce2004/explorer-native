@@ -1,3 +1,17 @@
+7.0.0
+New: Explorer Native can share a folder or a whole drive with your other devices. Preferences has three new pages: SMB server, FTP server and SFTP server. On each you choose the folder or drive, the port, a user name and a password, and whether it is read only. Tick Turn on and press OK. The server runs for as long as Explorer Native does, in the tray too, and starts again with it.
+New: the SMB server shares the way Windows and Samba do, so other computers, phones and media players can open your folder as a network drive. It uses port 4450 unless you change it, because Windows keeps the usual port for itself. The page says what to type on Windows, Mac and Linux.
+New: the FTP server works with nearly every device and file program, and gives an encrypted connection to programs that ask for one.
+New: the SFTP server is the encrypted file transfer that comes with SSH. Only files are offered, never a command line on your PC.
+New: your Google Drive letter can be shared through any of the three servers, like any other drive.
+New: each server page has a button, Allow through Windows Firewall, so other devices can reach it. It asks for an administrator once.
+New: the servers can be turned on and off from a command line, for example ExplorerNative --do smb-server-on. The others are smb-server-off, ftp-server-on, ftp-server-off, sftp-server-on and sftp-server-off.
+Bug fixed: if a folder you sync with Google Drive had a hidden folder in it, that folder was never synced. Git hides the .git folder it makes, so a project made on one PC arrived on the other without its history, while one that came down from Google Drive synced fine. Hidden files and folders are now synced. Windows system files are still left out.
+Bug fixed: if you deleted many files in a synced folder, they went to the Google Drive trash one at a time, about two a second. Clearing a build folder of a few hundred files held up every other change in that folder for minutes. They now go many at once.
+Bug fixed: if you changed a handful of files in a synced folder, they were uploaded one after another, a few seconds each. Eight or more now go up together. It took sixty-four before.
+Bug fixed: if files in a synced folder kept changing, for example while a program was being built, the sync kept putting off its start until everything went quiet. A change you saved first could wait a minute or more. It now starts within twelve seconds whatever else is going on.
+Bug fixed: a saved file waited ten seconds before it was allowed to sync. It is five now. A file that is still open for writing waits as before.
+
 6.2.1
 New: when an update is available, the window now starts by saying how many versions out of date you are. The list of changes shows every version you missed, each under its own Version line, newest first. Use the arrows to read them, and Control with Up or Down to jump from version to version.
 New: in Preferences, Audio, unticking Enable the audio player now hides the rest of that page. Tick it again and everything comes back as you left it.

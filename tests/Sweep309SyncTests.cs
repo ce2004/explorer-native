@@ -259,7 +259,7 @@ namespace ExplorerNative
             rig.Write("x.txt", "pc", T0);
             rig.Drive.AddFile("x.txt", Encoding.UTF8.GetBytes("drive copy"), T0.AddHours(1), rig.FolderId);
             var hidden = rig.Write($"x (conflict {stamp}).txt", "somebody's hidden file", T0);
-            File.SetAttributes(hidden, FileAttributes.Hidden);
+            File.SetAttributes(hidden, FileAttributes.System);
 
             var problem = await rig.Pass();
             if (DateTime.Now.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture) != stamp) return;   // midnight

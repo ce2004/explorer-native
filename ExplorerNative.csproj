@@ -12,7 +12,7 @@
     <!-- ARM64 by default; "dotnet publish -r win-x64" builds the x64 copy.
          Release builds stamp Version from the git tag (see .github\workflows). -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-arm64</RuntimeIdentifier>
-    <Version>6.2.1</Version>
+    <Version>7.0.0</Version>
     <!-- .NET 9+ checks properties for the forms designer, which nothing here uses. -->
     <NoWarn>$(NoWarn);WFO1000</NoWarn>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
@@ -108,6 +108,19 @@
          The player is hidden and created only when a song is first played; if
          Apple Music is never used, none of it loads. See AppleMusicPlayer.cs. -->
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4258.31" />
+
+    <!-- The third exception (7.0.0): the SMB server. An SMB 2 and 3 server is
+         a protocol of several thousand lines with a great many ways to be
+         subtly wrong against Windows, macOS and Linux clients, and Windows'
+         own file sharing cannot do what was asked: it listens on port 445
+         only, needs an administrator for each share, and will not share the
+         Google Drive letter. SMBLibrary (Tal Aloni, LGPL 3) is pure IL, like
+         the two decoders; the Win32 package is its file store over the NT
+         file calls. Its licence is in the "licence" switch with the others.
+         Pinned exactly: SmbFileServer reaches one private method to choose
+         the port, and a test fails if an update removes it. -->
+    <PackageReference Include="SMBLibrary" Version="[1.5.8.1]" />
+    <PackageReference Include="SMBLibrary.Win32" Version="[1.5.8]" />
   </ItemGroup>
 
   <!-- The NVDA controller client must match THIS process's architecture
@@ -170,6 +183,9 @@
     </EmbeddedResource>
     <EmbeddedResource Include="native\7-Zip-LICENSE.txt">
       <LogicalName>7-Zip-LICENSE.txt</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="native\SMBLibrary-LICENSE.txt">
+      <LogicalName>SMBLibrary-LICENSE.txt</LogicalName>
     </EmbeddedResource>
   </ItemGroup>
 

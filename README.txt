@@ -174,6 +174,48 @@ the next or previous station file in the same folder. A playlist that lists
 files on your PC instead of streams opens in its own app, as before.
 
 
+Sharing a folder with other devices: SMB, FTP and SFTP servers
+
+Explorer Native can share a folder or a whole drive from this PC to your
+other computers, phones and media players. Preferences (Ctrl+P) has three
+pages for it: SMB server, FTP server and SFTP server. Each works the same
+way. Choose the folder or drive, the port, a user name and a password of at
+least 8 characters, tick Turn on, and press OK. Tick Read only if nothing
+should be changed or deleted through it. Your Google Drive letter can be
+shared like any other drive. A server keeps running while Explorer Native is
+running, in the tray too, and starts again with it.
+
+SMB is the way Windows and Samba share files, so the other device opens it as
+a network drive. It uses port 4450 unless you change it, not the usual 445,
+because Windows keeps 445 for its own file sharing. On Windows 11 (24H2 or
+later): net use Z: \\this-pc\files /user:name * /tcpport:4450. On a Mac, in
+Finder choose Go, Connect to Server, and enter smb://this-pc:4450/files. On
+Linux, iPhone and Android, type the port into the file program's port box.
+Older versions of Windows cannot connect to SMB on another port; use FTP or
+SFTP from those.
+
+FTP works with nearly everything. Programs that ask for it get an encrypted
+connection (explicit FTP over TLS). Plain FTP sends the password unprotected,
+so keep it to your own network or Tailscale. Only passive connections are
+taken, which is what current programs use.
+
+SFTP is the file transfer that comes with SSH, encrypted from the first
+byte: sftp -P 2222 name@this-pc. Only files are offered. Nobody gets a
+command line on this PC.
+
+Windows Firewall blocks other devices until it is told to let them in. Each
+page has a button, Allow through Windows Firewall, that does it once and
+asks for an administrator. Nothing here opens your router: the servers are
+reached from your own network, or from anywhere over Tailscale.
+
+The same can be done from a command line: ExplorerNative --do smb-server-on,
+smb-server-off, and the same for ftp and sftp.
+
+The SMB server uses SMBLibrary by Tal Aloni, under the GNU Lesser General
+Public License. ExplorerNative --licence writes out its licence with the
+others.
+
+
 Updates
 
 Help menu (Alt, then H), Check for updates. It asks GitHub whether a newer

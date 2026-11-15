@@ -162,6 +162,7 @@
     <Compile Include="Perf522OpsTests.cs" />
     <Compile Include="Favourites530Tests.cs" />
     <Compile Include="CommandsTests.cs" />
+    <Compile Include="..\src\ServedFolder.cs" /><Compile Include="..\src\FtpServer.cs" /><Compile Include="..\src\SftpServer.cs" /><Compile Include="FileServerTests.cs" />
     <Compile Include="Radio540Tests.cs" />
     <Compile Include="Release600Tests.cs" />
     <Compile Include="..\src\StreamPlaylists.cs" />
@@ -217,6 +218,16 @@
     <PackageReference Include="NVorbis" Version="0.10.5" />
     <PackageReference Include="Concentus" Version="2.2.2" />
     <PackageReference Include="Concentus.OggFile" Version="1.0.7" />
+    <!-- The SMB server's library, as in ExplorerNative.csproj. -->
+    <PackageReference Include="SMBLibrary" Version="[1.5.8.1]" />
+    <PackageReference Include="SMBLibrary.Win32" Version="[1.5.8]" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Include="..\src\FileServers.cs" />
+    <Compile Include="..\src\FileServers.Sftp.cs" />
+    <Compile Include="..\src\SmbFileServer.cs" />
+    <Compile Include="Release700Tests.cs" />
   </ItemGroup>
 
   <ItemGroup>

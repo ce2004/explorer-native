@@ -247,6 +247,21 @@ namespace ExplorerNative
 
             StartConnect();
 
+            // The file servers (Preferences: SMB server, FTP server, SFTP
+            // server). What they say comes back on a worker.
+            _fileServers.Said = (id, sentence) => PostUi(() =>
+            {
+                switch (id)
+                {
+                    case "server.started": Notify("server.started", sentence); break;
+                    case "server.stopped": Notify("server.stopped", sentence); break;
+                    default: Notify("server.failed", sentence); break;
+                }
+            });
+            SettingsForm.ServerStatus = _fileServers.StatusOf;
+            SettingsForm.ServerFingerprint = () => FileServers.FingerprintOf(_settings);
+            ApplyFileServers(announce: false);
+
             RoboCopyEngine.DownloadFromCloud = _drive.DownloadOutAsync;
 
             // On a worker, because both are directory walks, deletes and a pass
@@ -861,6 +876,7 @@ namespace ExplorerNative
                 }
             }
             if (webWasOn != settings.WebAppEnabled || portMoved) ReconcileWebApp(portWas);
+            ApplyFileServers(announce: !reload);
 
             // Switched back on in Preferences since: that choice stands over a
             // release still waiting for the file to open — that one setting,
@@ -2685,6 +2701,15 @@ namespace ExplorerNative
 
             Commands.Register("show-window", "Open the Explorer Native window", _ => ShowWindow(), window: false);
             Commands.Register("toggle-window", "Show the window, or put it away when it is in front", _ => ToggleWindow(), window: false);
+            foreach (var kind in FileServers.All)
+            {
+                var server = kind;
+                var name = FileServers.NameOf(server);
+                Commands.Register(name.ToLowerInvariant() + "-server-on", $"Turn on the {name} server set up in Preferences",
+                    _ => SetFileServer(server, true), window: false);
+                Commands.Register(name.ToLowerInvariant() + "-server-off", $"Turn off the {name} server",
+                    _ => SetFileServer(server, false), window: false);
+            }
             Commands.Register("sync-all", "Sync all Google Drive folders now",
                 _ => { if (_monitor != null) Notify("sync.all", _monitor.SyncAllNow()); }, window: false);
             Commands.Register("pause-all-syncing", "Pause every synced Google Drive folder",
@@ -3154,6 +3179,41 @@ namespace ExplorerNative
             });
         }
 
+        /// <summary>The SMB, FTP and SFTP servers of Preferences; see FileServers.</summary>
+        private readonly FileServers _fileServers = new();
+
+        /// <summary>
+        /// Starts, stops or restarts the file servers to match the settings.
+        /// The keys the encrypted ones need are made here the first time, and
+        /// saved, so a server is the same server after every restart.
+        /// </summary>
+        private void ApplyFileServers(bool announce)
+        {
+            try
+            {
+                // Not onto defaults standing in for a file that could not be read.
+                if (!_settings.UnreadableOnDisk && FileServers.EnsureKeys(_settings)) _settings.Save();
+                _fileServers.Apply(_settings, announce);
+            }
+            catch (Exception ex)
+            {
+                Notify("server.failed", "The file servers could not be set up: " + ex.Message);
+            }
+        }
+
+        /// <summary>A server turned on or off from a command; said either way.</summary>
+        private void SetFileServer(FileServers.Kind kind, bool on)
+        {
+            switch (kind)
+            {
+                case FileServers.Kind.Smb: _settings.SmbServerEnabled = on; break;
+                case FileServers.Kind.Ftp: _settings.FtpServerEnabled = on; break;
+                default: _settings.SftpServerEnabled = on; break;
+            }
+            if (!_settings.UnreadableOnDisk) _settings.Save();
+            ApplyFileServers(announce: true);
+        }
+
         private void ShowWindow()
         {
             // Only a window that had gone away can come back. Asked before
@@ -3404,6 +3464,7 @@ namespace ExplorerNative
                 // player goes first, and DriveMount.Dispose then waits for any
                 // callback still being answered before it disconnects.
                 _connect?.Dispose();
+                _fileServers.Dispose();
                 _connectStreams?.Dispose();
                 _connectClipboard?.Dispose();
                 _monitor.Dispose();
