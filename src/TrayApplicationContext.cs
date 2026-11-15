@@ -3171,8 +3171,70 @@ namespace ExplorerNative
 
             _form.Activate();
             _form.BringToFront();
+            Foreground.Take(_form);
 
             if (restoring) Notify("app.restored", _settings.DisplayTitle);
+        }
+
+        /// <summary>
+        /// Puts a window in front for certain. Windows refuses SetForegroundWindow
+        /// from a process that did not get the last key, which is where a
+        /// shortcut caught by the keyboard hook leaves us: the window showed, and
+        /// the keyboard stayed on the desktop (6.2.1). Joining the input queue of
+        /// whoever is in front lifts the refusal; an unassigned key does when
+        /// that is refused too.
+        /// </summary>
+        private static class Foreground
+        {
+            [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+            [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
+            [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr window);
+            [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint process);
+            [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern bool AttachThreadInput(uint from, uint to, bool attach);
+            [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern void keybd_event(byte key, byte scan, uint flags, UIntPtr extra);
+            [System.Runtime.InteropServices.DllImport("kernel32.dll")] private static extern uint GetCurrentThreadId();
+
+            /// <summary>Unassigned, so no program acts on it; the hook's own mask key.</summary>
+            private const byte NoKey = 0xE8;
+
+            public static void Take(MainForm form)
+            {
+                try
+                {
+                    if (form.IsDisposed || !form.IsHandleCreated) return;
+                    var window = form.Handle;
+
+                    if (GetForegroundWindow() != window)
+                    {
+                        var front = GetForegroundWindow();
+                        uint ours = GetCurrentThreadId();
+                        uint theirs = front == IntPtr.Zero ? 0 : GetWindowThreadProcessId(front, out _);
+                        bool joined = theirs != 0 && theirs != ours && AttachThreadInput(ours, theirs, true);
+                        try
+                        {
+                            BringWindowToTop(window);
+                            SetForegroundWindow(window);
+                        }
+                        finally
+                        {
+                            if (joined) AttachThreadInput(ours, theirs, false);
+                        }
+                    }
+
+                    if (GetForegroundWindow() != window)
+                    {
+                        keybd_event(NoKey, 0, 0, UIntPtr.Zero);
+                        keybd_event(NoKey, 0, 2, UIntPtr.Zero);
+                        BringWindowToTop(window);
+                        SetForegroundWindow(window);
+                    }
+
+                    // In front with the keyboard nowhere is the same complaint.
+                    if (GetForegroundWindow() == window && !form.ContainsFocus)
+                        form.RestoreListFocusExternally();
+                }
+                catch { }
+            }
         }
 
         private void ToggleWindow()

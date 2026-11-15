@@ -1,3 +1,8 @@
+6.2.1
+New: when an update is available, the window now starts by saying how many versions out of date you are. The list of changes shows every version you missed, each under its own Version line, newest first. Use the arrows to read them, and Control with Up or Down to jump from version to version.
+New: in Preferences, Audio, unticking Enable the audio player now hides the rest of that page. Tick it again and everything comes back as you left it.
+Bug fixed: if you pressed your keyboard shortcut to open Explorer Native, the window could open with the keyboard still on the desktop, so nothing you typed reached it. The window now always comes to the front with the file list focused.
+
 6.2.0
 New: speed, pitch, the equaliser, the limiter and fades now work on Apple Music. They use the same settings as your own files, the same keys and the same windows in the Audio menu, and a setting sounds the same in both. Before, they all said they were not available for Apple Music.
 New: silence reduction works on Apple Music too. It cannot cut a silence out the way it does for a file, so it plays the silence at four times the speed until the sound comes back.

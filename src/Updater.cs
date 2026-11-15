@@ -38,7 +38,60 @@ namespace ExplorerNative
             long Size,
             string? Sha256,
             string? CompressedUrl = null,
-            long CompressedSize = -1);
+            long CompressedSize = -1)
+        {
+            /// <summary>
+            /// Every version newer than this build, newest first, each with its
+            /// notes (6.2.1). Never empty: when the list of releases could not be
+            /// read it is the latest alone.
+            /// </summary>
+            public IReadOnlyList<Missed> Behind { get; init; } = new[] { new Missed(Version, Notes) };
+        }
+
+        /// <summary>One version this build has not got, and what changed in it.</summary>
+        public sealed record Missed(Version Version, string Notes);
+
+        /// <summary>
+        /// The versions between this build and <paramref name="latest"/>, newest
+        /// first. Only ever makes the question fuller: any trouble reading the
+        /// list answers with the latest alone.
+        /// </summary>
+        private static async Task<IReadOnlyList<Missed>> BehindAsync(Version latest, string notes, CancellationToken cancel)
+        {
+            var found = new Dictionary<Version, string> { [latest] = notes };
+            try
+            {
+                using var response = await Http.GetAsync(
+                    $"https://api.github.com/repos/{Repository}/releases?per_page=100", cancel).ConfigureAwait(false);
+                if (response.IsSuccessStatusCode)
+                {
+                    await using var body = await response.Content.ReadAsStreamAsync(cancel).ConfigureAwait(false);
+                    using var json = await JsonDocument.ParseAsync(body, cancellationToken: cancel).ConfigureAwait(false);
+                    if (json.RootElement.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var release in json.RootElement.EnumerateArray())
+                        {
+                            if (release.ValueKind != JsonValueKind.Object) continue;
+                            if (release.TryGetProperty("draft", out var d) && d.ValueKind == JsonValueKind.True) continue;
+                            if (release.TryGetProperty("prerelease", out var p) && p.ValueKind == JsonValueKind.True) continue;
+                            if (!release.TryGetProperty("tag_name", out var t) || t.ValueKind != JsonValueKind.String) continue;
+                            if (!TryParseVersion(t.GetString() ?? "", out var version)) continue;
+                            if (version <= Current || version > latest || found.ContainsKey(version)) continue;
+
+                            found[version] = release.TryGetProperty("body", out var b) && b.ValueKind == JsonValueKind.String
+                                ? (b.GetString() ?? "").Trim()
+                                : "";
+                        }
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is not OutOfMemoryException)
+            {
+                // The update itself is known; only its history is not.
+            }
+
+            return found.OrderByDescending(f => f.Key).Select(f => new Missed(f.Key, f.Value)).ToList();
+        }
 
         /// <summary>
         /// The gzip copy of each executable the release carries beside it, about
@@ -251,7 +304,10 @@ namespace ExplorerNative
                                 ". Try again later.");
 
                         return new Release(latest, notes, url, size, sha,
-                            string.IsNullOrEmpty(packedUrl) ? null : packedUrl, packedSize);
+                            string.IsNullOrEmpty(packedUrl) ? null : packedUrl, packedSize)
+                        {
+                            Behind = await BehindAsync(latest, notes, timeout.Token).ConfigureAwait(false),
+                        };
                     }
 
                     throw new UpdateException(Problem.NotFound,

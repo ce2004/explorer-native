@@ -38,8 +38,8 @@ namespace ExplorerNative
             var unit = Math.Max(1, Font.Height);
             var width = Math.Max(496, 496 * unit / 15);
 
-            var messageText = $"Version {version} is available. You have {Updater.CurrentText}. " +
-                              "Install it now? Explorer Native will restart.";
+            var messageText = Sentence(release);
+            bool several = release.Behind.Count > 1;
             var measured = TextRenderer.MeasureText(messageText, Font, new Size(width, 0),
                 TextFormatFlags.WordBreak | TextFormatFlags.TextBoxControl);
             var message = new TextBox
@@ -59,7 +59,7 @@ namespace ExplorerNative
 
             var changesLabel = new Label
             {
-                Text = $"&Changes in {version}:",
+                Text = several ? $"&Changes since {Updater.CurrentText}:" : $"&Changes in {version}:",
                 AutoSize = true,
                 TabIndex = 1,
             };
@@ -70,12 +70,27 @@ namespace ExplorerNative
                 Height = unit * 13,
                 TabIndex = 2,
                 HorizontalScrollbar = true,
-                AccessibleName = $"Changes in {version}",
+                AccessibleName = several ? $"Changes since {Updater.CurrentText}" : $"Changes in {version}",
             };
-            var lines = Changes(release.Notes);
-            if (lines.Count == 0) lines.Add("No list of changes was published for this version.");
-            changes.Items.AddRange(lines.ToArray());
+            changes.Items.AddRange(Rows(release).ToArray());
             changes.SelectedIndex = 0;
+
+            // As in Help, Changelog: Ctrl+Down and Ctrl+Up go version to version.
+            changes.KeyDown += (_, e) =>
+            {
+                if (!e.Control || (e.KeyCode != Keys.Down && e.KeyCode != Keys.Up)) return;
+                e.Handled = e.SuppressKeyPress = true;
+                int step = e.KeyCode == Keys.Down ? 1 : -1;
+                for (int i = changes.SelectedIndex + step; i >= 0 && i < changes.Items.Count; i += step)
+                {
+                    if (Changelog.IsHeading((string)changes.Items[i]))
+                    {
+                        changes.SelectedIndex = i;
+                        return;
+                    }
+                }
+                try { Speech.Speak(step > 0 ? "No more versions" : "This is the newest version", interrupt: true); } catch { }
+            };
 
             var buttonSize = new Size(Math.Max(84, 84 * unit / 15), unit + 13);
             var update = new Button
@@ -140,6 +155,35 @@ namespace ExplorerNative
             base.OnLoad(e);
             var panel = Controls[0];
             ClientSize = new Size(panel.PreferredSize.Width, panel.PreferredSize.Height);
+        }
+
+        /// <summary>
+        /// The question, starting with how far behind this copy is (6.2.1,
+        /// Conner: "it will say you're x versions out of date").
+        /// </summary>
+        internal static string Sentence(Updater.Release release)
+        {
+            int behind = release.Behind.Count;
+            return (behind == 1 ? "You're 1 version out of date. " : $"You're {behind} versions out of date. ") +
+                   $"Version {Updater.Text(release.Version)} is available. You have {Updater.CurrentText}. " +
+                   "Install it now? Explorer Native will restart.";
+        }
+
+        /// <summary>
+        /// The list: every version missed, newest first, each under a
+        /// "Version 6.2.1" row of its own, as Help, Changelog lays them out.
+        /// </summary>
+        internal static List<string> Rows(Updater.Release release)
+        {
+            var rows = new List<string>();
+            foreach (var missed in release.Behind)
+            {
+                rows.Add(Changelog.HeadingPrefix + Updater.Text(missed.Version));
+                var lines = Changes(missed.Notes);
+                if (lines.Count == 0) lines.Add("No list of changes was published for this version.");
+                rows.AddRange(lines);
+            }
+            return rows;
         }
 
         // Private-use characters standing in for code spans and escaped

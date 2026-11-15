@@ -449,6 +449,12 @@ Five read-only reviews of everything added since 5.1.0 found 25 bugs; each is pi
 - AI: only 402, "credit balance", "insufficient_quota" and "insufficient credits" mean out of credit; "quota" and "billing" also appear in ordinary rate limits. Gemma takes no system instruction (`GeminiBody(model:)`). Dated price ids keep their own entry (`Normalise(keepDate:)`).
 - The sync's `DeleteForGood` deletes a file only, never a folder that took its name.
 
+## 6.2.1 (Conner)
+
+- The window shortcut left the keyboard on the desktop: `ShowWindow` ends with `Foreground.Take` (tray), which joins the front window's input queue for SetForegroundWindow, falls back to an unassigned key (0xE8), and focuses the list when the window is in front with focus nowhere. Never rely on `Form.Activate` alone to come to the front.
+- Preferences, Audio: unticking Enable the audio player hides every other control on the page (`ShowRest` in `BuildAudioTab`); hidden controls still apply what they held.
+- Update window: `Updater.Release.Behind` is every version newer than this build, newest first (`BehindAsync`, the releases list, best effort: any trouble gives the latest alone). `UpdateForm.Sentence` starts "You're N versions out of date" and `UpdateForm.Rows` puts each version under a "Version X" row; Ctrl+Up/Down jump between them as in Help, Changelog. Tests in the updates group.
+
 ## Testing and probing the running app
 
 - Assert behaviour, not this machine's setup. Registry tests snapshot and restore.

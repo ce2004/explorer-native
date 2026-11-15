@@ -164,6 +164,47 @@ namespace ExplorerNative
                 Check("a newer release is found",
                     newer != null && newer.Size == 1234 && newer.Sha256 == "ab" && newer.DownloadUrl == "https://example/x.exe");
 
+                Check("with nothing else known, it is one version behind",
+                    newer != null && newer.Behind.Count == 1 && newer.Behind[0].Version == newer.Version &&
+                    UpdateForm.Sentence(newer).StartsWith("You're 1 version out of date. ", StringComparison.Ordinal),
+                    newer == null ? null : UpdateForm.Sentence(newer));
+
+                // Several versions behind (6.2.1): counted, and each one's
+                // changes listed under its own heading, newest first.
+                var latestJson =
+                    "{\"tag_name\":\"v99.0.0\",\"body\":\"* one\",\"assets\":[{\"name\":\"" + asset +
+                    "\",\"browser_download_url\":\"https://example/x.exe\",\"size\":1234,\"digest\":\"sha256:ab\"}]}";
+                fake.Answer = r => r.RequestUri!.AbsoluteUri.Contains("/releases?", StringComparison.Ordinal)
+                    ? Json("[{\"tag_name\":\"v98.5.0\",\"body\":\"New: middle\"}," +
+                           "{\"tag_name\":\"v99.0.0\",\"body\":\"* one\"}," +
+                           "{\"tag_name\":\"v98.0.0\",\"body\":\"Bug fixed: oldest\\nNew: second line\"}," +
+                           "{\"tag_name\":\"v98.9.0\",\"body\":\"draft\",\"draft\":true}," +
+                           "{\"tag_name\":\"v0.0.1\",\"body\":\"long ago\"}," +
+                           "{\"tag_name\":\"nightly\",\"body\":\"not a version\"}]")
+                    : Json(latestJson);
+                var far = await Updater.CheckAsync();
+                Check("every version missed is counted, and only those",
+                    far != null && string.Join(",", far.Behind.Select(b => Updater.Text(b.Version))) == "99.0.0,98.5.0,98.0.0",
+                    far == null ? null : string.Join(",", far.Behind.Select(b => Updater.Text(b.Version))));
+                if (far != null)
+                {
+                    Check("the question says how many",
+                        UpdateForm.Sentence(far).StartsWith("You're 3 versions out of date. Version 99.0.0 is available.", StringComparison.Ordinal),
+                        UpdateForm.Sentence(far));
+                    Equal("each version's changes sit under its own heading",
+                        "Version 99.0.0|one|Version 98.5.0|New: middle|Version 98.0.0|Bug fixed: oldest|New: second line",
+                        string.Join("|", UpdateForm.Rows(far)));
+                    Check("the headings are ones Ctrl+arrows stop on",
+                        UpdateForm.Rows(far).Count(Changelog.IsHeading) == 3);
+                }
+
+                // The list of releases failing takes nothing away from the update.
+                fake.Answer = r => r.RequestUri!.AbsoluteUri.Contains("/releases?", StringComparison.Ordinal)
+                    ? new HttpResponseMessage(HttpStatusCode.Forbidden)
+                    : Json(latestJson);
+                var alone = await Updater.CheckAsync();
+                Check("an unreadable release list still offers the update", alone != null && alone.Behind.Count == 1);
+
                 fake.Answer = _ => Json("{\"tag_name\":\"v0.0.1\",\"assets\":[]}");
                 Check("an older one is not offered", await Updater.CheckAsync() == null);
 

@@ -1105,12 +1105,29 @@ namespace ExplorerNative
                 + "saved token from this machine and nothing else.");
         }
 
+        /// <summary>Hides the Audio page's settings at build time when the player is off.</summary>
+        private Action? _afterAudioPage;
+
         private FlowLayoutPanel BuildAudioTab()
         {
             var panel = NewPage();
 
-            AddCheck(panel, "Enable the audio player", _working.AudioPlayerEnabled,
+            var enable = AddCheck(panel, "Enable the audio player", _working.AudioPlayerEnabled,
                 v => _working.AudioPlayerEnabled = v);
+
+            // Off, the rest of the page is not there (6.2.1, Conner: "it should
+            // not show anymore settings until you check it"). Hidden controls
+            // still apply what they held, so nothing is lost by unticking.
+            // Queued so it runs once the whole page has been built.
+            void ShowRest()
+            {
+                panel.SuspendLayout();
+                foreach (Control c in panel.Controls)
+                    if (c != enable) c.Visible = enable.Checked;
+                panel.ResumeLayout();
+            }
+            enable.CheckedChanged += (_, _) => ShowRest();
+            if (!enable.Checked) _afterAudioPage = ShowRest;
 
             AddCheck(panel, "Play audio files in Explorer Native instead of the associated application",
                 _working.PlayAudioInApp, v => _working.PlayAudioInApp = v);
@@ -1181,6 +1198,8 @@ namespace ExplorerNative
             if (problem.Length > 0 && problem != "not started" && problem != "ready")
                 AddInfo(panel, "Last problem starting a track: " + problem);
 
+            _afterAudioPage?.Invoke();
+            _afterAudioPage = null;
             return panel;
         }
 
