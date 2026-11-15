@@ -1573,6 +1573,9 @@ namespace ExplorerNative
                         if (!AppleMusicPlayState.ErrorMatters(path)) { Log("error with nothing loaded ignored"); break; }
                         int failed = gen == 0 ? Volatile.Read(ref _generation) : gen;
                         var sentence = Sentence(code, msg);
+                        // MusicKit refused the sign-in: the tray offers Preferences, once.
+                        if (sentence == AppleMusicClient.ExpiredSentence)
+                            AppleMusicClient.ReportSignInRejected(AppleMusic.SignInToken);
                         // Playing on by itself into a song Apple won't play: say so
                         // and go on to the next, rather than stopping the music.
                         // A song you pressed Enter on just says why.
@@ -1683,7 +1686,7 @@ namespace ExplorerNative
                 return "Apple Music says there is no active subscription on this account.";
             if (both.Contains("AUTHORIZ", StringComparison.Ordinal) || both.Contains("UNAUTHENTICATED", StringComparison.Ordinal) ||
                 both.Contains("TOKEN", StringComparison.Ordinal))
-                return "Apple Music didn't accept your sign-in. Load a new cookies.txt in Preferences, Apple Music.";
+                return AppleMusicClient.ExpiredSentence;
             if (both.Contains("CONTENT_UNAVAILABLE", StringComparison.Ordinal) || both.Contains("CONTENT_RESTRICTED", StringComparison.Ordinal) ||
                 both.Contains("NOT_FOUND", StringComparison.Ordinal))
                 return Unavailable;

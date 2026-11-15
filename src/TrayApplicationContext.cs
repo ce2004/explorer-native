@@ -317,6 +317,15 @@ namespace ExplorerNative
             // only listens to the answer, and arrives on that thread.
             Speech.Notification += OnSpeechAvailabilityChanged;
 
+            // Without NVDA (JAWS, Narrator, NVDA restarting) messages go out as
+            // UI Automation notifications, raised here on the UI thread from the
+            // window in front (Speech.UseUiaHost). NVDA itself is never sent one.
+            Speech.UseUiaHost(_ui, UiaSpeechTarget);
+
+            // The Apple Music cookies.txt sign-in expires without warning: the
+            // first refusal of each sign-in asks whether to load a new one.
+            AppleMusicClient.SignInRejected += OnAppleSignInRejected;
+
             // Signing out, restarting or shutting down Windows quits properly,
             // so files still on their way to Google Drive are sent first; see
             // SessionEndWindow. Made before Drive can mount, on this thread.
@@ -526,6 +535,61 @@ namespace ExplorerNative
         /// </summary>
         private void OnSpeechAvailabilityChanged(string id, string message) =>
             PostUi(() => Notify(id, message));
+
+        /// <summary>
+        /// Where a UI Automation notification is raised from, on the UI thread:
+        /// the focused control of our window in front, else that window, else
+        /// the main window. Screen readers read notifications from the window
+        /// you are in; with none of ours in front (hidden in the tray) the main
+        /// window is the best there is. Null when no window has a handle yet.
+        /// </summary>
+        private Control? UiaSpeechTarget()
+        {
+            if (Form.ActiveForm is { IsDisposed: false, IsHandleCreated: true } front)
+            {
+                Control here = front;
+                while (here is ContainerControl { ActiveControl: { } inner } && inner != here) here = inner;
+                return here.IsHandleCreated && !here.IsDisposed ? here : front;
+            }
+            return _form is { IsDisposed: false, IsHandleCreated: true } main ? main : null;
+        }
+
+        /// <summary>Each sign-in's expiry is asked about once.</summary>
+        private readonly OncePerSignIn _appleExpiryAsked = new();
+        private bool _askingAppleSignIn;
+
+        /// <summary>
+        /// Apple refused the Music sign-in (any thread). The failing request
+        /// already says why; this offers to open Preferences, Apple Music, once
+        /// per sign-in, as a Yes/No question like the WinFsp one. Not while
+        /// Preferences or an audio dialog is up (the person is already there, or
+        /// busy), and then it is asked the next time instead.
+        /// </summary>
+        private void OnAppleSignInRejected(string userToken) => PostUi(() =>
+        {
+            if (_quitting || _askingAppleSignIn || _audioDialogOpen || _form?.PreferencesOpen == true) return;
+            if (!_appleExpiryAsked.First(userToken)) return;
+            _askingAppleSignIn = true;
+            try
+            {
+                var answer = ShowDriveMessage(
+                    AppleMusicClient.ExpiredSentence + Environment.NewLine + Environment.NewLine +
+                    "Open Preferences, Apple Music, now?",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                // A quit inside the question's own message loop is not a Yes.
+                if (_quitting) return;
+                if (answer != DialogResult.Yes)
+                {
+                    if (_form is { IsDisposed: false, Visible: true } window) window.RestoreListFocusExternally();
+                    return;
+                }
+                if (_audioDialogOpen || _form?.PreferencesOpen == true) return;
+                ShowWindow();
+                _form?.OpenPreferencesExternally("Apple Music");
+            }
+            catch (Exception ex) { Diag.Note(ex); }
+            finally { _askingAppleSignIn = false; }
+        });
 
         /// <summary>
         /// Google Drive's messages, from whichever thread raised them. While
@@ -3466,6 +3530,8 @@ namespace ExplorerNative
             // the pump these arrive on is still running.
             ShellRegistration.Changed -= OnShellRegistrationChanged;
             Speech.Notification -= OnSpeechAvailabilityChanged;
+            Speech.UseUiaHost(null, null);
+            AppleMusicClient.SignInRejected -= OnAppleSignInRejected;
             _registrationWatch.Stop();
 
             try

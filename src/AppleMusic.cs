@@ -66,6 +66,12 @@ namespace ExplorerNative
             get { lock (Gate) return _token.Length > 0; }
         }
 
+        /// <summary>The media-user-token in use now, for telling one sign-in's expiry from the next.</summary>
+        internal static string SignInToken
+        {
+            get { lock (Gate) return _token; }
+        }
+
         /// <summary>Preferences, Apple Music, Autoplay: whether a finished list plays on.</summary>
         public static volatile bool Autoplay = true;
 

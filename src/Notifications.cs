@@ -132,7 +132,7 @@ namespace ExplorerNative
 
             // ---- Apple Music -------------------------------------------------
             Live("applemusic.loading", "Loading from Apple Music", Navigation, Say, "Loading from Apple Music"),
-            Live("applemusic.failed", "Apple Music problem", AudioTransport, Say, "{0}", "Apple Music didn't accept your sign-in."),
+            Live("applemusic.failed", "Apple Music problem", AudioTransport, Say, "{0}", "Your Apple Music sign-in has expired. Load a new cookies file in Preferences, Apple Music."),
             Live("applemusic.refused", "Not available in Apple Music", Navigation, Say, "{0}", "Apple Music can only be browsed and played here"),
             Live("applemusic.endoflist", "End of the Apple Music list", AudioTransport, Say, "{0}", "End of the list"),
             Live("applemusic.details", "Apple Music song details", Navigation, Say, "{0}", "Apathy by Someone, from Some Album, 3 minutes 12 seconds, released 2020"),
@@ -244,7 +244,7 @@ namespace ExplorerNative
             Live("drive.signin.opened", "Waiting for you in the browser", DriveConnection, Bar, "Waiting for you to allow access in the browser"),
             Live("drive.signin.done", "Signed in", DriveConnection, Pop, "Signed in to Google Drive as {0}", "you@example.com"),
             Live("drive.signin.refused", "Sign-in refused", DriveConnection, Loud, "Google Drive sign-in was refused: {0}", "access_denied"),
-            Live("drive.signin.timeout", "Sign-in timed out", DriveConnection, Loud, "Google sign-in timed out. Press Connect Google Drive again."),
+            Live("drive.signin.timeout", "Sign-in timed out", DriveConnection, Loud, "Google sign-in timed out. If Google said access is blocked, add your account as a test user in the Google Cloud console, under Google Auth platform, Audience. Then press Connect Google Drive again."),
             Live("drive.credentials.missing", "No Google client ID and secret", DriveConnection, Loud, "No Google client ID and secret yet. Enter them in Preferences, Google Drive"),
             Live("drive.letter.taken", "Preferred letter unavailable", DriveConnection, Bar, "{0} was taken, so Google Drive is using {1}", "G:", "H:"),
             Live("drive.letter.none", "No drive letter free", DriveConnection, Loud, "No drive letter is free for Google Drive"),
@@ -500,7 +500,7 @@ namespace ExplorerNative
             Live("startup.on", "Starts with Windows", Application, Bar, "Explorer Native will start with Windows"),
             Live("startup.off", "No longer starts with Windows", Application, Bar, "Explorer Native will not start with Windows"),
             Live("instance.handoff", "Folder opened in the window already open", Application, Off, "Opened {0}", "Downloads"),
-            Live("speech.unavailable", "Screen reader not found", Application, Bar, "NVDA is not running, so nothing will be spoken."),
+            Live("speech.unavailable", "Screen reader not found", Application, Bar, "NVDA isn't running. Messages will go to any other screen reader instead."),
             Live("speech.restored", "Screen reader found", Application, Bar, "NVDA is running again."),
             Live("error.generic", "Something went wrong", Application, Loud, "{0}", "Something went wrong"),
         };

@@ -432,6 +432,11 @@ namespace ExplorerNative
         {
             body = (body ?? "").Trim();
 
+            // A Cloud project set up wrong (the Drive API switched off, Drive
+            // unticked on the permission page): what to do in the console,
+            // from the one place those sentences live.
+            if (GoogleSetupErrors.FromApiBody(body) is { } setup) return setup;
+
             // The three that are worth a sentence of our own, because Google's
             // is either a bare code or prose about "quota" that does not say
             // which quota — and these are the ones where knowing which decides
@@ -460,14 +465,6 @@ namespace ExplorerNative
                 case "userRateLimitExceeded":
                     return "Google is limiting how fast this account may upload; waiting and " +
                            "trying again.";
-
-                // A new Cloud project has the Drive API switched off, and this is
-                // the first thing a new person meets after signing in.
-                case "accessNotConfigured":
-                case "SERVICE_DISABLED":
-                    return "The Google Drive API is not turned on for this Google Cloud project. " +
-                           "Open the project in the Google Cloud console, go to APIs and services, " +
-                           "Library, find Google Drive API and press Enable, then connect again.";
             }
 
             if (body.StartsWith("{", StringComparison.Ordinal))

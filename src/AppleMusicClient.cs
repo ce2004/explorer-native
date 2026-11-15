@@ -156,7 +156,46 @@ namespace ExplorerNative
         /// <summary>Tests only: answers every request instead of Apple, and skips the developer token's fetch.</summary>
         internal static Func<HttpRequestMessage, HttpResponseMessage>? FakeForTests;
 
-        private static async Task<JsonDocument> SendAsync(HttpRequestMessage req, CancellationToken token)
+        /// <summary>
+        /// What is said when Apple stops taking the media-user-token. The
+        /// cookies.txt sign-in lasts months, then quietly stops working, and
+        /// every list and play failed with a sentence that did not say why.
+        /// </summary>
+        public const string ExpiredSentence =
+            "Your Apple Music sign-in has expired. Load a new cookies file in Preferences, Apple Music.";
+
+        /// <summary>How Apple answered a request, as far as the app cares.</summary>
+        internal enum Answer { Ok, SignInRejected, NotFound, Failed }
+
+        /// <summary>
+        /// Apple's status code read as an answer. 401 and 403 both mean the
+        /// sign-in was refused: amp-api answers an expired or revoked
+        /// media-user-token with either, and the developer token scraped from
+        /// the web player is fetched afresh with each sign-in.
+        /// </summary>
+        internal static Answer Judge(int status) => status switch
+        {
+            401 or 403 => Answer.SignInRejected,
+            404 => Answer.NotFound,
+            >= 200 and < 300 => Answer.Ok,
+            _ => Answer.Failed,
+        };
+
+        /// <summary>
+        /// Raised, from whichever thread asked, each time Apple refuses the
+        /// sign-in, with the refused media-user-token. The tray asks once per
+        /// token whether to open Preferences, Apple Music (<see cref="OncePerSignIn"/>).
+        /// </summary>
+        public static event Action<string>? SignInRejected;
+
+        /// <summary>Says that Apple refused <paramref name="userToken"/>. Never throws.</summary>
+        internal static void ReportSignInRejected(string userToken)
+        {
+            try { SignInRejected?.Invoke(userToken); }
+            catch (Exception ex) { Diag.Note(ex); }
+        }
+
+        private async Task<JsonDocument> SendAsync(HttpRequestMessage req, CancellationToken token)
         {
             HttpResponseMessage resp;
             var fake = FakeForTests;
@@ -166,12 +205,16 @@ namespace ExplorerNative
             using (resp)
             {
                 var body = await resp.Content.ReadAsStringAsync(token).ConfigureAwait(false);
-                if (resp.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-                    throw new AppleMusicException("Apple Music didn't accept your sign-in. Set it up again in Preferences, Apple Music.", signIn: true);
-                if (resp.StatusCode == HttpStatusCode.NotFound)
-                    throw new AppleMusicException("Apple Music says that isn't there any more.") { NotFound = true };
-                if (!resp.IsSuccessStatusCode)
-                    throw new AppleMusicException($"Apple Music answered with an error ({(int)resp.StatusCode}).");
+                switch (Judge((int)resp.StatusCode))
+                {
+                    case Answer.SignInRejected:
+                        ReportSignInRejected(_userToken);
+                        throw new AppleMusicException(ExpiredSentence, signIn: true);
+                    case Answer.NotFound:
+                        throw new AppleMusicException("Apple Music says that isn't there any more.") { NotFound = true };
+                    case Answer.Failed:
+                        throw new AppleMusicException($"Apple Music answered with an error ({(int)resp.StatusCode}).");
+                }
                 // A change (PUT, DELETE, POST) is often answered with no body at all.
                 if (string.IsNullOrWhiteSpace(body)) return JsonDocument.Parse("{}");
                 try { return JsonDocument.Parse(body); }
@@ -620,5 +663,29 @@ namespace ExplorerNative
         /// <summary>Apple answered 404. An empty playlist's tracks answer this too.</summary>
         public bool NotFound { get; init; }
         public AppleMusicException(string message, bool signIn = false) : base(message) => SignIn = signIn;
+    }
+
+    /// <summary>
+    /// Whether to ask about an expired Apple Music sign-in: once for each
+    /// sign-in, not on every request that fails with it (a library listing
+    /// asks Apple sixteen pages at a time). Loading a new cookies file is a new
+    /// sign-in, so when that one expires too it is asked about again.
+    /// </summary>
+    internal sealed class OncePerSignIn
+    {
+        private readonly object _gate = new();
+        private string? _askedAbout;
+
+        /// <summary>True the first time <paramref name="userToken"/> is refused; false after that, and for no sign-in at all.</summary>
+        public bool First(string? userToken)
+        {
+            if (string.IsNullOrEmpty(userToken)) return false;
+            lock (_gate)
+            {
+                if (string.Equals(_askedAbout, userToken, StringComparison.Ordinal)) return false;
+                _askedAbout = userToken;
+                return true;
+            }
+        }
     }
 }

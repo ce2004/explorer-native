@@ -738,7 +738,11 @@ namespace ExplorerNative
             using var response = await Send(request, HttpCompletionOption.ResponseContentRead, token);
             var body = await response.Content.ReadAsStringAsync(token);
             if (!response.IsSuccessStatusCode)
-                throw new InvalidOperationException(Explain((int)response.StatusCode, body));
+                // The first request after signing in: a project set up wrong
+                // (the Drive API off) is said as that, with its fix, on its own.
+                throw GoogleSetupErrors.FromApiBody(body) is { } setup
+                    ? new GoogleSetupException(setup)
+                    : new InvalidOperationException(Explain((int)response.StatusCode, body));
 
             using var doc = JsonDocument.Parse(body);
             var root = doc.RootElement;

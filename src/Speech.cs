@@ -9,11 +9,12 @@ namespace ExplorerNative
     /// <summary>
     /// Screen-reader output through the NVDA controller client.
     ///
-    /// NVDA only, by design (same rule as the ARP recorder): no SAPI fallback,
+    /// NVDA first, by design (same rule as the ARP recorder): no SAPI fallback,
     /// because a second synthesiser talking over the top of NVDA is worse than
-    /// silence. If the controller client is missing, announcements are dropped
-    /// rather than spoken by something else — the UI itself is still fully
-    /// readable by NVDA through normal WinForms accessibility.
+    /// silence. Only when the NVDA controller is not answering (NVDA not
+    /// running or restarting, or the client missing) is a message raised as a
+    /// UI Automation notification instead, which JAWS, Narrator and other
+    /// screen readers read in their own voice (<see cref="ChooseRoute"/>).
     ///
     /// Everything is dispatched to a background thread. Both entry points into
     /// the controller client are synchronous RPC calls into NVDA's process: on a
@@ -56,8 +57,8 @@ namespace ExplorerNative
 
         private static void StartWorker()
         {
-            if (_speakText == null) return; // nothing to talk to; don't spawn a thread
-
+            // Started even without the NVDA client: UI Automation notifications
+            // are the second way out (see ChooseRoute).
             _worker = new Thread(PumpForever)
             {
                 IsBackground = true,
@@ -119,7 +120,18 @@ namespace ExplorerNative
 
                 try
                 {
-                    if (!NvdaRunning()) continue;
+                    // NVDA first, exactly as before. Only when its controller is
+                    // not answering (not running, restarting, or the client DLL
+                    // missing) does the message go out through UI Automation, for
+                    // JAWS, Narrator and the rest. Never both.
+                    bool nvda = NvdaRunning();
+                    var route = ChooseRoute(nvda, _uiaPost != null, !nvda && UiaClientsListening());
+                    if (route == SpeechRoute.Uia)
+                    {
+                        if (next.Message.Length > 0) RaiseUia(next.Message, next.Interrupt);
+                        continue;
+                    }
+                    if (route != SpeechRoute.Nvda) continue;
                     if (next.Interrupt) CancelNow();
 
                     // Cancel() enqueues an empty interrupting utterance: the
@@ -283,8 +295,7 @@ namespace ExplorerNative
                 _reportedRunning = _runningCached;
 
                 if (!_runningCached)
-                    Notification?.Invoke("speech.unavailable",
-                        "NVDA is not running, so nothing will be spoken.");
+                    Notification?.Invoke("speech.unavailable", UnavailableSentence);
                 else if (!first)
                     Notification?.Invoke("speech.restored", "NVDA is running again.");
             }
@@ -299,7 +310,6 @@ namespace ExplorerNative
         public static void Speak(string? message, bool interrupt = false)
         {
             if (string.IsNullOrEmpty(message)) return;
-            if (_speakText == null) return;
 
             lock (Gate)
             {
@@ -316,6 +326,78 @@ namespace ExplorerNative
                 // single pulse that woke it instead of the pump said nothing.
                 Monitor.PulseAll(Gate);
             }
+        }
+
+        /// <summary>Said when NVDA goes away. Not "nothing will be spoken" any more: other screen readers hear it.</summary>
+        internal const string UnavailableSentence = "NVDA isn't running. Messages will go to any other screen reader instead.";
+
+        // ---- UI Automation, when NVDA is not answering ----
+
+        /// <summary>Which way one message goes out.</summary>
+        internal enum SpeechRoute { Nvda, Uia, Silent }
+
+        /// <summary>
+        /// The one decision: NVDA whenever its controller answers (so nothing
+        /// about NVDA changes, and it never hears a message twice); otherwise a
+        /// UI Automation notification when there is a window to raise it from
+        /// and a UIA client (JAWS, Narrator, any screen reader) listening;
+        /// otherwise nothing.
+        /// </summary>
+        internal static SpeechRoute ChooseRoute(bool nvdaRunning, bool uiaHost, bool uiaListening) =>
+            nvdaRunning ? SpeechRoute.Nvda
+            : uiaHost && uiaListening ? SpeechRoute.Uia
+            : SpeechRoute.Silent;
+
+        /// <summary>Posts a message to the UI thread to be raised there; null until the tray sets it.</summary>
+        private static volatile Action<string, bool>? _uiaPost;
+
+        /// <summary>
+        /// Where UI Automation notifications come from: <paramref name="ui"/> is
+        /// the UI thread's context (they are raised there, never on the pump),
+        /// and <paramref name="target"/> picks the control to raise them from at
+        /// that moment. Null, null stops them (quitting).
+        /// </summary>
+        public static void UseUiaHost(SynchronizationContext? ui, Func<System.Windows.Forms.Control?>? target)
+        {
+            if (ui == null || target == null) { _uiaPost = null; return; }
+            _uiaPost = (text, interrupt) =>
+            {
+                try
+                {
+                    ui.Post(_ =>
+                    {
+                        try
+                        {
+                            var control = target();
+                            if (control == null || control.IsDisposed || !control.IsHandleCreated) return;
+                            var processing = interrupt
+                                ? System.Windows.Forms.Automation.AutomationNotificationProcessing.ImportantMostRecent
+                                : System.Windows.Forms.Automation.AutomationNotificationProcessing.ImportantAll;
+                            bool raised = control.AccessibilityObject.RaiseAutomationNotification(
+                                System.Windows.Forms.Automation.AutomationNotificationKind.Other, processing, text);
+                            // A child control whose provider will not raise: its window will.
+                            if (!raised && control.FindForm() is { IsDisposed: false, IsHandleCreated: true } form &&
+                                form != control)
+                                form.AccessibilityObject.RaiseAutomationNotification(
+                                    System.Windows.Forms.Automation.AutomationNotificationKind.Other, processing, text);
+                        }
+                        catch (Exception ex) { Diag.Note(ex); }
+                    }, null);
+                }
+                catch (Exception ex) { Diag.Note(ex); }
+            };
+        }
+
+        internal static void RaiseUia(string text, bool interrupt) => _uiaPost?.Invoke(text, interrupt);
+
+        [DllImport("uiautomationcore.dll")]
+        private static extern bool UiaClientsAreListening();
+
+        /// <summary>Whether any UI Automation client is listening; false when the call itself fails.</summary>
+        private static bool UiaClientsListening()
+        {
+            try { return UiaClientsAreListening(); }
+            catch (Exception ex) { Diag.Note(ex); return false; }
         }
 
         private static void CancelNow()
