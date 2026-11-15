@@ -232,9 +232,11 @@ namespace ExplorerNative
             {
                 Socket socket;
                 try { socket = listener.AcceptSocket(); }
-                catch
+                catch (Exception ex)
                 {
                     if (_disposed) return;
+                    // A caller who hung up in the queue is routine; anything else is the listener in trouble.
+                    if (ex is not SocketException) Diag.Note(ex);
                     Thread.Sleep(50);
                     continue;
                 }

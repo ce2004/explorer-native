@@ -249,7 +249,7 @@ namespace ExplorerNative
                 File.WriteAllText(part, answer, new UTF8Encoding(false));
                 File.Move(part, path!, overwrite: false);
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         // ------------------------------------------------ the command line

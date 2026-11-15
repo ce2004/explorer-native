@@ -79,9 +79,9 @@ namespace ExplorerNative
         /// </summary>
         public Action<string, string>? OnFailed { get; init; }
 
-        public void Starting(string name) { try { OnStarting?.Invoke(name); } catch { } }
-        public void Copied(string name, long bytes) { try { OnCopied?.Invoke(name, bytes); } catch { } }
-        public void Failed(string name, string why) { try { OnFailed?.Invoke(name, why); } catch { } }
+        public void Starting(string name) { try { OnStarting?.Invoke(name); } catch (Exception ex) { Diag.Note(ex); } }
+        public void Copied(string name, long bytes) { try { OnCopied?.Invoke(name, bytes); } catch (Exception ex) { Diag.Note(ex); } }
+        public void Failed(string name, string why) { try { OnFailed?.Invoke(name, why); } catch (Exception ex) { Diag.Note(ex); } }
 
         /// <summary>
         /// Whether a failure inside a folder copy is one to note and carry on
@@ -199,12 +199,12 @@ namespace ExplorerNative
         {
             if (_sayTo.Value is { } to)
             {
-                try { to(id, message); } catch { }
+                try { to(id, message); } catch (Exception ex) { Diag.Note(ex); }
                 return;
             }
             var handler = _notification;
             if (handler == null) return;
-            try { handler(id, message); } catch { }
+            try { handler(id, message); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>
@@ -408,7 +408,7 @@ namespace ExplorerNative
                     @"Software\Microsoft\Windows\CurrentVersion\Explorer\MountPoints2\" + name);
                 key?.SetValue("_LabelFromReg", "Google Drive");
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
         /// <summary>The same trace, for the upload and other callers outside this class.</summary>
         internal static void Trace(string line) => Note(line);
@@ -579,7 +579,7 @@ namespace ExplorerNative
             try
             {
                 // A sign-in saved meanwhile is tried before any browser.
-                try { if (File.Exists(TokenPath)) File.Copy(TokenPath, scratchPath); } catch { }
+                try { if (File.Exists(TokenPath)) File.Copy(TokenPath, scratchPath); } catch (Exception ex) { Diag.Note(ex); }
                 var scratch = new GoogleAuth(credentials.ClientId, credentials.ClientSecret, scratchPath)
                     { AllowConsent = false, Notify = Forward };
                 var client = new DriveClient(scratch) { Notify = Forward, Units = _units };
@@ -626,7 +626,7 @@ namespace ExplorerNative
             if (Interlocked.Exchange(ref _lapseSaid, 1) != 0) return;
             NeedsSignIn = true;
             Status = "Sign-in expired. Reconnect from Preferences.";
-            try { SignInRequired?.Invoke(); } catch { }
+            try { SignInRequired?.Invoke(); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         private async Task<bool> MountFresh(Settings settings, CancellationToken token, bool quietly = false,
@@ -695,7 +695,7 @@ namespace ExplorerNative
                         if (_lastSaid == now) return;
                         _lastSaid = now;
                     }
-                    try { ConnectionChanged?.Invoke(now); } catch { }
+                    try { ConnectionChanged?.Invoke(now); } catch (Exception ex) { Diag.Note(ex); }
                 };
 
                 // Proves the token before anything is registered. A drive left
@@ -993,7 +993,7 @@ namespace ExplorerNative
             // Changes the feed brought in since the last save, so the next start begins from here.
             if (sizes != null)
                 foreach (var index in sizes.Values)
-                    try { index.SaveNow(); } catch { }
+                    try { index.SaveNow(); } catch (Exception ex) { Diag.Note(ex); }
 
             // Outside the lock. Dispose waits up to five seconds for callbacks
             // still in flight, and a callback whose request fails raises the
@@ -1080,7 +1080,7 @@ namespace ExplorerNative
         public static void SweepOrphans(Settings settings)
         {
             _ = settings;
-            try { LegacyCloudFiles.Sweep(Note); } catch { }
+            try { LegacyCloudFiles.Sweep(Note); } catch (Exception ex) { Diag.Note(ex); }
             try { if (Directory.Exists(OldHoldingFolder) && !Directory.EnumerateFileSystemEntries(OldHoldingFolder).Any()) Directory.Delete(OldHoldingFolder); } catch { }
         }
         /// <summary>Whether this path lives on the mounted drive.</summary>
@@ -1526,7 +1526,7 @@ namespace ExplorerNative
             var refresh = index.Refresh(client, lifetime);
             try { await refresh.WaitAsync(DriveSizeIndex.AnswerWithin, token).ConfigureAwait(false); }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
-            catch (Exception) { }
+            catch (Exception ex) { if (ex is not TimeoutException) Diag.Note(ex); }   // too slow is the answer as it stands
             if (!refresh.IsCompleted)
                 _ = refresh.ContinueWith(t => Note($"folder sizes: {t.Exception?.GetBaseException().Message}"),
                     CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
@@ -1936,7 +1936,7 @@ namespace ExplorerNative
             catch
             {
                 // Never left under a name that reads as a finished file.
-                try { client.Trash(id, CancellationToken.None, retry: true).GetAwaiter().GetResult(); } catch { }
+                try { client.Trash(id, CancellationToken.None, retry: true).GetAwaiter().GetResult(); } catch (Exception ex) { Diag.Note(ex); }
                 throw;
             }
 
@@ -2431,7 +2431,7 @@ namespace ExplorerNative
             var clock = System.Diagnostics.Stopwatch.StartNew();
             await Task.Run(() =>
             {
-                try { mount.Populate(parentFullPath, interactive: false); } catch { }
+                try { mount.Populate(parentFullPath, interactive: false); } catch (Exception ex) { Diag.Note(ex); }
             }, token).ConfigureAwait(false);
             long listMs = clock.ElapsedMilliseconds;
             if (!mount.TryListing(parentFullPath, out _))

@@ -146,9 +146,10 @@ namespace ExplorerNative
                         speak(p);
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
                     // A failed announcement must never take the app down with it.
+                    Diag.Note(ex);
                 }
             }
         }

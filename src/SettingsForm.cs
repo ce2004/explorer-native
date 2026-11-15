@@ -1558,7 +1558,7 @@ namespace ExplorerNative
                         var key = keys[p];
                         using var cts = new System.Threading.CancellationTokenSource(TimeSpan.FromSeconds(30));
                         var found = await AiSetupForm.Check(p, key, cts.Token);
-                        try { await AiDescriber.PriceAsync(p, models[p], cts.Token); } catch { }
+                        try { await AiDescriber.PriceAsync(p, models[p], cts.Token); } catch (Exception ex) { Diag.Note(ex); }
                         if (IsDisposed || keys[p] != key) return;
                         bool same = lists.TryGetValue(p, out var had) && had.Select(m => m.Id).SequenceEqual(found.Select(m => m.Id));
                         lists[p] = found;
@@ -1570,7 +1570,7 @@ namespace ExplorerNative
                         else FillModels(p);
                     }
                     catch (AiException ex) { if (!IsDisposed) { status.Text = AiDescriber.Name(p) + ": " + ex.Message; Say(ex.Message); } }
-                    catch (Exception) { }
+                    catch (Exception ex) { Diag.Note(ex); }
                     finally { asking = false; }
                 }
                 combo.Enter += (_, _) => AskForModels();
@@ -1578,7 +1578,7 @@ namespace ExplorerNative
                 combo.DropDownClosed += (_, _) =>
                 {
                     try { if (stale && !IsDisposed) { stale = false; FillModels(p); } }
-                    catch { }
+                    catch (Exception ex) { Diag.Note(ex); }
                 };
 
                 remove.Click += (_, _) =>
@@ -1915,7 +1915,7 @@ namespace ExplorerNative
                 if (WebAppApply != null && ((cancelled && enable.Checked != original) || (started != null && started != want)))
                 {
                     var apply = WebAppApply;
-                    System.Threading.Tasks.Task.Run(() => { try { lock (applyGate) apply(want); } catch { } });
+                    System.Threading.Tasks.Task.Run(() => { try { lock (applyGate) apply(want); } catch (Exception ex) { Diag.Note(ex); } });
                 }
             };
 
@@ -2486,7 +2486,7 @@ namespace ExplorerNative
                 foreach (var d in System.IO.DriveInfo.GetDrives())
                     if (d.Name.Length > 0) used.Add(char.ToUpperInvariant(d.Name[0]));
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
 
             var letters = new List<string>();
             for (char c = 'D'; c <= 'Z'; c++)

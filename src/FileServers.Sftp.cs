@@ -32,7 +32,7 @@ namespace ExplorerNative
                 s.SftpServerHostKey = Convert.ToBase64String(SftpServer.NewHostKey());
                 changed = true;
             }
-            catch { }   // said when it fails to start, by MakeSftp
+            catch (Exception ex) { Diag.Note(ex); }   // said when it fails to start, by MakeSftp
         }
 
         static partial void SftpFingerprint(Settings s, ref string print)

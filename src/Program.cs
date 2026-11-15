@@ -1018,7 +1018,7 @@ namespace ExplorerNative
                 {
                     Process.Start(new ProcessStartInfo(Environment.ProcessPath ?? Application.ExecutablePath) { UseShellExecute = true });
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
                 for (int i = 0; i < 30 && !sent; i++)
                 {
                     Thread.Sleep(1000);
@@ -1084,7 +1084,7 @@ namespace ExplorerNative
                     File.WriteAllText(file, answer);
                     Process.Start(new ProcessStartInfo(file) { UseShellExecute = true });
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
             }
             return 0;
         }
@@ -1262,7 +1262,7 @@ namespace ExplorerNative
                     int unpacked = AppInstall.SweepOldExtractions();
                     if (unpacked > 0) WriteLog("Swept", $"{unpacked} older build(s) unpacked files removed");
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
 
                 // The installer an update ran, now that it has finished, and the
                 // one sentence saying the update took.

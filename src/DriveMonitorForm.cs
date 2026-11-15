@@ -221,7 +221,7 @@ namespace ExplorerNative
             dialog.ShowDialog(this);
             _list.Focus();
           }
-          catch { }
+          catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>The status lines of the folder chosen above, changed in place so the arrows keep their line.</summary>
@@ -515,7 +515,7 @@ namespace ExplorerNative
             Save(list => list.Add(dialog.Pair));
             ShowSaved(_pairs.FindIndex(p => p.Id == dialog.Pair.Id));
           }
-          catch (Exception ex) { Say("The folder could not be added: " + ex.Message); }
+          catch (Exception ex) { Diag.Note(ex); Say("The folder could not be added: " + ex.Message); }
           finally { _adding = false; }
         }
 
@@ -605,7 +605,7 @@ namespace ExplorerNative
                     ? $"Saved {name}, paused. Press Resume to start it."
                     : $"Saved {name}. Syncing has started, and Status shows how it is going.");
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         private async void EditPair()
@@ -647,7 +647,7 @@ namespace ExplorerNative
             }
             if (!IsDisposed) Fill(all: true);
           }
-          catch (Exception ex) { Say("Kept on Google Drive only could not be changed: " + ex.Message); }
+          catch (Exception ex) { Diag.Note(ex); Say("Kept on Google Drive only could not be changed: " + ex.Message); }
         }
 
         /// <summary>
@@ -680,7 +680,7 @@ namespace ExplorerNative
             if (_monitor != null) await _monitor.WaitForPassAsync(id, TimeSpan.FromSeconds(10));
             Say($"Removed {name}. No files were deleted.");
           }
-          catch { }
+          catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>
@@ -1093,7 +1093,7 @@ namespace ExplorerNative
                         _driveOnly.Add((relative, true));
                         ShowDriveOnly(relative);
                     }
-                    catch { }
+                    catch (Exception ex) { Diag.Note(ex); }
                     finally { if (!IsDisposed) _driveOnlyList?.Focus(); }
                 };
 
@@ -1199,7 +1199,7 @@ namespace ExplorerNative
                     }
                     _local.Focus();
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
                 finally { browsing = false; }
             };
 

@@ -214,7 +214,7 @@ namespace ExplorerNative
             {
                 try { return await filling.WaitAsync(token).ConfigureAwait(false); }
                 catch (OperationCanceledException) { throw; }
-                catch (Exception) { }   // the rest never came: asked for again below
+                catch (Exception ex) { Diag.Note(ex); }   // the rest never came: asked for again below
             }
 
             long began = Environment.TickCount64;
@@ -293,7 +293,7 @@ namespace ExplorerNative
                 Fetched[folder] = Environment.TickCount64;
             }
             AppleMusic.Trace?.Invoke($"rows for {folder}: all {whole.Count} now");
-            try { Grew?.Invoke(folder); } catch (Exception) { }
+            try { Grew?.Invoke(folder); } catch (Exception ex) { Diag.Note(ex); }
             WholeListArrived?.Invoke(folder);
             _ = RateAsync(folder);
         }
@@ -869,7 +869,7 @@ namespace ExplorerNative
                 }
                 RenameAll();
             }
-            catch (AppleMusicException) { }
+            catch (AppleMusicException ex) { Diag.Note(ex); }
             catch (OperationCanceledException) { }
         }
 
@@ -959,7 +959,7 @@ namespace ExplorerNative
                         lock (Gate) if (account != _account) return;
                         KeepPlaylists(all);
                     }
-                    catch (AppleMusicException) { }
+                    catch (AppleMusicException ex) { Diag.Note(ex); }
                     catch (OperationCanceledException) { }
                 });
             }
