@@ -97,6 +97,13 @@ namespace ExplorerNative
             // A command for the copy that is running (6.1.0): sent, answered, done.
             if (Commands.FromArguments(args) is { } wanted)
             {
+                // Written here, not by the running copy: it is wanted most
+                // when that copy is stuck or has crashed.
+                if (Commands.IdFor(wanted.Name) == BugReport.CommandName)
+                {
+                    Environment.ExitCode = WriteBugReport(wanted.Arguments);
+                    return;
+                }
                 Environment.ExitCode = SendCommand(wanted.Name, wanted.Arguments);
                 return;
             }
@@ -972,6 +979,22 @@ namespace ExplorerNative
         /// none) and waits for its answer, which it writes in a file of ours
         /// in the temporary folder: the pipe only goes one way. 0 when it ran.
         /// </summary>
+        private static int WriteBugReport(string[] arguments)
+        {
+            try
+            {
+                var path = BugReport.WriteFile(arguments);
+                WriteLog("Explorer Native", "bug-report: written");
+                Deliver("Explorer Native", $"The bug report is in {path}. Passwords, keys and sign-ins were taken out; read it before you send it.", failed: false);
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Deliver("Explorer Native", "The bug report could not be written: " + ex.Message, failed: true);
+                return 1;
+            }
+        }
+
         private static int SendCommand(string name, string[] arguments)
         {
             // Paths as the running copy will read them: it is not in this folder.

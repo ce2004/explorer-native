@@ -46,7 +46,15 @@ namespace ExplorerNative
         /// </param>
         public sealed record Command(string Id, string Does, Action<string[]> Run, bool NeedsWindow, bool ActsOnItems);
 
-        private static readonly Dictionary<string, Command> _all = new(StringComparer.OrdinalIgnoreCase);
+        private static readonly Dictionary<string, Command> _all = new(StringComparer.OrdinalIgnoreCase)
+        {
+            // Run by the copy that was launched (Program), so it works when
+            // this one is stuck; here so --commands lists it.
+            [BugReport.CommandName] = new Command(BugReport.CommandName,
+                "Write a bug report file: version, Windows, settings and recent logs, with passwords and keys taken out",
+                given => throw new Answer("The bug report is in " + BugReport.WriteFile(given) + "."),
+                NeedsWindow: false, ActsOnItems: false),
+        };
 
         /// <summary>
         /// Thrown by a command to answer in its own words instead of "ok": a

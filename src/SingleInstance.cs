@@ -590,6 +590,7 @@ namespace ExplorerNative
             "  --licence             write out the licences" + Environment.NewLine +
             "  --commands            list everything --do can run" + Environment.NewLine +
             "  --do <command> [...]  run a command in the running copy, on the files or folders given" + Environment.NewLine +
+            "  --do bug-report [file] write a bug report (version, Windows, settings, recent logs, secrets taken out)" + Environment.NewLine +
             "  --quiet               no notice window for a command-line run" + Environment.NewLine +
             "  --help, -h, /?        show this list";
 

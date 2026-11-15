@@ -112,7 +112,7 @@
     <Compile Include="Sweep500MainBTests.cs" />
     <Compile Include="Sweep500MainCTests.cs" />
     <Compile Include="Sweep500MainDTests.cs" />
-    <Compile Include="..\src\GoogleAuth.cs" /><Compile Include="..\src\GoogleNet.cs" /><Compile Include="..\src\BadNet.cs" /><Compile Include="..\src\WinKeyHook.cs" /><Compile Include="..\src\ProtectedFile.cs" /><Compile Include="..\src\Diag.cs" />
+    <Compile Include="..\src\GoogleAuth.cs" /><Compile Include="..\src\GoogleNet.cs" /><Compile Include="..\src\BadNet.cs" /><Compile Include="..\src\WinKeyHook.cs" /><Compile Include="..\src\ProtectedFile.cs" /><Compile Include="..\src\Diag.cs" /><Compile Include="..\src\BugReport.cs" /><Compile Include="BugReportTests.cs" /><Compile Include="PerfTimings.cs" /><Compile Include="ServerRun.cs" />
     <Compile Include="..\src\AppleMusicClient.cs" /><Compile Include="..\src\AppleMusic.cs" /><Compile Include="..\src\AppleMusicPlayState.cs" />
     <Compile Include="..\src\DriveClient.cs" /><Compile Include="..\src\DriveFolderSizes.cs" /><Compile Include="..\src\DriveWrites.cs" /><Compile Include="..\src\DriveTrash.cs" /><Compile Include="..\src\DriveHealth.cs" />
     <Compile Include="..\src\DriveFileCache.cs" />

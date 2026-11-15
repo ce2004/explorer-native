@@ -21,7 +21,7 @@ namespace ExplorerNative
     /// </summary>
     internal static class Tests
     {
-        private static int _passed, _failed;
+        private static int _passed, _failed, _skipped;
 
         /// <summary>
         /// How long the suite may go without finishing a single check before it
@@ -114,6 +114,11 @@ namespace ExplorerNative
             Volatile.Write(ref _lastProgressAt, Environment.TickCount64);
 
             if (condition) { _passed++; Console.WriteLine($"  PASS  {what}"); }
+            else if (ServerRun.Excuse(what, detail) is string why)
+            {
+                _skipped++;
+                Console.WriteLine($"  SKIP  {what}  ({why}){(detail == null ? "" : "  -> " + detail)}");
+            }
             else { _failed++; Console.WriteLine($"  FAIL  {what}{(detail == null ? "" : "  -> " + detail)}"); }
         }
 
@@ -375,6 +380,10 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "fileservers") { await Guard("FileServerTests", () => FileServerTests.RunAll(Check, Equal)); Console.WriteLine($"\n{_passed} passed, {_failed} failed"); return _failed == 0 ? 0 : 1; }
+            // ExplorerNative --do bug-report (7.1.0).
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "bugreport") { await Guard("BugReportTests", () => { BugReportTests.RunAll(Check, Equal); return Task.CompletedTask; }); Console.WriteLine($"\n{_passed} passed, {_failed} failed"); return _failed == 0 ? 0 : 1; }
+            // Timings to compare between releases (7.1.0).
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "perf") { await Guard("PerfTimings", () => PerfTimings.RunAll(Check)); PerfTimings.Print(); Console.WriteLine($"\n{_passed} passed, {_failed} failed"); return _failed == 0 ? 0 : 1; }
             // Every action by name from the command line (6.1.0).
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "commands")
             {
@@ -749,7 +758,11 @@ namespace ExplorerNative
             await Guard("SyncHardeningTests", () => SyncHardeningTests.RunAll(Check, Equal));
             await RunSweep500("");
             await RunRelease510("");
+            await Guard("BugReportTests", () => { BugReportTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("PerfTimings", () => PerfTimings.RunAll(Check));
 
+            PerfTimings.Print();
+            if (_skipped > 0) Console.WriteLine($"\n{_skipped} skipped on this server (each SKIP line says why)");
             Console.WriteLine($"\n{_passed} passed, {_failed} failed");
             return _failed == 0 ? 0 : 1;
         }

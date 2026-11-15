@@ -1,0 +1,53 @@
+name: build and test
+
+# Every push to main and every pull request: both projects build, for both
+# architectures, and the self-test runs. A red run here is a release that
+# would have been stopped (release.yml runs the same test before it publishes).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build the app (x64 and arm64)
+        shell: pwsh
+        run: |
+          foreach ($arch in 'x64', 'arm64') {
+            dotnet build ExplorerNative.csproj -c Release -r "win-$arch" -o "out/$arch"
+            if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          }
+
+      # Google Drive is a WinFsp volume (4.3.0), and its tests mount one.
+      - name: Install WinFsp for the drive tests
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi -OutFile winfsp.msi
+          Start-Process msiexec.exe -ArgumentList '/i winfsp.msi /qn /norestart' -Wait
+
+      # EXPLORERNATIVE_SELFTEST_SERVER skips only what this runner cannot do
+      # (no audio device, elevated, no desktop, shared timing), each with a
+      # SKIP line saying why. Anything else that fails fails the run.
+      - name: Self-test
+        shell: pwsh
+        env:
+          EXPLORERNATIVE_SELFTEST_SERVER: '1'
+          EXPLORERNATIVE_PERF_EXE: ${{ github.workspace }}\out\x64\ExplorerNative.exe
+        run: dotnet run --project tests/SelfTest.csproj -c Release -r win-x64

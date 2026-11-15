@@ -2,6 +2,14 @@ name: release
 
 # Push a tag like v1.0.1 to build both architectures and publish a release.
 # Help, Check for updates in the app reads the latest release from here.
+#
+# 7.1.0: the release waits for the self-test. Building and testing run side by
+# side, and gh release create runs only when both passed, so a broken build
+# never reaches anyone through Check for updates. The test is the server run
+# (EXPLORERNATIVE_SELFTEST_SERVER): what this runner cannot do (no audio
+# device, elevated, no desktop, shared timing) is SKIPPED with the reason;
+# every other failure stops the release. The whole run, with those checks
+# counted, runs again after the release for information only.
 on:
   push:
     tags: ['v*']
@@ -13,6 +21,8 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,32 +57,86 @@ jobs:
           }
           Get-ChildItem dist
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ExplorerNative
-          path: dist/*
-
       # This version's lines from CHANGES.txt: plain text, one change per line.
       # No Markdown: the update dialog lists each line, and NVDA reads symbols.
       - name: Release notes
-        if: startsWith(github.ref, 'refs/tags/v')
         shell: bash
         run: |
           awk -v v="${{ steps.ver.outputs.version }}" '
             $0 == v { f = 1; next }
             /^[0-9]+[.][0-9]+[.][0-9]+$/ { f = 0 }
-            f && NF' CHANGES.txt > notes.txt
-          [ -s notes.txt ] || { echo "CHANGES.txt has no section for this version"; exit 1; }
-          cat notes.txt
+            f && NF' CHANGES.txt > dist/notes.txt
+          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
+            [ -s dist/notes.txt ] || { echo "CHANGES.txt has no section for this version"; exit 1; }
+          fi
+          cat dist/notes.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ExplorerNative
+          path: dist/*
+
+  test:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Build the app for the startup timing
+        shell: pwsh
+        run: |
+          dotnet build ExplorerNative.csproj -c Release -r win-x64 -o out/x64
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      # Google Drive is a WinFsp volume (4.3.0), and its tests mount one.
+      - name: Install WinFsp for the drive tests
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi -OutFile winfsp.msi
+          Start-Process msiexec.exe -ArgumentList '/i winfsp.msi /qn /norestart' -Wait
+
+      - name: Self-test (x64, must pass)
+        shell: pwsh
+        env:
+          EXPLORERNATIVE_SELFTEST_SERVER: '1'
+          EXPLORERNATIVE_PERF_EXE: ${{ github.workspace }}\out\x64\ExplorerNative.exe
+        run: dotnet run --project tests/SelfTest.csproj -c Release -r win-x64
+
+  release:
+    needs: [build, test]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ExplorerNative
+          path: dist
 
       - name: Release
-        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create '${{ github.ref_name }}' dist/ExplorerNative-arm64.exe dist/ExplorerNative-x64.exe dist/ExplorerNative-arm64.exe.gz dist/ExplorerNative-x64.exe.gz --title "Explorer Native ${{ steps.ver.outputs.version }}" --notes-file notes.txt
+        run: gh release create '${{ github.ref_name }}' dist/ExplorerNative-arm64.exe dist/ExplorerNative-x64.exe dist/ExplorerNative-arm64.exe.gz dist/ExplorerNative-x64.exe.gz --title "Explorer Native ${{ needs.build.outputs.version }}" --notes-file dist/notes.txt
 
-      # Google Drive is a WinFsp volume (4.3.0), and its tests mount one.
+  # After the release, for information: the whole run with nothing skipped,
+  # so the checks that need audio hardware or a desktop are still seen.
+  selftest-full:
+    needs: release
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
       - name: Install WinFsp for the drive tests
         continue-on-error: true
         shell: pwsh
@@ -80,10 +144,7 @@ jobs:
           Invoke-WebRequest https://github.com/winfsp/winfsp/releases/download/v2.1/winfsp-2.1.25156.msi -OutFile winfsp.msi
           Start-Process msiexec.exe -ArgumentList '/i winfsp.msi /qn /norestart' -Wait
 
-      # After the release, so updates are out without waiting for it.
-      # Runs natively on x64. Informational: some sections need audio hardware
-      # or a desktop session the runner does not have.
-      - name: Self-test (x64)
+      - name: Self-test (x64, informational)
         continue-on-error: true
         shell: pwsh
         run: dotnet run --project tests/SelfTest.csproj -c Release -r win-x64
