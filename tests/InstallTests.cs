@@ -299,7 +299,7 @@ namespace ExplorerNative
             // The rollback. Losing the executable is worse than a failed install:
             // it is the registered handler for every folder on the machine.
             Check("a failed swap puts the old binary back",
-                install.Contains("try { File.Move(retired, target); } catch { }", StringComparison.Ordinal));
+                install.Contains("try { File.Move(retired, target); } catch", StringComparison.Ordinal));
         }
 
         private static bool IsLocked(string path)

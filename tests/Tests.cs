@@ -5211,7 +5211,8 @@ namespace ExplorerNative
                 // Offline, the check is skipped rather than refusing, and proves nothing.
                 if (GoogleAuth.LastCheckProblem == null)
                     Check("Google refuses a made-up client ID and secret",
-                        verdict != null && verdict.Contains("does not accept"), verdict ?? "accepted");
+                        // 7.1.0: refused in words that say which part is wrong.
+                        verdict != null && verdict.Contains("client ID", StringComparison.Ordinal), verdict ?? "accepted");
                 else
                     Check("unreached, the pair is not refused", verdict == null, verdict ?? "");
                 Check("the saved client file is not readable as text",
