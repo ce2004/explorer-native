@@ -92,7 +92,7 @@ namespace ExplorerNative
         private static void Tell(Action<string, string>? notify, string id, string message)
         {
             // A message must never be the reason a mount fails.
-            try { notify?.Invoke(id, message); } catch { }
+            try { notify?.Invoke(id, message); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         private static IEnumerable<char> Candidates(char preferred)

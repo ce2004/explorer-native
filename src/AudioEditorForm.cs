@@ -358,7 +358,7 @@ namespace ExplorerNative
             if (_playback != null && _playing && _playbackStart.IsCompleted)
             {
                 _cursor = Math.Max(0, _playback.Position);
-                try { _playback.Pause(); } catch { }
+                try { _playback.Pause(); } catch (Exception ex) { Diag.Note(ex); }
             }
             _playing = false;
             _stopAt = null;
@@ -442,11 +442,11 @@ namespace ExplorerNative
                 // Keys pressed while it was starting: a move, then a pause.
                 if (Math.Abs(_cursor - from) > 0.0005)
                 {
-                    try { playback.SeekTo(_cursor); } catch { }
+                    try { playback.SeekTo(_cursor); } catch (Exception ex) { Diag.Note(ex); }
                 }
                 if (!_playing)
                 {
-                    try { playback.Pause(); } catch { }
+                    try { playback.Pause(); } catch (Exception ex) { Diag.Note(ex); }
                 }
             }
             catch (Exception ex)
@@ -524,7 +524,7 @@ namespace ExplorerNative
             {
                 if (Program.AudioState is { Playing: true }) Program.RunAudioAction(AudioAction.PlayPause);
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         private void SeekBy(double seconds) => SeekTo(Now + seconds);
@@ -538,7 +538,7 @@ namespace ExplorerNative
             // Play seeks to the cursor once Start has returned.
             if (_playback != null && _playbackStart.IsCompleted)
             {
-                try { _playback.SeekTo(seconds); } catch { }
+                try { _playback.SeekTo(seconds); } catch (Exception ex) { Diag.Note(ex); }
             }
             if (_playing && _stopAt is { } end && seconds >= end) _stopAt = null;
 
@@ -880,7 +880,7 @@ namespace ExplorerNative
                         string.Equals(main.Path, _path, StringComparison.OrdinalIgnoreCase))
                         Program.RunAudioAction(AudioAction.Stop);
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
 
                 string KeepAsEdited() => AudioConverter.Place(temp,
                     FileOperations.UniqueName(Path.Combine(Path.GetDirectoryName(_path) ?? "",

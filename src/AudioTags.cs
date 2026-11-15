@@ -63,7 +63,7 @@ namespace ExplorerNative
         {
             var notify = Notify;
             if (notify == null) return;
-            try { notify(notificationId, message); } catch { }
+            try { notify(notificationId, message); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         private const uint GPS_BESTEFFORT = 0x40;
@@ -210,7 +210,7 @@ namespace ExplorerNative
             catch { }
 
             IPropertyStore? store = null;
-            try { store = Open(path); } catch { }
+            try { store = Open(path); } catch (Exception ex) { Diag.Note(ex); }
 
             if (store != null)
             {
@@ -250,7 +250,7 @@ namespace ExplorerNative
                     var channels = Number(store, Channels);
                     if (channels is > 0) Add(rows, "Channels", ChannelWord((int)channels.Value));
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
                 finally { Release(store); }
             }
 
@@ -266,7 +266,7 @@ namespace ExplorerNative
                 }
                 Add(rows, "Folder", Path.GetDirectoryName(path));
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
 
             return rows;
         }
@@ -280,7 +280,7 @@ namespace ExplorerNative
         public static SongSummary? ReadSummary(string path)
         {
             IPropertyStore? store = null;
-            try { store = Open(path); } catch { }
+            try { store = Open(path); } catch (Exception ex) { Diag.Note(ex); }
             if (store == null) return null;
             try
             {
@@ -353,7 +353,7 @@ namespace ExplorerNative
         private static AudioTagSet? ReadStoreTagSet(string path)
         {
             IPropertyStore? store = null;
-            try { store = Open(path); } catch { }
+            try { store = Open(path); } catch (Exception ex) { Diag.Note(ex); }
             if (store == null) return null;
             try
             {
@@ -455,7 +455,7 @@ namespace ExplorerNative
         {
             var found = new Dictionary<string, string>(StringComparer.Ordinal);
             IPropertyStore? store = null;
-            try { store = Open(path); } catch { }
+            try { store = Open(path); } catch (Exception ex) { Diag.Note(ex); }
             if (store == null) return found;
             try
             {
@@ -495,7 +495,7 @@ namespace ExplorerNative
         public static Dictionary<TagField, string>? ReadFields(string path)
         {
             IPropertyStore? store = null;
-            try { store = Open(path); } catch { }
+            try { store = Open(path); } catch (Exception ex) { Diag.Note(ex); }
             if (store == null) return null;
             try
             {

@@ -23,7 +23,7 @@ namespace ExplorerNative
         internal static void Mark(DateTime atUtc)
         {
             try { File.WriteAllText(NotePath, atUtc.Ticks.ToString(CultureInfo.InvariantCulture)); }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>Whether a fresh note was there; it is deleted either way.</summary>

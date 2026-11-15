@@ -79,7 +79,7 @@ namespace ExplorerNative
                     _window = new Listener(this);
                     Changed();
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
                 finally { _ready.Set(); }
                 Application.Run();
             })
@@ -125,7 +125,7 @@ namespace ExplorerNative
                     if (png != null) return (new ClipState(0, "image", ImageBytes: png.Length), png);
                 }
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
             return (new ClipState(0, "empty"), null);
         }
 

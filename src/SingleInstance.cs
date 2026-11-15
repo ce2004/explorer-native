@@ -248,7 +248,7 @@ namespace ExplorerNative
         {
             if (string.IsNullOrWhiteSpace(line)) return;
             try { onRequest(line.Trim()); }
-            catch { /* a bad request must not stop us listening */ }
+            catch (Exception ex) { /* a bad request must not stop us listening */ Diag.Note(ex); }
         }
 
         private static void Listen(Action<string> onRequest, string pipe, CancellationToken token)

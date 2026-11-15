@@ -243,7 +243,7 @@ namespace ExplorerNative
                     return;
                 }
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
             Open("https://tailscale.com/download/windows");
         }
 
@@ -261,7 +261,7 @@ namespace ExplorerNative
                 if (File.Exists(gui) && Process.GetProcessesByName("tailscale-ipn").Length == 0)
                     Process.Start(new ProcessStartInfo(gui) { UseShellExecute = true });
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
 
             _ = Task.Run(() =>
             {
@@ -274,7 +274,7 @@ namespace ExplorerNative
 
         public static void Open(string url)
         {
-            try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch { }
+            try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>

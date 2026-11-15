@@ -221,7 +221,7 @@ namespace ExplorerNative
                     if (IsDisposed) return;
                     BeginInvoke(() => { if (!IsDisposed && _step == Step.Model && which == _provider) FillModels(CurrentModel()); });
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
             });
         }
 

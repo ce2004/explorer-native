@@ -330,7 +330,7 @@ namespace ExplorerNative
                     if (value != null) result[name] = value;
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested) { partial = true; }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
             }
 
             try
@@ -499,7 +499,7 @@ namespace ExplorerNative
                     catch { }
                 }
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
 
             if (hash && !stat.Folder && stat.Size < 2L << 30)
             {
@@ -1513,7 +1513,7 @@ namespace ExplorerNative
                     target = MoveIntoPlace(file, folder, name, conflict);
                     // Only when it was moved: a skip leaves somebody's own file, attributes and all.
                     if (!File.Exists(Io(file)))
-                        try { File.SetAttributes(Io(target), File.GetAttributes(Io(target)) & ~FileAttributes.Hidden); } catch { }
+                        try { File.SetAttributes(Io(target), File.GetAttributes(Io(target)) & ~FileAttributes.Hidden); } catch (Exception ex) { Diag.Note(ex); }
                 }
                 catch (UnauthorizedAccessException e) { throw Refused(e, Path.Combine(folder, name), conflict); }
                 return target;

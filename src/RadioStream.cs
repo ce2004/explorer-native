@@ -436,7 +436,7 @@ namespace ExplorerNative
                 changed = song.Length > 0 ? song != _song : _song != null;
                 if (changed) _song = song.Length > 0 ? song : null;
             }
-            if (changed) try { SongChanged?.Invoke(this); } catch { }
+            if (changed) try { SongChanged?.Invoke(this); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         internal static bool IsTs(ReadOnlySpan<byte> head) =>
@@ -730,7 +730,7 @@ namespace ExplorerNative
                         {
                             _metaLeft = -1;
                             _untilMeta = _every;
-                            try { _onMeta(StreamPlaylists.Decode(_meta).TrimEnd('\0')); } catch { }
+                            try { _onMeta(StreamPlaylists.Decode(_meta).TrimEnd('\0')); } catch (Exception ex) { Diag.Note(ex); }
                         }
                     }
                 }

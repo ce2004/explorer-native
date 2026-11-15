@@ -797,7 +797,7 @@ namespace ExplorerNative
             // what it found. Thrown, it ended the extraction before a single good
             // file was kept, which is the case the staging exists for.
             try { Finish(process, token); }
-            catch (IOException) when (!token.IsCancellationRequested) { }
+            catch (IOException ex) when (!token.IsCancellationRequested) { Diag.Note(ex); }
             return (items, bytes);
         }
 
@@ -1182,7 +1182,7 @@ namespace ExplorerNative
                     }
                 }
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Diag.Note(ex); }
             return names;
         }
 
@@ -1249,7 +1249,7 @@ namespace ExplorerNative
             using var kill = token.Register(() => Stop(process));
             string? line;
             while ((line = process.Process.StandardOutput.ReadLine()) != null) names.Add(line);
-            try { Wait(process, token); } catch (IOException) { }
+            try { Wait(process, token); } catch (IOException ex) { Diag.Note(ex); }
             return names;
         }
 

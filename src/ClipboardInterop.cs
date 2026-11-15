@@ -119,7 +119,7 @@ namespace ExplorerNative
                 Clipboard.Clear();
                 return true;
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
             return false;
         }
 

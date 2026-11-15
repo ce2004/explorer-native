@@ -1055,7 +1055,7 @@ namespace ExplorerNative
         internal static void Mark(string path, byte[]? zone)
         {
             if (zone == null) return;
-            try { File.WriteAllBytes(path + ":Zone.Identifier", zone); } catch { }
+            try { File.WriteAllBytes(path + ":Zone.Identifier", zone); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>Files this big or bigger have their space asked for before they are written.</summary>

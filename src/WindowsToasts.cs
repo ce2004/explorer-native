@@ -55,7 +55,7 @@ namespace ExplorerNative
                 // read before every notification was noise. The message says it.
                 Show("", message.Trim());
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
     }
 }

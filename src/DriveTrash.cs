@@ -131,7 +131,7 @@ namespace ExplorerNative
             }
             // Outside the lock: the mount forgets its Trash folder's listing, so
             // the next visit shows the edit (the kept copy answers, no request).
-            try { TrashEdited?.Invoke(); } catch { }
+            try { TrashEdited?.Invoke(); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>Raised after our own change to the kept trash listing: something trashed, restored or deleted.</summary>
@@ -156,7 +156,7 @@ namespace ExplorerNative
                     f.TryGetProperty("md5Checksum", out var md5) ? md5.GetString() : null);
                 EditHeldTrash(l => { l.RemoveAll(e => e.Id == id); l.Insert(0, entry); });
             }
-            catch (Exception) { }   // a listing later will show it
+            catch (Exception ex) { Diag.Note(ex); }   // a listing later will show it
         }
 
         private async Task<List<DriveEntry>> ReadTrash(CancellationToken token, bool interactive)
@@ -225,7 +225,7 @@ namespace ExplorerNative
                     foreach (var p in ps.EnumerateArray())
                         if (p.GetString() is { Length: > 0 } id) parents.Add(id);
             }
-            catch (Exception) { }
+            catch (Exception ex) { Diag.Note(ex); }
             return parents;
         }
 

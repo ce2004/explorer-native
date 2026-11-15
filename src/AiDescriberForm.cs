@@ -288,7 +288,7 @@ namespace ExplorerNative
                 _shownPicture = new Bitmap(image);
                 _preview.Image = _shownPicture;
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         // ---------- talking ----------
@@ -512,7 +512,7 @@ namespace ExplorerNative
                 if (Notifications.ChannelsFor(id, _settings) != NotificationChannel.Speech) return;
                 Speech.Speak(text, interrupt);
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>
@@ -615,7 +615,7 @@ namespace ExplorerNative
                         SendMessage(Handle, LB_SETITEMHEIGHT, (IntPtr)i, (IntPtr)args.ItemHeight);
                     }
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
                 finally { EndUpdate(); Invalidate(); }
             }
         }

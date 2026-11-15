@@ -136,7 +136,7 @@ namespace ExplorerNative
                     return ((long)Math.Min(status.TotalPhysical, long.MaxValue),
                         (long)Math.Min(status.AvailablePhysical, long.MaxValue));
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
             return (0, 0);
         }
 

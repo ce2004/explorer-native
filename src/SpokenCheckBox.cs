@@ -80,7 +80,7 @@ namespace ExplorerNative
                 // ToggleState's values (Off 0, On 1, Indeterminate 2) are CheckState's.
                 RaiseToggle(AccessibilityObject, (int)was, (int)now);
             }
-            catch (Exception) { }   // a screen-reader courtesy never breaks a click
+            catch (Exception ex) { Diag.Note(ex); }   // a screen-reader courtesy never breaks a click
         }
     }
 }

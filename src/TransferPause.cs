@@ -74,7 +74,7 @@ namespace ExplorerNative
             if (handlers == null) return;
             foreach (Action<bool> one in handlers.GetInvocationList())
             {
-                try { one(paused); } catch { }
+                try { one(paused); } catch (Exception ex) { Diag.Note(ex); }
             }
         }
 

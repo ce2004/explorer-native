@@ -92,7 +92,7 @@ namespace ExplorerNative
                 var changed = id ?? "";
                 ThreadPool.QueueUserWorkItem(_ =>
                 {
-                    try { _defaultChanged?.Invoke(changed); } catch { }
+                    try { _defaultChanged?.Invoke(changed); } catch (Exception ex) { Diag.Note(ex); }
                 });
                 return 0;
             }
@@ -159,7 +159,7 @@ namespace ExplorerNative
                 if (Thread.CurrentThread.GetApartmentState() == ApartmentState.MTA) Register();
                 else Task.Run(Register).Wait(TimeSpan.FromSeconds(5));
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>The endpoint actually opened, whether it was named or the default.</summary>
@@ -411,10 +411,11 @@ namespace ExplorerNative
                     finally { ReleaseCom(device); }
                 }
             }
-            catch
+            catch (Exception ex)
             {
                 // A machine with no audio at all is not an error worth throwing
                 // over; it is an empty list and a menu that says so.
+                Diag.Note(ex);
             }
             finally
             {
@@ -527,7 +528,7 @@ namespace ExplorerNative
         private void RaiseLost()
         {
             if (Interlocked.Exchange(ref _lostRaised, 1) != 0) return;
-            ThreadPool.QueueUserWorkItem(_ => { try { DeviceLost?.Invoke(); } catch { } });
+            ThreadPool.QueueUserWorkItem(_ => { try { DeviceLost?.Invoke(); } catch (Exception ex) { Diag.Note(ex); } });
         }
 
         /// <summary>
@@ -1069,7 +1070,7 @@ namespace ExplorerNative
                 if (!started)
                 {
                     int hr = 0;
-                    try { hr = _client?.Start() ?? 0; } catch { }
+                    try { hr = _client?.Start() ?? 0; } catch (Exception ex) { Diag.Note(ex); }
                     started = true;
 
                     // A device unplugged while paused says so here, on resume.

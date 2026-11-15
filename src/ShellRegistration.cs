@@ -355,7 +355,7 @@ namespace ExplorerNative
                     using var cmd = verb.CreateSubKey("command");
                     cmd?.SetValue(null, command);
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
             }
         }
 
@@ -368,7 +368,7 @@ namespace ExplorerNative
                     using var shell = Registry.CurrentUser.OpenSubKey(basePath, writable: true);
                     shell?.DeleteSubKeyTree(verbName, throwOnMissingSubKey: false);
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
             }
         }
 
@@ -421,7 +421,7 @@ namespace ExplorerNative
                 isOn = key.GetValue(StartupValue) != null;
                 changed = was != isOn;
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
 
             // Outside the catch, so a subscriber that throws is not mistaken for
             // a registry failure and quietly swallowed.
@@ -588,7 +588,7 @@ namespace ExplorerNative
                     // the whole registration silently does nothing.
                     key.SetValue("DelegateExecute", "");
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
 
                 // Name the verb explicitly. Some of these classes ship with a
                 // different default verb, and the one we just wrote has to be the
@@ -600,7 +600,7 @@ namespace ExplorerNative
                     using var key = Registry.CurrentUser.CreateSubKey(shellKey);
                     key?.SetValue(null, "open");
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
             }
 
             // Win+E is deliberately not claimed. See ExplorerClsidRoot.
@@ -614,7 +614,7 @@ namespace ExplorerNative
                 using var friendly = Registry.CurrentUser.CreateSubKey(AppRegistration);
                 friendly?.SetValue("FriendlyAppName", "Explorer Native");
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>
@@ -689,7 +689,7 @@ namespace ExplorerNative
                 using var store = Registry.CurrentUser.OpenSubKey(BackupKey, writable: true);
                 store?.DeleteValue(BackupSlot(keyPath, valueName), throwOnMissingValue: false);
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         private static void ReleaseFolderOpen()
@@ -719,7 +719,7 @@ namespace ExplorerNative
                         if (key?.GetValue(null) is string blank && string.IsNullOrWhiteSpace(blank))
                             key.DeleteValue("", throwOnMissingValue: false);
                     }
-                    catch { }
+                    catch (Exception ex) { Diag.Note(ex); }
                 }
                 PruneIfEmpty(commandKey);
                 PruneIfEmpty($@"Software\Classes\{cls}\shell\open");
@@ -782,7 +782,7 @@ namespace ExplorerNative
                 var existing = alreadyOurs ? null : current;
                 store.SetValue(slot, existing ?? "\0absent");
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>True when the command in this key launches this program.</summary>
@@ -871,7 +871,7 @@ namespace ExplorerNative
 
                 store?.DeleteValue(slot, throwOnMissingValue: false);
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         private static string BackupSlot(string keyPath, string? valueName) =>

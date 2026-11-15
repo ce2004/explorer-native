@@ -90,7 +90,7 @@ namespace ExplorerNative
         private void Speak(string text)
         {
             if (!MaySpeak) return;
-            try { Speech.Speak(text, interrupt: true); } catch { }
+            try { Speech.Speak(text, interrupt: true); } catch (Exception ex) { Diag.Note(ex); }
         }
     }
 }

@@ -404,7 +404,7 @@ namespace ExplorerNative
         {
             var notify = Notify;
             if (notify == null) return;
-            try { notify(id, message); } catch { }
+            try { notify(id, message); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>

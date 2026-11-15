@@ -907,7 +907,7 @@ namespace ExplorerNative
                             lock (sizeByName) { sizeByName[Path.GetFileName(source)] = len; plannedSize[Path.GetFileName(source)] = len; }
                         }
                     }
-                    catch { }
+                    catch (Exception ex) { Diag.Note(ex); }
                 }
             }, token);
 
@@ -1116,7 +1116,7 @@ namespace ExplorerNative
                             before[file.FullName] = (file.Length, file.LastWriteTimeUtc);
                         }
                     }
-                    catch { }
+                    catch (Exception ex) { Diag.Note(ex); }
                 }
             });
 
@@ -1350,7 +1350,7 @@ namespace ExplorerNative
                                 if (landed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
                                     Consider(Prefix(origin) + landed[prefix.Length..], landed);
                         }
-                        catch { }
+                        catch (Exception ex) { Diag.Note(ex); }
                     }
 
                     // Every file this transfer created, wherever it is. That was
@@ -1388,7 +1388,7 @@ namespace ExplorerNative
                                     Consider(from + file.FullName[dest.Length..], file.FullName);
                                 }
                             }
-                            catch { }
+                            catch (Exception ex) { Diag.Note(ex); }
                         }
                     }
                 }
@@ -1995,11 +1995,11 @@ namespace ExplorerNative
                     {
                         if (!string.IsNullOrEmpty(e.FullPath)) started(e.FullPath);
                     }
-                    catch { }
+                    catch (Exception ex) { Diag.Note(ex); }
                 };
                 watcher.Error += (_, _) =>
                 {
-                    try { lost(); } catch { }
+                    try { lost(); } catch (Exception ex) { Diag.Note(ex); }
                 };
 
                 watcher.EnableRaisingEvents = true;
@@ -2380,7 +2380,7 @@ namespace ExplorerNative
                     // The attempt that has just failed is followed by a wait while
                     // there are retries left — that is the moment to say so.
                     if (attempt <= retries)
-                        try { onRetry(file, attempt); } catch { }
+                        try { onRetry(file, attempt); } catch (Exception ex) { Diag.Note(ex); }
                     return;
                 }
 

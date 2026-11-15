@@ -116,7 +116,7 @@ namespace ExplorerNative
                 if (jobs.Count == 0) { File.Delete(NotePath); return; }
                 ProtectedFile.WriteAllBytes(NotePath, Encoding.UTF8.GetBytes(Encode(jobs, atUtc)));
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>The jobs a fresh note holds; the note is deleted either way.</summary>

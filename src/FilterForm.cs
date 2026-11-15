@@ -77,7 +77,7 @@ namespace ExplorerNative
             var text = _box.Text;
             if (string.Equals(text, _applied, StringComparison.Ordinal)) return;
             _applied = text;
-            try { _onChange(text); } catch { }
+            try { _onChange(text); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         protected override void Dispose(bool disposing)

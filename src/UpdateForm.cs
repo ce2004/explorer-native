@@ -89,7 +89,7 @@ namespace ExplorerNative
                         return;
                     }
                 }
-                try { Speech.Speak(step > 0 ? "No more versions" : "This is the newest version", interrupt: true); } catch { }
+                try { Speech.Speak(step > 0 ? "No more versions" : "This is the newest version", interrupt: true); } catch (Exception ex) { Diag.Note(ex); }
             };
 
             var buttonSize = new Size(Math.Max(84, 84 * unit / 15), unit + 13);

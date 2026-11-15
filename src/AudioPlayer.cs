@@ -373,7 +373,7 @@ namespace ExplorerNative
         {
             var notify = Notify;
             if (notify == null) return;
-            try { notify(notificationId, message); } catch { }
+            try { notify(notificationId, message); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>
@@ -1108,7 +1108,7 @@ namespace ExplorerNative
             catch { return true; }
         }
 
-        public static void Prewarm() => ThreadPool.QueueUserWorkItem(_ => { try { EnsureStarted(); } catch { } });
+        public static void Prewarm() => ThreadPool.QueueUserWorkItem(_ => { try { EnsureStarted(); } catch (Exception ex) { Diag.Note(ex); } });
 
         private static bool EnsureStarted()
         {
@@ -2363,7 +2363,7 @@ namespace ExplorerNative
 
         private void DropPendingIfIdle()
         {
-            try { DropPending(); } catch { }
+            try { DropPending(); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>
@@ -2419,7 +2419,7 @@ namespace ExplorerNative
         private StreamingSource NewStreaming(string path, Action<long, long>? filled = null)
         {
             IRangeSource? range = null;
-            try { range = RangeSourceFor?.Invoke(path); } catch { }
+            try { range = RangeSourceFor?.Invoke(path); } catch (Exception ex) { Diag.Note(ex); }
             return range != null
                 ? new StreamingSource(range, CacheBytes, filled)
                 : new StreamingSource(path, CacheBytes, filled);
@@ -2736,7 +2736,7 @@ namespace ExplorerNative
                 // Paused, and the level put back where the dial says — the same
                 // two steps the last tick of the fade would have taken, so a
                 // track paused this way does not resume silent.
-                try { direct.Pause(); ApplyVolume(); } catch { }
+                try { direct.Pause(); ApplyVolume(); } catch (Exception ex) { Diag.Note(ex); }
             }
         }
 
@@ -2845,7 +2845,7 @@ namespace ExplorerNative
                     ApplyVolume();
                 }
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         // ---------- Buffering ----------

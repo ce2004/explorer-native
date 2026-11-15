@@ -1120,7 +1120,7 @@ namespace ExplorerNative
                         ProtectedFile.WriteAllText(temp, json, durable: true);
                         File.Move(temp, SettingsPath, overwrite: true);
                     }
-                    catch { }
+                    catch (Exception ex) { Diag.Note(ex); }
                     // Gone after a successful move; after a failed one (the file
                     // held at that moment) it stayed in AppData for good.
                     try { if (File.Exists(temp)) File.Delete(temp); } catch { }
@@ -1207,9 +1207,10 @@ namespace ExplorerNative
                 var copy = $"{SettingsPath}.{why}-{DateTime.Now:yyyyMMdd-HHmmss}";
                 if (!File.Exists(copy)) File.Copy(SettingsPath, copy);
             }
-            catch
+            catch (Exception ex)
             {
                 // Nothing more can be done from here, and starting matters more.
+                Diag.Note(ex);
             }
         }
 

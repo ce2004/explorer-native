@@ -437,7 +437,7 @@ namespace ExplorerNative
                 if (full) _saidFilled = true;
             }
 
-            if (full) try { _filled?.Invoke(Available, Length); } catch { }
+            if (full) try { _filled?.Invoke(Available, Length); } catch (Exception ex) { Diag.Note(ex); }
             return true;
         }
 
