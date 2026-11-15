@@ -348,7 +348,7 @@ namespace ExplorerNative
                         }
                     }
                     catch (OperationCanceledException) { }
-                    catch (Exception) { }
+                    catch (Exception ex) { Diag.Note(ex); }
                 });
             }
 
@@ -1735,9 +1735,10 @@ namespace ExplorerNative
                 {
                     state.PendingTrash.Remove(replaces);
                 }
-                catch (Exception) when (!token.IsCancellationRequested)
+                catch (Exception ex) when (!token.IsCancellationRequested)
                 {
                     // Kept in PendingTrash for the next pass.
+                    Diag.Note(ex);
                 }
             }
 
@@ -2003,6 +2004,7 @@ namespace ExplorerNative
                 }
                 catch (Exception ex) when (!token.IsCancellationRequested && ex is not PairStoppedException && !IsOffline(ex, token))
                 {
+                    Diag.Note(ex);
                 }
             }
         }

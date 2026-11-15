@@ -60,7 +60,7 @@ namespace ExplorerNative
                 long now = Environment.TickCount64;
                 if (now - Interlocked.Read(ref _lastProgressEvent) < 500) return;
                 Interlocked.Exchange(ref _lastProgressEvent, now);
-                try { Changed?.Invoke(); } catch { }
+                try { Changed?.Invoke(); } catch (Exception ex) { Diag.Note(ex); }
             }
             Progress();
 
@@ -484,6 +484,7 @@ namespace ExplorerNative
                 catch (Exception ex) when (!token.IsCancellationRequested && ex is not PairStoppedException)
                 {
                     // Anything at all: listed whole instead.
+                    Diag.Note(ex);
                 }
                 unusable.Clear();
                 clashing.Clear();

@@ -462,14 +462,14 @@ namespace ExplorerNative
                                 BeginInvoke(() =>
                                 {
                                     if (IsDisposed || !string.Equals(target.CurrentPath?.TrimEnd('\\'), AppleMusic.Root, StringComparison.OrdinalIgnoreCase)) return;
-                                    try { ShowAppleRowsQuietly(target, AppleMusic.Root, t.Result); } catch (Exception) { }
+                                    try { ShowAppleRowsQuietly(target, AppleMusic.Root, t.Result); } catch (Exception ex) { Diag.Note(ex); }
                                 });
                             }
                             catch (InvalidOperationException) { }
                         }, TaskScheduler.Default);
                 }
             }
-            catch (Exception) { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>
@@ -651,7 +651,7 @@ namespace ExplorerNative
             menu.DropDownItems.Add(Item("&Organise favourites…", Keys.None, OrganiseFavourites));
             menu.DropDownOpening += (_, _) =>
             {
-                try { FillFavouritesMenu(menu); } catch { }
+                try { FillFavouritesMenu(menu); } catch (Exception ex) { Diag.Note(ex); }
             };
             return menu;
         }
@@ -904,6 +904,11 @@ namespace ExplorerNative
                     }
                 }
             }
+            catch (Exception ex)
+            {
+                // async void: anything escaping would take the window with it.
+                Diag.Note(ex);
+            }
             finally
             {
                 _checkingForUpdates = false;
@@ -1104,48 +1109,56 @@ namespace ExplorerNative
         /// </summary>
         public async void ShowFolderFromOutside(string path)
         {
-            if (IsDisposed || string.IsNullOrWhiteSpace(path)) return;
-            if (_initialising) { _waitingOutside = path; return; }
-
-            string? select = null;
-            var target = NameRules.NormaliseLaunchPath(path);
-            if (target.Length == 0) return;
-
-            // A file was handed to us: show its folder with it picked out.
-            //
-            // Bounded, and given up if anything navigated meanwhile: on a
-            // sleeping share these waited twenty seconds and more, and then took
-            // the window back from wherever somebody had gone in the meantime.
-            var pane = Active;
-            int navigation = ++pane.NavigationId;
-
-            // Marked as a navigation in progress, so the folder watcher's reload
-            // waits rather than counting as somebody having gone elsewhere.
-            pane.Probing = navigation;
             try
             {
-                var folderCheck = await ProbeDirectoryAsync(target, NavigationProbeMs);
-                if (folderCheck == FolderProbe.Missing && await Bounded(() => File.Exists(NameRules.ExactPath(target))))
+                if (IsDisposed || string.IsNullOrWhiteSpace(path)) return;
+                if (_initialising) { _waitingOutside = path; return; }
+
+                string? select = null;
+                var target = NameRules.NormaliseLaunchPath(path);
+                if (target.Length == 0) return;
+
+                // A file was handed to us: show its folder with it picked out.
+                //
+                // Bounded, and given up if anything navigated meanwhile: on a
+                // sleeping share these waited twenty seconds and more, and then took
+                // the window back from wherever somebody had gone in the meantime.
+                var pane = Active;
+                int navigation = ++pane.NavigationId;
+
+                // Marked as a navigation in progress, so the folder watcher's reload
+                // waits rather than counting as somebody having gone elsewhere.
+                pane.Probing = navigation;
+                try
                 {
-                    select = target;
-                    target = Path.GetDirectoryName(target) ?? target;
+                    var folderCheck = await ProbeDirectoryAsync(target, NavigationProbeMs);
+                    if (folderCheck == FolderProbe.Missing && await Bounded(() => File.Exists(NameRules.ExactPath(target))))
+                    {
+                        select = target;
+                        target = Path.GetDirectoryName(target) ?? target;
+                    }
                 }
+                finally
+                {
+                    if (pane.Probing == navigation) pane.Probing = 0;
+                }
+
+                if (IsDisposed || pane.NavigationId != navigation) return;
+
+                // The file is the row to land on, in the one move: selecting it after
+                // the folder had already landed and been read out read two rows.
+                // On the pane the probe was for: a tab switch during the probe would
+                // otherwise land the folder in the other tab.
+                await NavigateAsync(target, preferPath: select, onPane: pane);
+                if (IsDisposed) return;
+
+                if (Visible && pane == Active) pane.List.Focus();
             }
-            finally
+            catch (Exception ex)
             {
-                if (pane.Probing == navigation) pane.Probing = 0;
+                // async void: anything escaping would take the window with it.
+                Diag.Note(ex);
             }
-
-            if (IsDisposed || pane.NavigationId != navigation) return;
-
-            // The file is the row to land on, in the one move: selecting it after
-            // the folder had already landed and been read out read two rows.
-            // On the pane the probe was for: a tab switch during the probe would
-            // otherwise land the folder in the other tab.
-            await NavigateAsync(target, preferPath: select, onPane: pane);
-            if (IsDisposed) return;
-
-            if (Visible && pane == Active) pane.List.Focus();
         }
 
         // ---------- UI ----------
@@ -2145,7 +2158,7 @@ namespace ExplorerNative
                 if (root != null) _ = NavigateAsync(root, preferPath: first);
 
                 if (!_settings.PlayAudioInApp || !Program.PlayAudioFile(first))
-                    _ = Task.Run(() => { try { FileLauncher.Open(first); } catch { } });
+                    _ = Task.Run(() => { try { FileLauncher.Open(first); } catch (Exception ex) { Diag.Note(ex); } });
             }
             catch (Exception ex)
             {
@@ -3150,7 +3163,7 @@ namespace ExplorerNative
                     current = SafeParent(current);
                 }
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
             return DrivesPath;
         }
 
@@ -3307,7 +3320,7 @@ namespace ExplorerNative
             {
                 made = await Task.Run(() => BuildWatcher(pane, path, generation, removable, window));
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
 
             // Back on the UI thread. Anything that let the pane's watcher go
             // meanwhile — another folder, the window hidden, a drive being
@@ -3853,7 +3866,7 @@ namespace ExplorerNative
             if (m.Msg == WM_DEVICECHANGE && m.LParam != IntPtr.Zero)
             {
                 try { OnDeviceChange((int)(long)m.WParam, m.LParam); }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
             }
             base.WndProc(ref m);
         }
@@ -4033,89 +4046,97 @@ namespace ExplorerNative
         /// </summary>
         private async void ApplyPendingRefresh()
         {
-            if (IsDisposed || !Visible) return;
-
-            var pane = Active;
-
-            // While the folder is being read, or a navigation is still finding
-            // out whether it is there, what the watcher collected stays where it
-            // is. Taken now, a file written during the listing was an in-place
-            // update thrown away because the pane was loading; left alone, it is
-            // looked at again once the listing is in (the navigation forgets only
-            // what happened before its listing began).
-            if (pane.Loading || pane.Probing != 0)
+            try
             {
-                if (pane.NeedsRefresh || pane.Debounce.Pending) ScheduleWatchCheck(retry: true);
-                return;
-            }
+                if (IsDisposed || !Visible) return;
 
-            // What the watcher collected. Rows of files written to are updated
-            // where they stand — unless the list is ordered by size or date,
-            // where a new size or date can move a row, which is a reload.
-            var (reload, changed) = pane.Debounce.Take();
-            if (reload) pane.NeedsRefresh = true;
-            if (changed.Count > 0)
+                var pane = Active;
+
+                // While the folder is being read, or a navigation is still finding
+                // out whether it is there, what the watcher collected stays where it
+                // is. Taken now, a file written during the listing was an in-place
+                // update thrown away because the pane was loading; left alone, it is
+                // looked at again once the listing is in (the navigation forgets only
+                // what happened before its listing began).
+                if (pane.Loading || pane.Probing != 0)
+                {
+                    if (pane.NeedsRefresh || pane.Debounce.Pending) ScheduleWatchCheck(retry: true);
+                    return;
+                }
+
+                // What the watcher collected. Rows of files written to are updated
+                // where they stand — unless the list is ordered by size or date,
+                // where a new size or date can move a row, which is a reload.
+                var (reload, changed) = pane.Debounce.Take();
+                if (reload) pane.NeedsRefresh = true;
+                if (changed.Count > 0)
+                {
+                    bool byName = NameRules.SortsAs(SortFor(pane.CurrentPath).By) == SortColumn.Name;
+                    // Not on the Drive letter, where the rows come from Google's
+                    // listing and reading a placeholder's attributes is the
+                    // provider's business.
+                    bool onDrive = Drive is { } drive && drive.Owns(pane.CurrentPath);
+                    if (byName && !onDrive) UpdateRowsInPlace(pane, changed);
+                    else pane.NeedsRefresh = true;
+                }
+
+                if (!pane.NeedsRefresh) return;
+
+                // A folder being copied into stays marked and is re-read once, by
+                // the transfer, when it finishes. Rebuilding it on the way through
+                // is a list that moves under the cursor a hundred times and is wrong
+                // at every one of them. Everything else on screen keeps watching,
+                // which is the point of asking about this folder rather than about
+                // whether any transfer is running at all.
+                if (IsTransferTarget(pane.CurrentPath)) return;
+
+                // A pane showing results is not showing this folder, and rebuilding
+                // it from the folder would throw the results away — silently, because
+                // something changed on disk that nobody in front of the screen did.
+                // The mark is left standing, so leaving the results re-reads then.
+                if (pane.SearchTerm != null) return;
+
+                // Nor while a search is still gathering: a reload is a navigation,
+                // and a navigation cancels it — silently, so the results never came.
+                // Nor while the folder is still arriving, or a navigation is still
+                // finding out whether its folder is there; the mark stays for after,
+                // and is looked at again in a second.
+                if (pane.Searching || pane.Loading || pane.Probing != 0)
+                {
+                    ScheduleWatchCheck(retry: true);
+                    return;
+                }
+
+                // Nor behind somebody's back. With the window not in front the mark
+                // stays, and OnActivated looks at it again.
+                if (Form.ActiveForm != this) return;
+
+                pane.NeedsRefresh = false;
+                bool ours = pane.ReloadQuietly;
+                pane.ReloadQuietly = false;
+
+                // Read before the reload: the pane can be switched while it runs, and
+                // the folder that changed is the one being named.
+                var folder = DescribePath(pane.CurrentPath);
+
+                // Keeps the cursor where it is, so a file appearing elsewhere in the
+                // folder does not move you.
+                bool landed = await RefreshAsync(folder: pane.CurrentPath, quiet: true);
+                if (IsDisposed) return;
+
+                // Said after the reload rather than before it, so the list already
+                // agrees with the announcement — and so it is not immediately
+                // overwritten in the status bar by the reload's own item count.
+                // Only when the reload landed on the folder: one that fell back, or
+                // gave way to somebody's navigation, has said something truer, and
+                // "changed" spoken over it cut that off.
+                if (landed && !ours) AnnounceOperation("nav.changed", $"{folder} changed");
+            }
+            catch (Exception ex)
             {
-                bool byName = NameRules.SortsAs(SortFor(pane.CurrentPath).By) == SortColumn.Name;
-                // Not on the Drive letter, where the rows come from Google's
-                // listing and reading a placeholder's attributes is the
-                // provider's business.
-                bool onDrive = Drive is { } drive && drive.Owns(pane.CurrentPath);
-                if (byName && !onDrive) UpdateRowsInPlace(pane, changed);
-                else pane.NeedsRefresh = true;
+                // async void: anything escaping would take the window with it.
+                Diag.Note(ex);
             }
-
-            if (!pane.NeedsRefresh) return;
-
-            // A folder being copied into stays marked and is re-read once, by
-            // the transfer, when it finishes. Rebuilding it on the way through
-            // is a list that moves under the cursor a hundred times and is wrong
-            // at every one of them. Everything else on screen keeps watching,
-            // which is the point of asking about this folder rather than about
-            // whether any transfer is running at all.
-            if (IsTransferTarget(pane.CurrentPath)) return;
-
-            // A pane showing results is not showing this folder, and rebuilding
-            // it from the folder would throw the results away — silently, because
-            // something changed on disk that nobody in front of the screen did.
-            // The mark is left standing, so leaving the results re-reads then.
-            if (pane.SearchTerm != null) return;
-
-            // Nor while a search is still gathering: a reload is a navigation,
-            // and a navigation cancels it — silently, so the results never came.
-            // Nor while the folder is still arriving, or a navigation is still
-            // finding out whether its folder is there; the mark stays for after,
-            // and is looked at again in a second.
-            if (pane.Searching || pane.Loading || pane.Probing != 0)
-            {
-                ScheduleWatchCheck(retry: true);
-                return;
-            }
-
-            // Nor behind somebody's back. With the window not in front the mark
-            // stays, and OnActivated looks at it again.
-            if (Form.ActiveForm != this) return;
-
-            pane.NeedsRefresh = false;
-            bool ours = pane.ReloadQuietly;
-            pane.ReloadQuietly = false;
-
-            // Read before the reload: the pane can be switched while it runs, and
-            // the folder that changed is the one being named.
-            var folder = DescribePath(pane.CurrentPath);
-
-            // Keeps the cursor where it is, so a file appearing elsewhere in the
-            // folder does not move you.
-            bool landed = await RefreshAsync(folder: pane.CurrentPath, quiet: true);
-            if (IsDisposed) return;
-
-            // Said after the reload rather than before it, so the list already
-            // agrees with the announcement — and so it is not immediately
-            // overwritten in the status bar by the reload's own item count.
-            // Only when the reload landed on the folder: one that fell back, or
-            // gave way to somebody's navigation, has said something truer, and
-            // "changed" spoken over it cut that off.
-            if (landed && !ours) AnnounceOperation("nav.changed", $"{folder} changed");
         }
 
         private static string? SafePathRoot(string? path)
@@ -4224,7 +4245,7 @@ namespace ExplorerNative
                 Announce($"{FolderDisplayName(path)} is no longer available, going to {DescribePath(fallback)}", isError: true);
                 await NavigateAsync(fallback, onPane: pane);
             }
-            catch { }   // async void off a timer: nothing may escape
+            catch (Exception ex) { Diag.Note(ex); }   // async void off a timer: nothing may escape
             finally { _availabilityCheckRunning = false; }
         }
 
@@ -5910,7 +5931,7 @@ namespace ExplorerNative
                         // Any failure here is only a list not updated: an exception
                         // out of this async lambda would take the window down.
                         try { ShowAppleRowsQuietly(pane, folder, await AppleMusic.ListAsync(folder, fresh: false, CancellationToken.None)); }
-                        catch (Exception) { }
+                        catch (Exception ex) { Diag.Note(ex); }
                     }
                 });
             }
@@ -6356,67 +6377,75 @@ namespace ExplorerNative
         /// </summary>
         private async void Refresh_()
         {
-            // In a set of results, refreshing means running the search again —
-            // not throwing them away and reloading the folder they came from,
-            // which is what "refresh" would otherwise quietly do to the list
-            // somebody is looking at.
-            if (Active.SearchTerm is { } term)
+            try
             {
-                // F5 means now: Drive's folder graph is otherwise kept for five
-                // minutes, and a folder made since could hide what is in it.
-                Drive?.ForgetFolderGraph();
-
-                // async void, same as SearchHere — see the guard there.
-                try { await RunSearchAsync(term); }
-                catch (Exception ex)
+                // In a set of results, refreshing means running the search again —
+                // not throwing them away and reloading the folder they came from,
+                // which is what "refresh" would otherwise quietly do to the list
+                // somebody is looking at.
+                if (Active.SearchTerm is { } term)
                 {
-                    AnnounceOperation("search.failed", $"Could not search: {ex.Message}");
+                    // F5 means now: Drive's folder graph is otherwise kept for five
+                    // minutes, and a folder made since could hide what is in it.
+                    Drive?.ForgetFolderGraph();
+
+                    // async void, same as SearchHere — see the guard there.
+                    try { await RunSearchAsync(term); }
+                    catch (Exception ex)
+                    {
+                        AnnounceOperation("search.failed", $"Could not search: {ex.Message}");
+                    }
+                    return;
                 }
-                return;
-            }
 
-            // A search still gathering defers the reload, and "Refreshed" would
-            // be said for a list nothing had touched.
-            if (Active.Searching)
-            {
-                Active.NeedsRefresh = true;
-                Active.ReloadQuietly = true;
-                Announce("A search is still running; the folder will be read again when it finishes");
-                return;
-            }
-
-            var pane = Active;
-
-            // In Apple Music, F5 asks Apple again rather than showing what this
-            // session already has.
-            if (AppleMusic.Is(pane.CurrentPath))
-            {
-                var folder = pane.CurrentPath;
-                AppleMusic.Forget(folder);
-                bool shown = await NavigateAsync(folder, FocusedPathOf(pane), pane, quiet: true, keepFocus: true);
-                if (!IsDisposed && shown)
-                    AnnounceOperation("nav.refreshed", $"Refreshed, {NameRules.Items(pane.Entries.Count)}");
-                return;
-            }
-
-            // Inside an archive, F5 reads the archive again.
-            if (pane.Archive != null)
-            {
-                try { await RefreshArchiveAsync(pane); }
-                catch (Exception ex)
+                // A search still gathering defers the reload, and "Refreshed" would
+                // be said for a list nothing had touched.
+                if (Active.Searching)
                 {
-                    if (!IsDisposed) AnnounceOperation("archive.open.failed", $"Could not read the archive again: {ex.Message}");
+                    Active.NeedsRefresh = true;
+                    Active.ReloadQuietly = true;
+                    Announce("A search is still running; the folder will be read again when it finishes");
+                    return;
                 }
-                return;
+
+                var pane = Active;
+
+                // In Apple Music, F5 asks Apple again rather than showing what this
+                // session already has.
+                if (AppleMusic.Is(pane.CurrentPath))
+                {
+                    var folder = pane.CurrentPath;
+                    AppleMusic.Forget(folder);
+                    bool shown = await NavigateAsync(folder, FocusedPathOf(pane), pane, quiet: true, keepFocus: true);
+                    if (!IsDisposed && shown)
+                        AnnounceOperation("nav.refreshed", $"Refreshed, {NameRules.Items(pane.Entries.Count)}");
+                    return;
+                }
+
+                // Inside an archive, F5 reads the archive again.
+                if (pane.Archive != null)
+                {
+                    try { await RefreshArchiveAsync(pane); }
+                    catch (Exception ex)
+                    {
+                        if (!IsDisposed) AnnounceOperation("archive.open.failed", $"Could not read the archive again: {ex.Message}");
+                    }
+                    return;
+                }
+
+                bool landed = await RefreshAsync();
+                if (IsDisposed || !landed) return;
+
+                // Only for a reload that landed on the folder, counted from the pane
+                // that was reloaded: one that fell back or was overtaken has said
+                // something truer, and this cut it off.
+                AnnounceOperation("nav.refreshed", $"Refreshed, {NameRules.Items(pane.Entries.Count)}");
             }
-
-            bool landed = await RefreshAsync();
-            if (IsDisposed || !landed) return;
-
-            // Only for a reload that landed on the folder, counted from the pane
-            // that was reloaded: one that fell back or was overtaken has said
-            // something truer, and this cut it off.
-            AnnounceOperation("nav.refreshed", $"Refreshed, {NameRules.Items(pane.Entries.Count)}");
+            catch (Exception ex)
+            {
+                // async void: anything escaping would take the window with it.
+                Diag.Note(ex);
+            }
         }
 
         // ---------- Search ----------
@@ -7943,7 +7972,7 @@ namespace ExplorerNative
                 {
                     _detailsTimer!.Stop();
                     try { await SayDetailsAsync(); }
-                    catch { }
+                    catch (Exception ex) { Diag.Note(ex); }
                 };
             }
 
@@ -11308,249 +11337,257 @@ namespace ExplorerNative
 
         private async void DeleteSelected(bool permanentOverride)
         {
-            if (IsDrivesView) { Announce("Cannot delete a drive", isError: true); return; }
-            if (RefuseInArchive()) return;
-            if (_deleting) { Announce("A delete is already running"); return; }
-
-            var paths = SelectedPaths();
-            if (paths.Length == 0) { Announce("Nothing selected"); return; }
-
-            // In Google Drive's trash, Delete (and Shift+Delete) is Delete
-            // permanently, which always asks.
-            if (Drive is { } trashDrive && paths.All(trashDrive.IsInTrash))
-            {
-                // Only what sits directly in Trash can be deleted for good.
-                if (!paths.All(p => SafeParent(p) is { } up && trashDrive.IsTrashFolder(up)))
-                {
-                    Announce("Items inside a trashed folder can't be deleted one by one. Restore the folder first.");
-                    return;
-                }
-                DeleteFromDriveTrash();
-                return;
-            }
-
-            bool permanent = permanentOverride || _settings.Delete == DeleteMode.Permanent;
-
-            // Where to land afterwards, decided while the rows are still there:
-            // the first row after the focused one that is not being deleted, or
-            // failing that the nearest one before it. Landing on the deleted
-            // file's own name found nothing, and the cursor went back to the top
-            // of the folder.
-            var origin = Active.CurrentPath;
-            var landOn = RowAfterRemoving(paths);
-
-            // Anything on the Drive letter goes to the Drive trash instead. The
-            // Recycle Bin cannot hold it — there is no local file to move, only a
-            // placeholder — and deleting the placeholder would leave the file
-            // sitting in Drive with nothing on this machine to show for it.
-            bool onDrive = Drive != null && paths.All(p => Drive.Owns(p));
-
-            // Half and half went the local way for all of it, which deletes the
-            // Drive placeholders and leaves the files in Drive — back on the next
-            // mount, after being counted as deleted.
-            if (!onDrive && Drive != null && paths.Any(p => Drive.Owns(p)))
-            {
-                Announce("Some of these are on Google Drive and some are not; delete them separately", isError: true);
-                return;
-            }
-
-            // A folder tied to a Google Drive sync pair is asked about first, in
-            // one dialog for every pair the selection touches. That dialog is the
-            // confirmation, so the ordinary one is not asked as well.
-            var monitor = DriveMonitor.Current;
-            var touched = SyncSafety.PairsTouchedBy(paths,
-                monitor?.Pairs ?? (IEnumerable<DriveSyncPair>)_settings.DriveSyncPairs,
-                Drive?.Letter, p => Drive?.KnownIdOf(p));
-            var syncChoice = SyncDeleteChoice.Cancel;
-            if (touched.Count > 0)
-            {
-                using (var ask = new SyncDeleteForm(touched.Select(t => t.Pair).ToList(), onDrive))
-                {
-                    ask.ShowDialog(this);
-                    syncChoice = ask.Choice;
-                }
-                if (syncChoice == SyncDeleteChoice.Cancel)
-                {
-                    AnnounceOperation("delete.cancelled", "Delete cancelled");
-                    RestoreListFocus();
-                    return;
-                }
-
-                // The pairs go before any file does. Removed afterwards, a
-                // monitor pass running during a long Recycle Bin delete would see
-                // half the files gone and, with deletes on, copy those deletes to
-                // the other side.
-                RemoveSyncPairs(touched.Select(t => t.Pair.Id).ToHashSet());
-            }
-
-            if (_settings.ConfirmDelete && touched.Count == 0)
-            {
-                var what = paths.Length == 1 ? $"\"{Path.GetFileName(paths[0])}\"" : $"{paths.Length} items";
-
-                // The name goes in the middle, not on the end. Built as
-                // "Really {verb} {what}?" this read "Really send to the Recycle
-                // Bin "song.flac"?" — the object after its own destination,
-                // which is not a sentence, and this one is read out loud.
-                var question = onDrive
-                    ? $"Really move {what} to the Google Drive trash?"
-                    : permanent
-                        ? $"Really permanently delete {what}?"
-                        : $"Really send {what} to the Recycle Bin?";
-
-                if (MessageBox.Show(this, question, "Confirm delete",
-                        MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
-                {
-                    AnnounceOperation("delete.cancelled", "Delete cancelled");
-                    RestoreListFocus();
-                    return;
-                }
-            }
-
-            // Off the UI thread. Recycling a large tree walks every file in it to
-            // build the undo record, and permanent deletion walks it to unlink
-            // each one — either can take tens of seconds, and doing it inline froze
-            // the window solid with no way to tell whether it had crashed.
-            (int Done, List<string> Errors) outcome;
-
-            // The folders being deleted from are held off the watcher, one refresh
-            // at the end rather than one per file removed — those folders only.
-            // It was the whole window, and the Drive trash takes most of a second
-            // an item, so a big delete there froze every other folder's updates.
-            // Counted as a running transfer, so closing asks first.
-            //
-            // Everything raised on the last lines before the try, with nothing
-            // that can throw between them and it: a raise left standing is a
-            // folder that never refreshes again, and `_deleting` stuck true is a
-            // Delete key that never works again.
-            var windowHandle = Handle;
-            var fromFolders = paths.Select(SafeParent).Where(f => f != null).Cast<string>()
-                .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-            AnnounceOperation("delete.started", paths.Length == 1 ? "Deleting" : $"Deleting {paths.Length} items");
-
-            _deleting = true;
-            RunningTransfers++;
-            foreach (var folder in fromFolders) BeginTransferTo(folder);
             try
             {
-                if (onDrive)
-                {
-                    var trashing = System.Diagnostics.Stopwatch.StartNew();
-                    outcome = await TrashOnDrive(paths);
-                    GoogleDrive.Trace($"window delete: {paths.Length} items trashed in {trashing.ElapsedMilliseconds}ms");
-                }
-                else
-                outcome = await Task.Run(() =>
-                {
-                    int done = 0;
-                    var owner = windowHandle;
-                    var errors = new List<string>();
-                    var toRecycle = new List<string>();
+                if (IsDrivesView) { Announce("Cannot delete a drive", isError: true); return; }
+                if (RefuseInArchive()) return;
+                if (_deleting) { Announce("A delete is already running"); return; }
 
-                    foreach (var path in paths)
+                var paths = SelectedPaths();
+                if (paths.Length == 0) { Announce("Nothing selected"); return; }
+
+                // In Google Drive's trash, Delete (and Shift+Delete) is Delete
+                // permanently, which always asks.
+                if (Drive is { } trashDrive && paths.All(trashDrive.IsInTrash))
+                {
+                    // Only what sits directly in Trash can be deleted for good.
+                    if (!paths.All(p => SafeParent(p) is { } up && trashDrive.IsTrashFolder(up)))
                     {
-                        try
-                        {
-                            // A name ending in a dot or a space, anywhere in the
-                            // path, is one the shell and every ordinary call trim —
-                            // "report." would delete "report". Only the exact
-                            // \\?\ form reaches it.
-                            var exact = NameRules.ExactPath(path);
-                            if (!Directory.Exists(exact) && !File.Exists(exact))
-                            {
-                                errors.Add($"{Path.GetFileName(path)}: no longer there");
-                                continue;
-                            }
+                        Announce("Items inside a trashed folder can't be deleted one by one. Restore the folder first.");
+                        return;
+                    }
+                    DeleteFromDriveTrash();
+                    return;
+                }
 
-                            // Directory.Delete with read-only cleared, links never
-                            // followed, and any name or length; see ShellDelete.
-                            if (permanent)
-                            {
-                                ShellDelete.DeletePermanently(path);
-                                done++;
-                                continue;
-                            }
+                bool permanent = permanentOverride || _settings.Delete == DeleteMode.Permanent;
 
-                            // The Recycle Bin does not take a name only the exact
-                            // form reaches.
-                            if (!string.Equals(exact, path, StringComparison.Ordinal))
-                            {
-                                errors.Add($"{Path.GetFileName(path)}: Windows cannot put a name ending in a dot " +
-                                           "or a space in the Recycle Bin; Shift+Delete deletes it permanently");
-                                continue;
-                            }
+                // Where to land afterwards, decided while the rows are still there:
+                // the first row after the focused one that is not being deleted, or
+                // failing that the nearest one before it. Landing on the deleted
+                // file's own name found nothing, and the cursor went back to the top
+                // of the folder.
+                var origin = Active.CurrentPath;
+                var landOn = RowAfterRemoving(paths);
 
-                            toRecycle.Add(path);
-                        }
-                        catch (Exception ex) { errors.Add($"{Path.GetFileName(path)}: {ex.Message}"); }
+                // Anything on the Drive letter goes to the Drive trash instead. The
+                // Recycle Bin cannot hold it — there is no local file to move, only a
+                // placeholder — and deleting the placeholder would leave the file
+                // sitting in Drive with nothing on this machine to show for it.
+                bool onDrive = Drive != null && paths.All(p => Drive.Owns(p));
+
+                // Half and half went the local way for all of it, which deletes the
+                // Drive placeholders and leaves the files in Drive — back on the next
+                // mount, after being counted as deleted.
+                if (!onDrive && Drive != null && paths.Any(p => Drive.Owns(p)))
+                {
+                    Announce("Some of these are on Google Drive and some are not; delete them separately", isError: true);
+                    return;
+                }
+
+                // A folder tied to a Google Drive sync pair is asked about first, in
+                // one dialog for every pair the selection touches. That dialog is the
+                // confirmation, so the ordinary one is not asked as well.
+                var monitor = DriveMonitor.Current;
+                var touched = SyncSafety.PairsTouchedBy(paths,
+                    monitor?.Pairs ?? (IEnumerable<DriveSyncPair>)_settings.DriveSyncPairs,
+                    Drive?.Letter, p => Drive?.KnownIdOf(p));
+                var syncChoice = SyncDeleteChoice.Cancel;
+                if (touched.Count > 0)
+                {
+                    using (var ask = new SyncDeleteForm(touched.Select(t => t.Pair).ToList(), onDrive))
+                    {
+                        ask.ShowDialog(this);
+                        syncChoice = ask.Choice;
+                    }
+                    if (syncChoice == SyncDeleteChoice.Cancel)
+                    {
+                        AnnounceOperation("delete.cancelled", "Delete cancelled");
+                        RestoreListFocus();
+                        return;
                     }
 
-                    done += RecycleAll(toRecycle, owner, errors);
-                    return (done, errors);
-                });
-            }
-            finally
-            {
-                _deleting = false;
-                RunningTransfers--;
-                foreach (var folder in fromFolders) EndTransferTo(folder);
-            }
-
-            if (IsDisposed) return;
-
-            // Delete anyway, with deletes on: the other end of each pair goes
-            // too — to the Recycle Bin or the Drive trash, never for good.
-            // What happened there is said below, after the refresh, so the
-            // "Deleted" that follows it no longer cuts it off.
-            List<string>? otherSide = null;
-            if (syncChoice == SyncDeleteChoice.DeleteAnyway)
-                otherSide = await DeleteOtherSyncEnds(touched.Where(t => t.Pair.CopyDeletes).ToList());
-
-            var refreshing = System.Diagnostics.Stopwatch.StartNew();
-            await RefreshAsync(landOn, folder: origin);
-            if (onDrive) GoogleDrive.Trace($"window delete: refresh afterwards {refreshing.ElapsedMilliseconds}ms");
-            if (IsDisposed) return;
-
-            if (outcome.Errors.Count > 0)
-            {
-                int failedCount = outcome.Errors.Count;
-                AnnounceOperation("delete.failed",
-                    (outcome.Done > 0
-                        ? $"Deleted {NameRules.Items(outcome.Done)}, but {failedCount:N0} could not be deleted"
-                        : failedCount == 1 ? $"Could not delete: {outcome.Errors[0]}"
-                        : $"Could not delete {failedCount:N0} items")
-                    + (otherSide is { Count: > 0 } ? "; the other copy was not deleted" : ""));
-                ShowErrors(outcome.Errors.Concat(otherSide ?? new List<string>()).ToList());
-            }
-            else if (otherSide is { Count: > 0 })
-            {
-                Announce(NameRules.SayCount("Deleted", outcome.Done) + ", but the other copy was not deleted. " +
-                         string.Join("; ", otherSide), isError: true);
-                ShowErrors(otherSide);
-            }
-            else if (otherSide != null) AnnounceOperation("delete.both", "Deleted on both sides");
-            else
-            {
-                // One is just the verb (NameRules.SayCount).
-                var said = NameRules.SayCount("Deleted", outcome.Done);
-
-                // Where they went is the only difference between these, and this
-                // is the one place that knows it: the Drive trash, gone for good,
-                // or the Recycle Bin. The sentence is the same either way — the id
-                // is what says which, and what decides whether anybody hears it.
-                //
-                // The Drive case has its own pair, and only the batch belongs
-                // here: the Drive layer already names each file as it goes, so
-                // for a single item this would be the same event said twice.
-                // Claiming delete.recycled for something that never reached a
-                // Recycle Bin would be wrong twice over.
-                if (onDrive)
-                {
-                    if (outcome.Done > 1)
-                        AnnounceOperation("drive.trash.many",
-                            $"{outcome.Done} items moved to the Google Drive trash");
+                    // The pairs go before any file does. Removed afterwards, a
+                    // monitor pass running during a long Recycle Bin delete would see
+                    // half the files gone and, with deletes on, copy those deletes to
+                    // the other side.
+                    RemoveSyncPairs(touched.Select(t => t.Pair.Id).ToHashSet());
                 }
-                else if (permanent) AnnounceOperation("delete.permanent", said);
-                else AnnounceOperation(outcome.Done == 1 ? "delete.recycled" : "delete.recycled.many", said);
+
+                if (_settings.ConfirmDelete && touched.Count == 0)
+                {
+                    var what = paths.Length == 1 ? $"\"{Path.GetFileName(paths[0])}\"" : $"{paths.Length} items";
+
+                    // The name goes in the middle, not on the end. Built as
+                    // "Really {verb} {what}?" this read "Really send to the Recycle
+                    // Bin "song.flac"?" — the object after its own destination,
+                    // which is not a sentence, and this one is read out loud.
+                    var question = onDrive
+                        ? $"Really move {what} to the Google Drive trash?"
+                        : permanent
+                            ? $"Really permanently delete {what}?"
+                            : $"Really send {what} to the Recycle Bin?";
+
+                    if (MessageBox.Show(this, question, "Confirm delete",
+                            MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes)
+                    {
+                        AnnounceOperation("delete.cancelled", "Delete cancelled");
+                        RestoreListFocus();
+                        return;
+                    }
+                }
+
+                // Off the UI thread. Recycling a large tree walks every file in it to
+                // build the undo record, and permanent deletion walks it to unlink
+                // each one — either can take tens of seconds, and doing it inline froze
+                // the window solid with no way to tell whether it had crashed.
+                (int Done, List<string> Errors) outcome;
+
+                // The folders being deleted from are held off the watcher, one refresh
+                // at the end rather than one per file removed — those folders only.
+                // It was the whole window, and the Drive trash takes most of a second
+                // an item, so a big delete there froze every other folder's updates.
+                // Counted as a running transfer, so closing asks first.
+                //
+                // Everything raised on the last lines before the try, with nothing
+                // that can throw between them and it: a raise left standing is a
+                // folder that never refreshes again, and `_deleting` stuck true is a
+                // Delete key that never works again.
+                var windowHandle = Handle;
+                var fromFolders = paths.Select(SafeParent).Where(f => f != null).Cast<string>()
+                    .Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                AnnounceOperation("delete.started", paths.Length == 1 ? "Deleting" : $"Deleting {paths.Length} items");
+
+                _deleting = true;
+                RunningTransfers++;
+                foreach (var folder in fromFolders) BeginTransferTo(folder);
+                try
+                {
+                    if (onDrive)
+                    {
+                        var trashing = System.Diagnostics.Stopwatch.StartNew();
+                        outcome = await TrashOnDrive(paths);
+                        GoogleDrive.Trace($"window delete: {paths.Length} items trashed in {trashing.ElapsedMilliseconds}ms");
+                    }
+                    else
+                    outcome = await Task.Run(() =>
+                    {
+                        int done = 0;
+                        var owner = windowHandle;
+                        var errors = new List<string>();
+                        var toRecycle = new List<string>();
+
+                        foreach (var path in paths)
+                        {
+                            try
+                            {
+                                // A name ending in a dot or a space, anywhere in the
+                                // path, is one the shell and every ordinary call trim —
+                                // "report." would delete "report". Only the exact
+                                // \\?\ form reaches it.
+                                var exact = NameRules.ExactPath(path);
+                                if (!Directory.Exists(exact) && !File.Exists(exact))
+                                {
+                                    errors.Add($"{Path.GetFileName(path)}: no longer there");
+                                    continue;
+                                }
+
+                                // Directory.Delete with read-only cleared, links never
+                                // followed, and any name or length; see ShellDelete.
+                                if (permanent)
+                                {
+                                    ShellDelete.DeletePermanently(path);
+                                    done++;
+                                    continue;
+                                }
+
+                                // The Recycle Bin does not take a name only the exact
+                                // form reaches.
+                                if (!string.Equals(exact, path, StringComparison.Ordinal))
+                                {
+                                    errors.Add($"{Path.GetFileName(path)}: Windows cannot put a name ending in a dot " +
+                                               "or a space in the Recycle Bin; Shift+Delete deletes it permanently");
+                                    continue;
+                                }
+
+                                toRecycle.Add(path);
+                            }
+                            catch (Exception ex) { errors.Add($"{Path.GetFileName(path)}: {ex.Message}"); }
+                        }
+
+                        done += RecycleAll(toRecycle, owner, errors);
+                        return (done, errors);
+                    });
+                }
+                finally
+                {
+                    _deleting = false;
+                    RunningTransfers--;
+                    foreach (var folder in fromFolders) EndTransferTo(folder);
+                }
+
+                if (IsDisposed) return;
+
+                // Delete anyway, with deletes on: the other end of each pair goes
+                // too — to the Recycle Bin or the Drive trash, never for good.
+                // What happened there is said below, after the refresh, so the
+                // "Deleted" that follows it no longer cuts it off.
+                List<string>? otherSide = null;
+                if (syncChoice == SyncDeleteChoice.DeleteAnyway)
+                    otherSide = await DeleteOtherSyncEnds(touched.Where(t => t.Pair.CopyDeletes).ToList());
+
+                var refreshing = System.Diagnostics.Stopwatch.StartNew();
+                await RefreshAsync(landOn, folder: origin);
+                if (onDrive) GoogleDrive.Trace($"window delete: refresh afterwards {refreshing.ElapsedMilliseconds}ms");
+                if (IsDisposed) return;
+
+                if (outcome.Errors.Count > 0)
+                {
+                    int failedCount = outcome.Errors.Count;
+                    AnnounceOperation("delete.failed",
+                        (outcome.Done > 0
+                            ? $"Deleted {NameRules.Items(outcome.Done)}, but {failedCount:N0} could not be deleted"
+                            : failedCount == 1 ? $"Could not delete: {outcome.Errors[0]}"
+                            : $"Could not delete {failedCount:N0} items")
+                        + (otherSide is { Count: > 0 } ? "; the other copy was not deleted" : ""));
+                    ShowErrors(outcome.Errors.Concat(otherSide ?? new List<string>()).ToList());
+                }
+                else if (otherSide is { Count: > 0 })
+                {
+                    Announce(NameRules.SayCount("Deleted", outcome.Done) + ", but the other copy was not deleted. " +
+                             string.Join("; ", otherSide), isError: true);
+                    ShowErrors(otherSide);
+                }
+                else if (otherSide != null) AnnounceOperation("delete.both", "Deleted on both sides");
+                else
+                {
+                    // One is just the verb (NameRules.SayCount).
+                    var said = NameRules.SayCount("Deleted", outcome.Done);
+
+                    // Where they went is the only difference between these, and this
+                    // is the one place that knows it: the Drive trash, gone for good,
+                    // or the Recycle Bin. The sentence is the same either way — the id
+                    // is what says which, and what decides whether anybody hears it.
+                    //
+                    // The Drive case has its own pair, and only the batch belongs
+                    // here: the Drive layer already names each file as it goes, so
+                    // for a single item this would be the same event said twice.
+                    // Claiming delete.recycled for something that never reached a
+                    // Recycle Bin would be wrong twice over.
+                    if (onDrive)
+                    {
+                        if (outcome.Done > 1)
+                            AnnounceOperation("drive.trash.many",
+                                $"{outcome.Done} items moved to the Google Drive trash");
+                    }
+                    else if (permanent) AnnounceOperation("delete.permanent", said);
+                    else AnnounceOperation(outcome.Done == 1 ? "delete.recycled" : "delete.recycled.many", said);
+                }
+            }
+            catch (Exception ex)
+            {
+                // async void: anything escaping would take the window with it.
+                Diag.Note(ex);
             }
         }
 
@@ -11846,7 +11883,7 @@ namespace ExplorerNative
                 if (Drive is { } drive && drive.Owns(path))
                 {
                     FolderSizeResult? fromDrive = null;
-                    try { fromDrive = await Task.Run(() => drive.FolderSizeAsync(path)); } catch { }
+                    try { fromDrive = await Task.Run(() => drive.FolderSizeAsync(path)); } catch (Exception ex) { Diag.Note(ex); }
                     if (IsDisposed) return;
                     if (fromDrive is { } known) result = known;
                     else
