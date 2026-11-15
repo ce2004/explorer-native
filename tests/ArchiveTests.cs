@@ -1124,12 +1124,21 @@ namespace ExplorerNative
                     // before it has even been queued. Pumped until it lands, with
                     // a ceiling — the window is allowed to take a moment to draw
                     // the last number, not allowed never to draw it.
+                    // Ten seconds: a shared CI runner drew reports seconds late
+                    // (7.1.0), and the loop leaves the moment 100 percent lands.
                     var settle = Stopwatch.StartNew();
-                    while (settle.Elapsed < TimeSpan.FromSeconds(2))
+                    while (settle.Elapsed < TimeSpan.FromSeconds(10))
                     {
                         Application.DoEvents();
                         if (percents.LastOrDefault() != percentBox.Text) percents.Add(percentBox.Text);
                         if (items.LastOrDefault() != itemBox.Text) items.Add(itemBox.Text);
+                        // A partway report drawn late is still one the window
+                        // showed partway; the closing one says 100 percent and
+                        // never counts.
+                        if (itemBox.Text.Contains("one.bin", StringComparison.Ordinal) &&
+                            percentBox.Text.Contains("percent", StringComparison.Ordinal) &&
+                            !percentBox.Text.StartsWith("100 percent", StringComparison.Ordinal))
+                            namedWhilePartway = true;
                         if (percentBox.Text.StartsWith("100 percent", StringComparison.Ordinal)) break;
                         Thread.Sleep(15);
                     }

@@ -206,14 +206,16 @@ command line on this PC.
 Over Tailscale there is nothing to set up. While a server is on, your other
 devices on your Tailscale network reach it at this PC's Tailscale name and
 the server's port; the page's status line says the name. Tailscale carries
-the connection, so Windows Firewall is not involved, and nothing is opened
-to the internet. FTP's file transfers use the eight ports after the FTP port
-(2122 to 2129 with the usual 2121), and those are carried too.
+the connection, so Windows Firewall is not involved, and Tailscale opens
+nothing to the internet. FTP's file transfers use the eight ports after the
+FTP port (2122 to 2129 with the usual 2121), and those are carried too.
 
-For devices that are not on your Tailscale network, Windows Firewall blocks
+For devices that are not on your Tailscale network: each server listens on
+every network this PC joins, over IPv4 and IPv6, and Windows Firewall blocks
 them until it is told to let them in. Each page has a button, Allow through
 Windows Firewall, that does it once and asks for an administrator. It covers
-every network this PC joins, public ones too, so the password is what
+every network this PC joins, public ones too, and the internet itself if
+this PC has an internet address of its own, so the password is what
 protects your files there. Once it is allowed the button says Remove from
 Windows Firewall and takes it away again. Nothing here opens your router.
 

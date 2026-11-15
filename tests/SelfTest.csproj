@@ -233,6 +233,7 @@
     <Compile Include="Release700Tests.cs" />
     <Compile Include="Release701Tests.cs" />
     <Compile Include="UserFixesTests.cs" />
+    <Compile Include="ServerAttackTests.cs" />
   </ItemGroup>
 
   <ItemGroup>
