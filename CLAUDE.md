@@ -98,6 +98,7 @@ $p.WaitForExit(120000)
 - Nothing slow runs on the UI thread, including before the window exists: enumeration, sizes, deletes, launches, Drive listings, and existence checks (`DirectoryExistsAsync`/`ProbeDirectoryAsync`, never `Directory.Exists`). Watch async continuations that come back to the UI thread.
 - `ProbeDirectoryAsync` answers Present, Missing or NotResponding. Never wait on the probe task after the timeout wins.
 - Speech is queued and never called inline.
+- Without NVDA (7.1.0): Speech is NVDA first and its path is unchanged. Only when the controller does not answer (not running, restarting, DLL missing) does `Speech.ChooseRoute` send a message as a UI Automation notification, for JAWS, Narrator and others: raised on the UI thread from the focused control of our front window, else the main window (`Speech.UseUiaHost`, set by the tray), and only when `UiaClientsAreListening`. With no window ever made (started in the tray) it stays silent. During the 2 s cache window while NVDA restarts a message can go both ways.
 - The list stays virtual. Its cache is bounded. Set focus and selection with `LVM_SETITEMSTATE`. On the arrow path use `FocusedIndex`, never `FocusedItem` (it builds the item).
 - Coalesce any work proportional to the selection (`_suppressStatus`, `ScheduleStatusUpdate`). Announce through `ShowStatus`, never `_statusLabel.Text`.
 - An `async void` that throws kills the window, so guard new handlers. Cancel CancellationTokenSources; never dispose them.
