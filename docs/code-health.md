@@ -1,0 +1,29 @@
+# Code health: errors.log, blocking, CI, bug reports, timings (7.1.0)
+
+Part of the Explorer Native notes for Claude; CLAUDE.md says when to read this file.
+
+7.1.0 came from a review of the whole codebase at 7.0.1 (Conner's issue file). These are the rules it left.
+
+## errors.log (src\Diag.cs)
+
+- `Diag.Note(ex)` writes one line to `%APPDATA%\ExplorerNative\errors.log`: time, file and method (CallerFilePath, CallerMemberName), exception type, HResult, the first 200 characters of the message. Encrypted a line at a time like every other log; read it with `ExplorerNative --read-log errors.log`.
+- It never throws and never blocks: the line is queued and written on a worker. The same file, method and exception type is written at most once a minute (`Quiet`), at most `LinesPerMinute` (120) lines a minute in all, and past `MaxBytes` (1 MB) the file becomes errors.old.log. OperationCanceledException is never written: it is how work stops.
+- Use it in any catch that lets an exception go, unless the catch is truly best effort: temp-file cleanup, Dispose of something already failing, per-row, per-sample or per-packet loops, COM Release, the logging code itself. Never change control flow to add it; keep the `when` filter and the comment.
+- Tests: group `diag` (tests\DiagTests.cs); `Diag.Enabled`, `Diag.Flush`, `Diag.ResetForTests`, `Settings.OverrideAppDataDir`.
+
+## The bug report (src\BugReport.cs)
+
+- `ExplorerNative --do bug-report [file or folder]` writes one plain text file (default: the desktop, "Explorer Native bug report <date time>.txt"): version, Windows edition and build, process and OS architecture, .NET, whether this is the installed copy, the settings as `--do settings` shows them (secrets only say set or not set), then the last lines of errors.log, errors.old.log, crash.log and install.log, decrypted.
+- Every line is scrubbed (`BugReport.Scrub`): the values of every secret setting and the Google client secret wherever they appear, Google access and refresh tokens, client secrets and API keys, sk- keys, Bearer headers, JWTs, name=value and "name": "value" where the name says password, token, secret, key, cookie or authorization (but not "= set" or "= not set"), key-bearing query strings, and email addresses (sign-ins).
+- Program runs it in the copy that was launched, before anything is sent down the pipe, because it is wanted most when the running copy is stuck or crashed. It is also in `Commands` so `--commands` lists it. Tests: group `bugreport`.
+
+## The CI server run (tests\ServerRun.cs)
+
+- `EXPLORERNATIVE_SELFTEST_SERVER=1` is the run that gates every release (release.yml `test` job) and every push to main (ci.yml). `Check` turns a failure into SKIP, printed with its reason, only when `ServerRun.Excuse` names a reason that is really true of that machine: no audio device (Windows lists no playback endpoint, and the detail is one of the no-device symptoms), elevated (permission checks an administrator cannot fail), shared timing (two named timing checks and the describer window's timer-driven conversation), no signed-in desktop (HKCU Run).
+- RULE: never add a check to ServerRun to get a release out. Fix the test or the code. Add one only when the runner itself makes the check impossible, and write why.
+- The 7.0.1 release run (the last before the gate) had 9,313 passed and 40 failed, all of them in those categories.
+
+## Timings (tests\PerfTimings.cs)
+
+- Group `perf`, and the end of the whole run: `TIMING <name> <ms> ms` lines, each the median of five, the same names every release: `startup` (the exe to its `--help` answer, only with `EXPLORERNATIVE_PERF_EXE`), `open-folder-10000` (one scan of 10,000 files and the pane's logical sort), `search-10000` (FileSearch.Local for one name), `drive-first-listing` (a fresh DriveClient listing 2,000 files from FakeDrive). On GitHub the table also goes to the job summary. Nothing fails for being slow; compare the lines between releases.
+- This PC, 7.1.0: open-folder-10000 about 25 ms, search-10000 about 9 ms, drive-first-listing about 20 ms, startup about 45 ms warm.

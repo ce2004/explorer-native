@@ -1,0 +1,42 @@
+# Rules from the 5.0.0 sweep, the 6.0.0 review and 6.2.1
+
+Part of the Explorer Native notes for Claude; CLAUDE.md says when to read this file.
+
+## The 5.0.0 sweep (rules it added)
+
+Every area was reviewed and the high and medium findings fixed, each pinned in `tests\Sweep500<Area>Tests.cs` (`EXPLORERNATIVE_SELFTEST_ONLY=sweep500` runs them all, `sweep500<key>` one: mount, client, sync, sync2, sync3, web, webjs, files, archives, archives2, player, player2, decoders, audioedit, applemusic, app, app2, keys, maina-maind). Area groups: `web`, `mainform`, `core`, `playback`, `files`. The minor findings were deferred.
+- Quit and session end: `SessionEndWindow` (src\SessionEnd.cs) is a hidden top-level window (message-only windows never get WM_QUERYENDSESSION); while uploads are pending it sets a ShutdownBlockReason, never vetoes, and WM_ENDSESSION runs `Quit(sessionEnding: true)`. Once `_quitting` is set PostUi drops everything, so drive.save.failed is held (`QuitNotices`), spoken, logged and saved (drive-unsaved.txt, DPAPI) to be said at the next start. `ConfirmUnsavedDrive(before, question, owner)` is the one question about unsent Drive files (Exit, Ctrl+R and Update through `Program.ConfirmUnsavedDrive`, Disconnect). `SingleInstance.QuittingMost` (2 min) is how long a restart or a folder messenger waits for a draining quit.
+- Never call `_drive.Unmount()` on the UI thread: it drains for up to `DrainFor`. `GoogleDrive.Unmount` returns at once and tears down on a chained worker (`_teardown`); MountFresh and Quit wait for it.
+- Sign-in: `Mount(mayConsent:)` is false at start-up and on retries; only Connect or OK may open the browser. `RenewSignIn` consents through a scratch GoogleAuth; another account retires the old auth and `DriveMount.AccountGone` keeps unsent files in UnsavedFolder instead of draining them to the wrong account.
+- The Drive volume runs without WinFsp's operation guard (`Host.Create(unguarded: true)`): DriveMount's name gates (`HoldNames`, 256 stripes, at most two, lower index first) keep creates, deletes and renames of one name in order. Lock order: name gates, hold gate, `_treeGate`, `Gate`. WinFsp's driver still holds every open while a rename runs, so renames stay short (`RenameFor` 20s, no inline re-list). Folder removal asks Drive (`EmptyOnDrive`), because listings leave out Google Docs. Listings write only while their key still names their folder (`StillListing`).
+- `ListChildren` throws `ListingCutException` at max: pass `partial: true` only when the first N will do, `max: int.MaxValue` wherever the whole folder matters.
+- Mark of the Web: every extraction route passes the archive's Zone.Identifier on (`ArchiveEngine.ZoneOf`, `ExtractionRules.Zone`, `zone: rules.Zone` on every `WriteCommitted`). A new writer path that skips it is a security hole. High-risk types (`FileLauncher.MustGoThroughShell`) always open through ShellExecute so Windows shows its warning.
+- Every program the app starts goes by full path from System32 (robocopy, msiexec, tar); a test fails on a bare "x.exe".
+- The web app trusts only the Tailscale service's own process or its child (`TailscaleServiceProcess`, `ProcessTable`); the pairing-code count keys every loopback address as one (`AddressKey`).
+- Folder watchers: a FileSystemWatcher that raises Error for anything but a buffer overflow has stopped for good. Panes (`Pane.WatchDead`) and the sync (`PcWatchJournal.Die`) re-arm instead of trusting it. The drive list follows WM_DEVICECHANGE through `RefreshDrivesList`.
+- Sync: `Stopped(pair)` also means edited since the pass began; the minute's loop syncs a pair as settings hold it when its turn comes (`SyncOneAsync(fromLive: true)`). The sync window never saves its own copy of every pair: `Save(change)` applies one change onto the live list. Account quota checks skip shared-drive pairs.
+- Extracts into one folder take turns (`ExtractTurns.InTurn`). 7-Zip renames bad names its own way (`CleanLike7Zip`), and only the tar half's ERROR lines name entries.
+- An MP3's exact length comes from Mp3Seek's background frame walk: the editor waits for it (`TrackDecoder.WaitForExactSeek`); anything else that needs the exact length must too. Ogg tags are read from the stream (`OggPages.ReadComments`).
+- Menus and dialogs have unique access keys, tested (main menus, tray menu O R P T W S U B X, audio effect dialogs).
+- While a track opens, `NowPlayingPath` is empty: use `OpeningOrPlayingPath` for the track the person means. A failed start asks `AudioPlayer.WhereIs` (never File.Exists) so a share that stopped answering is said as that.
+- Exact dates go through `TimeFormatter.WindowsDateTime`: InvariantGlobalization makes .NET's "g" always MM/dd/yyyy in the shipped exe.
+- Parallel work in git worktrees: never use `git stash` (every worktree shares one stash list, and two fixers popped each other's changes). In PowerShell, `[IO.File]` calls with a relative path resolve against the process folder, not Set-Location.
+
+## The 6.0.0 review (rules it added)
+
+Five read-only reviews of everything added since 5.1.0 found 25 bugs; each is pinned in `tests\Release600Tests.cs` (`EXPLORERNATIVE_SELFTEST_ONLY=release600`, seconds).
+- Finishing a paste after a restart: the note (`CarryOnTransfers.Job`) carries the conflict answer (`Policy`, written in `RunTransferCore` once known) and which sources clashed at the start (`Clashed`, null = not known). `CarryOnTransfers.Plan` decides the re-run: what was new at the destination is Fill gaps, what clashed keeps Replace or stays skipped, and a Keep both clash is left out and said (its "X (2)" cannot be found again by name). Never re-run everything as Fill gaps. A 5.6 note (no Policy) still does, as 5.6 did.
+- `LookForCarryOn` is three-state: no answer in 5 s, or a source whose own folder is not there, means wait; only a source missing from a folder that is there has gone. Never take part of a selection for all of it.
+- Once `CarryOnLaterAsync` has stopped the copies, every way the update or restart can still fail must call `CarryOnHereAsync` (takes the note, finishes them in this copy). `CarryOnTransfers.Waiting` deletes a note older than `GoodFor`.
+- `_carryOnAgreed` is the set of operations agreed, not a count, and is cleared when the update or restart ends either way. `_carryStopped` keeps a paste that was still at its conflict check from starting under the restart.
+- Radio: only the playlist is fatal in HLS; up to `GoneSegmentsMost` missing segments in a row are stepped over, a long `WaitForRoom` on a live list reloads it, `_hlsLast` survives a reconnect, and `Get` times each body read (`StallMilliseconds`). With `ResponseHeadersRead`, HttpClient's timeout and token end at the headers: every body read needs its own.
+- Anything in the player that can connect to a network runs through `PlayAudioFile`'s worker, never inline from `RunAudioActionCore` (`AudioPlayer.LiveEnded`). `Stop` forgets a radio still opening.
+- Resume after start gives way to any play request since (`_playRequest` compared with the value at start), and the after-restart resume stands for ten minutes (`Settings.ResumeAfterRestartStands`) and is cleared on disk once used.
+- AI: only 402, "credit balance", "insufficient_quota" and "insufficient credits" mean out of credit; "quota" and "billing" also appear in ordinary rate limits. Gemma takes no system instruction (`GeminiBody(model:)`). Dated price ids keep their own entry (`Normalise(keepDate:)`).
+- The sync's `DeleteForGood` deletes a file only, never a folder that took its name.
+
+## 6.2.1 (Conner)
+
+- The window shortcut left the keyboard on the desktop: `ShowWindow` ends with `Foreground.Take` (tray), which joins the front window's input queue for SetForegroundWindow, falls back to an unassigned key (0xE8), and focuses the list when the window is in front with focus nowhere. Never rely on `Form.Activate` alone to come to the front.
+- Preferences, Audio: unticking Enable the audio player hides every other control on the page (`ShowRest` in `BuildAudioTab`); hidden controls still apply what they held.
+- Update window: `Updater.Release.Behind` is every version newer than this build, newest first (`BehindAsync`, the releases list, best effort: any trouble gives the latest alone). `UpdateForm.Sentence` starts "You're N versions out of date" and `UpdateForm.Rows` puts each version under a "Version X" row; Ctrl+Up/Down jump between them as in Help, Changelog. Tests in the updates group.

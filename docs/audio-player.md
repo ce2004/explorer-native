@@ -1,0 +1,43 @@
+# Audio player
+
+Part of the Explorer Native notes for Claude; CLAUDE.md says when to read this file.
+
+## Audio player
+
+There is no window: Enter, the Audio menu, Preferences pages and global hotkeys. Shift+Enter opens the file in its own app. No playlist.
+
+- Silent by default. `SayAudio` always writes the status bar and speaks only when allowed. "What is playing" and failures always speak.
+- The menu, shortcut page and tray all come from `AudioActions.All`. Toggle labels show the next action. Access keys are unique (tested). Use `ShortcutKeyDisplayString`, never ShortcutKeys.
+- Hotkeys: no bare keys except media keys. `ReservedShortcuts` blocks keys whose loss would leave no way to do the thing: window keys, Ctrl+C/Z, Shift+arrow, Ctrl+Space, Space, bare F1-F24, and Ctrl with Up/Down/Home/End/PageUp/PageDown (Conner, 3.0.13: never again; his volume on Ctrl+Up/Down stopped Ctrl+arrow reaching the list, so items could not be picked out with Ctrl+arrow and Space). His volume is Ctrl+Shift+Minus / Ctrl+Shift+Equals (`Shortcut` names Oem keys Minus and Equals). In the list Space toggles the focused row (any Ctrl state, not while type-ahead is mid-word) and letting go of Ctrl after a Ctrl+Space says the total (`List_KeyUp`). Check from both the capture box and the registration. Read the real settings.json before reserving more.
+- In front, ours win (5.5.0, Conner): every non-Windows-key shortcut also gets a front-only catch in `WinKeyHook` (`AddFront`, entries keyed id | `FrontIdBit`), so with one of our windows in front the low-level hook takes the key before another program's RegisterHotKey of the same keys. Minimised or behind, nothing changes. `FrontPaused` (Suspend/Resume) lets the shortcut capture box see keys. A global key another program owns is still reported, saying it works while we are in front.
+- Never default to Ctrl+Alt+arrow: NVDA's hook swallows it silently. The tray menu has play/pause, stop and "what is playing" for that reason.
+- Settings-file mistakes (reserved, duplicate, no modifier) get one modal dialog, posted through `_ui.Post`. "Taken by another app" stays a notification. Debug with `EXPLORERNATIVE_HOTKEYLOG`.
+- MOD_NOREPEAT on every hotkey; `HoldRepeat` does the repeating. It paces by how long the action took, detects release with `GetAsyncKeyState`, and stops after 30s. Skipping uses `NudgeRepeatMilliseconds` with no acceleration. Speed has its own 120ms clock.
+- Seek counts from its own last target and applies every press. Do not bring back the seek throttle. Skipping past the end restarts at 0.
+- Volume above 100% is our own multiply. Never touch endpoint volume, never use an MFT. Float is not clamped; `ClippedPercent` reports clipping, reset per track. Volume is also saved on Quit.
+- The limiter is an upward compressor (ceiling 0.9), active only above gain 1 unless `LimiterWholeRange`. One envelope for all channels, 0.5ms attack, 0.25s release, coefficients from the device rate. Its controls live in LimiterForm only, and opening the form turns nothing on.
+- At rest the whole chain is bit-exact (`NeutralChainTests`): gain 1, EQ off or flat, stretch rate 1, pitch 1, silence reduction off are all bypasses.
+- Changing device opens the new one before stopping the old. The ring and decoder survive. An empty id follows the system default (`IMMNotificationClient`). `GetDevice` succeeds for unplugged endpoints, so check `GetState`. Never name a file in a device error. Default changes are queued (`DefaultMoved`), not tracked with flags.
+- When paused, the device stops (`SetSuspended`) and the pump waits on an event.
+- Errors name the real cause (`Diagnostic`), not "cannot decode". The audio page shows what was granted, and failures are appended, not replacing the state.
+
+Pipeline: decoder -> SilenceReduction -> TimeStretch -> Resampler -> ring -> renderer (gain, limiter, EQ, meter)
+- After Media Foundation refuses a file, `TrackDecoder` tries in turn: `OggDecoder`, `WavDecoder` (by content: RIFF/RF64/Wave64/caff/.snd/AIFC/VOC), `TtaDecoder`, then `Rewrap` (FLAC in Ogg as native FLAC, FLV audio as ADTS/MP3) back into Media Foundation through `ManagedIStream`. `AudioFiles.AlwaysPlayed` extensions play whatever the saved extension list says. Verify formats with `EXPLORERNATIVE_SELFTEST_ONLY=playprobe` (`_PLAYPROBE_DIR`, `_ALL=1`, `_ROUNDS`); test files come from ffmpeg (winget Gyan.FFmpeg.Essentials, on this PC only). Not decodable here: AC3/E-AC3/DTS (no Dolby/DTS decoder on Windows Server), Vorbis in Matroska, WavPack, MXF, MP3 inside WAV.
+- Media Foundation `IMFSourceReader` first. `OggDecoder` covers Ogg/Opus, because Web Media Extensions are invisible to unpackaged apps. The media engine and gain MFT are deleted: the MFT took every sample and output none. Never retry that.
+- TimeStretch (WSOLA): 1024 hop, 50% overlap, raised-cosine fade, ±640 search on a mono sum, fractional remainder carried, end residue emitted proportionally. Test pitch (Goertzel) and purity (≥0.98).
+- Pitch: resample by P and stretch by S/P, both set in `ApplyRates`. The resampler comes after the stretcher. Catmull-Rom, anti-alias only when pitching up, fraction carried.
+- EQ: 20 half-octave bands, ±24dB, Q 2, end shelves cornered between bands, double-precision TDF-II, 20ms glides, placed after the limiter. Test that neighbouring bands do not move.
+- Silence reduction runs before the stretcher. It uses spin boxes because an editable combo went silent and a full list took 1s to open. Values are spoken 400ms after arrowing stops. Detection blocks are at most 128 frames. The clock overshoot across a cut is known and accepted.
+- Ring: 4s capacity, kept shallow (0.2s) unless a download is still arriving (`Available < Length`, not `Complete`). Prebuffer floor is `Math.Min(PrebufferFrames, TargetFrames())`. The renderer opens suspended and `ReleaseWhenBuffered` is checked every pump loop.
+- Gapless repeat: the pump loops the decoder itself (`WasapiPlayback.Loop`). Two empty loops end the track. `_lastPassFrames` fixes the clock across the loop.
+- `IsPlaying` asks the ring. An empty read is not the end (`EmptyReadsBeforeEnd` 3). Drop a block if a newer seek is waiting.
+- COM: wrong slot means a wrong call. `[PreserveSig]` for double/BOOL returns, BOOL as int. Never inherit `[ComImport]` interfaces; repeat the methods. `IMFMediaType.SetUINT32` is slot 18. Arrays marshal as SAFEARRAY, so use IntPtr. Create COM objects on the thread that uses them.
+- `AudioDecoder` counts MFStartup per instance. An unbalanced MFShutdown kills MF for the whole process.
+- Exact seeks land on the sample in every format except WMA (~1ms). FLAC and VBR MP3 locate their own frames. Searches use only bytes already held. Seeks start on the resampler grid (`GridStep`) and on AAC frames. Opus run-up is 500ms. MP3 joins drop a frame; LAME "Info" decodes as silence. NVorbis needs `TrailingShift`.
+- Ogg: our own page readers (the library readers index the whole file). Sniff the first packet (OpusHead or vorbis). An unreadable head is "unknown, try Opus then Vorbis", never "no". Every empty-read loop is bounded.
+- .mp4/.mov/.mkv/.avi play their first audio stream. `.cda` is read as raw CDDA through `CdTrackStream`. AIFF goes through as WAV. Tags come from the property system; blank means absent, and they are read on a worker.
+- Remote files: `StreamingSource` plays through an in-memory download window (4MB pieces, first MB alone). One track at a time. The buffer is released after 10 minutes paused. `StartFilling` always allocates. Reads are async and cancellable, never under the lock. A generation number replaces thread joins. `ReadAt` retries 20s from the first failure. Never restore the reverted "Prioritise" moving window.
+- `AudioPrefetch` waits 350ms of settle, handles remote files only, and is skipped for bulk selection and Drive. Drive tracks read straight from Google (`RangeSourceFor` -> `OpenRange`), never through the placeholder.
+- Rejected after measurement: parallel SMB readers, MF real-time mode (dropouts). Measure shares with interleaved A/B and medians.
+- Tests need real audio (`Tests.WriteTone`), since silent fixtures hide silent bugs. Watch a new test fail against the bug first. Fixtures are generated in code. Every audio harness gets a 60s watchdog.
+- Measuring: use the per-session meter and sweep every endpoint. A missing session is not proof of no sound; a moving clock is the proof.
