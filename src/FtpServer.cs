@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Globalization;
@@ -48,7 +49,16 @@ namespace ExplorerNative
 
         internal SignInThrottle Throttle { get; } = new();
 
-        public FtpServer(string folder, int port, string user, string password, bool readOnly, X509Certificate2? tls = null)
+        /// <param name="passivePorts">
+        /// The ports transfers come in on, or null for any free port. Fixed
+        /// ports are what let Tailscale forward them and a firewall name them.
+        /// </param>
+        /// <param name="requireTls">
+        /// Nobody signs in until the connection is inside TLS, and files only
+        /// move inside it. Needs <paramref name="tls"/>.
+        /// </param>
+        public FtpServer(string folder, int port, string user, string password, bool readOnly, X509Certificate2? tls = null,
+            int[]? passivePorts = null, bool requireTls = false)
         {
             _root = folder ?? "";
             _port = port;
@@ -56,7 +66,21 @@ namespace ExplorerNative
             _password = password ?? "";
             _readOnly = readOnly;
             _tls = tls;
+            _passivePorts = passivePorts is { Length: > 0 } ? (int[])passivePorts.Clone() : null;
+            _requireTls = requireTls;
         }
+
+        private readonly int[]? _passivePorts;
+        private readonly bool _requireTls;
+
+        /// <summary>Connections one address may have at once. This PC itself (and so Tailscale, which arrives from it) is not held to it.</summary>
+        internal const int MaxPerAddress = 16;
+
+        /// <summary>How long a connection has to sign in, and how many commands it may send first.</summary>
+        internal int SignInWithinMs { get; set; } = 60_000;
+        private const int CommandsBeforeSignIn = 20;
+
+        private readonly ConcurrentDictionary<IPAddress, int> _perAddress = new();
 
         public void Start()
         {
@@ -65,6 +89,7 @@ namespace ExplorerNative
             if (_port < 0 || _port > 65535) throw new InvalidOperationException($"{_port} is not a port number. Pick one between 1 and 65535.");
             if (!Directory.Exists(_root)) throw new InvalidOperationException($"The folder {_root} is not there.");
             if (_tls != null && !_tls.HasPrivateKey) throw new InvalidOperationException("The certificate for secure FTP has no private key.");
+            if (_requireTls && _tls == null) throw new InvalidOperationException("Encrypted connections only was asked for, but the FTP server has no certificate.");
 
             TcpListener listener;
             try
@@ -153,13 +178,57 @@ namespace ExplorerNative
                     _sockets[socket] = 0;
                     if (_disposed) { Drop(socket); return; }
 
+                    // Counted here, before a thread is spent: a caller over
+                    // either limit gets one line and no thread. They used to
+                    // be counted on a thread of their own, and uncounted
+                    // again while that thread was still alive.
+                    IPAddress from = ServedFolder.Plain(((IPEndPoint)socket.RemoteEndPoint!).Address);
+                    bool tooMany = Interlocked.Increment(ref _connections) > MaxConnections;
+                    bool tooManyFromOne = _perAddress.AddOrUpdate(from, 1, (_, n) => n + 1) > MaxPerAddress && !IPAddress.IsLoopback(from);
+                    if (tooMany || tooManyFromOne)
+                    {
+                        try
+                        {
+                            socket.SendTimeout = 2000;
+                            socket.Send(Encoding.ASCII.GetBytes("421 Too many connections at the moment. Try again shortly.\r\n"));
+                        }
+                        catch { }
+                        Uncount(from);
+                        Drop(socket);
+                        continue;
+                    }
+
                     var session = new Session(socket);
-                    new Thread(() => Serve(session)) { IsBackground = true, Name = "FTP connection" }.Start();
+                    try
+                    {
+                        new Thread(() => Serve(session)) { IsBackground = true, Name = "FTP connection" }.Start();
+                    }
+                    catch
+                    {
+                        Uncount(from);
+                        throw;
+                    }
                 }
                 catch
                 {
                     Drop(socket);
                 }
+            }
+        }
+
+        /// <summary>One connection fewer, overall and for its address.</summary>
+        private void Uncount(IPAddress from)
+        {
+            Interlocked.Decrement(ref _connections);
+            // Removed at zero, so the table is only ever the addresses connected now.
+            while (true)
+            {
+                if (!_perAddress.TryGetValue(from, out int n)) return;
+                if (n <= 1)
+                {
+                    if (_perAddress.TryRemove(new KeyValuePair<IPAddress, int>(from, n))) return;
+                }
+                else if (_perAddress.TryUpdate(from, n - 1, n)) return;
             }
         }
 
@@ -183,6 +252,10 @@ namespace ExplorerNative
             public string? UserName;
             public bool SignedIn;
             public int WrongTries;
+
+            /// <summary>When it connected (or signed out), and what it has sent since without signing in.</summary>
+            public long Began = Environment.TickCount64;
+            public int Unsigned;
 
             public List<string> Folder = new();     // where CWD has taken them, below the root
             public long RestartAt;
@@ -242,17 +315,8 @@ namespace ExplorerNative
 
         private void Serve(Session s)
         {
-            bool counted = false;
             try
             {
-                if (Interlocked.Increment(ref _connections) > MaxConnections)
-                {
-                    counted = true;
-                    Reply(s, 421, "Too many connections at the moment. Try again shortly.");
-                    return;
-                }
-                counted = true;
-
                 if (Throttle.IsBlocked(s.Remote))
                 {
                     Reply(s, 421, "Too many wrong passwords from your address. Try again in a few minutes.");
@@ -263,10 +327,26 @@ namespace ExplorerNative
 
                 while (!_disposed)
                 {
+                    // Signing in has a deadline of its own. Each read used to
+                    // have a minute to itself for ever, so sixty-four
+                    // connections sending NOOP now and then, with no
+                    // password, held every place the server has.
+                    if (!s.SignedIn)
+                    {
+                        long left = SignInWithinMs - (Environment.TickCount64 - s.Began);
+                        if (left <= 0 || s.Unsigned > CommandsBeforeSignIn)
+                        {
+                            Reply(s, 421, "Sign in sooner next time.");
+                            return;
+                        }
+                        s.Control.ReceiveTimeout = (int)Math.Clamp(left, 1, IoTimeoutMs);
+                    }
+
                     string? line = s.ReadLine(out bool tooLong);
                     if (tooLong) { Reply(s, 500, "That command is too long."); return; }
                     if (line == null) return;
                     if (line.Length == 0) continue;
+                    if (!s.SignedIn) s.Unsigned++;
 
                     int space = line.IndexOf(' ');
                     string verb = (space < 0 ? line : line.Substring(0, space)).ToUpperInvariant();
@@ -291,11 +371,12 @@ namespace ExplorerNative
             }
             finally
             {
-                if (counted) Interlocked.Decrement(ref _connections);
                 ClosePassive(s);
                 HangUpGently(s.Control);
                 try { s.Stream.Dispose(); } catch { }
                 Drop(s.Control);
+                // Last: the place is given up only once the thread is done with it.
+                Uncount(s.Remote);
             }
         }
 
@@ -311,11 +392,15 @@ namespace ExplorerNative
             try
             {
                 socket.Shutdown(SocketShutdown.Send);
-                socket.ReceiveTimeout = 500;
+                // Two seconds in all, not half a second a byte: a caller
+                // sending one byte now and then kept this thread and its
+                // socket for a day and a half, off the books.
+                var clock = Stopwatch.StartNew();
                 byte[] scrap = new byte[4096];
                 int total = 0;
-                while (total < 256 * 1024)
+                while (total < 64 * 1024 && clock.ElapsedMilliseconds < 2000)
                 {
+                    socket.ReceiveTimeout = (int)Math.Max(1, 2000 - clock.ElapsedMilliseconds);
                     int read = socket.Receive(scrap);
                     if (read <= 0) break;
                     total += read;
@@ -399,11 +484,28 @@ namespace ExplorerNative
                     Protect(s, argument);
                     return;
                 case "USER":
-                    s.SignedIn = false;
+                    if (s.SignedIn)
+                    {
+                        // Signed out: the sign-in clock and the short timeout start again.
+                        s.SignedIn = false;
+                        s.Began = Environment.TickCount64;
+                        s.Unsigned = 0;
+                        s.Control.ReceiveTimeout = IoTimeoutMs;
+                    }
+                    if (_requireTls && !s.Secure)
+                    {
+                        Reply(s, 530, "This server only takes encrypted connections. Turn on explicit FTP over TLS and try again.");
+                        return;
+                    }
                     s.UserName = argument;
                     Reply(s, 331, "Now send the password.");
                     return;
                 case "PASS":
+                    if (_requireTls && !s.Secure)
+                    {
+                        Reply(s, 530, "This server only takes encrypted connections. Turn on explicit FTP over TLS and try again.");
+                        return;
+                    }
                     SignIn(s, argument);
                     return;
             }
@@ -548,6 +650,9 @@ namespace ExplorerNative
             bool nameRight = ServedFolder.SameSecret(s.UserName, _user);
             bool passwordRight = ServedFolder.SameSecret(password, _password);
             s.UserName = null;
+            // Passwords being guessed from many addresses at once: every
+            // answer waits, right or wrong alike.
+            Throttle.Slow();
 
             if (nameRight & passwordRight)
             {
@@ -630,6 +735,11 @@ namespace ExplorerNative
                     Reply(s, 200, "Files and listings will be sent inside TLS.");
                     break;
                 case "C":
+                    if (_requireTls)
+                    {
+                        Reply(s, 534, "This server only sends files inside TLS.");
+                        break;
+                    }
                     s.ProtectData = false;
                     Reply(s, 200, "Files and listings will be sent without TLS.");
                     break;
@@ -728,6 +838,8 @@ namespace ExplorerNative
             try { listener.Close(0); } catch { }
         }
 
+        private static readonly int[] AnyPort = { 0 };
+
         private void Passive(Session s, bool extended, string argument)
         {
             if (extended && argument.Trim().Equals("ALL", StringComparison.OrdinalIgnoreCase))
@@ -745,17 +857,29 @@ namespace ExplorerNative
 
             // The port is opened on the address this client already reached us
             // on: that is the one address we know it can get to.
-            var listener = new Socket(s.Local.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
-            try
+            Socket? listener = null;
+            foreach (int wanted in _passivePorts ?? AnyPort)
             {
-                listener.ExclusiveAddressUse = true;
-                listener.Bind(new IPEndPoint(s.Local, 0));
-                listener.Listen(1);
+                var trial = new Socket(s.Local.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+                try
+                {
+                    trial.ExclusiveAddressUse = true;
+                    trial.Bind(new IPEndPoint(s.Local, wanted));
+                    trial.Listen(1);
+                    listener = trial;
+                    break;
+                }
+                catch
+                {
+                    // In use by another transfer (or another program): the next one.
+                    try { trial.Close(0); } catch { }
+                }
             }
-            catch
+            if (listener == null)
             {
-                try { listener.Close(0); } catch { }
-                Reply(s, 425, "No port could be opened for the transfer.");
+                Reply(s, 425, _passivePorts == null
+                    ? "No port could be opened for the transfer."
+                    : "Every transfer port is busy at the moment. Try again shortly.");
                 return;
             }
 
@@ -794,6 +918,12 @@ namespace ExplorerNative
             if (listener == null)
             {
                 Reply(s, 425, "Send PASV or EPSV before asking for a transfer.");
+                return null;
+            }
+            if (_requireTls && !s.ProtectData)
+            {
+                ClosePassive(s);
+                Reply(s, 521, "This server only sends files inside TLS. Send PROT P first.");
                 return null;
             }
 
@@ -942,6 +1072,8 @@ namespace ExplorerNative
             bool sent = true;
             try
             {
+              try
+              {
                 using (var writer = new StreamWriter(data, new UTF8Encoding(false), 16 * 1024, leaveOpen: true))
                 {
                     writer.NewLine = "\r\n";
@@ -957,12 +1089,18 @@ namespace ExplorerNative
                     }
                 }
             }
-            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is ObjectDisposedException)
-            {
+              catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is ObjectDisposedException)
+              {
                 sent = false;
-            }
+              }
 
-            if (!CloseData(data)) sent = false;
+              if (!CloseData(data)) sent = false;
+            }
+            finally
+            {
+                // Whatever else went wrong, the connection does not outlive the command.
+                try { data.Dispose(); } catch { }
+            }
             if (sent) Reply(s, 226, "That is the whole list.");
             else Reply(s, 426, "The connection closed before the whole list was sent.");
         }
@@ -1053,28 +1191,35 @@ namespace ExplorerNative
 
                 bool sent = true;
                 Exception? diskTrouble = null;
-                byte[] buffer = new byte[CopyBufferBytes];
-                while (true)
+                try
                 {
-                    int read;
-                    try { read = file.Read(buffer, 0, buffer.Length); }
-                    catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { diskTrouble = ex; break; }
-                    if (read <= 0) break;
+                    byte[] buffer = new byte[CopyBufferBytes];
+                    while (true)
+                    {
+                        int read;
+                        try { read = file.Read(buffer, 0, buffer.Length); }
+                        catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { diskTrouble = ex; break; }
+                        if (read <= 0) break;
 
-                    try { data.Write(buffer, 0, read); }
-                    catch (Exception ex) when (ex is IOException || ex is ObjectDisposedException) { sent = false; break; }
+                        try { data.Write(buffer, 0, read); }
+                        catch (Exception ex) when (ex is IOException || ex is ObjectDisposedException) { sent = false; break; }
+                    }
+
+                    // Disk trouble: cut the line rather than end it cleanly, or the
+                    // client would take the part it has for the whole file.
+                    if (diskTrouble == null && !CloseData(data)) sent = false;
+                }
+                finally
+                {
+                    // Whatever else went wrong, the connection does not outlive the command.
+                    try { data.Dispose(); } catch { }
                 }
 
                 if (diskTrouble != null)
                 {
-                    // Cut the line rather than end it cleanly, or the client would
-                    // take the part it has for the whole file.
-                    try { data.Dispose(); } catch { }
                     Reply(s, 451, "The file could not be read to the end.");
                     return;
                 }
-
-                if (!CloseData(data)) sent = false;
                 if (sent) Reply(s, 226, "The whole file was sent.");
                 else Reply(s, 426, "The connection closed before the whole file was sent.");
             }
@@ -1098,17 +1243,30 @@ namespace ExplorerNative
             // A fresh upload lands beside the target under another name and takes
             // its place only when all of it is here. Carrying on a broken upload
             // (REST) or adding to a file (APPE) has to write to the file itself.
+            // Before any file is made: with no port asked for there is no
+            // transfer, and APPE used to leave an empty file behind saying so.
+            if (s.Passive == null)
+            {
+                Reply(s, 425, "Send PASV or EPSV before asking for a transfer.");
+                return;
+            }
+
             string? temp = null;
+            string? madeForAppend = null;
             FileStream file;
             try
             {
                 if (append)
                 {
+                    bool wasThere = File.Exists(local);
                     file = new FileStream(local, FileMode.Append, FileAccess.Write, FileShare.Read, CopyBufferBytes);
+                    if (!wasThere) madeForAppend = local;
                 }
                 else if (startAt > 0)
                 {
-                    file = new FileStream(local, FileMode.OpenOrCreate, FileAccess.Write, FileShare.Read, CopyBufferBytes);
+                    // Carrying on needs something to carry on from: OpenOrCreate
+                    // made an empty file and then refused it for being too short.
+                    file = new FileStream(local, FileMode.Open, FileAccess.Write, FileShare.Read, CopyBufferBytes);
                     if (startAt > file.Length)
                     {
                         file.Dispose();
@@ -1130,6 +1288,8 @@ namespace ExplorerNative
             }
 
             bool cut = false;
+            bool finished = false;
+            long arrived = 0;
             Exception? diskTrouble = null;
             Stream? data = null;
             try
@@ -1145,7 +1305,7 @@ namespace ExplorerNative
                     catch (Exception ex) when (ex is IOException || ex is ObjectDisposedException) { cut = true; break; }
                     if (read <= 0) break;
 
-                    try { file.Write(buffer, 0, read); }
+                    try { file.Write(buffer, 0, read); arrived += read; }
                     catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { diskTrouble = ex; break; }
                 }
 
@@ -1158,12 +1318,17 @@ namespace ExplorerNative
                     }
                     catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException) { diskTrouble = ex; }
                 }
+                finished = !cut && diskTrouble == null;
             }
             finally
             {
-                try { file.Dispose(); } catch (IOException ex) { diskTrouble ??= ex; }
+                try { file.Dispose(); } catch (IOException ex) { diskTrouble ??= ex; finished = false; }
                 if (data != null) { try { data.Dispose(); } catch { } }
-                if (cut || diskTrouble != null) ServedFolder.DeleteQuietly(temp);
+                // Anything but a finished upload: the control connection
+                // dropping first threw straight past here and left the
+                // half-made file for good, hidden from every listing.
+                if (!finished) ServedFolder.DeleteQuietly(temp);
+                if (!finished && arrived == 0) ServedFolder.DeleteQuietly(madeForAppend);
             }
 
             if (diskTrouble != null)

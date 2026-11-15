@@ -49,6 +49,26 @@ namespace ExplorerNative
         private static readonly Dictionary<string, Command> _all = new(StringComparer.OrdinalIgnoreCase);
 
         /// <summary>
+        /// Thrown by a command to answer in its own words instead of "ok": a
+        /// value that was asked for ("smb-server-port is 4450"), or why it
+        /// did nothing. The message is the whole answer.
+        /// </summary>
+        public sealed class Answer : Exception
+        {
+            /// <summary>The command did not do what was asked: the sender prints it as an error and exits 1.</summary>
+            public bool Refused { get; }
+
+            public Answer(string sentence, bool refused = false) : base(sentence) => Refused = refused;
+        }
+
+        /// <summary>
+        /// What an answer that is a value starts with on its way back, so the
+        /// sender prints it as output and exits 0. Without it anything but
+        /// "ok" is a failure, as it has been since 6.1.0.
+        /// </summary>
+        public const string SaidMark = "\u0002";
+
+        /// <summary>
         /// A menu's text as a command name: "New &amp;folder…" is new-folder.
         /// Taken when the item is made, so an item whose text changes as it is
         /// used (Pause, Play) keeps the name it started with.

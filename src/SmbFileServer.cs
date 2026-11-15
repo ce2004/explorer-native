@@ -69,9 +69,7 @@ namespace ExplorerNative
                 throw new InvalidOperationException("The SMB server could not start: this build cannot choose its port.");
 
             var full = Path.GetFullPath(_folder);
-            INTFileStore store = new NTDirectoryFileSystem(full);
-            // A whole drive: see DriveRootStore.
-            if (full.EndsWith(Path.DirectorySeparatorChar)) store = new DriveRootStore((NTDirectoryFileSystem)store, full);
+            INTFileStore store = new ShareStore(new NTDirectoryFileSystem(full), full);
 
             var share = new FileSystemShare(_share, store);
             share.AccessRequested += (_, e) =>
@@ -114,14 +112,26 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// A drive's own top folder. The library builds every path as the
-        /// folder, a backslash, and the rest, and a drive's folder already
-        /// ends in one ("G:\"), so every open of anything on a shared drive
-        /// failed with "name invalid". This opens and renames with the path
-        /// put together properly and hands everything else to the library's
-        /// store, which only ever sees the handles.
+        /// What stands between the library and the disk. The library's own
+        /// store does the reading and writing through the handles; this
+        /// decides what may be opened at all, and builds the paths itself.
+        ///
+        /// Paths: the library builds every path as the folder, a backslash,
+        /// and the rest, and a drive's folder already ends in one ("G:\"), so
+        /// every open of anything on a shared drive failed with "name
+        /// invalid".
+        ///
+        /// Limits (7.0.1, the security review): every open and every rename
+        /// goes through <see cref="ServedFolder.Resolve"/>, the same rule the
+        /// FTP and SFTP servers use, so a junction or symbolic link inside the
+        /// share that points somewhere else on the PC is not followed, and
+        /// device names and names Windows would quietly respell are refused.
+        /// Control codes are refused whole (one of them makes a link), and so
+        /// are changing who may open a file and making hard links: none of
+        /// them is file sharing, and each is a way to reach or expose
+        /// something outside the folder.
         /// </summary>
-        private sealed class DriveRootStore : INTFileStore
+        private sealed class ShareStore : INTFileStore
         {
             private delegate NTStatus Opener(out IntPtr handle, out FileStatus fileStatus, string nativePath,
                 AccessMask desiredAccess, long allocationSize, SMBLibrary.FileAttributes fileAttributes, ShareAccess shareAccess,
@@ -134,34 +144,75 @@ namespace ExplorerNative
             private readonly NTDirectoryFileSystem _inner;
             private readonly Opener _open;
 
-            /// <summary>The NT path of the drive, with no backslash on the end: "\??\G:".</summary>
+            /// <summary>The shared folder as given, for the rules.</summary>
+            private readonly string _folder;
+
+            /// <summary>Its NT path, with no backslash on the end: "\??\G:" or "\??\D:\Music".</summary>
             private readonly string _root;
 
-            public DriveRootStore(NTDirectoryFileSystem inner, string drive)
+            public ShareStore(NTDirectoryFileSystem inner, string folder)
             {
                 _inner = inner;
-                _root = @"\??\" + drive.TrimEnd(Path.DirectorySeparatorChar);
+                _folder = folder;
+                _root = @"\??\" + folder.TrimEnd(Path.DirectorySeparatorChar);
                 var method = typeof(NTDirectoryFileSystem).GetMethod("CreateFile", BindingFlags.NonPublic | BindingFlags.Instance, null,
                     new[]
                     {
                         typeof(IntPtr).MakeByRefType(), typeof(FileStatus).MakeByRefType(), typeof(string), typeof(AccessMask),
                         typeof(long), typeof(SMBLibrary.FileAttributes), typeof(ShareAccess), typeof(CreateDisposition), typeof(CreateOptions),
                     }, null)
-                    ?? throw new InvalidOperationException("The SMB server cannot share a whole drive in this build.");
+                    ?? throw new InvalidOperationException("The SMB server could not start: this build cannot open files its own way.");
                 _open = (Opener)method.CreateDelegate(typeof(Opener), inner);
             }
 
+            /// <summary>Whether the library can still be reached the way this needs. For the tests.</summary>
+            internal static bool CanOpen => typeof(NTDirectoryFileSystem).GetMethod("CreateFile", BindingFlags.NonPublic | BindingFlags.Instance, null,
+                new[]
+                {
+                    typeof(IntPtr).MakeByRefType(), typeof(FileStatus).MakeByRefType(), typeof(string), typeof(AccessMask),
+                    typeof(long), typeof(SMBLibrary.FileAttributes), typeof(ShareAccess), typeof(CreateDisposition), typeof(CreateOptions),
+                }, null) != null;
+
             private string Native(string path) => path.StartsWith('\\') ? _root + path : _root + "\\" + path;
+
+            /// <summary>
+            /// Whether a path a client sent stays inside the share by the rules
+            /// in ServedFolder. A stream name on the last part ("a.txt:Zone.Identifier",
+            /// which Windows writes on every downloaded file it copies) belongs to
+            /// the file, so the file is what is checked.
+            /// </summary>
+            private bool Allowed(string? path)
+            {
+                if (path == null) return false;
+                foreach (char c in path)
+                    if (c < 32) return false;
+                var relative = path.Replace('\\', '/').Trim('/');
+                int slash = relative.LastIndexOf('/');
+                int colon = relative.IndexOf(':', slash + 1);
+                if (colon == slash + 1) return false;                 // a stream of nothing
+                if (colon >= 0) relative = relative[..colon];
+                return ServedFolder.Resolve(_folder, relative) != null;
+            }
 
             public NTStatus CreateFile(out object handle, out FileStatus fileStatus, string path, AccessMask desiredAccess,
                 SMBLibrary.FileAttributes fileAttributes, ShareAccess shareAccess, CreateDisposition createDisposition,
                 CreateOptions createOptions, SecurityContext securityContext)
             {
+                if (!Allowed(path))
+                {
+                    handle = null!;
+                    fileStatus = FileStatus.FILE_DOES_NOT_EXIST;
+                    return NTStatus.STATUS_ACCESS_DENIED;
+                }
+
                 // As the library's own open does, for the same reasons: its
                 // directory listing and change notices need a synchronous handle.
                 desiredAccess |= AccessMask.SYNCHRONIZE;
                 createOptions &= ~CreateOptions.FILE_SYNCHRONOUS_IO_NONALERT;
                 createOptions |= CreateOptions.FILE_SYNCHRONOUS_IO_ALERT;
+                // Never through a link handed over as the thing itself: opened
+                // as a link, a client could read where it points or re-point it.
+                createOptions &= ~CreateOptions.FILE_OPEN_REPARSE_POINT;
                 if ((createOptions & CreateOptions.FILE_NO_INTERMEDIATE_BUFFERING) > 0 &&
                     ((FileAccessMask)desiredAccess & FileAccessMask.FILE_APPEND_DATA) > 0)
                     desiredAccess = (AccessMask)((uint)desiredAccess & ~(uint)FileAccessMask.FILE_APPEND_DATA);
@@ -176,6 +227,7 @@ namespace ExplorerNative
             {
                 if (information is FileRenameInformationType2 rename)
                 {
+                    if (!Allowed(rename.FileName)) return NTStatus.STATUS_ACCESS_DENIED;
                     var local = new FileRenameInformationType2
                     {
                         ReplaceIfExists = rename.ReplaceIfExists,
@@ -184,8 +236,22 @@ namespace ExplorerNative
                     var buffer = local.GetBytes();
                     return NtSetInformationFile((IntPtr)handle, out _, buffer, (uint)buffer.Length, (uint)local.FileInformationClass);
                 }
+                // A second name for a file, anywhere on the volume.
+                if (information is FileLinkInformationType2 or FileLinkInformationType1 or FileRenameInformationType1)
+                    return NTStatus.STATUS_NOT_SUPPORTED;
                 return _inner.SetFileInformation(handle, information);
             }
+
+            public NTStatus SetSecurityInformation(object handle, SecurityInformation securityInformation, SecurityDescriptor securityDescriptor) =>
+                NTStatus.STATUS_NOT_SUPPORTED;
+
+            public NTStatus DeviceIOControl(object handle, uint ctlCode, byte[] input, out byte[] output, int maxOutputLength)
+            {
+                output = null!;
+                return NTStatus.STATUS_NOT_SUPPORTED;
+            }
+
+            public NTStatus SetFileSystemInformation(FileSystemInformation information) => NTStatus.STATUS_NOT_SUPPORTED;
 
             public NTStatus CloseFile(object handle) => _inner.CloseFile(handle);
             public NTStatus ReadFile(out byte[] data, object handle, long offset, int maxCount) =>
@@ -202,17 +268,12 @@ namespace ExplorerNative
                 _inner.GetFileInformation(out result, handle, informationClass);
             public NTStatus GetFileSystemInformation(out FileSystemInformation result, FileSystemInformationClass informationClass) =>
                 _inner.GetFileSystemInformation(out result, informationClass);
-            public NTStatus SetFileSystemInformation(FileSystemInformation information) => _inner.SetFileSystemInformation(information);
             public NTStatus GetSecurityInformation(out SecurityDescriptor result, object handle, SecurityInformation securityInformation) =>
                 _inner.GetSecurityInformation(out result, handle, securityInformation);
-            public NTStatus SetSecurityInformation(object handle, SecurityInformation securityInformation, SecurityDescriptor securityDescriptor) =>
-                _inner.SetSecurityInformation(handle, securityInformation, securityDescriptor);
             public NTStatus NotifyChange(out object ioRequest, object handle, NotifyChangeFilter completionFilter, bool watchTree,
                 int outputBufferSize, OnNotifyChangeCompleted onNotifyChangeCompleted, object context) =>
                 _inner.NotifyChange(out ioRequest, handle, completionFilter, watchTree, outputBufferSize, onNotifyChangeCompleted, context);
             public NTStatus Cancel(object ioRequest) => _inner.Cancel(ioRequest);
-            public NTStatus DeviceIOControl(object handle, uint ctlCode, byte[] input, out byte[] output, int maxOutputLength) =>
-                _inner.DeviceIOControl(handle, ctlCode, input, out output, maxOutputLength);
         }
     }
 }

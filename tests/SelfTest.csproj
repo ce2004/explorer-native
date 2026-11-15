@@ -226,8 +226,11 @@
   <ItemGroup>
     <Compile Include="..\src\FileServers.cs" />
     <Compile Include="..\src\FileServers.Sftp.cs" />
+    <Compile Include="..\src\TailscaleForward.cs" />
+    <Compile Include="..\src\SettingCommands.cs" />
     <Compile Include="..\src\SmbFileServer.cs" />
     <Compile Include="Release700Tests.cs" />
+    <Compile Include="Release701Tests.cs" />
   </ItemGroup>
 
   <ItemGroup>

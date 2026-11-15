@@ -203,13 +203,34 @@ SFTP is the file transfer that comes with SSH, encrypted from the first
 byte: sftp -P 2222 name@this-pc. Only files are offered. Nobody gets a
 command line on this PC.
 
-Windows Firewall blocks other devices until it is told to let them in. Each
-page has a button, Allow through Windows Firewall, that does it once and
-asks for an administrator. Nothing here opens your router: the servers are
-reached from your own network, or from anywhere over Tailscale.
+Over Tailscale there is nothing to set up. While a server is on, your other
+devices on your Tailscale network reach it at this PC's Tailscale name and
+the server's port; the page's status line says the name. Tailscale carries
+the connection, so Windows Firewall is not involved, and nothing is opened
+to the internet. FTP's file transfers use the eight ports after the FTP port
+(2122 to 2129 with the usual 2121), and those are carried too.
+
+For devices that are not on your Tailscale network, Windows Firewall blocks
+them until it is told to let them in. Each page has a button, Allow through
+Windows Firewall, that does it once and asks for an administrator. It covers
+every network this PC joins, public ones too, so the password is what
+protects your files there. Once it is allowed the button says Remove from
+Windows Firewall and takes it away again. Nothing here opens your router.
+
+How the servers protect your files: nobody gets in without the user name
+and password, and ten wrong passwords from one address lock that address
+out for five minutes. Nothing outside the shared folder can be reached, and
+a link inside it that leads somewhere else on the PC is not followed. SFTP
+is encrypted throughout. FTP is encrypted for programs that ask, and the FTP
+page has a box, Encrypted connections only, that refuses the rest. SMB signs
+in without sending the password itself, but the files travel unencrypted, so
+outside your own network use it over Tailscale, which encrypts everything.
 
 The same can be done from a command line: ExplorerNative --do smb-server-on,
-smb-server-off, and the same for ftp and sftp.
+smb-server-off and smb-server-status, and the same for ftp and sftp. Every
+setting has a command too: ExplorerNative --do settings lists them, and
+ExplorerNative --do setting smb-server-folder D:\Music changes one.
+Passwords and keys are never shown, only whether they are set.
 
 The SMB server uses SMBLibrary by Tal Aloni, under the GNU Lesser General
 Public License. ExplorerNative --licence writes out its licence with the

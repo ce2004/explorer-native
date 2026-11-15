@@ -690,6 +690,8 @@ namespace ExplorerNative
         public string FtpServerUser { get; set; } = "";
         public string FtpServerPassword { get; set; } = "";
         public bool FtpServerReadOnly { get; set; }
+        /// <summary>Nobody signs in, and no file moves, outside TLS. Off by default: plenty of devices only speak plain FTP.</summary>
+        public bool FtpServerEncryptedOnly { get; set; }
 
         public bool SftpServerEnabled { get; set; }
         public string SftpServerFolder { get; set; } = "";

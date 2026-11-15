@@ -1027,6 +1027,20 @@ namespace ExplorerNative
                 return 1;
             }
 
+            // A value the command was asked for (a status, a setting): printed
+            // as it is, on standard output, and it is not a failure.
+            if (answer.StartsWith(Commands.SaidMark, StringComparison.Ordinal))
+            {
+                var said = answer[Commands.SaidMark.Length..];
+                WriteLog("Explorer Native", Commands.IdFor(name) + ": answered");
+                if (_console)
+                {
+                    try { Console.Out.WriteLine(said); } catch { }
+                }
+                else if (!_quiet) ShowNotice("Explorer Native", said);
+                return 0;
+            }
+
             bool list = Commands.IdFor(name) == Commands.ListName;
             if (answer != "ok" && !list)
             {

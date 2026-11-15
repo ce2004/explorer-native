@@ -1,3 +1,19 @@
+7.0.1
+New: the SMB, FTP and SFTP servers now work over Tailscale by themselves. While a server is on, your other devices on your Tailscale network reach it at this PC's Tailscale name and the server's port. There is nothing to set up and Windows Firewall is not involved. The server's status line says the name to use. Nothing is opened to the internet.
+New: on each server page, the firewall button now says Remove from Windows Firewall once the servers are allowed through, and takes the rule away again.
+New: on each server page, unticking Turn on hides the rest of the page, the same as the Audio page. Tick it and everything is back as you left it.
+New: the FTP page has a box, Encrypted connections only. With it ticked, plain FTP is refused, so the password is never sent unprotected.
+New: every setting in Preferences now has a command. ExplorerNative --do settings lists them all with their values. ExplorerNative --do setting smb-server-port reads one, and ExplorerNative --do setting smb-server-port 4455 changes it. Passwords, sign-ins and keys are never shown, only whether they are set. ExplorerNative --do reset-setting smb-server-folder puts one back to how a new installation has it.
+New: more commands for the servers: smb-server-status, ftp-server-status and sftp-server-status say whether each is running and where. smb-server, ftp-server and sftp-server open Preferences on that page. sftp-server-fingerprint says the SFTP key fingerprint. firewall-status, allow-through-firewall and remove-from-firewall do what the button does.
+Changed: FTP file transfers now use the eight ports after the FTP port, 2122 to 2129 if you kept 2121. Before, they used any free port. That is what lets Tailscale carry them.
+Changed: the Browse button on the server pages now says Browse for the folder or drive to share.
+Security fixed: a folder link inside a folder shared over SMB could lead a signed-in person to other folders on the PC. SMB now refuses links that leave the shared folder, as FTP and SFTP already did. It also refuses requests to change who may open a file, to make links, and other things that are not file sharing.
+Security fixed: someone who could reach the FTP or SFTP port could tie the server up without knowing the password, by opening many connections and never signing in, or by keeping a finished connection open. Connections now have one minute to sign in, one address can only hold a share of the places, and a finished connection is closed within two seconds.
+Security fixed: the limit on wrong passwords could be worked around from a very large number of addresses. If passwords are being guessed from many addresses at once, every answer is now slowed down, and an address that is locked out stays locked out.
+Bug fixed: if an FTP upload lost its connection at the wrong moment, a hidden half-made file was left behind, and its folder could not be removed because it looked empty. Nothing is left behind now.
+Bug fixed: if an FTP program asked to continue a file that was not there, or to add to a file without opening a transfer first, an empty file was made. It no longer is.
+Bug fixed: the firewall button could fail if the path to Explorer Native had a percent sign or an ampersand in it.
+
 7.0.0
 New: Explorer Native can share a folder or a whole drive with your other devices. Preferences has three new pages: SMB server, FTP server and SFTP server. On each you choose the folder or drive, the port, a user name and a password, and whether it is read only. Tick Turn on and press OK. The server runs for as long as Explorer Native does, in the tray too, and starts again with it.
 New: the SMB server shares the way Windows and Samba do, so other computers, phones and media players can open your folder as a network drive. It uses port 4450 unless you change it, because Windows keeps the usual port for itself. The page says what to type on Windows, Mac and Linux.

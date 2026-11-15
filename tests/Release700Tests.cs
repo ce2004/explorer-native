@@ -141,6 +141,22 @@ namespace ExplorerNative
             return (client, status == NTStatus.STATUS_SUCCESS ? store : null, "share " + status);
         }
 
+        /// <summary>Makes a junction with Windows' own mklink. False when it could not.</summary>
+        private static bool Junction(string at, string target)
+        {
+            try
+            {
+                var cmd = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+                using var p = Process.Start(new ProcessStartInfo(cmd, $"/c mklink /J \"{at}\" \"{target}\"")
+                {
+                    UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
+                });
+                p?.WaitForExit(10000);
+                return Directory.Exists(at) && (File.GetAttributes(at) & System.IO.FileAttributes.ReparsePoint) != 0;
+            }
+            catch { return false; }
+        }
+
         private static string? ReadText(ISMBFileStore share, string path)
         {
             var status = share.CreateFile(out var handle, out _, path, AccessMask.GENERIC_READ | AccessMask.SYNCHRONIZE,
@@ -213,8 +229,61 @@ namespace ExplorerNative
                         File.ReadAllText(Path.Combine(folder, "new.txt")) == "written over SMB", wrote.ToString());
                     Check("700 smb: nothing outside the folder is reached",
                         ReadText(share, @"..\outside.txt") == null && ReadText(share, @"Sub folder\..\..\outside.txt") == null);
+
+                    // 7.0.1, the security review. A junction inside the share
+                    // that points out of it is not a way out; one that stays
+                    // inside still works.
+                    var secret = Path.Combine(sandbox, "secret");
+                    Directory.CreateDirectory(secret);
+                    File.WriteAllText(Path.Combine(secret, "secret.txt"), "not shared");
+                    bool linked = Junction(Path.Combine(folder, "way out"), secret) &&
+                                  Junction(Path.Combine(folder, "way round"), Path.Combine(folder, "Sub folder"));
+                    if (linked)
+                    {
+                        Check("700 smb: a junction that leaves the share is not followed",
+                            ReadText(share, @"way out\secret.txt") == null && Names(share, "way out").Count == 0,
+                            ReadText(share, @"way out\secret.txt") ?? string.Join("|", Names(share, "way out")));
+                        Check("700 smb: nor written through",
+                            WriteText(share, @"way out\planted.txt", "x") != NTStatus.STATUS_SUCCESS &&
+                            !File.Exists(Path.Combine(secret, "planted.txt")));
+                        Equal("700 smb: a junction that stays inside still works", "inside",
+                            ReadText(share, @"way round\ünïcode näme.txt") ?? "(not opened)");
+                    }
+                    else Console.WriteLine("  (junctions could not be made: the link checks were not run)");
+
+                    Check("700 smb: a device name is not opened", ReadText(share, "NUL") == null && ReadText(share, @"Sub folder\CON.txt") == null);
+                    Check("700 smb: nor a name Windows would quietly respell", ReadText(share, "hello.txt.") == null && ReadText(share, "hello.txt ") == null);
+                    Check("700 smb: a file's own stream is still allowed (Windows writes one on downloaded files)",
+                        WriteText(share, "new.txt:Zone.Identifier", "[ZoneTransfer]") == NTStatus.STATUS_SUCCESS);
+
+                    var opened = share.CreateFile(out var any, out _, "hello.txt", AccessMask.GENERIC_READ | AccessMask.SYNCHRONIZE,
+                        SMBLibrary.FileAttributes.Normal, ShareAccess.Read, CreateDisposition.FILE_OPEN,
+                        CreateOptions.FILE_NON_DIRECTORY_FILE | CreateOptions.FILE_SYNCHRONOUS_IO_ALERT, null);
+                    if (opened == NTStatus.STATUS_SUCCESS)
+                    {
+                        // FSCTL_SET_REPARSE_POINT and friends: no control code reaches the disk.
+                        var control = share.DeviceIOControl(any, 0x000900A4, new byte[16], out _, 0);
+                        var acl = share.SetSecurityInformation(any, SecurityInformation.DACL_SECURITY_INFORMATION, new SecurityDescriptor());
+                        share.CloseFile(any);
+                        Check("700 smb: control codes are refused", control != NTStatus.STATUS_SUCCESS, control.ToString());
+                        Check("700 smb: and so is changing who may open a file", acl != NTStatus.STATUS_SUCCESS, acl.ToString());
+                    }
                 }
                 client.Disconnect();
+
+                // Nobody gets in without the name and the password.
+                foreach (var (who, word, label) in new[] { ("", "", "no name at all"), ("Guest", "", "Guest"), ("conner", "", "the right name with no password") })
+                {
+                    var (anon, anonShare, anonOutcome) = Open(port, who, word, "files");
+                    Check($"700 smb: {label} is refused", anonShare == null, anonOutcome);
+                    if (anonShare == null && anonOutcome.StartsWith("share"))
+                    {
+                        // Signed in as nobody: the pipe share must not list the shares either.
+                        var listed = anon.ListShares(out var listStatus);
+                        Check($"700 smb: and {label} cannot list the shares", listed == null || listed.Count == 0, listStatus.ToString());
+                    }
+                    anon.Disconnect();
+                }
 
                 var second = new SmbFileServer(folder, port, "files", "conner", "a long password", false);
                 string? refused = null;
@@ -243,6 +312,28 @@ namespace ExplorerNative
                     var wrote = WriteText(share, "refused.txt", "no");
                     Check("700 smb read only: nothing is written", wrote != NTStatus.STATUS_SUCCESS &&
                         !File.Exists(Path.Combine(folder, "refused.txt")), wrote.ToString());
+
+                    var forDelete = share.CreateFile(out var doomed, out _, "hello.txt", AccessMask.DELETE | AccessMask.SYNCHRONIZE,
+                        SMBLibrary.FileAttributes.Normal, ShareAccess.Read | ShareAccess.Write | ShareAccess.Delete,
+                        CreateDisposition.FILE_OPEN, CreateOptions.FILE_SYNCHRONOUS_IO_ALERT, null);
+                    if (forDelete == NTStatus.STATUS_SUCCESS)
+                    {
+                        share.SetFileInformation(doomed, new FileRenameInformationType2 { FileName = @"\renamed.txt" });
+                        share.SetFileInformation(doomed, new FileDispositionInformation { DeletePending = true });
+                        share.CloseFile(doomed);
+                    }
+                    var onClose = share.CreateFile(out var closing, out _, "hello.txt", AccessMask.GENERIC_READ | AccessMask.SYNCHRONIZE,
+                        SMBLibrary.FileAttributes.Normal, ShareAccess.Read | ShareAccess.Delete, CreateDisposition.FILE_OPEN,
+                        CreateOptions.FILE_DELETE_ON_CLOSE | CreateOptions.FILE_SYNCHRONOUS_IO_ALERT, null);
+                    if (onClose == NTStatus.STATUS_SUCCESS) share.CloseFile(closing);
+                    var made = share.CreateFile(out var newFolder, out _, "made", AccessMask.GENERIC_READ | AccessMask.SYNCHRONIZE,
+                        SMBLibrary.FileAttributes.Directory, ShareAccess.Read, CreateDisposition.FILE_CREATE,
+                        CreateOptions.FILE_DIRECTORY_FILE, null);
+                    if (made == NTStatus.STATUS_SUCCESS) share.CloseFile(newFolder);
+                    Check("700 smb read only: nothing is renamed, deleted or made, whichever way it is asked",
+                        File.Exists(Path.Combine(folder, "hello.txt")) && !File.Exists(Path.Combine(folder, "renamed.txt")) &&
+                        !Directory.Exists(Path.Combine(folder, "made")),
+                        $"delete open {forDelete}, delete on close {onClose}, new folder {made}");
                 }
                 client.Disconnect();
             }

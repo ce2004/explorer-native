@@ -1980,12 +1980,16 @@ namespace ExplorerNative
             panel.Controls.Add(enable);
 
             var folderBox = new TextBox { Text = was.Folder, Width = 360, AccessibleName = "Folder or drive to share" };
-            var browse = new Button { Text = "&Browse...", AutoSize = true, AccessibleName = "Browse", Margin = new Padding(6, 0, 0, 0) };
+            var browse = new Button
+            {
+                Text = "&Browse for the folder or drive to share...", AutoSize = true,
+                AccessibleName = "Browse for the folder or drive to share", Margin = new Padding(6, 0, 0, 0),
+            };
             browse.Click += (_, _) =>
             {
                 using var dialog = new FolderBrowserDialog
                 {
-                    Description = $"The folder or drive the {name} server shares",
+                    Description = "Folder or drive to share",
                     UseDescriptionForTitle = true,
                     ShowNewFolderButton = false,
                 };
@@ -2042,6 +2046,18 @@ namespace ExplorerNative
             };
             panel.Controls.Add(readOnly);
 
+            SpokenCheckBox? encryptedOnly = null;
+            if (kind == FileServers.Kind.Ftp)
+            {
+                encryptedOnly = new SpokenCheckBox
+                {
+                    Text = "&Encrypted connections only: refuse plain FTP, which sends the password unprotected",
+                    Checked = was.EncryptedOnly, AutoSize = true, Margin = new Padding(3, 4, 3, 4),
+                    AccessibleName = "Encrypted connections only: refuse plain FTP, which sends the password unprotected",
+                };
+                panel.Controls.Add(encryptedOnly);
+            }
+
             AddInfo(panel, kind switch
             {
                 FileServers.Kind.Smb =>
@@ -2062,30 +2078,71 @@ namespace ExplorerNative
                     (ServerFingerprint?.Invoke() is { Length: > 0 } print ? " The fingerprint is " + print + "." : ""),
             });
 
-            var firewall = new Button
+            AddInfo(panel,
+                "Over Tailscale there is nothing more to do: while the server is on, your other devices on your " +
+                "Tailscale network reach it at this PC's Tailscale name and the port above. Tailscale carries it, " +
+                "so Windows Firewall is not in the way, and nothing is opened to the internet." +
+                (kind == FileServers.Kind.Ftp
+                    ? " Transfers use the eight ports after the FTP port, and those are carried too."
+                    : ""));
+
+            // One button, saying what it will do: Allow while Windows Firewall
+            // has no rule for the servers, Remove once it has (7.0.1, Conner).
+            // Never greyed out while it works: that drops the keyboard off it.
+            bool allowed = false, asking = false;
+            var firewall = new Button { AutoSize = true, Margin = new Padding(3, 10, 3, 4) };
+            void NameFirewall()
             {
-                Text = "Allow through Windows Fire&wall...", AutoSize = true, Margin = new Padding(3, 10, 3, 4),
-                AccessibleName = "Allow through Windows Firewall",
+                firewall.Text = allowed ? "Remove from Windows Fire&wall..." : "Allow through Windows Fire&wall...";
+                firewall.AccessibleName = allowed ? "Remove from Windows Firewall" : "Allow through Windows Firewall";
+            }
+            NameFirewall();
+            // Asked on a worker (it runs a Windows program), and the button
+            // renamed if the rule turns out to be there already.
+            // Only once the page is looked at: three pages each running a
+            // program as Preferences opens is not what opening it should cost.
+            bool looked = false;
+            panel.VisibleChanged += (_, _) =>
+            {
+                if (!panel.Visible || looked) return;
+                looked = true;
+                System.Threading.Tasks.Task.Run(() =>
+                {
+                    bool there;
+                    try { there = FileServers.FirewallAllows(Environment.ProcessPath ?? ""); } catch { there = false; }
+                    if (!there || IsDisposed) return;
+                    try { BeginInvoke(() => { if (!asking) { allowed = true; NameFirewall(); } }); } catch { }
+                });
             };
             firewall.Click += async (_, _) =>
             {
-                firewall.Enabled = false;
+                if (asking) return;
+                asking = true;
+                bool removing = allowed;
                 string? problem;
-                try { problem = await System.Threading.Tasks.Task.Run(FileServers.AllowThroughFirewall); }
+                try
+                {
+                    problem = await System.Threading.Tasks.Task.Run(
+                        () => removing ? FileServers.RemoveFromFirewall() : FileServers.AllowThroughFirewall());
+                }
                 catch (Exception ex) { problem = ex.Message; }
+                asking = false;
                 if (IsDisposed) return;
-                firewall.Enabled = true;
+                if (problem == null) { allowed = !removing; NameFirewall(); }
                 MessageBox.Show(this,
-                    problem == null
-                        ? "Windows Firewall now lets other devices reach Explorer Native's servers."
-                        : "Windows Firewall was not changed. " + problem,
+                    problem != null ? "Windows Firewall was not changed. " + problem
+                    : removing ? "Explorer Native's servers are no longer let through Windows Firewall. " +
+                                 "Over Tailscale they are still reached."
+                    : "Windows Firewall now lets other devices reach Explorer Native's servers, on every network this PC joins.",
                     page, MessageBoxButtons.OK, problem == null ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
                 firewall.Focus();
             };
             panel.Controls.Add(firewall);
             AddInfo(panel,
-                "Windows Firewall blocks other devices until it is told to let them in. Windows usually asks the " +
-                "first time a server starts; this button does it for you, once, and asks for an administrator.");
+                "For devices that are not on your Tailscale network: Windows Firewall blocks them until it is told " +
+                "to let them in. The button does that, once, and asks for an administrator. It covers every network " +
+                "this PC joins, public ones too, so the password is what protects your files there. " +
+                "Once it is allowed, the same button takes it away again.");
 
             static string Shown(string user) => user.Length == 0 ? "name" : user;
 
@@ -2094,7 +2151,8 @@ namespace ExplorerNative
                 int port = int.TryParse(portBox.Text.Trim(), System.Globalization.NumberStyles.None,
                     System.Globalization.CultureInfo.InvariantCulture, out var p) ? p : -1;
                 return new FileServers.Config(kind, enable.Checked, folderBox.Text.Trim(), port,
-                    shareBox?.Text.Trim() ?? "", userBox.Text.Trim(), passwordBox.Text, readOnly.Checked, was.Key);
+                    shareBox?.Text.Trim() ?? "", userBox.Text.Trim(), passwordBox.Text, readOnly.Checked, was.Key,
+                    encryptedOnly?.Checked ?? false);
             }
             _serverTyped[kind] = Typed;
 
@@ -2113,7 +2171,8 @@ namespace ExplorerNative
 
                 MessageBox.Show(this, refusal, page, MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 _showCategory?.Invoke(page);
-                Control at = refusal.Contains("port", StringComparison.OrdinalIgnoreCase) ? portBox
+                Control at = refusal.Contains("folder or drive", StringComparison.OrdinalIgnoreCase) ? folderBox
+                    : refusal.Contains("port", StringComparison.OrdinalIgnoreCase) ? portBox
                     : refusal.Contains("password", StringComparison.OrdinalIgnoreCase) ? passwordBox
                     : refusal.Contains("user name", StringComparison.OrdinalIgnoreCase) ? userBox
                     : refusal.Contains("share", StringComparison.OrdinalIgnoreCase) && shareBox != null ? shareBox
@@ -2144,6 +2203,7 @@ namespace ExplorerNative
                         _working.FtpServerUser = typed.User;
                         _working.FtpServerPassword = typed.Password;
                         _working.FtpServerReadOnly = typed.ReadOnly;
+                        _working.FtpServerEncryptedOnly = typed.EncryptedOnly;
                         break;
                     default:
                         _working.SftpServerEnabled = typed.Enabled;
@@ -2155,6 +2215,21 @@ namespace ExplorerNative
                         break;
                 }
             });
+
+            // Off, the page is its first paragraph and the box that turns it
+            // on, as on the Audio page (7.0.1, Conner: "if you uncheck the
+            // server boxes just like audio, their settings go away"). What the
+            // hidden boxes hold is kept, and applied as before.
+            var intro = panel.Controls[0];
+            void ShowRest()
+            {
+                panel.SuspendLayout();
+                foreach (Control c in panel.Controls)
+                    if (c != enable && c != intro) c.Visible = enable.Checked;
+                panel.ResumeLayout();
+            }
+            enable.CheckedChanged += (_, _) => ShowRest();
+            if (!enable.Checked) ShowRest();
 
             return panel;
         }

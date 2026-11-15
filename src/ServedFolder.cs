@@ -166,8 +166,16 @@ namespace ExplorerNative
         /// </summary>
         public static IEnumerable<ServedEntry> List(string root, string folder)
         {
+            // Opened here, not on the first row: this used to be one iterator,
+            // so a folder that could not be opened only said so after the
+            // caller had told its client the list was coming.
             string fullRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
             IEnumerator<FileSystemInfo> rows = new DirectoryInfo(folder).EnumerateFileSystemInfos().GetEnumerator();
+            return Rows(fullRoot, rows);
+        }
+
+        private static IEnumerable<ServedEntry> Rows(string fullRoot, IEnumerator<FileSystemInfo> rows)
+        {
             try
             {
                 while (true)
@@ -353,9 +361,17 @@ namespace ExplorerNative
             IPAddress key = KeyFor(address);
             lock (_entries)
             {
+                while (_recent.Count > 0 && now - _recent.Peek() > BrakeWindow) _recent.Dequeue();
+                if (_recent.Count < BrakeAfter * 4) _recent.Enqueue(now);
+
                 if (!_entries.TryGetValue(key, out Entry? entry))
                 {
                     if (_entries.Count >= MaxAddresses) MakeRoom(now);
+                    // Still full: every note left is an address shut out right
+                    // now. None of those is thrown away to make room (cycling
+                    // through thousands of addresses used to wipe the guesser's
+                    // own lockouts); the newcomer is refused instead.
+                    if (_entries.Count >= MaxAddresses) return true;
                     entry = new Entry();
                     _entries[key] = entry;
                 }
@@ -390,11 +406,49 @@ namespace ExplorerNative
             foreach (KeyValuePair<IPAddress, Entry> pair in _entries)
             {
                 if (pair.Value.BlockedUntil <= now && now - pair.Value.LastSeen > Window) stale.Add(pair.Key);
-                if (pair.Value.LastSeen < oldestSeen) { oldestSeen = pair.Value.LastSeen; oldest = pair.Key; }
+                // Never one that is shut out right now.
+                if (pair.Value.BlockedUntil <= now && pair.Value.LastSeen < oldestSeen) { oldestSeen = pair.Value.LastSeen; oldest = pair.Key; }
             }
 
             foreach (IPAddress key in stale) _entries.Remove(key);
             if (_entries.Count >= MaxAddresses && oldest != null) _entries.Remove(oldest);
+        }
+
+        // ---- everybody at once ----------------------------------------------
+
+        /// <summary>Wrong sign-ins from anywhere, inside <see cref="BrakeWindow"/>, before every answer is slowed.</summary>
+        public const int BrakeAfter = 30;
+        public static readonly TimeSpan BrakeWindow = TimeSpan.FromMinutes(1);
+
+        /// <summary>How long an answer to a password waits while the brake is on.</summary>
+        public static readonly TimeSpan BrakeDelay = TimeSpan.FromSeconds(2);
+
+        private readonly Queue<DateTime> _recent = new();
+
+        /// <summary>
+        /// Whether passwords are being guessed from many addresses at once.
+        /// The limit per address stops one PC; somebody with a whole block of
+        /// IPv6 addresses has thousands of them. While this is true every
+        /// answer to a password, right or wrong, should wait
+        /// <see cref="BrakeDelay"/>: the same for both, so the wait says nothing.
+        /// </summary>
+        public bool Braking
+        {
+            get
+            {
+                DateTime now = _now();
+                lock (_entries)
+                {
+                    while (_recent.Count > 0 && now - _recent.Peek() > BrakeWindow) _recent.Dequeue();
+                    return _recent.Count >= BrakeAfter;
+                }
+            }
+        }
+
+        /// <summary>Waits out the brake, when it is on. Call before answering any password.</summary>
+        public void Slow()
+        {
+            if (Braking) System.Threading.Thread.Sleep(BrakeDelay);
         }
 
         /// <summary>

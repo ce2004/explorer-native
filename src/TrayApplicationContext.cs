@@ -2709,7 +2709,60 @@ namespace ExplorerNative
                     _ => SetFileServer(server, true), window: false);
                 Commands.Register(name.ToLowerInvariant() + "-server-off", $"Turn off the {name} server",
                     _ => SetFileServer(server, false), window: false);
+                Commands.Register(name.ToLowerInvariant() + "-server-status", $"Say whether the {name} server is running, and where",
+                    _ => throw new Commands.Answer(_fileServers.StatusOf(server)), window: false);
+                Commands.Register(name.ToLowerInvariant() + "-server", $"Open Preferences on the {name} server page", _ =>
+                {
+                    if (_audioDialogOpen || _form?.PreferencesOpen == true)
+                        throw new Commands.Answer("Explorer Native has a dialog open. Close it and try again.", refused: true);
+                    ShowWindow();
+                    _form?.OpenPreferencesExternally(name + " server");
+                }, window: false);
             }
+            Commands.Register("sftp-server-fingerprint", "Say the SFTP server's key fingerprint, to check against what a program shows", _ =>
+                throw new Commands.Answer(FileServers.FingerprintOf(_settings) is { Length: > 0 } print
+                    ? print
+                    : "The SFTP server has no key yet. It makes one the first time it is turned on."), window: false);
+            Commands.Register("firewall-status", "Say whether Windows Firewall lets other devices reach the file servers", _ =>
+                throw new Commands.Answer(FileServers.FirewallAllows(Environment.ProcessPath ?? "")
+                    ? "Windows Firewall lets other devices reach Explorer Native's servers."
+                    : "Windows Firewall has no rule for Explorer Native's servers. Over Tailscale they are reached without one."),
+                window: false);
+            Commands.Register("allow-through-firewall", "Let other devices reach the file servers through Windows Firewall (asks for an administrator)",
+                _ => ChangeFirewall(allow: true), window: false);
+            Commands.Register("remove-from-firewall", "Take the file servers' rule out of Windows Firewall (asks for an administrator)",
+                _ => ChangeFirewall(allow: false), window: false);
+
+            // Every preference, by its own name (see SettingCommands).
+            Commands.Register("settings", "List every setting and its value", _ => throw new Commands.Answer(SettingCommands.List(_settings)),
+                window: false);
+            Commands.Register("setting", "Read or change one setting: setting <name> [value]", given =>
+            {
+                if (given.Length == 0) throw new Commands.Answer(SettingCommands.List(_settings));
+                if (given.Length == 1)
+                    throw new Commands.Answer(SettingCommands.Read(_settings, given[0]), refused: SettingCommands.Find(given[0]) == null);
+                if (_settings.UnreadableOnDisk)
+                    throw new Commands.Answer("Nothing was changed, because the settings file cannot be read right now. Try again in a moment.", refused: true);
+                if (_form?.PreferencesOpen == true)
+                    throw new Commands.Answer("Preferences is open. Close it and try again, or its OK would undo this.", refused: true);
+                // Everything after the name is the value, so a path or a title with spaces needs no quotes of its own.
+                var changed = SettingCommands.Change(_settings, given[0], string.Join(" ", given.Skip(1)), out var refusal, out var said);
+                if (changed == null) throw new Commands.Answer(refusal, refused: true);
+                bool saved = Program.ApplySettings(changed);
+                throw new Commands.Answer(saved ? said : said + ", for this session only: it could not be saved");
+            }, window: false);
+            Commands.Register("reset-setting", "Put one setting back to how a new installation has it: reset-setting <name>", given =>
+            {
+                if (given.Length == 0) throw new Commands.Answer("Say which setting: reset-setting <name>. Run ExplorerNative --do settings for the list.", refused: true);
+                if (_settings.UnreadableOnDisk)
+                    throw new Commands.Answer("Nothing was changed, because the settings file cannot be read right now. Try again in a moment.", refused: true);
+                if (_form?.PreferencesOpen == true)
+                    throw new Commands.Answer("Preferences is open. Close it and try again, or its OK would undo this.", refused: true);
+                var changed = SettingCommands.Reset(_settings, given[0], out var refusal, out var said);
+                if (changed == null) throw new Commands.Answer(refusal, refused: true);
+                bool saved = Program.ApplySettings(changed);
+                throw new Commands.Answer(saved ? said : said + ", for this session only: it could not be saved");
+            }, window: false);
             Commands.Register("sync-all", "Sync all Google Drive folders now",
                 _ => { if (_monitor != null) Notify("sync.all", _monitor.SyncAllNow()); }, window: false);
             Commands.Register("pause-all-syncing", "Pause every synced Google Drive folder",
@@ -2740,6 +2793,7 @@ namespace ExplorerNative
             if (!Commands.TryDecode(request, out var name, out var given, out var reply)) return;
             string answer;
             try { answer = RunCommand(name, given); }
+            catch (Commands.Answer said) { answer = said.Refused ? said.Message : Commands.SaidMark + said.Message; }
             catch (Exception ex) { answer = $"{name} failed: {ex.Message}"; }
             Commands.WriteReply(reply, answer);
         }
@@ -3180,7 +3234,7 @@ namespace ExplorerNative
         }
 
         /// <summary>The SMB, FTP and SFTP servers of Preferences; see FileServers.</summary>
-        private readonly FileServers _fileServers = new();
+        private readonly FileServers _fileServers = new() { UseTailscale = true };
 
         /// <summary>
         /// Starts, stops or restarts the file servers to match the settings.
@@ -3199,6 +3253,28 @@ namespace ExplorerNative
             {
                 Notify("server.failed", "The file servers could not be set up: " + ex.Message);
             }
+        }
+
+        /// <summary>
+        /// The firewall rule, from a command. Windows asks its question on a
+        /// worker (it can sit there a while), and how it went is said when it
+        /// is known: the command itself answers that it has asked.
+        /// </summary>
+        private void ChangeFirewall(bool allow)
+        {
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                string? problem;
+                try { problem = allow ? FileServers.AllowThroughFirewall() : FileServers.RemoveFromFirewall(); }
+                catch (Exception ex) { problem = ex.Message; }
+                PostUi(() =>
+                {
+                    if (problem != null) Notify("server.failed", "Windows Firewall was not changed. " + problem);
+                    else if (allow) Notify("server.started", "Windows Firewall now lets other devices reach Explorer Native's servers");
+                    else Notify("server.stopped", "Explorer Native's servers are no longer let through Windows Firewall");
+                });
+            });
+            throw new Commands.Answer("Windows is asking for an administrator. Explorer Native says how it went.");
         }
 
         /// <summary>A server turned on or off from a command; said either way.</summary>

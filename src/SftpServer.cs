@@ -57,6 +57,34 @@ namespace ExplorerNative
         private readonly ConcurrentDictionary<Socket, byte> _sockets = new();
         private TcpListener? _listener;
         private int _connections;
+
+        /// <summary>Connections one address may have at once. This PC itself (and so Tailscale, which arrives from it) is not held to it.</summary>
+        internal const int MaxPerAddress = 16;
+
+        /// <summary>
+        /// Everything before sign-in, start to finish: the version line, the
+        /// key exchange and the password. Each read used to have a minute to
+        /// itself, so a connection dripping a byte now and then, or sending
+        /// "ignore" messages, held its place for hours without a password.
+        /// </summary>
+        internal int BeforeSignInMs { get; set; } = 60_000;
+
+        private readonly ConcurrentDictionary<IPAddress, int> _perAddress = new();
+
+        /// <summary>One connection fewer, overall and for its address.</summary>
+        private void Uncount(IPAddress from)
+        {
+            Interlocked.Decrement(ref _connections);
+            while (true)
+            {
+                if (!_perAddress.TryGetValue(from, out int n)) return;
+                if (n <= 1)
+                {
+                    if (_perAddress.TryRemove(new KeyValuePair<IPAddress, int>(from, n))) return;
+                }
+                else if (_perAddress.TryUpdate(from, n - 1, n)) return;
+            }
+        }
         private volatile bool _disposed;
 
         /// <summary>The port really listened on, which matters when 0 was asked for.</summary>
@@ -219,8 +247,30 @@ namespace ExplorerNative
                     _sockets[socket] = 0;
                     if (_disposed) { Drop(socket); return; }
 
+                    // Counted here, before a thread is spent. The limit used to
+                    // be looked at on a thread of the connection's own, after
+                    // its first line had arrived: 1,500 silent connections were
+                    // 1,500 threads against a limit of 64.
+                    IPAddress from = ServedFolder.Plain(((IPEndPoint)socket.RemoteEndPoint!).Address);
+                    bool tooMany = Interlocked.Increment(ref _connections) > MaxConnections;
+                    bool tooManyFromOne = _perAddress.AddOrUpdate(from, 1, (_, n) => n + 1) > MaxPerAddress && !IPAddress.IsLoopback(from);
+                    if (tooMany || tooManyFromOne)
+                    {
+                        Uncount(from);
+                        Drop(socket);
+                        continue;
+                    }
+
                     var link = new Link(this, socket);
-                    new Thread(link.Serve) { IsBackground = true, Name = "SFTP connection" }.Start();
+                    try
+                    {
+                        new Thread(link.Serve) { IsBackground = true, Name = "SFTP connection" }.Start();
+                    }
+                    catch
+                    {
+                        Uncount(from);
+                        throw;
+                    }
                 }
                 catch
                 {
@@ -443,18 +493,18 @@ namespace ExplorerNative
                 _remote = ServedFolder.Plain(((IPEndPoint)socket.RemoteEndPoint!).Address);
             }
 
+            /// <summary>When everything before sign-in must be done by (tick count), 0 once signed in.</summary>
+            private long _deadline;
+
             public void Serve()
             {
-                bool counted = false;
                 try
                 {
-                    bool full = Interlocked.Increment(ref _server._connections) > MaxConnections;
-                    counted = true;
+                    _deadline = Environment.TickCount64 + _server.BeforeSignInMs;
 
                     SendRaw(Encoding.ASCII.GetBytes(ServerVersion + "\r\n"));
                     _clientVersion = ReadVersion();
 
-                    if (full) Disconnect(11, "Too many connections at the moment. Try again shortly.");
                     if (_server.Throttle.IsBlocked(_remote)) Disconnect(11, "Too many wrong passwords from your address. Try again in a few minutes.");
 
                     byte[] ours = OurKexInit();
@@ -464,6 +514,7 @@ namespace ExplorerNative
                     ExchangeKeys(theirs, ours, initial: true);
 
                     SignIn();
+                    _deadline = 0;
                     _socket.ReceiveTimeout = IdleTimeoutMs;
 
                     while (!_server._disposed)
@@ -479,13 +530,14 @@ namespace ExplorerNative
                 }
                 finally
                 {
-                    if (counted) Interlocked.Decrement(ref _server._connections);
                     foreach (Channel channel in _channels.Values) channel.CloseHandles();
                     _channels.Clear();
                     HangUpGently();
                     _in?.Dispose();
                     _out?.Dispose();
                     _server.Drop(_socket);
+                    // Last: the place is given up only once the thread is done with it.
+                    _server.Uncount(_remote);
                 }
             }
 
@@ -500,11 +552,14 @@ namespace ExplorerNative
                 try
                 {
                     _socket.Shutdown(SocketShutdown.Send);
-                    _socket.ReceiveTimeout = 500;
+                    // Two seconds in all, not half a second a byte: a caller
+                    // sending a byte now and then kept this thread for a day.
+                    var clock = System.Diagnostics.Stopwatch.StartNew();
                     byte[] scrap = new byte[4096];
                     int total = 0;
-                    while (total < 256 * 1024)
+                    while (total < 64 * 1024 && clock.ElapsedMilliseconds < 2000)
                     {
+                        _socket.ReceiveTimeout = (int)Math.Max(1, 2000 - clock.ElapsedMilliseconds);
                         int read = _socket.Receive(scrap);
                         if (read <= 0) break;
                         total += read;
@@ -531,6 +586,12 @@ namespace ExplorerNative
                 {
                     if (_receivedAt == _receivedEnd)
                     {
+                        if (_deadline != 0)
+                        {
+                            long left = _deadline - Environment.TickCount64;
+                            if (left <= 0) throw new HangUp();
+                            _socket.ReceiveTimeout = (int)Math.Min(left, IoTimeoutMs);
+                        }
                         _receivedAt = 0;
                         _receivedEnd = _socket.Receive(_received);
                         if (_receivedEnd <= 0) { _receivedEnd = 0; throw new HangUp(); }
@@ -679,6 +740,10 @@ namespace ExplorerNative
                         case 4:                             // debug
                             continue;
                         case 20:
+                            // Fresh keys are for somebody who has signed in:
+                            // before that it is a way to make this PC do
+                            // public-key sums for nothing, over and over.
+                            if (_deadline != 0) throw new Malformed("A second key exchange before signing in.");
                             byte[] ours = OurKexInit();
                             Send(ours);
                             ExchangeKeys(packet, ours, initial: false);
@@ -763,7 +828,7 @@ namespace ExplorerNative
                 // Both ends hash everything said so far. Our signature over that
                 // hash is what proves to the client that it reached this PC.
                 byte[] hash = SHA256.HashData(new Wire()
-                    .Str(_clientVersion).Str(ServerVersion).Str(theirInit).Str(ourInit)
+                    .Str(Encoding.Latin1.GetBytes(_clientVersion)).Str(ServerVersion).Str(theirInit).Str(ourInit)
                     .Str(_server._hostKeyBlob).Str(theirPoint).Str(ourPoint).MpInt(secret).ToArray());
                 _sessionId ??= hash;
 
@@ -861,6 +926,9 @@ namespace ExplorerNative
                         // not say whether the name alone was right.
                         bool nameRight = ServedFolder.SameSecret(user, _server._user);
                         bool passwordRight = ServedFolder.SameSecret(password, _server._password);
+                        // Passwords being guessed from many addresses at once:
+                        // every answer waits, right or wrong alike.
+                        _server.Throttle.Slow();
                         if (nameRight & passwordRight)
                         {
                             _server.Throttle.Succeeded(_remote);

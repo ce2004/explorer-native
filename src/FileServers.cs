@@ -43,14 +43,14 @@ namespace ExplorerNative
 
         /// <summary>One server as the settings ask for it. Compared whole: any difference is a restart.</summary>
         public sealed record Config(Kind Kind, bool Enabled, string Folder, int Port, string Share, string User, string Password,
-            bool ReadOnly, string Key);
+            bool ReadOnly, string Key, bool EncryptedOnly = false);
 
         public static Config Read(Settings s, Kind kind) => kind switch
         {
             Kind.Smb => new Config(kind, s.SmbServerEnabled, s.SmbServerFolder.Trim(), s.SmbServerPort, s.SmbServerShare.Trim(),
                 s.SmbServerUser.Trim(), s.SmbServerPassword, s.SmbServerReadOnly, ""),
             Kind.Ftp => new Config(kind, s.FtpServerEnabled, s.FtpServerFolder.Trim(), s.FtpServerPort, "",
-                s.FtpServerUser.Trim(), s.FtpServerPassword, s.FtpServerReadOnly, s.FtpServerCertificate),
+                s.FtpServerUser.Trim(), s.FtpServerPassword, s.FtpServerReadOnly, s.FtpServerCertificate, s.FtpServerEncryptedOnly),
             _ => new Config(kind, s.SftpServerEnabled, s.SftpServerFolder.Trim(), s.SftpServerPort, "",
                 s.SftpServerUser.Trim(), s.SftpServerPassword, s.SftpServerReadOnly, s.SftpServerHostKey),
         };
@@ -66,7 +66,7 @@ namespace ExplorerNative
         public static string? WhyNot(Config c, IEnumerable<Config>? others = null)
         {
             var name = NameOf(c.Kind);
-            if (c.Folder.Length == 0) return $"Choose the folder or drive the {name} server shares.";
+            if (c.Folder.Length == 0) return $"Choose the folder or drive to share for the {name} server.";
             if (!Path.IsPathFullyQualified(c.Folder)) return $"The {name} server needs a whole path, such as D:\\Music or G:\\.";
             if (AppleMusic.Is(c.Folder)) return "Apple Music is not a folder that can be shared.";
             if (!IsPort(c.Port)) return $"The {name} server's port has to be a number from 1 to 65535.";
@@ -83,8 +83,19 @@ namespace ExplorerNative
             }
             if (others != null)
                 foreach (var other in others)
-                    if (other.Kind != c.Kind && other.Enabled && other.Port == c.Port)
+                {
+                    if (other.Kind == c.Kind || !other.Enabled) continue;
+                    if (other.Port == c.Port)
                         return $"The {name} server and the {NameOf(other.Kind)} server cannot both use port {c.Port}.";
+                    // FTP's transfers use the eight ports after its own.
+                    if (Array.IndexOf(PortsOf(other), c.Port) >= 0 || Array.IndexOf(PortsOf(c), other.Port) >= 0)
+                    {
+                        var ftp = c.Kind == Kind.Ftp ? c : other;
+                        var passive = FtpPassivePorts(ftp.Port);
+                        return $"The FTP server on port {ftp.Port} also uses ports {passive[0]} to {passive[^1]} for its transfers, " +
+                               $"so the {NameOf((c.Kind == Kind.Ftp ? other : c).Kind)} server needs a port outside those.";
+                    }
+                }
             return null;
         }
 
@@ -126,42 +137,80 @@ namespace ExplorerNative
         /// <summary>
         /// Lets other devices reach this program through Windows Firewall: one
         /// rule for the executable (so FTP's data connections, which come in
-        /// on ports of their own, are covered), replacing any earlier one.
-        /// Asks for an administrator. Null when done, else why not, as a
-        /// sentence. Blocks while Windows asks: call it from a worker.
+        /// on ports of their own, are covered). Asks for an administrator,
+        /// unless the rule is already there. Null when done, else why not, as
+        /// a sentence. Blocks while Windows asks: call it from a worker.
         /// </summary>
+        /// <remarks>
+        /// netsh is run directly, by its full path, with the executable's
+        /// path as one quoted argument. It went through cmd at first (7.0.0),
+        /// which reads a percent sign or an ampersand in a path its own way.
+        /// </remarks>
         public static string? AllowThroughFirewall()
         {
             var exe = Environment.ProcessPath;
-            if (string.IsNullOrEmpty(exe)) return "Explorer Native could not tell where it is running from.";
-            var system = Environment.SystemDirectory;
-            var netsh = Path.Combine(system, "netsh.exe");
-            var cmd = Path.Combine(system, "cmd.exe");
-            // One elevation for both steps. The outer pair of quotes is cmd's
-            // own: it takes the first and last off and runs what is between.
-            var line = $"/c \"\"{netsh}\" advfirewall firewall delete rule name=\"{FirewallRule}\" & " +
-                       $"\"{netsh}\" advfirewall firewall add rule name=\"{FirewallRule}\" dir=in action=allow " +
-                       $"program=\"{exe}\" protocol=TCP enable=yes profile=any\"";
+            if (string.IsNullOrEmpty(exe) || exe.Contains('"')) return "Explorer Native could not tell where it is running from.";
+            if (FirewallAllows(exe)) return null;
+            return RunNetsh(elevated: true,
+                $"advfirewall firewall add rule name=\"{FirewallRule}\" dir=in action=allow program=\"{exe}\" protocol=TCP enable=yes profile=any",
+                out _) switch
+            {
+                0 => null,
+                -1223 => "The administrator question was answered No.",
+                -1 => "Windows did not finish the change.",
+                _ => "Windows Firewall refused the new rule.",
+            };
+        }
+
+        /// <summary>Takes the rule away again. Null when it is gone (or was never there).</summary>
+        public static string? RemoveFromFirewall()
+        {
+            var exe = Environment.ProcessPath ?? "";
+            if (!FirewallAllows(exe, anyProgram: true)) return null;
+            return RunNetsh(elevated: true, $"advfirewall firewall delete rule name=\"{FirewallRule}\"", out _) switch
+            {
+                0 => null,
+                -1223 => "The administrator question was answered No.",
+                -1 => "Windows did not finish the change.",
+                _ => "Windows Firewall would not remove the rule.",
+            };
+        }
+
+        /// <summary>Whether our rule is there for this executable. Asked without an administrator.</summary>
+        public static bool FirewallAllows(string exe, bool anyProgram = false)
+        {
+            if (RunNetsh(elevated: false, $"advfirewall firewall show rule name=\"{FirewallRule}\" verbose", out var said) != 0) return false;
+            return anyProgram || said.Contains(exe, StringComparison.OrdinalIgnoreCase);
+        }
+
+        /// <summary>netsh's exit code; -1223 when the administrator question was refused, -1 for anything else that stopped it.</summary>
+        private static int RunNetsh(bool elevated, string arguments, out string output)
+        {
+            output = "";
+            var netsh = Path.Combine(Environment.SystemDirectory, "netsh.exe");
             try
             {
-                using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(cmd, line)
+                var start = new System.Diagnostics.ProcessStartInfo(netsh, arguments);
+                if (elevated)
                 {
-                    UseShellExecute = true,
-                    Verb = "runas",
-                    WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
-                });
-                if (process == null) return "Windows did not start the change.";
-                if (!process.WaitForExit(60000)) return "Windows did not finish the change.";
-                return process.ExitCode == 0 ? null : "Windows Firewall refused the new rule.";
+                    start.UseShellExecute = true;
+                    start.Verb = "runas";
+                    start.WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden;
+                }
+                else
+                {
+                    start.UseShellExecute = false;
+                    start.CreateNoWindow = true;
+                    start.RedirectStandardOutput = true;
+                }
+                using var process = System.Diagnostics.Process.Start(start);
+                if (process == null) return -1;
+                if (!elevated) output = process.StandardOutput.ReadToEnd();
+                if (!process.WaitForExit(60000)) return -1;
+                return process.ExitCode;
             }
-            catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223)
-            {
-                return "The administrator question was answered No.";
-            }
-            catch (Exception ex)
-            {
-                return ex.Message;
-            }
+            catch (System.ComponentModel.Win32Exception ex) when (ex.NativeErrorCode == 1223) { return -1223; }
+            catch { return -1; }
         }
 
         // ---------------- running ----------------
@@ -261,8 +310,15 @@ namespace ExplorerNative
             if (wasRunning && (!config.Enabled || was.Config != config))
             {
                 try { was.Server.Dispose(); } catch { }
-                lock (_gate) _running.Remove(kind);
+                lock (_gate) { _running.Remove(kind); _tailnet.Remove(kind); }
                 wasRunning = false;
+                // Off, or on other ports now: Tailscale stops forwarding the old ones.
+                if (UseTailscale)
+                {
+                    var still = config.Enabled ? PortsOf(config) : Array.Empty<int>();
+                    foreach (int port in PortsOf(was.Config))
+                        if (Array.IndexOf(still, port) < 0) { try { StopForward(port); } catch { } }
+                }
                 if (!config.Enabled)
                 {
                     lock (_gate) { _problems.Remove(kind); NotWaiting(kind); }
@@ -328,8 +384,86 @@ namespace ExplorerNative
                 }
             }
             if (late) { try { server.Dispose(); } catch { } return false; }
+
+            // Over Tailscale with nothing to set up (see TailscaleForward).
+            // After it is listening, and never a reason for it not to be on.
+            if (UseTailscale)
+            {
+                bool? reachable = true;
+                try
+                {
+                    foreach (int port in PortsOf(config))
+                    {
+                        var one = StartForward(port);
+                        if (one == null) { reachable = null; break; }
+                        if (one == false) reachable = false;
+                    }
+                }
+                catch { reachable = false; }
+                string? onTailnet = null;
+                if (reachable == true) { try { onTailnet = TailnetName(); } catch { } }
+                lock (_gate) { _tailnet[kind] = reachable; if (onTailnet != null) _tailnetName = onTailnet; }
+            }
+
             if (announce) Say("server.started", Sentence(config));
             return true;
+        }
+
+        /// <summary>Set by the tray: servers are also forwarded from the Tailscale network. Off in the tests.</summary>
+        public bool UseTailscale { get; set; }
+
+        /// <summary>The real Tailscale, unless a test says otherwise.</summary>
+        internal Func<int, bool?> StartForward { get; set; } = TailscaleForward.Start;
+        internal Action<int> StopForward { get; set; } = TailscaleForward.Stop;
+        internal Func<string?> TailnetName { get; set; } = TailscaleForward.Name;
+
+        /// <summary>Per running server: true forwarded, false Tailscale would not, null no Tailscale here.</summary>
+        private readonly Dictionary<Kind, bool?> _tailnet = new();
+        private string? _tailnetName;
+
+        /// <summary>
+        /// Every port a server listens on: its own, and for FTP the few its
+        /// file transfers come in on (<see cref="FtpPassivePorts"/>).
+        /// </summary>
+        internal static int[] PortsOf(Config c)
+        {
+            if (c.Kind != Kind.Ftp) return new[] { c.Port };
+            var passive = FtpPassivePorts(c.Port);
+            var all = new int[passive.Length + 1];
+            all[0] = c.Port;
+            passive.CopyTo(all, 1);
+            return all;
+        }
+
+        /// <summary>How many files FTP can move at once: each transfer has a port to itself while it runs.</summary>
+        public const int FtpTransfersAtOnce = 8;
+
+        /// <summary>
+        /// The ports FTP's transfers use: the eight after its own port (before
+        /// it, at the very top of the range). Fixed, where they used to be
+        /// any free port, so that Tailscale can forward them and a firewall
+        /// rule can name them.
+        /// </summary>
+        public static int[] FtpPassivePorts(int port)
+        {
+            var ports = new int[FtpTransfersAtOnce];
+            int first = port + FtpTransfersAtOnce <= 65535 ? port + 1 : port - FtpTransfersAtOnce;
+            for (int i = 0; i < ports.Length; i++) ports[i] = first + i;
+            return ports;
+        }
+
+        /// <summary>The Tailscale sentence for a running server, or empty.</summary>
+        private string TailnetSentence(Config c)
+        {
+            if (!_tailnet.TryGetValue(c.Kind, out var reachable)) return "";
+            return reachable switch
+            {
+                true => _tailnetName != null
+                    ? $" Devices on your Tailscale network reach it at {_tailnetName}, port {c.Port}, with nothing more to set up."
+                    : " Devices on your Tailscale network reach it with nothing more to set up.",
+                false => " Tailscale is installed but did not take it: check that Tailscale is running and signed in.",
+                null => "",
+            };
         }
 
         /// <summary>Under the gate: the server is no longer waiting for its folder.</summary>
@@ -386,7 +520,10 @@ namespace ExplorerNative
                             tls = X509CertificateLoader.LoadPkcs12(Convert.FromBase64String(c.Key), null);
                     }
                     catch { tls = null; }   // a damaged certificate only costs TLS
-                    var ftp = new FtpServer(c.Folder, c.Port, c.User, c.Password, c.ReadOnly, tls);
+                    if (tls == null && c.EncryptedOnly)
+                        throw new InvalidOperationException("It is set to encrypted connections only, and its certificate could not be read. " +
+                                                            "Turn it off and on again in Preferences to make a new one.");
+                    var ftp = new FtpServer(c.Folder, c.Port, c.User, c.Password, c.ReadOnly, tls, FtpPassivePorts(c.Port), c.EncryptedOnly);
                     try { ftp.Start(); }
                     catch { tls?.Dispose(); throw; }
                     return new WithCertificate(ftp, tls);
@@ -447,7 +584,7 @@ namespace ExplorerNative
         {
             lock (_gate)
             {
-                if (_running.TryGetValue(kind, out var on)) return Sentence(on.Config) + ".";
+                if (_running.TryGetValue(kind, out var on)) return Sentence(on.Config) + "." + TailnetSentence(on.Config);
                 if (_problems.TryGetValue(kind, out var problem)) return problem;
             }
             return $"The {NameOf(kind)} server is off.";
