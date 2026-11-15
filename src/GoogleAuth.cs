@@ -301,26 +301,22 @@ namespace ExplorerNative
                     .ConfigureAwait(false);
                 var body = await response.Content.ReadAsStringAsync(token).ConfigureAwait(false);
 
-                string error = "";
+                string error = "", description = "";
                 try
                 {
                     using var doc = JsonDocument.Parse(body);
                     if (doc.RootElement.TryGetProperty("error", out var e) && e.ValueKind == JsonValueKind.String)
                         error = e.GetString() ?? "";
+                    if (doc.RootElement.TryGetProperty("error_description", out var d) && d.ValueKind == JsonValueKind.String)
+                        description = d.GetString() ?? "";
                 }
                 catch (JsonException) { }
 
-                // Only a definite "no" refuses. Anything else (a proxy's page, an
-                // odd status) is not proof the pair is wrong, and the browser
-                // sign-in that follows is the real test.
-                return error switch
-                {
-                    "invalid_client" => "Google does not accept that client ID and secret. Check both, " +
-                                        "and that the client is a Desktop app.",
-                    "unauthorized_client" => "Google knows that client but will not let it sign in. Make sure " +
-                                             "it is a Desktop app client.",
-                    _ => null,
-                };
+                // Only a definite "no" refuses, and it says which part is wrong
+                // and how to put it right (GoogleSetupErrors). Anything else (a
+                // proxy's page, an odd status) is not proof the pair is wrong,
+                // and the browser sign-in that follows is the real test.
+                return GoogleSetupErrors.RefusesClient(error) ? GoogleSetupErrors.ForSignIn(error, description) : null;
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
@@ -537,10 +533,14 @@ namespace ExplorerNative
                 // refused — a mistyped or deleted client_secret.json. The token is
                 // kept, so taking the bad file away brings the sign-in back, and
                 // the refusal is said as what it is.
+                // deleted_client and disabled_client are the same kind of thing:
+                // the client was deleted or switched off in the Cloud console.
                 if ((int)response.StatusCode is 400 or 401 &&
-                    body.Contains("invalid_client", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException(
-                        "Google refused this application's client id — check client_secret.json");
+                    (body.Contains("invalid_client", StringComparison.OrdinalIgnoreCase) ||
+                     body.Contains("deleted_client", StringComparison.OrdinalIgnoreCase) ||
+                     body.Contains("disabled_client", StringComparison.OrdinalIgnoreCase)))
+                    throw new GoogleSetupException(GoogleSetupErrors.FromBody(body) ??
+                        GoogleSetupErrors.ForSignIn("invalid_client")!);
 
                 if (dead)
                 {
@@ -630,7 +630,16 @@ namespace ExplorerNative
                 }
                 catch (TimeoutException)
                 {
-                    try { Notify?.Invoke("drive.signin.timeout", "Google sign-in timed out. Press Connect Google Drive again."); }
+                    // Google's own "Access blocked" page (an app in testing, an
+                    // account that is not a test user) never comes back here, so
+                    // a timeout is the only place left to say how to fix it.
+                    try
+                    {
+                        Notify?.Invoke("drive.signin.timeout",
+                            "Google sign-in timed out. If Google said access is blocked, add your account as a test " +
+                            "user in the Google Cloud console, under Google Auth platform, Audience. Then press " +
+                            "Connect Google Drive again.");
+                    }
                     catch { }
                     throw;
                 }
@@ -656,16 +665,27 @@ namespace ExplorerNative
             bool failed = query["error"] != null || string.IsNullOrEmpty(query["code"]);
             string heading = failed ? "Sign-in failed" : "Signed in";
 
+            // What is wrong and what to do about it, when Google's code is one
+            // the person can fix (access_denied: Cancel pressed, or not a test user).
+            string? setup = query["error"] is { } code0
+                ? GoogleSetupErrors.ForSignIn(code0, query["error_description"])
+                : null;
+
             // Escaped, because this is somebody else's text going into a page.
             string detail = query["error"] is { } said
-                ? $"Google said: {WebUtility.HtmlEncode(said)}"
+                ? setup != null
+                    ? WebUtility.HtmlEncode(setup)
+                    : $"Google said: {WebUtility.HtmlEncode(said)}"
                 : failed
                     ? "This was not the answer Explorer Native was waiting for. Try connecting again."
                     : "You can close this tab and go back to Explorer Native.";
 
             Answer(context, failed ? 400 : 200, heading, detail);
 
-            if (query["error"] is { } refusal) throw new InvalidOperationException($"consent refused: {refusal}");
+            if (query["error"] is { } refusal)
+                throw setup != null
+                    ? new GoogleSetupException(setup)
+                    : new InvalidOperationException($"consent refused: {refusal}");
 
             string code = query["code"] ?? throw new InvalidOperationException("no code in the redirect");
 
@@ -683,7 +703,9 @@ namespace ExplorerNative
                 TokenEndpoint, new FormUrlEncodedContent(form), token);
             var payload = await response.Content.ReadAsStringAsync(token);
             if (!response.IsSuccessStatusCode)
-                throw new InvalidOperationException("Google refused the sign-in: " + TokenError(payload));
+                throw GoogleSetupErrors.FromBody(payload) is { } plain
+                    ? new GoogleSetupException(plain)
+                    : new InvalidOperationException("Google refused the sign-in: " + TokenError(payload));
 
             ReadTokens(payload);
             SaveRefreshToken();

@@ -609,7 +609,7 @@ namespace ExplorerNative
             {
                 Status = consentToken.IsCancellationRequested && !token.IsCancellationRequested
                     ? "Not connected."
-                    : $"Could not sign in again: {GoogleNet.Reason(ex)}";
+                    : SetupProblem(ex) ?? $"Could not sign in again: {GoogleNet.Reason(ex)}";
                 return (false, false, null);
             }
             finally { try { File.Delete(scratchPath); } catch { } }
@@ -828,15 +828,29 @@ namespace ExplorerNative
                 // Called off by a newer Connect press: that one is connecting now.
                 bool cancelled = token.IsCancellationRequested || consentToken.IsCancellationRequested;
                 bool unfinished = auth?.ConsentStarted == true && !auth.ConsentGranted;
+                // A setup problem in the person's own Cloud project says what is
+                // wrong and how to fix it, even from a sign-in left unfinished:
+                // access_denied for an account that is not a test user used to
+                // come out as only "sign-in was not finished".
                 Status = cancelled
                     ? "Not connected."
-                    : unfinished
-                        ? "Google sign-in was not finished."
-                        : $"Could not connect: {GoogleNet.Reason(ex)}";
+                    : SetupProblem(ex) is { } setup
+                        ? setup
+                        : unfinished
+                            ? "Google sign-in was not finished."
+                            : $"Could not connect: {GoogleNet.Reason(ex)}";
                 FailedOnNetwork = RetryableConnectFailure(ex, cancelled, auth?.ConsentStarted == true,
                     auth?.ConsentGranted == true);
                 return false;
             }
+        }
+
+        /// <summary>The sentence of a setup problem anywhere in <paramref name="ex"/>'s chain, or null.</summary>
+        internal static string? SetupProblem(Exception? ex)
+        {
+            for (var e = ex; e != null; e = e.InnerException)
+                if (e is GoogleSetupException setup) return setup.Message;
+            return null;
         }
 
         /// <summary>

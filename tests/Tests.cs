@@ -356,6 +356,13 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
             // The 6.0.0 review of everything added since 5.1.0.
+            // Google setup errors in words, an expired Apple Music sign-in, speech without NVDA.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "userfixes")
+            {
+                await Guard("UserFixesTests", () => UserFixesTests.RunAll(Check, Equal));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "release701")
             {
                 await Guard("Release701Tests", () => Release701Tests.RunAll(Check, Equal));
@@ -720,6 +727,7 @@ namespace ExplorerNative
             await Guard("Release600Tests", () => Release600Tests.RunAll(Check, Equal));
             await Guard("Release700Tests", () => Release700Tests.RunAll(Check, Equal));
             await Guard("Release701Tests", () => Release701Tests.RunAll(Check, Equal));
+            await Guard("UserFixesTests", () => UserFixesTests.RunAll(Check, Equal));
             await Guard("DriveClientCacheTests", () => DriveClientCacheTests.RunAll(Check, Equal));
             await Guard("TagEditTests", () => { TagEditTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("AudioConvertTests", () => AudioConvertTests.RunAll(Check, Equal));
