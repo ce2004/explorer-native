@@ -83,36 +83,36 @@
     <Compile Include="..\src\WinFspSetup.cs" />
     <Compile Include="WinFspTests.cs" />
     <Compile Include="DiagTests.cs" />
-    <Compile Include="Release510DriveTests.cs" />
-    <Compile Include="Release510MainTests.cs" />
-    <Compile Include="Release510ArchivesTests.cs" />
-    <Compile Include="Release510PlaybackTests.cs" />
-    <Compile Include="Release510AppleMusicTests.cs" />
-    <Compile Include="Release510WebTests.cs" />
-    <Compile Include="Release510FilesTests.cs" />
-    <Compile Include="Release510SearchTests.cs" />
-    <Compile Include="Sweep500MountTests.cs" />
-    <Compile Include="Sweep500App2Tests.cs" />
-    <Compile Include="Sweep500Player2Tests.cs" />
-    <Compile Include="Sweep500Archive2Tests.cs" />
-    <Compile Include="Sweep500WebJsTests.cs" />
-    <Compile Include="Sweep500Sync3Tests.cs" />
-    <Compile Include="Sweep500Sync2Tests.cs" />
-    <Compile Include="Sweep500ClientTests.cs" />
-    <Compile Include="Sweep500SyncTests.cs" />
-    <Compile Include="Sweep500WebTests.cs" />
-    <Compile Include="Sweep500FilesTests.cs" />
-    <Compile Include="Sweep500ArchiveTests.cs" />
-    <Compile Include="Sweep500PlayerTests.cs" />
-    <Compile Include="Sweep500DecoderTests.cs" />
-    <Compile Include="Sweep500AudioEditTests.cs" />
-    <Compile Include="Sweep500AppleMusicTests.cs" />
-    <Compile Include="Sweep500AppTests.cs" />
-    <Compile Include="Sweep500KeysTests.cs" />
-    <Compile Include="Sweep500MainATests.cs" />
-    <Compile Include="Sweep500MainBTests.cs" />
-    <Compile Include="Sweep500MainCTests.cs" />
-    <Compile Include="Sweep500MainDTests.cs" />
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    <Compile Include="TrayAppTests.cs" />
+
+
+
+
+
     <Compile Include="..\src\GoogleAuth.cs" /><Compile Include="..\src\GoogleSetupErrors.cs" /><Compile Include="..\src\GoogleNet.cs" /><Compile Include="..\src\BadNet.cs" /><Compile Include="..\src\WinKeyHook.cs" /><Compile Include="..\src\ProtectedFile.cs" /><Compile Include="..\src\Diag.cs" /><Compile Include="..\src\BugReport.cs" /><Compile Include="BugReportTests.cs" /><Compile Include="PerfTimings.cs" /><Compile Include="ServerRun.cs" />
     <Compile Include="..\src\AppleMusicClient.cs" /><Compile Include="..\src\AppleMusic.cs" /><Compile Include="..\src\AppleMusicPlayState.cs" />
     <Compile Include="..\src\DriveClient.cs" /><Compile Include="..\src\DriveFolderSizes.cs" /><Compile Include="..\src\DriveWrites.cs" /><Compile Include="..\src\DriveTrash.cs" /><Compile Include="..\src\DriveHealth.cs" />
@@ -142,11 +142,11 @@
     <Compile Include="..\src\KeyboardShortcutsForm.cs" />
     <Compile Include="..\src\ConnectServer.cs" /><Compile Include="..\src\ConnectFiles.cs" /><Compile Include="..\src\ConnectAudio.cs" /><Compile Include="..\src\ConnectUploads.cs" /><Compile Include="..\src\ConnectClipboard.cs" /><Compile Include="..\src\ClipboardInterop.cs" /><Compile Include="..\src\ConnectDetails.cs" /><Compile Include="..\src\TailscaleWeb.cs" /><Compile Include="..\src\WebAssets.cs" />
     <Compile Include="SearchTests.cs" />
-    <Compile Include="Fix418Tests.cs" />
+
     <Compile Include="SevenZipTests.cs" />
     <Compile Include="ArchiveBench.cs" />
     <Compile Include="ArchiveSpeedTests.cs" />
-    <Compile Include="ConnectTests.cs" />
+    <Compile Include="WebAppTests.cs" />
     <Compile Include="SeekTests.cs" />
     <Compile Include="Tests.cs" />
     <Compile Include="SourceFiles.cs" />
@@ -155,23 +155,23 @@
     <Compile Include="..\src\TransferRules.cs" />
     <Compile Include="..\src\SelectionSpeech.cs" />
     <Compile Include="..\src\FolderFiltering.cs" />
-    <Compile Include="MainFormLogicTests.cs" />
+    <Compile Include="MainWindowTests.cs" />
     <Compile Include="AppleMusicTests.cs" />
     <Compile Include="ArchiveTests.cs" />
-    <Compile Include="ArchiveFixTests.cs" />
-    <Compile Include="InstallTests.cs" />
+
+
     <Compile Include="DriveCopyTests.cs" />
     <Compile Include="FakeDrive.cs" />
     <Compile Include="DriveMountTests.cs" />
     <Compile Include="DriveTrashTests.cs" />
     <Compile Include="DriveTransferTests.cs" />
-    <Compile Include="DriveMountTimerTests.cs" />
+
     <Compile Include="DriveSizeTests.cs" />
-    <Compile Include="Perf522OpsTests.cs" />
-    <Compile Include="Favourites530Tests.cs" />
+
+    <Compile Include="FavouritesTests.cs" />
     <Compile Include="CommandsTests.cs" />
     <Compile Include="..\src\ServedFolder.cs" /><Compile Include="..\src\FtpServer.cs" /><Compile Include="..\src\SftpServer.cs" /><Compile Include="FileServerTests.cs" />
-    <Compile Include="Radio540Tests.cs" />
+    <Compile Include="RadioTests.cs" />
     <Compile Include="Release600Tests.cs" />
     <Compile Include="..\src\StreamPlaylists.cs" />
     <Compile Include="..\src\RadioStream.cs" />
@@ -179,35 +179,35 @@
     <Compile Include="..\src\FavouritesForm.cs" />
     <Compile Include="..\src\ReopenAfterUpdate.cs" />
     <Compile Include="..\src\CarryOnTransfers.cs" />
-    <Compile Include="DriveClientCacheTests.cs" />
+    <Compile Include="DriveClientTests.cs" />
     <Compile Include="DriveMonitorTests.cs" />
     <Compile Include="SyncDuplicateTests.cs" />
     <Compile Include="SyncScaleTests.cs" />
     <Compile Include="PcChangesTests.cs" />
-    <Compile Include="Perf522SyncTests.cs" />
+
     <Compile Include="SyncHardeningTests.cs" />
-    <Compile Include="EdgeCaseTests.cs" />
-    <Compile Include="TransferFixTests.cs" />
-    <Compile Include="FilesR2Tests.cs" />
-    <Compile Include="SettingsFixTests.cs" />
+
+
+
+    <Compile Include="SettingsTests.cs" />
     <Compile Include="AiDescriberTests.cs" />
-    <Compile Include="SettingsTransferTests.cs" />
-    <Compile Include="AudioFixTests.cs" />
+
+
     <Compile Include="VideoContainerTests.cs" />
-    <Compile Include="UpdateFixTests.cs" />
-    <Compile Include="MainFixTests.cs" />
-    <Compile Include="MainFileOpsFixTests.cs" />
-    <Compile Include="DeleteTests.cs" />
-    <Compile Include="Round2FixTests.cs" />
-    <Compile Include="Sweep308ClientTests.cs" /><Compile Include="BadNetTests.cs" /><Compile Include="WinKeyTests.cs" /><Compile Include="Sweep308CoreTests.cs" /><Compile Include="Sweep308FilesTests.cs" /><Compile Include="Sweep308DecoderTests.cs" /><Compile Include="Sweep308WebTests.cs" /><Compile Include="Sweep308PlaybackTests.cs" /><Compile Include="Sweep308MountTests.cs" /><Compile Include="Sweep308MainFormTests.cs" /><Compile Include="Sweep308SyncTests.cs" /><Compile Include="Sweep308DotPathTests.cs" /><Compile Include="Sweep309MainFormTests.cs" /><Compile Include="Sweep309MountTests.cs" /><Compile Include="Sweep309FilesTests.cs" /><Compile Include="Sweep309WebTests.cs" /><Compile Include="Sweep309ClientTests.cs" /><Compile Include="Sweep309CoreTests.cs" /><Compile Include="Sweep309PlaybackTests.cs" /><Compile Include="Sweep309SyncTests.cs" /><Compile Include="Sweep309DecoderTests.cs" />
-    <Compile Include="ShortcutSortDetailsTests.cs" />
+    <Compile Include="UpdateInstallTests.cs" />
+
+
+
+
+    <Compile Include="BadNetTests.cs" /><Compile Include="ShortcutTests.cs" /><Compile Include="CoreTests.cs" /><Compile Include="FilesTests.cs" /><Compile Include="DecoderTests.cs" /><Compile Include="PlayerTests.cs" /><Compile Include="SyncTests.cs" />
+
     <Compile Include="TagEditTests.cs" />
     <Compile Include="ArchiveBrowserTests.cs" />
     <Compile Include="AudioConvertTests.cs" />
-    <Compile Include="WebArchiveAudioFixTests.cs" />
+
     <Compile Include="DriveProbe.cs" />
     <Compile Include="LiveSyncProbe.cs" />
-    <Compile Include="AuditFixTests.cs" />
+
   </ItemGroup>
 
   <!-- The managed Ogg Vorbis and Opus decoders, which the suite exercises the
@@ -237,8 +237,8 @@
     <Compile Include="..\src\TailscaleForward.cs" />
     <Compile Include="..\src\SettingCommands.cs" />
     <Compile Include="..\src\SmbFileServer.cs" />
-    <Compile Include="Release700Tests.cs" />
-    <Compile Include="Release701Tests.cs" />
+
+
     <Compile Include="UserFixesTests.cs" />
     <Compile Include="ServerAttackTests.cs" />
   </ItemGroup>

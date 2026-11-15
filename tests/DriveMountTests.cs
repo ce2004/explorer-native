@@ -1,14 +1,17 @@
-using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
+using System.Threading;
+using System;
+using Rig = ExplorerNative.DriveMountTests.Rig;
 
 namespace ExplorerNative
 {
@@ -1190,6 +1193,1090 @@ namespace ExplorerNative
                 Check("and back by itself once Google answers the probe", Eventually(() => rig.Mount.LetterShown, 10000));
             }
             finally { DriveMount.Probe.WhileOffline = TimeSpan.FromHours(1); }
+        }
+    }
+
+    // ---- merged from DriveMountTimerTests.cs (7.1.0: tests are filed by feature, not by fix round) ----
+
+    /// <summary>
+    /// The mount's housekeeping timer (the idle sweep) only ticks while there
+    /// is work for it, and the work it does still happens on time.
+    /// </summary>
+    internal static class DriveMountTimerTests
+    {
+        private static Action<string, bool, string?> _check = null!;
+        private static void Check(string what, bool ok, string? detail = null) => _check(what, ok, detail);
+
+        private static readonly DateTime When = new(2025, 3, 4, 5, 6, 7, DateTimeKind.Utc);
+
+        public static Task RunAll(Action<string, bool, string?> check, Action<string, string, string> equal)
+        {
+            _check = check;
+            Console.WriteLine("Google Drive mount timers, armed only while there is work:");
+
+            var keepInterval = DriveMount.SweepInterval;
+            var keepFresh = DriveMount.FreshFor;
+            try
+            {
+                WorkTimerTests();
+                MountTimerTests();
+            }
+            finally
+            {
+                DriveMount.SweepInterval = keepInterval;
+                DriveMount.FreshFor = keepFresh;
+            }
+            return Task.CompletedTask;
+        }
+
+        private static bool Eventually(Func<bool> condition, int milliseconds = 5000)
+        {
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            while (clock.ElapsedMilliseconds < milliseconds)
+            {
+                if (condition()) return true;
+                Thread.Sleep(20);
+            }
+            return condition();
+        }
+
+        private static void WorkTimerTests()
+        {
+            DriveMount.SweepInterval = TimeSpan.FromMilliseconds(1);
+
+            int pending = 0;
+            int ticks = 0;
+            using var timer = new DriveMount.WorkTimer(
+                () => { Interlocked.Increment(ref ticks); Interlocked.Exchange(ref pending, 0); },
+                () => Volatile.Read(ref pending) > 0);
+
+            Check("a work timer with nothing to do is not armed", !timer.Armed);
+            Thread.Sleep(50);
+            Check("and never ticks", Volatile.Read(ref ticks) == 0, $"{ticks} ticks");
+
+            Interlocked.Increment(ref pending);
+            timer.Arm();
+            Check("work arms it", timer.Armed);
+            Check("it ticks, does the work and stands down again",
+                Eventually(() => Volatile.Read(ref pending) == 0 && !timer.Armed),
+                $"pending {pending}, armed {timer.Armed}");
+
+            // Many threads adding while ticks keep stopping the timer: an add is
+            // never left behind with the timer stopped.
+            var producers = Enumerable.Range(0, 8).Select(_ => Task.Run(() =>
+            {
+                for (int i = 0; i < 2000; i++)
+                {
+                    Interlocked.Increment(ref pending);
+                    timer.Arm();
+                    if ((i & 63) == 0) Thread.Sleep(1);
+                }
+            })).ToArray();
+            Task.WaitAll(producers);
+            Check("work added from many threads at once is never stranded",
+                Eventually(() => Volatile.Read(ref pending) == 0 && !timer.Armed),
+                $"pending {pending}, armed {timer.Armed}");
+
+            timer.Dispose();
+            Interlocked.Increment(ref pending);
+            timer.Arm();
+            Check("a disposed work timer does not start again", !timer.Armed);
+        }
+
+        private static void MountTimerTests()
+        {
+            DriveMount.SweepInterval = TimeSpan.FromMilliseconds(100);
+            DriveMount.FreshFor = TimeSpan.FromMilliseconds(1000);
+
+            var root = Path.Combine(Path.GetTempPath(), "en-mtimer-" + Guid.NewGuid().ToString("N")[..8]);
+            var drive = new FakeDrive();
+            var client = new DriveClient(drive, 0.0005);
+            DriveMount? mount = null;
+            try
+            {
+                mount = new DriveMount(client, root, 64L * 1024 * 1024, _ => { });
+                Check("a new mount has no timer ticking", !mount.SweepArmed);
+
+                // On Drive before the root is listed, so the root's listing knows it.
+                var folder = drive.AddFolder("Tracks");
+                drive.AddFile("one.flac", new byte[64 * 1024], When, folder);
+
+                mount.Start(FakeDrive.Root, assignLetter: false);
+                mount.Populate(root);
+                Thread.Sleep(300);
+                Check("a mount that has listed only its root still has no timer ticking", !mount.SweepArmed);
+
+                var folderPath = Path.Combine(root, "Tracks");
+                mount.Populate(folderPath);
+                Check("listing a folder starts no timer either", !mount.SweepArmed);
+                // ---- the idle sweep ----
+                Check("no cache, no sweep", !mount.SweepArmed);
+                int warmed = mount.Warm(new[] { Path.Combine(folderPath, "one.flac") });
+                Check("a warmed file has a cache", warmed == 1 && mount.OpenCaches == 1,
+                    $"warmed {warmed}, open {mount.OpenCaches}");
+                Check("with idle release off, a cache does not keep the sweep ticking", !mount.SweepArmed);
+
+                // Callbacks in flight hold the sweep off, as they always have.
+                var inFlight = typeof(DriveMount).GetField("_callbacksInFlight",
+                    BindingFlags.NonPublic | BindingFlags.Instance)!;
+                inFlight.SetValue(mount, 1);
+                mount.IdleRelease = TimeSpan.FromMilliseconds(200);
+                Check("switching idle release on with a cache open arms the sweep", mount.SweepArmed);
+                Thread.Sleep(800);
+                Check("the sweep never releases a cache while a callback is running",
+                    mount.OpenCaches == 1 && mount.SweepArmed,
+                    $"open {mount.OpenCaches}, sweep {mount.SweepArmed}");
+                inFlight.SetValue(mount, 0);
+                Check("once the callbacks are done, the idle cache is released and the sweep stands down",
+                    Eventually(() => mount.OpenCaches == 0 && !mount.SweepArmed),
+                    $"open {mount.OpenCaches}, sweep {mount.SweepArmed}");
+
+                warmed = mount.Warm(new[] { Path.Combine(folderPath, "one.flac") });
+                Check("a cache opened again arms the sweep again", warmed == 1 && mount.SweepArmed,
+                    $"warmed {warmed}, sweep {mount.SweepArmed}");
+                Check("and it is released again after the idle time",
+                    Eventually(() => mount.OpenCaches == 0 && !mount.SweepArmed),
+                    $"open {mount.OpenCaches}, sweep {mount.SweepArmed}");
+            }
+            finally
+            {
+                try { mount?.Dispose(); } catch { }
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+    }
+
+    // ---- merged from Sweep308MountTests.cs (7.1.0: tests are filed by feature, not by fix round) ----
+
+    /// <summary>
+    /// Bug sweep, Drive mount half: a file warmed for a paste at the moment
+    /// Drive is unmounted. The warm could open its cache after the unmount had
+    /// already let every cache go, so its download ran on with nothing left to
+    /// stop it.
+    /// </summary>
+    internal static class Sweep308MountTests
+    {
+        private static Action<string, bool, string?> _check = null!;
+        private static void Check(string what, bool ok, string? detail = null) => _check(what, ok, detail);
+
+        private static readonly DateTime When = new(2025, 3, 4, 5, 6, 7, DateTimeKind.Utc);
+
+        public static Task RunAll(Action<string, bool, string?> check, Action<string, string, string> equal)
+        {
+            _check = check;
+            Console.WriteLine("Drive mount sweep:");
+
+            WarmAfterUnmountOpensNothing();
+            WarmRacingUnmountLeavesNoCache();
+
+            Console.WriteLine();
+            return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// A mount over a temporary folder that is never registered: the map is
+        /// told the one file's Drive id directly, which is all Warm looks at.
+        /// </summary>
+        private static DriveMount MountWithOneFile(DriveClient client, string root, string fileId, out string path)
+        {
+            Directory.CreateDirectory(root);
+            path = Path.Combine(root, "one.flac");
+            File.WriteAllBytes(path, new byte[64 * 1024]);
+
+            var mount = new DriveMount(client, root, 64L * 1024 * 1024, _ => { });
+            var ids = (ConcurrentDictionary<string, string>)typeof(DriveMount)
+                .GetField("_ids", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(mount)!;
+            ids["one.flac"] = fileId;
+            // Warm reads the size from the folder's listing, not from disk.
+            var listings = (ConcurrentDictionary<string, DrivePlaced[]>)typeof(DriveMount)
+                .GetField("_listings", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(mount)!;
+            listings[""] = new[] { new DrivePlaced("one.flac", false, 64 * 1024, When, "one.flac") };
+            return mount;
+        }
+
+        private static void WarmAfterUnmountOpensNothing()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "en-sw308m-" + Guid.NewGuid().ToString("N")[..8]);
+            var drive = new FakeDrive();
+            var client = new DriveClient(drive, 0.0005);
+            var fileId = drive.AddFile("one.flac", new byte[64 * 1024], When, FakeDrive.Root);
+            try
+            {
+                var mount = MountWithOneFile(client, root, fileId, out var path);
+                int warmed = mount.Warm(new[] { path });
+                Check("a file on the mount can be warmed (control)", warmed == 1 && mount.OpenCaches == 1,
+                    $"warmed {warmed}, open {mount.OpenCaches}");
+
+                mount.Dispose();
+                Check("unmounting lets the warmed file go", mount.OpenCaches == 0, $"open {mount.OpenCaches}");
+
+                File.WriteAllBytes(path, new byte[64 * 1024]);
+                warmed = mount.Warm(new[] { path });
+                Check("a warm after the unmount opens nothing", warmed == 0 && mount.OpenCaches == 0,
+                    $"warmed {warmed}, open {mount.OpenCaches}");
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        /// <summary>
+        /// Warm and Dispose started together, many times over. Whichever wins,
+        /// nothing may be left open afterwards: a cache still in the table once
+        /// Dispose has returned is a download nobody will ever cancel.
+        /// </summary>
+        private static void WarmRacingUnmountLeavesNoCache()
+        {
+            var root = Path.Combine(Path.GetTempPath(), "en-sw308r-" + Guid.NewGuid().ToString("N")[..8]);
+            var drive = new FakeDrive();
+            var client = new DriveClient(drive, 0.0005);
+            var fileId = drive.AddFile("one.flac", new byte[64 * 1024], When, FakeDrive.Root);
+            int left = 0, warmedAny = 0;
+            const int Rounds = 300;
+            try
+            {
+                for (int round = 0; round < Rounds; round++)
+                {
+                    var mount = MountWithOneFile(client, root, fileId, out var path);
+                    using var start = new Barrier(2);
+                    var warming = Task.Run(() =>
+                    {
+                        start.SignalAndWait();
+                        if (mount.Warm(new[] { path }) > 0) Interlocked.Increment(ref warmedAny);
+                    });
+                    var unmounting = Task.Run(() =>
+                    {
+                        start.SignalAndWait();
+                        mount.Dispose();
+                    });
+                    Task.WaitAll(new[] { warming, unmounting }, 10_000);
+                    if (mount.OpenCaches != 0) left++;
+                }
+
+                Check("a warm racing the unmount never leaves a cache open after it",
+                    left == 0, $"{left} of {Rounds} rounds left one open ({warmedAny} warms got in first)");
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+    }
+
+    // ---- merged from Sweep309MountTests.cs (7.1.0: tests are filed by feature, not by fix round) ----
+
+    /// <summary>
+    /// Second bug sweep, Drive mount half: what a removed folder left behind in
+    /// the maps, a failed read starting a whole-file download, a moved file
+    /// recorded under its cleaned-up name as Drive's, one folder that would not
+    /// list failing a whole search, listing rows lost to a race, and a folder
+    /// size index stuck on a changes token Drive had refused.
+    /// </summary>
+    internal static class Sweep309MountTests
+    {
+        private static Action<string, bool, string?> _check = null!;
+        private static void Check(string what, bool ok, string? detail = null) => _check(what, ok, detail);
+
+        private static readonly DateTime When = new(2025, 3, 4, 5, 6, 7, DateTimeKind.Utc);
+        private const BindingFlags Private = BindingFlags.NonPublic | BindingFlags.Instance;
+
+        public static async Task RunAll(Action<string, bool, string?> check, Action<string, string, string> equal)
+        {
+            _check = check;
+            Console.WriteLine("Drive mount sweep, second pass:");
+
+            RemoveOneForgetsTheWholeSubtree();
+            RemoveOneRefusesTheRoot();
+            FailedReadDoesNotWarm();
+            DriveNameAtIsDrivesName();
+            MoveKeepsDrivesName();
+            RemovalsAndPlacementsDoNotLoseRows();
+            SearchSurvivesOneFolderThatWillNotList();
+            await RefusedChangesTokenRebuildsSizes();
+
+            Console.WriteLine();
+        }
+
+        private static T Field<T>(DriveMount mount, string name) =>
+            (T)typeof(DriveMount).GetField(name, Private)!.GetValue(mount)!;
+
+        private static string? SourceFile(string name)
+        {
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "src"))) dir = dir.Parent;
+            if (dir == null) return null;
+            var path = Path.Combine(dir.FullName, "src", name);
+            return File.Exists(path) ? File.ReadAllText(path) : null;
+        }
+
+        private static string Scratch(string tag) =>
+            Path.Combine(Path.GetTempPath(), $"en-sw309{tag}-" + Guid.NewGuid().ToString("N")[..8]);
+
+        /// <summary>A mount over a plain temporary folder, never registered: only its maps are used.</summary>
+        private static DriveMount Unregistered(string root, DriveClient? client = null)
+        {
+            Directory.CreateDirectory(root);
+            return new DriveMount(client ?? new DriveClient(new FakeDrive(), 0.0005), root, 64L * 1024 * 1024, _ => { });
+        }
+
+        // ---- RemoveOne ------------------------------------------------------
+
+        private static void RemoveOneForgetsTheWholeSubtree()
+        {
+            var root = Scratch("r");
+            try
+            {
+                var mount = Unregistered(root);
+                Directory.CreateDirectory(Path.Combine(root, "Music", "Sub"));
+                Directory.CreateDirectory(Path.Combine(root, "Other"));
+
+                var ids = Field<ConcurrentDictionary<string, string>>(mount, "_ids");
+                var folders = Field<ConcurrentDictionary<string, string>>(mount, "_folders");
+                var driveIds = Field<ConcurrentDictionary<string, string>>(mount, "_driveIds");
+                var listedAt = Field<ConcurrentDictionary<string, long>>(mount, "_listedAt");
+                var offline = Field<ConcurrentDictionary<string, bool>>(mount, "_answeredOffline");
+                var whereIs = Field<ConcurrentDictionary<string, (string Folder, string Name)>>(mount, "_whereIs");
+                var listings = Field<ConcurrentDictionary<string, DrivePlaced[]>>(mount, "_listings");
+
+                foreach (var key in new[] { "music", "music\\sub", "other" })
+                {
+                    ids[key] = "id-" + key;
+                    folders[key] = "id-" + key;
+                    driveIds[key] = "drive-1";
+                    listedAt[key] = Environment.TickCount64;
+                    offline[key] = true;
+                }
+                whereIs["id-music"] = ("", "Music");
+                whereIs["id-music\\sub"] = ("music", "Sub");
+                whereIs["track"] = ("music\\sub", "t.flac");
+                whereIs["id-other"] = ("", "Other");
+                listings[""] = new[]
+                {
+                    new DrivePlaced("Music", true, -1, When, "Music"),
+                    new DrivePlaced("Other", true, -1, When, "Other"),
+                };
+
+                bool removed = mount.RemoveOne(Path.Combine(root, "Music"));
+
+                bool Gone<T>(ConcurrentDictionary<string, T> map) =>
+                    !map.ContainsKey("music") && !map.ContainsKey("music\\sub") && map.ContainsKey("other");
+
+                Check("removing a folder drops its stamps of when it was listed", removed && Gone(listedAt),
+                    string.Join(",", listedAt.Keys));
+                Check("and its offline answers", Gone(offline), string.Join(",", offline.Keys));
+                Check("and its shared-drive ids", Gone(driveIds), string.Join(",", driveIds.Keys));
+                Check("and where everything in it was placed",
+                    !whereIs.ContainsKey("id-music") && !whereIs.ContainsKey("id-music\\sub") &&
+                    !whereIs.ContainsKey("track") && whereIs.ContainsKey("id-other"),
+                    string.Join(",", whereIs.Keys));
+                Check("while a sibling folder keeps everything (control)",
+                    Gone(ids) && Gone(folders) && listings[""].Length == 1 && listings[""][0].Name == "Other",
+                    string.Join(",", listings[""].Select(p => p.Name)));
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        private static void RemoveOneRefusesTheRoot()
+        {
+            var root = Scratch("t");
+            try
+            {
+                var mount = Unregistered(root);
+                File.WriteAllBytes(Path.Combine(root, "keep.txt"), new byte[] { 1 });
+                bool removed = mount.RemoveOne(root);
+                Check("removing the mount's own root is refused, and nothing is deleted",
+                    !removed && File.Exists(Path.Combine(root, "keep.txt")), $"removed {removed}");
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        // ---- a failed read is not a warm -----------------------------------
+
+        private static unsafe void FailedReadDoesNotWarm()
+        {
+            var root = Scratch("w");
+            try
+            {
+                var mount = Unregistered(root);
+                var caches = Field<ConcurrentDictionary<string, DriveFileCache>>(mount, "_caches");
+                var buffer = new byte[4096];
+
+                // Wholly past the end: the end of the file, said before anything
+                // is opened or read.
+                var past = new DriveMount.Opened { Key = "past.flac", Id = "file-0", Size = 64 * 1024 };
+                int status;
+                fixed (byte* b = buffer) status = mount.ReadFromDrive(past, (IntPtr)b, 1024 * 1024, 4096, out _);
+                Check("a read wholly past the end says so and opens no download",
+                    status == WinFsp.EndOfFile && !caches.ContainsKey("file-0"), $"0x{status:X8}");
+
+                // A file Drive does not have: the read fails, and its cache is
+                // left still — a failure must not start the whole file downloading.
+                var missing = new DriveMount.Opened { Key = "gone.flac", Id = "file-1", Size = 64 * 1024 };
+                fixed (byte* b = buffer) status = mount.ReadFromDrive(missing, (IntPtr)b, 0, 4096, out _);
+                bool opened = caches.TryGetValue("file-1", out var cache);
+                Check("a read that fails starts no whole-file download",
+                    status != WinFsp.Success && (!opened || !cache!.Pumping),
+                    $"0x{status:X8}, {(opened ? (cache!.Pumping ? "pumping" : "still") : "no cache")}");
+
+                // Control: warming, which is a lease let go unread on purpose, does.
+                Field<ConcurrentDictionary<string, DrivePlaced[]>>(mount, "_listings")[""] = new[]
+                {
+                    new DrivePlaced("warm.flac", false, 64 * 1024, When, "warm.flac"),
+                };
+                Field<ConcurrentDictionary<string, string>>(mount, "_ids")["warm.flac"] = "file-2";
+                mount.Warm(new[] { Path.Combine(root, "warm.flac") });
+                Check("while warming a file still starts its download (control)",
+                    caches.TryGetValue("file-2", out var warmed) && warmed.Pumping);
+                mount.Dispose();
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        // ---- Drive's name, not the one on disk -------------------------------
+        private static void DriveNameAtIsDrivesName()
+        {
+            var root = Scratch("n");
+            try
+            {
+                var mount = Unregistered(root);
+                Field<ConcurrentDictionary<string, DrivePlaced[]>>(mount, "_listings")[""] = new[]
+                {
+                    new DrivePlaced("AC_DC.flac", false, 10, When, "AC:DC.flac"),
+                    new DrivePlaced("plain.flac", false, 10, When),
+                };
+                Check("what Drive calls a cleaned-up file is read from its folder's listing",
+                    mount.DriveNameAt(Path.Combine(root, "AC_DC.flac")) == "AC:DC.flac",
+                    mount.DriveNameAt(Path.Combine(root, "AC_DC.flac")) ?? "(null)");
+                Check("and a row with no Drive name, or no row, says nothing",
+                    mount.DriveNameAt(Path.Combine(root, "plain.flac")) == null &&
+                    mount.DriveNameAt(Path.Combine(root, "nope.flac")) == null &&
+                    mount.DriveNameAt(root) == null);
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        private static void MoveKeepsDrivesName()
+        {
+            var source = SourceFile("GoogleDrive.cs") ?? "";
+            int start = source.IndexOf("public async Task<bool> MoveOnDrive(", StringComparison.Ordinal);
+            int end = start < 0 ? -1 : source.IndexOf("public async Task<int> CopyOnDrive(", start, StringComparison.Ordinal);
+            var body = start < 0 || end < 0 ? "" : source[start..end];
+            Check("a move with no new name records Drive's own name, not the one on disk",
+                body.Contains("mount.DriveNameAt(fromPath)", StringComparison.Ordinal) &&
+                !body.Contains("newName ?? Path.GetFileName(fromPath)", StringComparison.Ordinal),
+                body.Length == 0 ? "MoveOnDrive not found" : null);
+        }
+
+        // ---- rows lost to a race ---------------------------------------------
+
+        private static void RemovalsAndPlacementsDoNotLoseRows()
+        {
+            var root = Scratch("c");
+            try
+            {
+                var mount = Unregistered(root);
+                var listings = Field<ConcurrentDictionary<string, DrivePlaced[]>>(mount, "_listings");
+                var ids = Field<ConcurrentDictionary<string, string>>(mount, "_ids");
+                const int Each = 300;
+
+                var start = new List<DrivePlaced>();
+                for (int i = 0; i < Each; i++)
+                {
+                    var name = $"old{i}.flac";
+                    File.WriteAllBytes(Path.Combine(root, name), new byte[] { 1 });
+                    ids[name] = "old-" + i;
+                    start.Add(new DrivePlaced(name, false, 1, When, name));
+                }
+                listings[""] = start.ToArray();
+
+                // Removals on two threads; rows arriving on two more, merged the
+                // way an upload's PlaceOne merges its row.
+                var work = new List<Task>();
+                for (int lane = 0; lane < 2; lane++)
+                {
+                    int l = lane;
+                    work.Add(Task.Run(() =>
+                    {
+                        for (int i = l; i < Each; i += 2) mount.RemoveOne(Path.Combine(root, $"old{i}.flac"));
+                    }));
+                    work.Add(Task.Run(() =>
+                    {
+                        for (int i = l; i < Each; i += 2)
+                        {
+                            var row = new[] { new DrivePlaced($"new{i}.flac", false, 1, When) };
+                            listings.AddOrUpdate("", row, (_, existing) => existing.Concat(row).ToArray());
+                        }
+                    }));
+                }
+                Task.WaitAll(work.ToArray(), 60_000);
+
+                var names = listings[""].Select(p => p.Name).ToList();
+                int olds = names.Count(n => n.StartsWith("old", StringComparison.Ordinal));
+                int news = names.Count(n => n.StartsWith("new", StringComparison.Ordinal));
+                Check("removals and new rows in one folder at once lose neither",
+                    olds == 0 && news == Each, $"{olds} removed rows left, {news} of {Each} new rows kept");
+            }
+            finally
+            {
+                try { Directory.Delete(root, true); } catch { }
+            }
+        }
+
+        // ---- a search with one folder that will not list ---------------------
+
+        private static void SearchSurvivesOneFolderThatWillNotList()
+        {
+            // root -> A (lists) -> hit; root -> B (will not list) -> hit.
+            var placed = new Dictionary<(string Folder, string Id), string>
+            {
+                [("R", "a")] = "R\\A",
+                [("R", "b")] = "R\\B",
+            };
+            int bTries = 0;
+            void Populate(string folder)
+            {
+                if (folder == "R\\B")
+                {
+                    Interlocked.Increment(ref bTries);
+                    throw new TimeoutException("the listing timed out");
+                }
+            }
+            string? Child(string folder, string id) => placed.TryGetValue((folder, id), out var p) ? p : null;
+            var chains = new List<IReadOnlyList<string>> { new[] { "a" }, new[] { "b" } };
+
+            bool rawFailed = false;
+            try
+            {
+                DriveSearch.PopulateAhead("R", chains, Populate, Child,
+                    new Dictionary<string, string?>(), 4, CancellationToken.None).GetAwaiter().GetResult();
+            }
+            catch { rawFailed = true; }
+            Check("one folder that will not list fails the raw walk (control)", rawFailed);
+
+            var failed = new ConcurrentDictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var tolerant = DriveSearch.NotingFailures(Populate, failed, ex => ex.Message);
+            var resolved = new Dictionary<string, string?>();
+            bTries = 0;
+            Exception? thrown = null;
+            string? aPath = null, bPath = null;
+            try
+            {
+                DriveSearch.PopulateAhead("R", chains, tolerant, Child, resolved, 4, CancellationToken.None)
+                    .GetAwaiter().GetResult();
+                aPath = DriveSearch.PathForChain("R", chains[0], tolerant, Child, resolved);
+                bPath = DriveSearch.PathForChain("R", chains[1], tolerant, Child, resolved);
+            }
+            catch (Exception ex) { thrown = ex; }
+
+            Check("a search keeps the hits in folders that did list", thrown == null && aPath == "R\\A",
+                thrown?.Message ?? aPath ?? "(null)");
+            Check("and knows which folder would not, and why",
+                bPath == "R\\B" && failed.TryGetValue("R\\B", out var why) && why == "the listing timed out",
+                string.Join(",", failed.Keys));
+            Check("trying that folder once, not once per hit", bTries == 1, $"{bTries} tries");
+
+            var stop = DriveSearch.NotingFailures(_ => throw new OperationCanceledException(), failed, _ => null);
+            bool stopped = false;
+            try { stop("R\\C"); } catch (OperationCanceledException) { stopped = true; }
+            Check("a search that was stopped still stops", stopped);
+            var source = SourceFile("GoogleDrive.cs") ?? "";
+
+            int vc = source.IndexOf("public async Task<bool?> VerifyCopied(", StringComparison.Ordinal);
+            int vcEnd = vc < 0 ? -1 : source.IndexOf("public async Task<bool> HasDocumentsIn(", vc, StringComparison.Ordinal);
+            var verify = vc < 0 || vcEnd < 0 ? "" : source[vc..vcEnd];
+            Check("checking a move's copy on the PC reads folders ending in a dot exactly",
+                verify.Contains("Directory.Exists(NameRules.ExactPath(copy))", StringComparison.Ordinal) &&
+                verify.Contains("new FileInfo(NameRules.ExactPath(arrived))", StringComparison.Ordinal),
+                verify.Length == 0 ? "VerifyCopied not found" : null);
+
+            int from = source.IndexOf("internal async Task<SearchResult?> SearchAsync(", StringComparison.Ordinal);
+            int to = from < 0 ? -1 : source.IndexOf("private static readonly TimeSpan FolderGraphLife", from, StringComparison.Ordinal);
+            var body = from < 0 || to < 0 ? "" : source[from..to];
+            Check("the Drive search walks through the tolerant listing, both stages",
+                body.Contains("DriveSearch.NotingFailures(", StringComparison.Ordinal) &&
+                System.Text.RegularExpressions.Regex.Matches(body, @"\bpopulateOrNote\b").Count >= 3,
+                body.Length == 0 ? "SearchAsync not found" : null);
+        }
+
+        // ---- the size index and a refused changes token ----------------------
+
+        private static async Task RefusedChangesTokenRebuildsSizes()
+        {
+            var fake = new FakeDrive();
+            var client = new DriveClient(fake, 0.0005);
+            var music = fake.AddFolder("Music");
+            fake.AddFile("a.flac", new byte[100], When, music);
+
+            var index = new DriveSizeIndex(null);
+            await index.Refresh(client, CancellationToken.None);
+            var before = index.SizeOf(music);
+            Check("the size index is built (control)", before is { Bytes: 100, Files: 1 }, before?.ToString());
+
+            fake.AddFile("b.flac", new byte[50], When, music);
+            fake.AddFault(new FakeDrive.Fault
+            {
+                Kind = "changes", Status = 410, Times = 1,
+                Body = FakeDrive.ErrorBody(410, "invalid", "Invalid page token"),
+            });
+            index.Expire();
+            Exception? thrown = null;
+            try { await index.Refresh(client, CancellationToken.None); }
+            catch (Exception ex) { thrown = ex; }
+
+            var after = index.SizeOf(music);
+            Check("a changes token Drive refuses is replaced by listing the drive again",
+                thrown == null && after is { Bytes: 150, Files: 2 },
+                (thrown?.Message ?? "") + " " + after);
+        }
+    }
+
+    // ---- merged from Sweep500MountTests.cs (7.1.0: tests are filed by feature, not by fix round) ----
+
+    /// <summary>
+    /// The 5.0.0 sweep of the Google Drive volume.
+    /// </summary>
+    internal static class Sweep500MountTests
+    {
+        private static Action<string, bool, string?> _check = null!;
+        private static Action<string, string, string> _equal = null!;
+
+        internal static void Check(string what, bool ok, string? detail = null) => _check(what, ok, detail);
+        internal static void Equal(string what, string expected, string actual) => _equal(what, expected, actual);
+
+        private static readonly DateTime When = new(2025, 3, 4, 5, 6, 7, DateTimeKind.Utc);
+
+        public static async Task RunAll(Action<string, bool, string?> check, Action<string, string, string> equal)
+        {
+            _check = check;
+            _equal = equal;
+
+            Console.WriteLine("Sweep 5.0.0, the Google Drive volume:");
+            if (!WinFsp.Installed)
+            {
+                Check("WinFsp is installed, to mount the drive", false);
+                return;
+            }
+
+            var settle = DriveMount.Settle;
+            var miss = DriveMount.MissRelistAfter;
+            var every = DriveMount.Probe.Every;
+            var offline = DriveMount.Probe.WhileOffline;
+            DriveMount.Settle = TimeSpan.FromMilliseconds(300);
+            DriveMount.MissRelistAfter = TimeSpan.Zero;
+            DriveMount.Probe.Every = TimeSpan.FromHours(1);
+            DriveMount.Probe.WhileOffline = TimeSpan.FromHours(1);
+            try
+            {
+                Run("a folder that only looks empty", FolderHoldingOnlyDocsIsNotRemoved, drive =>
+                {
+                    var only = drive.AddFolder("OnlyDocs");
+                    drive.AddFile("Budget", Array.Empty<byte>(), When, only, "application/vnd.google-apps.spreadsheet");
+                    drive.AddFolder("Later");
+                    drive.AddFolder("Empty");
+                });
+                Run("one slow change does not hold the whole drive", SlowChangesHoldOnlyTheirOwnName, drive =>
+                {
+                    var docs = drive.Find(FakeDrive.Root, "Docs")!;
+                    drive.AddFile("old.txt", Encoding.UTF8.GetBytes("old"), When, docs);
+                    drive.AddFile("new.txt", Encoding.UTF8.GetBytes("new"), When, docs);
+                    drive.AddFolder("Race");
+                    drive.AddFolder("Doomed");
+                });
+                Run("the letter follows Drive's state as it is now", LetterFollowsTheStateNow);
+                Run("a listing keeps to the folder it lists", ListingKeepsToItsFolder, drive =>
+                {
+                    var music = drive.Find(FakeDrive.Root, "Music")!;
+                    var live = drive.AddFolder("Live", music);
+                    foreach (var name in new[] { "a.flac", "b.flac", "c.flac" })
+                        drive.AddFile(name, DriveMountTests.Bytes(100, name[0]), When, live);
+                    var gig = drive.AddFolder("Gig", music);
+                    drive.AddFile("d.flac", DriveMountTests.Bytes(100, 4), When, gig);
+                    drive.AddFile("e.flac", DriveMountTests.Bytes(100, 5), When, gig);
+                });
+            }
+            finally
+            {
+                DriveMount.Settle = settle;
+                DriveMount.MissRelistAfter = miss;
+                DriveMount.Probe.Every = every;
+                DriveMount.Probe.WhileOffline = offline;
+            }
+            await Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// One test on a fresh mount. <paramref name="setup"/> adds to the fake
+        /// Drive before the mount starts, so the first listing already has it.
+        /// </summary>
+        private static void Run(string what, Action<Rig> tests, Action<FakeDrive>? setup = null)
+        {
+            Rig? rig = null;
+            try
+            {
+                rig = new Rig(start: false);
+                setup?.Invoke(rig.Drive);
+                rig.Start();
+                tests(rig);
+            }
+            catch (Exception ex)
+            {
+                Check($"{what}: ran without throwing", false, ex.GetType().Name + ": " + ex.Message + " | " + rig?.LogText());
+            }
+            finally
+            {
+                // Bounded: a mount stuck in a callback must not hold the rest of the suite.
+                var r = rig;
+                if (r != null && !Task.Run(r.Dispose).Wait(TimeSpan.FromSeconds(60)))
+                    Check($"{what}: the test mount came down within a minute", false);
+            }
+        }
+
+        /// <summary>Whether a task ended (well or not) within the time, without throwing its error.</summary>
+        private static bool Ended(this Task task, int milliseconds)
+        {
+            try { task.Wait(milliseconds); } catch (AggregateException) { }
+            return task.IsCompleted;
+        }
+
+        /// <summary>Runs <paramref name="action"/> on a worker; false when it did not finish in time.</summary>
+        private static bool Within(int milliseconds, Action action, out Exception? error)
+        {
+            Exception? caught = null;
+            var task = Task.Run(() =>
+            {
+                try { action(); }
+                catch (Exception ex) { caught = ex; }
+            });
+            bool done = task.Wait(milliseconds);
+            error = caught;
+            return done;
+        }
+
+        // ---- 1. a folder holding only Google Docs, or files the letter has not seen ----
+
+        private static void FolderHoldingOnlyDocsIsNotRemoved(Rig rig)
+        {
+            var only = rig.Drive.Find(FakeDrive.Root, "OnlyDocs")!;
+            var later = rig.Drive.Find(FakeDrive.Root, "Later")!;
+            var empty = rig.Drive.Find(FakeDrive.Root, "Empty")!;
+
+            // Only a spreadsheet inside: nothing on the letter shows it.
+            Equal("a folder holding only a Google Sheet looks empty on the letter", "0",
+                Directory.GetFileSystemEntries(rig.P("OnlyDocs")).Length.ToString());
+            bool finished = Within(30000, () => Directory.Delete(rig.P("OnlyDocs")), out var error);
+            Check("removing a folder that holds only Google Docs is refused as not empty",
+                finished && error is IOException, error?.Message);
+            Check("and the folder, with the document in it, is not sent to the Drive trash",
+                !rig.Drive.Get(only)!.Trashed, rig.LogText());
+            Check("it is still on the letter", Directory.Exists(rig.P("OnlyDocs")));
+
+            // Listed empty through the letter, then given a file on the web.
+            Equal("a folder listed while empty", "0",
+                Directory.GetFileSystemEntries(rig.P("Later")).Length.ToString());
+            rig.Drive.AddFile("new.txt", DriveMountTests.Bytes(10, 1), When, later);
+            finished = Within(30000, () => Directory.Delete(rig.P("Later")), out error);
+            Check("removing a folder whose listing is older than a file added on the web is refused",
+                finished && error is IOException, error?.Message);
+            Check("and nothing in it is sent to the trash", !rig.Drive.Get(later)!.Trashed, rig.LogText());
+
+            // Controls: an empty folder still goes, and so does a folder emptied
+            // through the letter a moment ago (its files just trashed).
+            Equal("an empty folder", "0", Directory.GetFileSystemEntries(rig.P("Empty")).Length.ToString());
+            finished = Within(30000, () => Directory.Delete(rig.P("Empty")), out error);
+            Check("an empty folder is still removed bare", finished && error == null && rig.Drive.Get(empty)!.Trashed,
+                error?.Message + " | " + rig.LogText());
+            finished = Within(60000, () => Directory.Delete(rig.P("Music"), recursive: true), out error);
+            Check("a folder removed with everything in it still goes",
+                finished && error == null && rig.Drive.Get(rig.Music)!.Trashed && rig.Drive.Get(rig.Track)!.Trashed,
+                error?.Message + " | " + rig.LogText());
+        }
+
+        // ---- 2. a delete, folder create or rename waiting on Google holds only its own name ----
+
+        private static void SlowChangesHoldOnlyTheirOwnName(Rig rig)
+        {
+            var race = rig.Drive.Find(FakeDrive.Root, "Race")!;
+            var doomed = rig.Drive.Find(FakeDrive.Root, "Doomed")!;
+            var oldId = rig.Drive.Find(rig.Docs, "old.txt")!;
+            var newId = rig.Drive.Find(rig.Docs, "new.txt")!;
+
+            // Requests of one kind held at the fake Drive until let go. The hook
+            // only waits (with a limit); it never touches the letter.
+            var gate = new ManualResetEventSlim(true);
+            string holdKind = "", holdSubject = "";
+            int held = 0;
+            rig.Drive.BeforeAnswer = (kind, subject) =>
+            {
+                if (gate.IsSet || kind != holdKind || (holdSubject.Length > 0 && subject != holdSubject)) return;
+                Interlocked.Increment(ref held);
+                gate.Wait(TimeSpan.FromSeconds(20));
+            };
+            void Hold(string kind, string subject = "") { holdKind = kind; holdSubject = subject; held = 0; gate.Reset(); }
+
+            bool OthersAnswer(string what)
+            {
+                bool listed = Within(2000, () => Directory.GetFiles(rig.P("Music")), out var e1);
+                bool opened = Within(2000, () => { using (File.OpenRead(rig.P("Music", "song.flac"))) { } }, out var e2);
+                bool sized = Within(2000, () => _ = new DriveInfo(rig.Letter).AvailableFreeSpace, out var e3);
+                Check($"while {what}, a listing of another folder answers at once", listed && e1 == null, e1?.Message);
+                Check($"while {what}, another file opens at once", opened && e2 == null, e2?.Message);
+                Check($"while {what}, the drive's free space answers at once", sized && e3 == null, e3?.Message);
+                return listed && opened && sized;
+            }
+
+            try
+            {
+                // A delete waiting on Google's trash.
+                Hold("trash");
+                var deleting = Task.Run(() => File.Delete(rig.P("Docs", "notes.txt")));
+                Check("a delete's trash request is being held", DriveMountTests.Eventually(() => held > 0, 10000));
+                OthersAnswer("a delete waits on Google");
+                gate.Set();
+                Check("the held delete finishes once Google answers", deleting.Ended(30000) && deleting.Exception == null);
+                Check("and the file is in the Drive trash and gone from the letter",
+                    rig.Drive.Get(rig.Notes)!.Trashed && !File.Exists(rig.P("Docs", "notes.txt")), rig.LogText());
+
+                // A new folder waiting on Google.
+                Hold("create", "Held");
+                var making = Task.Run(() => Directory.CreateDirectory(rig.P("Held")));
+                Check("a new folder's request is being held", DriveMountTests.Eventually(() => held > 0, 10000));
+                OthersAnswer("a new folder waits on Google");
+                gate.Set();
+                Check("the held new folder is made once Google answers", making.Ended(30000) && making.Exception == null &&
+                    rig.Drive.Find(FakeDrive.Root, "Held") != null && Directory.Exists(rig.P("Held")), rig.LogText());
+
+                // A rename that replaces a file: the replaced one is trashed
+                // behind it, so the rename (which Windows holds every open on
+                // the drive for) answers at once.
+                Hold("trash");
+                bool moved = Within(2000, () => File.Move(rig.P("Docs", "new.txt"), rig.P("Docs", "old.txt"), overwrite: true),
+                    out var moveError);
+                gate.Set();
+                Check("a move over another file answers while the replaced file's trash waits on Google",
+                    moved && moveError == null, moveError?.Message);
+                Check("and the replaced file still ends up in the Drive trash",
+                    DriveMountTests.Eventually(() => rig.Drive.Get(oldId)!.Trashed, 30000), rig.LogText());
+                bool read = Within(10000, () =>
+                {
+                    if (File.ReadAllText(rig.P("Docs", "old.txt")) != "new") throw new IOException("the old contents");
+                }, out var readError);
+                Check("with the moved file under its new name",
+                    rig.Drive.Get(newId)!.Name == "old.txt" && !rig.Drive.Get(newId)!.Trashed && read && readError == null,
+                    readError?.Message);
+
+                // Controls that the name gates keep what WinFsp's guard gave.
+                // Two new folders of one name at once: one folder on Drive.
+                Hold("create", "Twin");
+                var first = Task.Run(() => Directory.CreateDirectory(rig.P("Twin")));
+                Check("one new folder's request is being held", DriveMountTests.Eventually(() => held > 0, 10000));
+                var second = Task.Run(() => Directory.CreateDirectory(rig.P("Twin")));
+                Thread.Sleep(500);
+                gate.Set();
+                Check("two programs making the same new folder at once both succeed",
+                    first.Ended(30000) && second.Ended(30000) && first.Exception == null && second.Exception == null,
+                    (first.Exception ?? second.Exception)?.GetBaseException().Message);
+                Equal("and Drive has the folder once", "1", rig.Drive.Count(FakeDrive.Root, "Twin").ToString());
+
+                // Two opens-or-creates of one new file, both past the "is it
+                // there" question before either made it: one file on Drive.
+                var listGate = new ManualResetEventSlim(false);
+                int listHeld = 0;
+                rig.Drive.OnList = async (folder, ct) =>
+                {
+                    if (folder != race || listGate.IsSet) return;
+                    Interlocked.Increment(ref listHeld);
+                    await Task.Run(() => listGate.Wait(TimeSpan.FromSeconds(20), ct), ct);
+                };
+                FileStream? a = null, b = null;
+                try
+                {
+                    var openA = Task.Run(() => a = new FileStream(rig.P("Race", "same.txt"), FileMode.OpenOrCreate,
+                        FileAccess.ReadWrite, FileShare.ReadWrite, 1));
+                    Check("the new file's folder listing is being held", DriveMountTests.Eventually(() => listHeld > 0, 10000));
+                    var openB = Task.Run(() => b = new FileStream(rig.P("Race", "same.txt"), FileMode.OpenOrCreate,
+                        FileAccess.ReadWrite, FileShare.ReadWrite, 1));
+                    Thread.Sleep(500);
+                    listGate.Set();
+                    bool bothOpen = openA.Ended(30000) && openB.Ended(30000) && openA.Exception == null && openB.Exception == null;
+                    Check("two programs opening-or-creating the same new file at once both get it", bothOpen,
+                        (openA.Exception ?? openB.Exception)?.GetBaseException().Message);
+                    if (bothOpen)
+                    {
+                        a!.Write(Encoding.UTF8.GetBytes("A"));
+                        a.Flush();
+                        b!.Position = 1;
+                        b.Write(Encoding.UTF8.GetBytes("B"));
+                        b.Flush();
+                    }
+                }
+                finally
+                {
+                    listGate.Set();
+                    rig.Drive.OnList = null;
+                    a?.Dispose();
+                    b?.Dispose();
+                }
+                Check("and Drive has the file once, with both writes in it",
+                    rig.Uploaded(20000) && DriveMountTests.Eventually(() => rig.Drive.Count(race, "same.txt") == 1, 10000) &&
+                    rig.Drive.Count(race, "same.txt") == 1 &&
+                    Encoding.UTF8.GetString(rig.Drive.Get(rig.Drive.Find(race, "same.txt")!)!.Data) == "AB",
+                    $"{rig.Drive.Count(race, "same.txt")} copies | {rig.LogText()}");
+
+                // A file made in a folder while the folder's delete waits on
+                // Google waits for it, then fails: nothing goes into a trashed folder.
+                Equal("an empty folder to remove", "0", Directory.GetFileSystemEntries(rig.P("Doomed")).Length.ToString());
+                Hold("trash", "");
+                var removing = Task.Run(() => Directory.Delete(rig.P("Doomed")));
+                Check("the folder's trash request is being held", DriveMountTests.Eventually(() => held > 0, 10000));
+                var late = Task.Run(() => File.WriteAllText(rig.P("Doomed", "late.txt"), "too late"));
+                Thread.Sleep(700);
+                bool waited = !late.IsCompleted;
+                gate.Set();
+                bool removed = removing.Ended(30000) && removing.Exception == null;
+                bool lateEnded = late.Ended(30000);
+                Check("a file made in a folder being removed waits for the removal", waited);
+                Check("then fails, since the folder is gone", removed && lateEnded && late.Exception != null,
+                    late.Exception?.GetBaseException().Message);
+                Thread.Sleep(800);
+                Check("and nothing is uploaded into the trashed folder",
+                    rig.Drive.Get(doomed)!.Trashed && rig.Drive.Find(doomed, "late.txt") == null && rig.Uploaded(), rig.LogText());
+            }
+            finally
+            {
+                gate.Set();
+                rig.Drive.BeforeAnswer = null;
+            }
+        }
+
+        // ---- 3. the letter follows the state as it is now, not an event's word ----
+
+        private static void LetterFollowsTheStateNow(Rig rig)
+        {
+            var mount = rig.Mount;
+            void Deliver(DriveState state) =>
+                typeof(DriveMount).GetMethod("OnHealthChanged", BindingFlags.NonPublic | BindingFlags.Instance)!
+                    .Invoke(mount, new object[] { state });
+
+            _ = Directory.GetFileSystemEntries(rig.Letter + "\\");
+            rig.Client.Health.Succeeded();
+            Check("Drive is online with the letter shown to start with",
+                DriveMountTests.Eventually(() => rig.Client.Health.State == DriveState.Online, 5000) && mount.LetterShown);
+
+            // An Offline event arriving after the Online one that followed it.
+            Deliver(DriveState.Offline);
+            Thread.Sleep(1500);
+            Check("an Offline event that arrives after Drive came back does not hide the letter",
+                mount.LetterShown && Directory.Exists(rig.Letter + "\\"));
+
+            // The mirror: an Online event arriving after Drive went offline again.
+            var network = new HttpRequestException("no route to host");
+            for (int i = 0; i < DriveHealth.FailuresBeforeOffline; i++) rig.Client.Health.Failed(network);
+            Check("offline, the letter goes away", DriveMountTests.Eventually(() => !mount.LetterShown, 5000));
+            Deliver(DriveState.Online);
+            Thread.Sleep(1500);
+            Check("an Online event that arrives after Drive went offline again does not bring the letter back",
+                !mount.LetterShown);
+            rig.Client.Health.Succeeded();
+            Check("and it comes back when Drive really does", DriveMountTests.Eventually(() => mount.LetterShown, 5000));
+
+            // Hidden while online, with nothing left to say so: the probe puts it back.
+            var probe = typeof(DriveMount).GetField("_probe", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(mount)!;
+            var host = (WinFsp.Host)typeof(DriveMount).GetField("_host", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(mount)!;
+            DriveMount.Probe.WhileOffline = TimeSpan.FromMilliseconds(500);
+            try
+            {
+                host.Unmount();
+                Check("the letter is hidden while Drive is online", !mount.LetterShown && rig.Client.Health.State == DriveState.Online);
+                probe.GetType().GetMethod("Pace")!.Invoke(probe, null);
+                Check("a letter hidden while Drive is online comes back by itself",
+                    DriveMountTests.Eventually(() => mount.LetterShown && Directory.Exists(rig.Letter + "\\"), 10000), rig.LogText());
+            }
+            finally { DriveMount.Probe.WhileOffline = TimeSpan.FromHours(1); }
+        }
+
+        // ---- 5. a folder renamed or removed while it is being listed ----
+
+        private static void ListingKeepsToItsFolder(Rig rig)
+        {
+            var live = rig.Drive.Find(rig.Music, "Live")!;
+            var a = rig.Drive.Find(live, "a.flac")!;
+            var gig = rig.Drive.Find(rig.Music, "Gig")!;
+            const BindingFlags Private = BindingFlags.NonPublic | BindingFlags.Instance;
+            var ids = (System.Collections.Concurrent.ConcurrentDictionary<string, string>)
+                typeof(DriveMount).GetField("_ids", Private)!.GetValue(rig.Mount)!;
+            var listings = (System.Collections.Concurrent.ConcurrentDictionary<string, DrivePlaced[]>)
+                typeof(DriveMount).GetField("_listings", Private)!.GetValue(rig.Mount)!;
+
+            Equal("Music lists through the letter", "6", Directory.GetFileSystemEntries(rig.P("Music")).Length.ToString());
+
+            // A folder's listing held at the fake Drive until let go; the hook only waits.
+            var gate = new ManualResetEventSlim(false);
+            string holdFolder = live;
+            int held = 0;
+            rig.Drive.OnList = async (folder, ct) =>
+            {
+                if (folder != holdFolder || gate.IsSet) return;
+                Interlocked.Increment(ref held);
+                await Task.Run(() => gate.Wait(TimeSpan.FromSeconds(20), ct), ct);
+            };
+            try
+            {
+                var listing = Task.Run(() => rig.Mount.Populate(rig.P("Music", "Live")));
+                Check("a listing of Live is under way", DriveMountTests.Eventually(() => held > 0, 10000));
+                bool renamed = Within(10000, () => Directory.Move(rig.P("Music", "Live"), rig.P("Music", "Live 2019")),
+                    out var renameError);
+                Check("Live is renamed on the letter while it is being listed", renamed && renameError == null,
+                    renameError?.Message);
+                gate.Set();
+                Check("the listing ends", listing.Ended(30000));
+
+                Check("no file is left bound under the folder's old name",
+                    !ids.Keys.Any(k => k.StartsWith("music\\live\\", StringComparison.Ordinal)),
+                    string.Join(", ", ids.Keys.Where(k => k.StartsWith("music\\live", StringComparison.Ordinal))));
+                bool made = Within(10000, () => Directory.CreateDirectory(rig.P("Music", "Live")), out var makeError);
+                Check("a new folder can be made with the old name", made && makeError == null, makeError?.Message);
+                Equal("the new folder is empty on the letter", "0",
+                    Directory.GetFileSystemEntries(rig.P("Music", "Live")).Length.ToString());
+                Check("and in the file manager", rig.Mount.TryListing(rig.P("Music", "Live"), out var shown) && shown.Count == 0,
+                    string.Join(", ", shown.Select(s => s.Name)));
+                Within(10000, () => File.Delete(rig.P("Music", "Live", "a.flac")), out _);
+                Check("deleting a.flac in the new folder trashes nothing in the renamed one", !rig.Drive.Get(a)!.Trashed);
+                Equal("the renamed folder lists, with all its files", "3",
+                    Directory.GetFileSystemEntries(rig.P("Music", "Live 2019")).Length.ToString());
+
+                // The file manager's way: taken off the letter while it is listed.
+                Check("Gig is in Music's listing", rig.Mount.TryListing(rig.P("Music"), out var music) &&
+                    music.Any(m => m.Name == "Gig"));
+                gate.Reset();
+                held = 0;
+                holdFolder = gig;
+                var gigListing = Task.Run(() => rig.Mount.Populate(rig.P("Music", "Gig")));
+                Check("a listing of Gig is under way", DriveMountTests.Eventually(() => held > 0, 10000));
+                rig.Mount.RemoveOne(rig.P("Music", "Gig"));
+                gate.Set();
+                Check("that listing ends", gigListing.Ended(30000));
+                Check("nothing is left under a folder taken off the letter while it was listed",
+                    !ids.Keys.Any(k => k.StartsWith("music\\gig\\", StringComparison.Ordinal)) && !listings.ContainsKey("music\\gig"),
+                    string.Join(", ", ids.Keys.Where(k => k.StartsWith("music\\gig", StringComparison.Ordinal))));
+            }
+            finally
+            {
+                gate.Set();
+                rig.Drive.OnList = null;
+            }
         }
     }
 }

@@ -247,6 +247,17 @@ over the running copy and restarts Explorer Native on the new version. Nothing
 checks automatically.
 
 
+Reporting a bug
+
+Run ExplorerNative --do bug-report from a command prompt. It writes one text
+file on your desktop with the version, your Windows build, your settings and
+the last few hundred lines of the logs. Passwords, keys, sign-ins and email
+addresses are taken out, and passwords in the settings only say whether they
+are set. Read it before you send it. It works even when Explorer Native is
+stuck or has closed. To write it somewhere else, give a path:
+ExplorerNative --do bug-report D:\report.txt
+
+
 Building
 
 Needs the .NET 10 SDK.
@@ -267,5 +278,6 @@ then push a tag of the same number:
 git tag v1.0.1
 git push origin v1.0.1
 
-GitHub Actions builds both architectures and publishes the release that Check
-for updates finds.
+GitHub Actions builds both architectures and runs the tests at the same time.
+The release is published, and Check for updates finds it, only when the tests
+pass. Every push to main and every pull request is built and tested too.

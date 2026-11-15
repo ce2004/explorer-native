@@ -1,17 +1,20 @@
-using System;
+using SMBLibrary.Client;
+using SMBLibrary;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+using System.Net;
+using System.Reflection;
 using System.Security.Authentication;
-using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Security.Cryptography;
 using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
+using System.Threading;
+using System;
 
 namespace ExplorerNative
 {
@@ -1304,6 +1307,1112 @@ namespace ExplorerNative
             Check("and says permission denied each time", Count(roOutput, "Permission denied") >= 5, Count(roOutput, "Permission denied") + " refusals\n" + Tail(roOutput));
 
             foreach (string made in new[] { "renamed.bin", "last.txt", "kept-time.txt", "name with space.txt" }) ServedFolder.DeleteQuietly(Path.Combine(share, made));
+        }
+    }
+
+    // ---- merged from Release700Tests.cs (7.1.0: tests are filed by feature, not by fix round) ----
+
+    /// <summary>
+    /// 7.0.0: the file servers (SMB here; FTP and SFTP have their own suite in
+    /// FileServerTests) and what decides which of them run. Group: release700.
+    /// The SMB server is talked to over a real socket by the library's own
+    /// client, on a port of the test's choosing.
+    /// </summary>
+    internal static class Release700Tests
+    {
+        private static Action<string, bool, string?> _check = null!;
+        private static Action<string, string, string> _equal = null!;
+
+        private static void Check(string what, bool ok, string? detail = null) => _check(what, ok, detail);
+        private static void Equal(string what, string expected, string actual) => _equal(what, expected, actual);
+
+        public static async Task RunAll(Action<string, bool, string?> check, Action<string, string, string> equal)
+        {
+            _check = check;
+            _equal = equal;
+            Console.WriteLine("7.0.0, file servers:");
+
+            var sandbox = Path.Combine(Path.GetTempPath(), "en-700-" + Guid.NewGuid().ToString("N")[..8]);
+            Directory.CreateDirectory(sandbox);
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(90));
+            try
+            {
+                Rules();
+                var work = Task.Run(async () =>
+                {
+                    Smb(sandbox);
+                    SmbWholeDrive(sandbox);
+                    await WhichRun(sandbox);
+                });
+                if (await Task.WhenAny(work, Task.Delay(Timeout.Infinite, watchdog.Token)) != work)
+                    Check("700: the file server tests finish in time", false, "still running after 90 seconds");
+                else await work;
+                Wiring();
+            }
+            finally
+            {
+                try { Directory.Delete(sandbox, true); } catch { }
+            }
+            Console.WriteLine();
+        }
+
+        private static int FreePort()
+        {
+            var probe = new TcpListener(IPAddress.Loopback, 0);
+            probe.Start();
+            int port = ((IPEndPoint)probe.LocalEndpoint).Port;
+            probe.Stop();
+            return port;
+        }
+
+        // ---------------- what may be a server ----------------
+
+        private static void Rules()
+        {
+            FileServers.Config Smb(string folder = @"D:\Music", int port = 4450, string share = "files", string user = "conner",
+                string password = "long enough", bool on = true) =>
+                new(FileServers.Kind.Smb, on, folder, port, share, user, password, false, "");
+
+            Check("700 rules: a whole setup is accepted", FileServers.WhyNot(Smb()) == null, FileServers.WhyNot(Smb()));
+            Check("700 rules: a drive is a folder too", FileServers.WhyNot(Smb(folder: @"G:\")) == null);
+            Check("700 rules: no folder is refused, in a sentence",
+                FileServers.WhyNot(Smb(folder: "")) is { } a && a.Contains("folder or drive") && a.EndsWith('.'), FileServers.WhyNot(Smb(folder: "")));
+            Check("700 rules: a path that is not whole is refused", FileServers.WhyNot(Smb(folder: "Music")) != null);
+            Check("700 rules: Apple Music is not a folder to share", FileServers.WhyNot(Smb(folder: "::applemusic")) != null);
+            Check("700 rules: no user name is refused", FileServers.WhyNot(Smb(user: "")) != null);
+            Check("700 rules: a short password is refused, and says how long",
+                FileServers.WhyNot(Smb(password: "short")) is { } p && p.Contains(FileServers.ShortestPassword.ToString()),
+                FileServers.WhyNot(Smb(password: "short")));
+            Check("700 rules: no password at all is refused", FileServers.WhyNot(Smb(password: "")) != null);
+            Check("700 rules: port 0 and 70000 are refused",
+                FileServers.WhyNot(Smb(port: 0)) != null && FileServers.WhyNot(Smb(port: 70000)) != null);
+            Check("700 rules: a share name with a slash is refused", FileServers.WhyNot(Smb(share: @"a\b")) != null);
+
+            var ftp = new FileServers.Config(FileServers.Kind.Ftp, true, @"D:\Music", 4450, "", "conner", "long enough", false, "");
+            Check("700 rules: two servers cannot have one port",
+                FileServers.WhyNot(ftp, new[] { Smb(), ftp }) is { } clash && clash.Contains("4450") && clash.Contains("SMB"),
+                FileServers.WhyNot(ftp, new[] { Smb(), ftp }));
+            Check("700 rules: unless the other is off", FileServers.WhyNot(ftp, new[] { Smb(on: false), ftp }) == null);
+
+            var s = new Settings();
+            Check("700 settings: every server is off by default, on a port of its own that is not the protocol's",
+                !s.SmbServerEnabled && !s.FtpServerEnabled && !s.SftpServerEnabled &&
+                s.SmbServerPort == FileServers.DefaultSmbPort && s.SmbServerPort != 445 &&
+                s.FtpServerPort != 21 && s.SftpServerPort != 22 &&
+                new[] { s.SmbServerPort, s.FtpServerPort, s.SftpServerPort }.Distinct().Count() == 3);
+            Check("700 settings: each PC keeps its own server keys",
+                Settings.ThisPcOnly.Contains(nameof(Settings.SftpServerHostKey)) &&
+                Settings.ThisPcOnly.Contains(nameof(Settings.FtpServerCertificate)));
+
+            var withFtp = new Settings { FtpServerEnabled = true };
+            Check("700 keys: turning FTP on makes its certificate, once",
+                FileServers.EnsureKeys(withFtp) && withFtp.FtpServerCertificate.Length > 0 && !FileServers.EnsureKeys(withFtp));
+            Check("700 keys: nothing is made for servers that are off",
+                !FileServers.EnsureKeys(new Settings()));
+            var withSftp = new Settings { SftpServerEnabled = true };
+            Check("700 keys: turning SFTP on makes its key, once, and the key has a fingerprint",
+                FileServers.EnsureKeys(withSftp) && withSftp.SftpServerHostKey.Length > 0 && !FileServers.EnsureKeys(withSftp) &&
+                FileServers.FingerprintOf(withSftp).StartsWith("SHA256:", StringComparison.Ordinal),
+                FileServers.FingerprintOf(withSftp));
+            Check("700 keys: no key, no fingerprint", FileServers.FingerprintOf(new Settings()) == "");
+            using (var loaded = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadPkcs12(
+                       Convert.FromBase64String(withFtp.FtpServerCertificate), null))
+                Check("700 keys: the certificate has its private key and ten years", loaded.HasPrivateKey &&
+                    loaded.NotAfter > DateTime.Now.AddYears(9));
+        }
+
+        // ---------------- SMB, over a real socket ----------------
+
+        private static readonly MethodInfo? ConnectOnPort = typeof(SMB2Client).GetMethod("Connect",
+            BindingFlags.NonPublic | BindingFlags.Instance, null,
+            new[] { typeof(IPAddress), typeof(SMBTransportType), typeof(int) }, null);
+
+        /// <summary>Signs in and opens the share, or says how far it got.</summary>
+        private static (SMB2Client Client, ISMBFileStore? Share, string Outcome) Open(int port, string user, string password, string share)
+        {
+            var client = new SMB2Client();
+            if (ConnectOnPort == null || !(bool)ConnectOnPort.Invoke(client, new object[] { IPAddress.Loopback, SMBTransportType.DirectTCPTransport, port })!)
+                return (client, null, "could not connect");
+            var status = client.Login("", user, password);
+            if (status != NTStatus.STATUS_SUCCESS) return (client, null, "login " + status);
+            var store = client.TreeConnect(share, out status);
+            return (client, status == NTStatus.STATUS_SUCCESS ? store : null, "share " + status);
+        }
+
+        /// <summary>Makes a junction with Windows' own mklink. False when it could not.</summary>
+        private static bool Junction(string at, string target)
+        {
+            try
+            {
+                var cmd = Path.Combine(Environment.SystemDirectory, "cmd.exe");
+                using var p = Process.Start(new ProcessStartInfo(cmd, $"/c mklink /J \"{at}\" \"{target}\"")
+                {
+                    UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true,
+                });
+                p?.WaitForExit(10000);
+                return Directory.Exists(at) && (File.GetAttributes(at) & System.IO.FileAttributes.ReparsePoint) != 0;
+            }
+            catch { return false; }
+        }
+
+        private static string? ReadText(ISMBFileStore share, string path)
+        {
+            var status = share.CreateFile(out var handle, out _, path, AccessMask.GENERIC_READ | AccessMask.SYNCHRONIZE,
+                SMBLibrary.FileAttributes.Normal, ShareAccess.Read, CreateDisposition.FILE_OPEN,
+                CreateOptions.FILE_NON_DIRECTORY_FILE | CreateOptions.FILE_SYNCHRONOUS_IO_ALERT, null);
+            if (status != NTStatus.STATUS_SUCCESS) return null;
+            share.ReadFile(out var data, handle, 0, 65536);
+            share.CloseFile(handle);
+            return Encoding.UTF8.GetString(data ?? Array.Empty<byte>());
+        }
+
+        private static NTStatus WriteText(ISMBFileStore share, string path, string text)
+        {
+            var status = share.CreateFile(out var handle, out _, path, AccessMask.GENERIC_WRITE | AccessMask.SYNCHRONIZE,
+                SMBLibrary.FileAttributes.Normal, ShareAccess.None, CreateDisposition.FILE_OVERWRITE_IF,
+                CreateOptions.FILE_NON_DIRECTORY_FILE | CreateOptions.FILE_SYNCHRONOUS_IO_ALERT, null);
+            if (status != NTStatus.STATUS_SUCCESS) return status;
+            status = share.WriteFile(out _, handle, 0, Encoding.UTF8.GetBytes(text));
+            share.CloseFile(handle);
+            return status;
+        }
+
+        private static List<string> Names(ISMBFileStore share, string folder)
+        {
+            var names = new List<string>();
+            var status = share.CreateFile(out var handle, out _, folder, AccessMask.GENERIC_READ, SMBLibrary.FileAttributes.Directory,
+                ShareAccess.Read | ShareAccess.Write, CreateDisposition.FILE_OPEN, CreateOptions.FILE_DIRECTORY_FILE, null);
+            if (status != NTStatus.STATUS_SUCCESS) return names;
+            share.QueryDirectory(out var found, handle, "*", FileInformationClass.FileDirectoryInformation);
+            share.CloseFile(handle);
+            foreach (var entry in found ?? new())
+                if (entry is FileDirectoryInformation info && info.FileName is not ("." or "..")) names.Add(info.FileName);
+            names.Sort(StringComparer.Ordinal);
+            return names;
+        }
+
+        private static void Smb(string sandbox)
+        {
+            Check("700 smb: the library can still be started on a chosen port", SmbFileServer.StartOnPort != null);
+            Check("700 smb: and its client can still be pointed at one, for these tests", ConnectOnPort != null);
+            if (SmbFileServer.StartOnPort == null || ConnectOnPort == null) return;
+
+            var folder = Path.Combine(sandbox, "shared");
+            Directory.CreateDirectory(Path.Combine(folder, "Sub folder"));
+            File.WriteAllText(Path.Combine(folder, "hello.txt"), "hello from the share");
+            File.WriteAllText(Path.Combine(folder, "Sub folder", "ünïcode näme.txt"), "inside");
+
+            int port = FreePort();
+            using (var server = new SmbFileServer(folder, port, "files", "conner", "a long password", readOnly: false))
+            {
+                server.Start();
+
+                var (bad, none, outcome) = Open(port, "conner", "wrong password", "files");
+                Check("700 smb: a wrong password is refused", none == null && outcome.StartsWith("login"), outcome);
+                bad.Disconnect();
+                (bad, none, outcome) = Open(port, "somebody", "a long password", "files");
+                Check("700 smb: and so is a user name that is not the one set", none == null, outcome);
+                bad.Disconnect();
+
+                var (client, share, said) = Open(port, "Conner", "a long password", "files");
+                Check("700 smb: the right name and password open the share, whatever the name's case", share != null, said);
+                if (share != null)
+                {
+                    Equal("700 smb: the folder is listed", "Sub folder|hello.txt", string.Join("|", Names(share, "")));
+                    Equal("700 smb: a file is read", "hello from the share", ReadText(share, "hello.txt") ?? "(not opened)");
+                    Equal("700 smb: a name with accents in a subfolder too", "inside",
+                        ReadText(share, @"Sub folder\ünïcode näme.txt") ?? "(not opened)");
+                    var wrote = WriteText(share, "new.txt", "written over SMB");
+                    Check("700 smb: a file is written", wrote == NTStatus.STATUS_SUCCESS &&
+                        File.ReadAllText(Path.Combine(folder, "new.txt")) == "written over SMB", wrote.ToString());
+                    Check("700 smb: nothing outside the folder is reached",
+                        ReadText(share, @"..\outside.txt") == null && ReadText(share, @"Sub folder\..\..\outside.txt") == null);
+
+                    // 7.0.1, the security review. A junction inside the share
+                    // that points out of it is not a way out; one that stays
+                    // inside still works.
+                    var secret = Path.Combine(sandbox, "secret");
+                    Directory.CreateDirectory(secret);
+                    File.WriteAllText(Path.Combine(secret, "secret.txt"), "not shared");
+                    bool linked = Junction(Path.Combine(folder, "way out"), secret) &&
+                                  Junction(Path.Combine(folder, "way round"), Path.Combine(folder, "Sub folder"));
+                    if (linked)
+                    {
+                        Check("700 smb: a junction that leaves the share is not followed",
+                            ReadText(share, @"way out\secret.txt") == null && Names(share, "way out").Count == 0,
+                            ReadText(share, @"way out\secret.txt") ?? string.Join("|", Names(share, "way out")));
+                        Check("700 smb: nor written through",
+                            WriteText(share, @"way out\planted.txt", "x") != NTStatus.STATUS_SUCCESS &&
+                            !File.Exists(Path.Combine(secret, "planted.txt")));
+                        Equal("700 smb: a junction that stays inside still works", "inside",
+                            ReadText(share, @"way round\ünïcode näme.txt") ?? "(not opened)");
+                    }
+                    else Console.WriteLine("  (junctions could not be made: the link checks were not run)");
+
+                    Check("700 smb: a device name is not opened", ReadText(share, "NUL") == null && ReadText(share, @"Sub folder\CON.txt") == null);
+                    Check("700 smb: nor a name Windows would quietly respell", ReadText(share, "hello.txt.") == null && ReadText(share, "hello.txt ") == null);
+                    Check("700 smb: a file's own stream is still allowed (Windows writes one on downloaded files)",
+                        WriteText(share, "new.txt:Zone.Identifier", "[ZoneTransfer]") == NTStatus.STATUS_SUCCESS);
+
+                    var opened = share.CreateFile(out var any, out _, "hello.txt", AccessMask.GENERIC_READ | AccessMask.SYNCHRONIZE,
+                        SMBLibrary.FileAttributes.Normal, ShareAccess.Read, CreateDisposition.FILE_OPEN,
+                        CreateOptions.FILE_NON_DIRECTORY_FILE | CreateOptions.FILE_SYNCHRONOUS_IO_ALERT, null);
+                    if (opened == NTStatus.STATUS_SUCCESS)
+                    {
+                        // FSCTL_SET_REPARSE_POINT and friends: no control code reaches the disk.
+                        var control = share.DeviceIOControl(any, 0x000900A4, new byte[16], out _, 0);
+                        var acl = share.SetSecurityInformation(any, SecurityInformation.DACL_SECURITY_INFORMATION, new SecurityDescriptor());
+                        share.CloseFile(any);
+                        Check("700 smb: control codes are refused", control != NTStatus.STATUS_SUCCESS, control.ToString());
+                        Check("700 smb: and so is changing who may open a file", acl != NTStatus.STATUS_SUCCESS, acl.ToString());
+                    }
+                }
+                client.Disconnect();
+
+                // Nobody gets in without the name and the password.
+                foreach (var (who, word, label) in new[] { ("", "", "no name at all"), ("Guest", "", "Guest"), ("conner", "", "the right name with no password") })
+                {
+                    var (anon, anonShare, anonOutcome) = Open(port, who, word, "files");
+                    Check($"700 smb: {label} is refused", anonShare == null, anonOutcome);
+                    if (anonShare == null && anonOutcome.StartsWith("share"))
+                    {
+                        // Signed in as nobody: the pipe share must not list the shares either.
+                        var listed = anon.ListShares(out var listStatus);
+                        Check($"700 smb: and {label} cannot list the shares", listed == null || listed.Count == 0, listStatus.ToString());
+                    }
+                    anon.Disconnect();
+                }
+
+                var second = new SmbFileServer(folder, port, "files", "conner", "a long password", false);
+                string? refused = null;
+                try { second.Start(); } catch (InvalidOperationException ex) { refused = ex.Message; }
+                finally { second.Dispose(); }
+                Check("700 smb: a port already taken is said in a sentence",
+                    refused == $"Port {port} is already in use by another program.", refused);
+            }
+
+            // Stopped: the port is free again.
+            bool free;
+            try { var again = new TcpListener(IPAddress.Loopback, port); again.Start(); again.Stop(); free = true; }
+            catch { free = false; }
+            Check("700 smb: stopping gives the port back", free);
+
+            File.WriteAllText(Path.Combine(sandbox, "outside.txt"), "not shared");
+            port = FreePort();
+            using (var readOnly = new SmbFileServer(folder, port, "files", "conner", "a long password", readOnly: true))
+            {
+                readOnly.Start();
+                var (client, share, said) = Open(port, "conner", "a long password", "files");
+                Check("700 smb read only: the share opens", share != null, said);
+                if (share != null)
+                {
+                    Equal("700 smb read only: files are read", "hello from the share", ReadText(share, "hello.txt") ?? "(not opened)");
+                    var wrote = WriteText(share, "refused.txt", "no");
+                    Check("700 smb read only: nothing is written", wrote != NTStatus.STATUS_SUCCESS &&
+                        !File.Exists(Path.Combine(folder, "refused.txt")), wrote.ToString());
+
+                    var forDelete = share.CreateFile(out var doomed, out _, "hello.txt", AccessMask.DELETE | AccessMask.SYNCHRONIZE,
+                        SMBLibrary.FileAttributes.Normal, ShareAccess.Read | ShareAccess.Write | ShareAccess.Delete,
+                        CreateDisposition.FILE_OPEN, CreateOptions.FILE_SYNCHRONOUS_IO_ALERT, null);
+                    if (forDelete == NTStatus.STATUS_SUCCESS)
+                    {
+                        share.SetFileInformation(doomed, new FileRenameInformationType2 { FileName = @"\renamed.txt" });
+                        share.SetFileInformation(doomed, new FileDispositionInformation { DeletePending = true });
+                        share.CloseFile(doomed);
+                    }
+                    var onClose = share.CreateFile(out var closing, out _, "hello.txt", AccessMask.GENERIC_READ | AccessMask.SYNCHRONIZE,
+                        SMBLibrary.FileAttributes.Normal, ShareAccess.Read | ShareAccess.Delete, CreateDisposition.FILE_OPEN,
+                        CreateOptions.FILE_DELETE_ON_CLOSE | CreateOptions.FILE_SYNCHRONOUS_IO_ALERT, null);
+                    if (onClose == NTStatus.STATUS_SUCCESS) share.CloseFile(closing);
+                    var made = share.CreateFile(out var newFolder, out _, "made", AccessMask.GENERIC_READ | AccessMask.SYNCHRONIZE,
+                        SMBLibrary.FileAttributes.Directory, ShareAccess.Read, CreateDisposition.FILE_CREATE,
+                        CreateOptions.FILE_DIRECTORY_FILE, null);
+                    if (made == NTStatus.STATUS_SUCCESS) share.CloseFile(newFolder);
+                    Check("700 smb read only: nothing is renamed, deleted or made, whichever way it is asked",
+                        File.Exists(Path.Combine(folder, "hello.txt")) && !File.Exists(Path.Combine(folder, "renamed.txt")) &&
+                        !Directory.Exists(Path.Combine(folder, "made")),
+                        $"delete open {forDelete}, delete on close {onClose}, new folder {made}");
+                }
+                client.Disconnect();
+            }
+        }
+
+        /// <summary>
+        /// A whole drive ("G:\"): the library put two backslashes in every
+        /// path, and nothing on a shared drive could be opened. Here a spare
+        /// letter is pointed at a folder with Windows' subst.
+        /// </summary>
+        private static void SmbWholeDrive(string sandbox)
+        {
+            if (SmbFileServer.StartOnPort == null || ConnectOnPort == null) return;
+            var folder = Path.Combine(sandbox, "drive");
+            Directory.CreateDirectory(Path.Combine(folder, "Music"));
+            File.WriteAllText(Path.Combine(folder, "top.txt"), "at the top");
+            File.WriteAllText(Path.Combine(folder, "Music", "song.txt"), "a song");
+
+            char letter = '\0';
+            for (char c = 'R'; c >= 'K' && letter == '\0'; c--)
+                if (!Directory.Exists(c + @":\")) letter = c;
+            var subst = Path.Combine(Environment.SystemDirectory, "subst.exe");
+            if (letter == '\0' || !File.Exists(subst))
+            {
+                Console.WriteLine("  (no spare drive letter or no subst: the whole-drive share was not tested)");
+                return;
+            }
+
+            void Subst(string arguments)
+            {
+                using var p = Process.Start(new ProcessStartInfo(subst, arguments) { UseShellExecute = false, CreateNoWindow = true });
+                p?.WaitForExit(10000);
+            }
+
+            Subst($"{letter}: \"{folder}\"");
+            try
+            {
+                if (!Directory.Exists(letter + @":\"))
+                {
+                    Console.WriteLine("  (subst did not make the drive: the whole-drive share was not tested)");
+                    return;
+                }
+                int port = FreePort();
+                using var server = new SmbFileServer(letter + @":\", port, "drive", "conner", "a long password", false);
+                server.Start();
+                var (client, share, said) = Open(port, "conner", "a long password", "drive");
+                Check("700 smb drive: a whole drive opens as a share", share != null, said);
+                if (share != null)
+                {
+                    Equal("700 smb drive: its top folder is listed", "Music|top.txt", string.Join("|", Names(share, "")));
+                    Equal("700 smb drive: a file at the top is read", "at the top", ReadText(share, "top.txt") ?? "(not opened)");
+                    Equal("700 smb drive: and one in a folder", "a song", ReadText(share, @"Music\song.txt") ?? "(not opened)");
+
+                    var status = share.CreateFile(out var handle, out _, "top.txt", AccessMask.DELETE | AccessMask.SYNCHRONIZE,
+                        SMBLibrary.FileAttributes.Normal, ShareAccess.Read | ShareAccess.Write | ShareAccess.Delete,
+                        CreateDisposition.FILE_OPEN, CreateOptions.FILE_SYNCHRONOUS_IO_ALERT, null);
+                    if (status == NTStatus.STATUS_SUCCESS)
+                    {
+                        status = share.SetFileInformation(handle, new FileRenameInformationType2 { FileName = @"\Music\moved.txt" });
+                        share.CloseFile(handle);
+                    }
+                    Check("700 smb drive: a rename lands where it was sent", status == NTStatus.STATUS_SUCCESS &&
+                        File.Exists(Path.Combine(folder, "Music", "moved.txt")) && !File.Exists(Path.Combine(folder, "top.txt")),
+                        status.ToString());
+                }
+                client.Disconnect();
+            }
+            finally { Subst($"{letter}: /d"); }
+        }
+
+        // ---------------- which servers run ----------------
+
+        private static async Task WhichRun(string sandbox)
+        {
+            if (SmbFileServer.StartOnPort == null || ConnectOnPort == null) return;
+            var folder = Path.Combine(sandbox, "served");
+            Directory.CreateDirectory(folder);
+            File.WriteAllText(Path.Combine(folder, "hello.txt"), "served");
+            var later = Path.Combine(sandbox, "arrives later");
+
+            var said = new List<string>();
+            var before = FileServers.LookAgainEvery;
+            var beforeSay = FileServers.SayWaitingAfter;
+            FileServers.LookAgainEvery = TimeSpan.FromMilliseconds(150);
+            FileServers.SayWaitingAfter = TimeSpan.FromMilliseconds(600);
+            using var servers = new FileServers { Said = (id, text) => { lock (said) said.Add(id + ": " + text); } };
+            try
+            {
+                int port = FreePort();
+                var settings = new Settings
+                {
+                    SmbServerEnabled = true, SmbServerFolder = folder, SmbServerPort = port, SmbServerShare = "files",
+                    SmbServerUser = "conner", SmbServerPassword = "a long password",
+                };
+                await servers.Apply(settings, announce: true);
+                var (client, share, outcome) = Open(port, "conner", "a long password", "files");
+                Check("700 run: a server turned on in settings is listening", servers.IsRunning(FileServers.Kind.Smb) && share != null, outcome);
+                client.Disconnect();
+                Check("700 run: and that is said, with the folder and the port",
+                    said.Count == 1 && said[0] == $"server.started: The SMB server is on, sharing {folder} on port {port}",
+                    string.Join(" | ", said));
+                Equal("700 run: its status line says the same", $"The SMB server is on, sharing {folder} on port {port}.",
+                    servers.StatusOf(FileServers.Kind.Smb));
+
+                // The same settings again: nothing restarts, nothing is said.
+                await servers.Apply(settings, announce: true);
+                Check("700 run: applying the same settings again says nothing", said.Count == 1, string.Join(" | ", said));
+
+                // A new port: the old one is let go.
+                int moved = FreePort();
+                settings.SmbServerPort = moved;
+                await servers.Apply(settings, announce: true);
+                var (old, oldShare, _) = Open(port, "conner", "a long password", "files");
+                old.Disconnect();
+                (client, share, outcome) = Open(moved, "conner", "a long password", "files");
+                client.Disconnect();
+                Check("700 run: a changed port moves the server", share != null && oldShare == null, outcome);
+
+                // A short password: it stops, and says why.
+                said.Clear();
+                settings.SmbServerPassword = "short";
+                await servers.Apply(settings, announce: true);
+                Check("700 run: settings that cannot be a server stop it and say why",
+                    !servers.IsRunning(FileServers.Kind.Smb) && said.Count == 1 && said[0].StartsWith("server.failed: The SMB server is not on."),
+                    string.Join(" | ", said));
+
+                // A folder that is not there yet (the Drive letter at start-up).
+                said.Clear();
+                settings.SmbServerPassword = "a long password";
+                settings.SmbServerFolder = later;
+                await servers.Apply(settings, announce: false);
+                Check("700 run: at start-up a folder that is not there yet is waited for without a word",
+                    !servers.IsRunning(FileServers.Kind.Smb) && said.Count == 0 &&
+                    servers.StatusOf(FileServers.Kind.Smb).Contains("is waiting for " + later),
+                    string.Join(" | ", said) + " / " + servers.StatusOf(FileServers.Kind.Smb));
+                var saidBy = Environment.TickCount64 + 5000;
+                while (said.Count == 0 && Environment.TickCount64 < saidBy) await Task.Delay(50);
+                await Task.Delay(600);
+                Check("700 run: still not there after a while, it is said, once",
+                    said.Count == 1 && said[0].Contains("is waiting for " + later), string.Join(" | ", said));
+                Directory.CreateDirectory(later);
+                var until = Environment.TickCount64 + 5000;
+                while (!servers.IsRunning(FileServers.Kind.Smb) && Environment.TickCount64 < until) await Task.Delay(50);
+                Check("700 run: it starts by itself once the folder is there", servers.IsRunning(FileServers.Kind.Smb));
+
+                said.Clear();
+                settings.SmbServerEnabled = false;
+                await servers.Apply(settings, announce: true);
+                Check("700 run: turned off, it stops and says so",
+                    !servers.IsRunning(FileServers.Kind.Smb) && said.SequenceEqual(new[] { "server.stopped: The SMB server is off" }),
+                    string.Join(" | ", said));
+                Equal("700 run: and its status says off", "The SMB server is off.", servers.StatusOf(FileServers.Kind.Smb));
+            }
+            finally
+            {
+                FileServers.LookAgainEvery = before;
+                FileServers.SayWaitingAfter = beforeSay;
+            }
+        }
+
+        // ---------------- wired into the app ----------------
+
+        private static void Wiring()
+        {
+            string Source(string name)
+            {
+                var dir = AppContext.BaseDirectory;
+                for (int i = 0; i < 8 && dir != null; i++, dir = Path.GetDirectoryName(dir))
+                {
+                    var path = Path.Combine(dir, "src", name);
+                    if (File.Exists(path)) return File.ReadAllText(path);
+                }
+                return "";
+            }
+
+            var form = Source("SettingsForm.cs");
+            var tray = Source("TrayApplicationContext.cs");
+            if (form.Length == 0 || tray.Length == 0)
+            {
+                Console.WriteLine("  (sources not beside the tests: wiring not checked)");
+                return;
+            }
+            Check("700 wiring: Preferences has a page called SMB server, and one for each other kind",
+                form.Contains("\"SMB server\"") && form.Contains("\"FTP server\"") && form.Contains("\"SFTP server\""));
+            Check("700 wiring: OK refuses a server that could not start, before saving", form.Contains("FileServers.WhyNot("));
+            Check("700 wiring: the tray applies the servers with the settings, and stops them on the way out",
+                tray.Contains("_fileServers.Apply(") && tray.Contains("_fileServers.Dispose()"));
+            Check("700 wiring: each server has a command", tray.Contains("\"smb-server-on\"") || tray.Contains("-server-on"));
+        }
+    }
+
+    // ---- merged from Release701Tests.cs (7.1.0: tests are filed by feature, not by fix round) ----
+
+    /// <summary>
+    /// 7.0.1: what the security review of the file servers found and fixed
+    /// (FTP here; SMB's are in Release700Tests beside the rest of its checks,
+    /// SFTP's in FileServerTests), the servers over Tailscale, and a command
+    /// for every setting. Group: release701.
+    /// </summary>
+    internal static class Release701Tests
+    {
+        private static Action<string, bool, string?> _check = null!;
+        private static Action<string, string, string> _equal = null!;
+
+        private static void Check(string what, bool ok, string? detail = null) => _check(what, ok, detail);
+        private static void Equal(string what, string expected, string actual) => _equal(what, expected, actual);
+
+        public static async Task RunAll(Action<string, bool, string?> check, Action<string, string, string> equal)
+        {
+            _check = check;
+            _equal = equal;
+            Console.WriteLine("7.0.1, the servers' security review:");
+
+            var sandbox = Path.Combine(Path.GetTempPath(), "en-701-" + Guid.NewGuid().ToString("N")[..8]);
+            Directory.CreateDirectory(sandbox);
+            using var watchdog = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+            try
+            {
+                Throttle();
+                Tailnet();
+                Settings701();
+                var work = Task.Run(async () =>
+                {
+                    Ftp(sandbox);
+                    Sftp(sandbox);
+                    await OverTailscale(sandbox);
+                });
+                if (await Task.WhenAny(work, Task.Delay(Timeout.Infinite, watchdog.Token)) != work)
+                    Check("701: the server tests finish in time", false, "still running after 120 seconds");
+                else await work;
+                Wiring();
+                Pages();
+            }
+            finally
+            {
+                try { Directory.Delete(sandbox, true); } catch { }
+            }
+            Console.WriteLine();
+        }
+
+        // ---------------- the password-guess limit ----------------
+
+        private static void Throttle()
+        {
+            var now = new DateTime(2026, 11, 14, 12, 0, 0, DateTimeKind.Utc);
+            var throttle = new SignInThrottle(() => now);
+
+            // Shut one address out, then try to push its note out with thousands of others.
+            var guesser = IPAddress.Parse("203.0.113.9");
+            for (int i = 0; i < SignInThrottle.MaxFailures; i++) throttle.Failed(guesser);
+            Check("701 throttle: ten wrong passwords shut the address out", throttle.IsBlocked(guesser));
+            for (int i = 0; i < 3000; i++)
+            {
+                now = now.AddMilliseconds(1);
+                throttle.Failed(new IPAddress(new byte[] { 198, 18, (byte)(i >> 8), (byte)i }));
+            }
+            Check("701 throttle: thousands of other addresses do not wipe a lockout", throttle.IsBlocked(guesser));
+            Check("701 throttle: and its notes stay bounded", throttle.TrackedAddresses <= 2048, throttle.TrackedAddresses.ToString());
+
+            // Everybody at once.
+            var quiet = new SignInThrottle(() => now);
+            quiet.Failed(IPAddress.Parse("192.0.2.1"));
+            Check("701 throttle: a few wrong passwords slow nobody", !quiet.Braking);
+            var busy = new SignInThrottle(() => now);
+            for (int i = 0; i < SignInThrottle.BrakeAfter; i++) busy.Failed(new IPAddress(new byte[] { 198, 19, 0, (byte)i }));
+            Check("701 throttle: guessing from many addresses at once slows every answer", busy.Braking);
+            now = now + SignInThrottle.BrakeWindow + TimeSpan.FromSeconds(1);
+            Check("701 throttle: and stops slowing once it stops", !busy.Braking);
+        }
+
+        // ---------------- Tailscale ----------------
+
+        private static void Tailnet()
+        {
+            const string status = "{\"TCP\":{\"443\":{\"HTTPS\":true},\"4450\":{\"TCPForward\":\"127.0.0.1:4450\"}," +
+                                  "\"2222\":{\"TCPForward\":\"127.0.0.1:22\"}},\"Web\":{}}";
+            Equal("701 tailscale: a port forwarded to this PC is read", "127.0.0.1:4450", TailscaleForward.ForwardOf(status, 4450) ?? "(none)");
+            Check("701 tailscale: and known as ours", TailscaleForward.IsOurs(status, 4450));
+            Check("701 tailscale: one forwarded somewhere else is not ours", !TailscaleForward.IsOurs(status, 2222) &&
+                TailscaleForward.ForwardOf(status, 2222) == "127.0.0.1:22");
+            Equal("701 tailscale: a port serving a web page is somebody else's", "other", TailscaleForward.ForwardOf(status, 443) ?? "(none)");
+            Check("701 tailscale: a port with nothing on it is free", TailscaleForward.ForwardOf(status, 2121) == null);
+            Check("701 tailscale: nothing set up at all reads as free",
+                TailscaleForward.ForwardOf("{}", 4450) == null && TailscaleForward.ForwardOf("not json", 4450) == null);
+
+            var ports = FileServers.FtpPassivePorts(2121);
+            Check("701 ftp ports: transfers use the eight ports after the FTP port",
+                ports.Length == 8 && ports[0] == 2122 && ports[^1] == 2129, string.Join(",", ports));
+            var top = FileServers.FtpPassivePorts(65530);
+            Check("701 ftp ports: at the top of the range they come before it", top.All(p => p is > 0 and < 65530) && top.Length == 8,
+                string.Join(",", top));
+
+            var ftp = new FileServers.Config(FileServers.Kind.Ftp, true, @"D:\Music", 2121, "", "conner", "long enough", false, "");
+            var sftp = new FileServers.Config(FileServers.Kind.Sftp, true, @"D:\Music", 2125, "", "conner", "long enough", false, "");
+            Check("701 ftp ports: another server cannot sit on one of them",
+                FileServers.WhyNot(sftp, new[] { ftp, sftp }) is { } why && why.Contains("2122") && why.Contains("2129"),
+                FileServers.WhyNot(sftp, new[] { ftp, sftp }));
+            Check("701 ftp ports: nor FTP be put where they would land on another",
+                FileServers.WhyNot(ftp, new[] { ftp, sftp }) != null);
+            Check("701 ftp ports: the defaults are clear of each other",
+                FileServers.WhyNot(new FileServers.Config(FileServers.Kind.Sftp, true, @"D:\Music", FileServers.DefaultSftpPort, "", "c", "long enough", false, ""),
+                    new[] { ftp with { Port = FileServers.DefaultFtpPort } }) == null);
+        }
+
+        private static async Task OverTailscale(string sandbox)
+        {
+            var folder = Path.Combine(sandbox, "tailnet");
+            Directory.CreateDirectory(folder);
+            var started = new List<int>();
+            var stopped = new List<int>();
+            bool? answer = true;
+            using var servers = new FileServers
+            {
+                UseTailscale = true,
+                StartForward = port => { lock (started) started.Add(port); return answer; },
+                StopForward = port => { lock (stopped) stopped.Add(port); },
+                TailnetName = () => "pc.example.ts.net",
+            };
+
+            int port = FreePort(9);
+            var settings = new Settings
+            {
+                FtpServerEnabled = true, FtpServerFolder = folder, FtpServerPort = port,
+                FtpServerUser = "conner", FtpServerPassword = "a long password",
+            };
+            await servers.Apply(settings, announce: false);
+            var all = new[] { port }.Concat(FileServers.FtpPassivePorts(port)).ToArray();
+            Check("701 tailscale: a server that starts is forwarded, its transfer ports too",
+                servers.IsRunning(FileServers.Kind.Ftp) && started.SequenceEqual(all), string.Join(",", started));
+            Check("701 tailscale: its status says where to reach it",
+                servers.StatusOf(FileServers.Kind.Ftp).Contains("pc.example.ts.net, port " + port), servers.StatusOf(FileServers.Kind.Ftp));
+
+            settings.FtpServerEnabled = false;
+            await servers.Apply(settings, announce: false);
+            Check("701 tailscale: turned off, every one of its ports stops being forwarded",
+                stopped.OrderBy(p => p).SequenceEqual(all.OrderBy(p => p)), string.Join(",", stopped));
+
+            // Tailscale there but refusing is never a reason for the server to be off.
+            started.Clear();
+            answer = false;
+            settings.FtpServerEnabled = true;
+            await servers.Apply(settings, announce: false);
+            Check("701 tailscale: Tailscale refusing does not stop the server, and the status says so",
+                servers.IsRunning(FileServers.Kind.Ftp) && servers.StatusOf(FileServers.Kind.Ftp).Contains("Tailscale is installed but did not take it"),
+                servers.StatusOf(FileServers.Kind.Ftp));
+
+            using var plain = new FileServers();
+            Check("701 tailscale: nothing is forwarded unless the app asks for it (the tests never touch the real one)", !plain.UseTailscale);
+        }
+
+        private static int FreePort(int clearAfter = 0)
+        {
+            for (int tries = 0; tries < 50; tries++)
+            {
+                var probe = new TcpListener(IPAddress.Loopback, 0);
+                probe.Start();
+                int port = ((IPEndPoint)probe.LocalEndpoint).Port;
+                probe.Stop();
+                if (port + clearAfter <= 65535) return port;
+            }
+            return 40000;
+        }
+
+        // ---------------- a command for every setting ----------------
+
+        private static void Settings701()
+        {
+            var live = new Settings();
+            Check("701 settings: every plain setting has a command name",
+                SettingCommands.All.Count > 60 && SettingCommands.All.All(p => SettingCommands.Find(SettingCommands.Dashed(p.Name)) == p),
+                SettingCommands.All.Count.ToString());
+            Check("701 settings: the name is found however it is typed",
+                SettingCommands.Find("smb-server-port")?.Name == nameof(Settings.SmbServerPort) &&
+                SettingCommands.Find("SmbServerPort")?.Name == nameof(Settings.SmbServerPort) &&
+                SettingCommands.Find("smb server port")?.Name == nameof(Settings.SmbServerPort));
+            Equal("701 settings: one is read back in a sentence", "smb-server-port is 4450", SettingCommands.Read(live, "smb-server-port"));
+
+            var changed = SettingCommands.Change(live, "smb-server-port", "4455", out var refusal, out var said);
+            Check("701 settings: a number is changed on a copy, and said",
+                changed != null && changed.SmbServerPort == 4455 && live.SmbServerPort == 4450 && said == "smb-server-port is now 4455",
+                refusal + said);
+            changed = SettingCommands.Change(live, "smb-server-enabled", "yes", out refusal, out said);
+            Check("701 settings: yes and no are understood", changed is { SmbServerEnabled: true } && said.EndsWith("is now yes"), refusal + said);
+            Check("701 settings: nonsense for a number is refused in a sentence",
+                SettingCommands.Change(live, "smb-server-port", "lots", out refusal, out _) == null && refusal == "smb-server-port is a whole number.",
+                refusal);
+            Check("701 settings: nonsense for yes or no too",
+                SettingCommands.Change(live, "smb-server-enabled", "maybe", out refusal, out _) == null && refusal.EndsWith("is yes or no."), refusal);
+            changed = SettingCommands.Change(live, "smb-server-port", "700000", out refusal, out said);
+            Check("701 settings: a number out of range lands on one that is allowed",
+                changed != null && FileServers.IsPort(changed.SmbServerPort), refusal + said);
+            Check("701 settings: a name that is not a setting says so, with ones near it",
+                SettingCommands.Change(live, "smb-server-prot", "1", out refusal, out _) == null && refusal.Contains("is not a setting") &&
+                refusal.Contains("smb-server-port"), refusal);
+
+            // Text with spaces arrives whole; a path is a path.
+            changed = SettingCommands.Change(live, "smb-server-folder", @"D:\My Music", out refusal, out said);
+            Check("701 settings: text is taken exactly as given", changed?.SmbServerFolder == @"D:\My Music", refusal + said);
+
+            var reset = SettingCommands.Reset(new Settings { SmbServerFolder = @"D:\Music", SmbServerPort = 4999 }, "smb-server-folder", out refusal, out said);
+            Check("701 settings: one can be put back to how a new installation has it, which is how text is emptied",
+                reset is { SmbServerFolder: "", SmbServerPort: 4999 } && said == "smb-server-folder is back to empty", refusal + said);
+
+            // Nothing secret is ever written out.
+            var secret = new Settings
+            {
+                SmbServerPassword = "hunter2-hunter2", FtpServerPassword = "ftp-secret-1", SftpServerPassword = "sftp-secret-1",
+                AppleMusicUserToken = "apple-token-value", ConnectCode = "PAIR-CODE-1", AiClaudeKey = "sk-claude-key",
+                SftpServerHostKey = "host-key-bytes", FtpServerCertificate = "certificate-bytes",
+            };
+            var listed = SettingCommands.List(secret);
+            foreach (var value in new[] { "hunter2-hunter2", "ftp-secret-1", "sftp-secret-1", "apple-token-value", "PAIR-CODE-1", "sk-claude-key",
+                         "host-key-bytes", "certificate-bytes" })
+                Check($"701 settings: the list never shows a secret ({value[..4]}...)", !listed.Contains(value));
+            Equal("701 settings: a password reads as set", "smb-server-password is set", SettingCommands.Read(secret, "smb-server-password"));
+            Equal("701 settings: or not set", "smb-server-password is not set", SettingCommands.Read(live, "smb-server-password"));
+            changed = SettingCommands.Change(live, "smb-server-password", "a new password", out refusal, out said);
+            Check("701 settings: a password can be changed, and is not said back",
+                changed?.SmbServerPassword == "a new password" && said == "smb-server-password is now set", refusal + said);
+            Check("701 settings: the servers' own keys are not offered at all",
+                SettingCommands.Find("sftp-server-host-key") == null && SettingCommands.Find("ftp-server-certificate") == null);
+        }
+
+        // ---------------- FTP, over real sockets ----------------
+
+        private sealed class Client : IDisposable
+        {
+            private readonly TcpClient _tcp;
+            private readonly StreamReader _reader;
+            private readonly NetworkStream _stream;
+            public string Greeting = "";
+
+            public Client(int port)
+            {
+                _tcp = new TcpClient { NoDelay = true, ReceiveTimeout = 8000, SendTimeout = 8000 };
+                _tcp.Connect(IPAddress.Loopback, port);
+                _stream = _tcp.GetStream();
+                _reader = new StreamReader(_stream, new UTF8Encoding(false));
+                try { Greeting = Read(); } catch { Greeting = "(nothing)"; }
+            }
+
+            public string Read()
+            {
+                while (true)
+                {
+                    var line = _reader.ReadLine() ?? throw new IOException("closed");
+                    if (line.Length >= 4 && char.IsDigit(line[0]) && line[3] == ' ') return line;
+                }
+            }
+
+            public string Say(string command)
+            {
+                try
+                {
+                    var bytes = Encoding.UTF8.GetBytes(command + "\r\n");
+                    _stream.Write(bytes, 0, bytes.Length);
+                    return Read();
+                }
+                catch (Exception ex) when (ex is IOException or SocketException or ObjectDisposedException) { return "(closed)"; }
+            }
+
+            public bool SignIn() => Say("USER conner").StartsWith("331") && Say("PASS a long password").StartsWith("230");
+
+            /// <summary>Asks for a transfer port and gives its number.</summary>
+            public int Passive()
+            {
+                var reply = Say("EPSV");
+                int open = reply.IndexOf("(|||", StringComparison.Ordinal), close = reply.IndexOf("|)", StringComparison.Ordinal);
+                return open < 0 || close < 0 ? -1 : int.Parse(reply[(open + 4)..close]);
+            }
+
+            public void Raw(string text) { var b = Encoding.UTF8.GetBytes(text); _stream.Write(b, 0, b.Length); }
+            public void Cut() { try { _tcp.Client.Close(0); } catch { } }
+            public void Dispose() { try { _tcp.Dispose(); } catch { } }
+        }
+
+        private static void Ftp(string sandbox)
+        {
+            var folder = Path.Combine(sandbox, "ftp");
+            Directory.CreateDirectory(Path.Combine(folder, "sub"));
+            File.WriteAllText(Path.Combine(folder, "hello.txt"), "hello");
+
+            // ---- signing in has a deadline, and a count
+            using (var server = new FtpServer(folder, 0, "conner", "a long password", false) { SignInWithinMs = 900 })
+            {
+                server.Start();
+                using var idle = new Client(server.Port);
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                string last = "";
+                while (clock.ElapsedMilliseconds < 5000)
+                {
+                    last = idle.Say("NOOP");
+                    if (!last.StartsWith("200")) break;
+                    Thread.Sleep(150);
+                }
+                Check("701 ftp: a connection that never signs in is ended, however often it says NOOP",
+                    !last.StartsWith("200") && clock.ElapsedMilliseconds < 4000, $"{last} after {clock.ElapsedMilliseconds} ms");
+
+                using var signed = new Client(server.Port);
+                bool inside = signed.SignIn();
+                Thread.Sleep(1300);
+                Check("701 ftp: one that has signed in is not held to that deadline", inside && signed.Say("NOOP").StartsWith("200"));
+            }
+
+            using (var server = new FtpServer(folder, 0, "conner", "a long password", false))
+            {
+                server.Start();
+                using var chatty = new Client(server.Port);
+                string last = "";
+                int sent = 0;
+                for (; sent < 60; sent++)
+                {
+                    last = chatty.Say("SYST");
+                    if (!last.StartsWith("215")) break;
+                }
+                Check("701 ftp: nor may it send commands for ever without signing in", sent < 40 && !last.StartsWith("215"), $"{sent} commands, then {last}");
+            }
+
+            // ---- a finished connection really ends
+            using (var server = new FtpServer(folder, 0, "conner", "a long password", false))
+            {
+                server.Start();
+                using var lingerer = new Client(server.Port);
+                lingerer.Say("QUIT");
+                var clock = System.Diagnostics.Stopwatch.StartNew();
+                bool closed = false;
+                while (clock.ElapsedMilliseconds < 6000 && !closed)
+                {
+                    try { lingerer.Raw("x"); } catch (Exception ex) when (ex is IOException or SocketException) { closed = true; }
+                    Thread.Sleep(300);
+                }
+                Check("701 ftp: after QUIT a caller dripping bytes is let go within seconds, not a day", closed, $"{clock.ElapsedMilliseconds} ms");
+            }
+
+            // ---- uploads leave nothing behind
+            using (var server = new FtpServer(folder, 0, "conner", "a long password", false) { PassiveWaitMs = 1500 })
+            {
+                server.Start();
+                using (var dropper = new Client(server.Port))
+                {
+                    dropper.SignIn();
+                    dropper.Say("CWD sub");
+                    dropper.Passive();
+                    dropper.Raw("STOR orphan.bin\r\n");
+                    Thread.Sleep(300);
+                    dropper.Cut();
+                }
+                var until = Environment.TickCount64 + 6000;
+                while (Directory.EnumerateFileSystemEntries(Path.Combine(folder, "sub")).Any() && Environment.TickCount64 < until) Thread.Sleep(100);
+                Check("701 ftp: an upload whose connection drops before any data leaves no hidden file",
+                    !Directory.EnumerateFileSystemEntries(Path.Combine(folder, "sub")).Any(),
+                    string.Join(", ", Directory.EnumerateFileSystemEntries(Path.Combine(folder, "sub")).Select(Path.GetFileName)));
+
+                using var client = new Client(server.Port);
+                client.SignIn();
+                client.Passive();
+                client.Say("REST 5");
+                var refused = client.Say("STOR brandnew.bin");
+                Check("701 ftp: carrying on a file that is not there is refused without making it",
+                    refused.StartsWith("5") && !File.Exists(Path.Combine(folder, "brandnew.bin")), refused);
+                using var fresh = new Client(server.Port);
+                fresh.SignIn();
+                var noPort = fresh.Say("APPE noport.bin");
+                Check("701 ftp: adding to a file with no transfer port asked for makes no file",
+                    noPort.StartsWith("425") && !File.Exists(Path.Combine(folder, "noport.bin")), noPort);
+            }
+
+            // ---- fixed transfer ports
+            int basePort = FreePort(9);
+            var two = new[] { basePort + 1, basePort + 2 };
+            using (var server = new FtpServer(folder, basePort, "conner", "a long password", false, null, two))
+            {
+                server.Start();
+                using var a = new Client(server.Port);
+                using var b = new Client(server.Port);
+                using var c = new Client(server.Port);
+                a.SignIn(); b.SignIn(); c.SignIn();
+                int first = a.Passive(), second = b.Passive();
+                var third = c.Say("EPSV");
+                Check("701 ftp: transfers come in on the ports it was given, one each",
+                    two.Contains(first) && two.Contains(second) && first != second, $"{first}, {second}");
+                Check("701 ftp: and with every one busy the next is asked to wait, in a sentence", third.StartsWith("425"), third);
+                int again = a.Passive();
+                Check("701 ftp: asking again reuses the caller's own port", two.Contains(again) && again != second, again.ToString());
+            }
+
+            // ---- encrypted connections only
+            using (var certificate = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadPkcs12(FileServers.NewCertificate(), null))
+            using (var server = new FtpServer(folder, 0, "conner", "a long password", false, certificate, null, requireTls: true))
+            {
+                server.Start();
+                using var plain = new Client(server.Port);
+                var user = plain.Say("USER conner");
+                var pass = plain.Say("PASS a long password");
+                var list = plain.Say("PWD");
+                Check("701 ftp: with encrypted only, nobody signs in over plain FTP",
+                    user.StartsWith("530") && pass.StartsWith("530") && list.StartsWith("530"), $"{user} | {pass} | {list}");
+                Check("701 ftp: and the refusal says what to turn on", user.Contains("TLS"), user);
+            }
+            string? noCertificate = null;
+            try { using var bad = new FtpServer(folder, 0, "conner", "a long password", false, null, null, requireTls: true); bad.Start(); }
+            catch (InvalidOperationException ex) { noCertificate = ex.Message; }
+            Check("701 ftp: encrypted only with no certificate does not start", noCertificate != null, noCertificate);
+
+            // ---- one address cannot take every place
+            using (var server = new FtpServer(folder, 0, "conner", "a long password", false))
+            {
+                server.Start();
+                // From this PC itself there is no limit per address (Tailscale arrives that way).
+                var many = new List<Client>();
+                try
+                {
+                    for (int i = 0; i < FtpServer.MaxPerAddress + 4; i++) many.Add(new Client(server.Port));
+                    Check("701 ftp: this PC's own connections are not held to the per-address limit",
+                        many.All(m => m.Greeting.StartsWith("220")), many.Count(m => m.Greeting.StartsWith("220")).ToString());
+                }
+                finally { foreach (var m in many) m.Dispose(); }
+            }
+        }
+
+        // ---------------- SFTP: nobody holds a place without signing in ----------------
+
+        /// <summary>Sends <paramref name="first"/>, then a byte every so often, and says how long the server kept the connection.</summary>
+        private static long HeldFor(int port, string first, int dripEveryMs, int giveUpMs)
+        {
+            using var tcp = new TcpClient { NoDelay = true };
+            tcp.Connect(IPAddress.Loopback, port);
+            var stream = tcp.GetStream();
+            var clock = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                var bytes = Encoding.ASCII.GetBytes(first);
+                if (bytes.Length > 0) stream.Write(bytes, 0, bytes.Length);
+                var one = new byte[] { (byte)'x' };
+                var scrap = new byte[4096];
+                while (clock.ElapsedMilliseconds < giveUpMs)
+                {
+                    Thread.Sleep(dripEveryMs);
+                    stream.Write(one, 0, 1);
+                    // A closed connection shows on the read side first.
+                    if (tcp.Client.Poll(0, SelectMode.SelectRead))
+                    {
+                        int read = tcp.Client.Receive(scrap);
+                        if (read == 0) break;
+                    }
+                }
+            }
+            catch (Exception ex) when (ex is IOException or SocketException) { }
+            return clock.ElapsedMilliseconds;
+        }
+
+        private static void Sftp(string sandbox)
+        {
+            var folder = Path.Combine(sandbox, "sftp");
+            Directory.CreateDirectory(folder);
+            var key = SftpServer.NewHostKey();
+
+            using (var server = new SftpServer(folder, 0, "conner", "a long password", false, key) { BeforeSignInMs = 1000 })
+            {
+                server.Start();
+                long silent = HeldFor(server.Port, "", 200, 8000);
+                Check("701 sftp: a connection that says nothing useful is ended at the sign-in deadline, drip or no drip",
+                    silent < 5000, silent + " ms");
+                long version = HeldFor(server.Port, "SSH-2.0-slow", 200, 8000);
+                Check("701 sftp: so is one that never finishes its first line", version < 5000, version + " ms");
+                long junk = HeldFor(server.Port, "junk\n", 200, 8000);
+                Check("701 sftp: and one already refused is let go within seconds, however it drips", junk < 5000, junk + " ms");
+            }
+
+            using (var server = new SftpServer(folder, 0, "conner", "a long password", false, key))
+            {
+                server.Start();
+                // More than the server has places for, all silent. Before, each
+                // was a thread of its own for a minute whatever the limit said.
+                int threadsBefore = System.Diagnostics.Process.GetCurrentProcess().Threads.Count;
+                var held = new List<TcpClient>();
+                try
+                {
+                    for (int i = 0; i < 300; i++)
+                    {
+                        var tcp = new TcpClient();
+                        tcp.Connect(IPAddress.Loopback, server.Port);
+                        held.Add(tcp);
+                    }
+                    Thread.Sleep(500);
+                    int extra = System.Diagnostics.Process.GetCurrentProcess().Threads.Count - threadsBefore;
+                    Check("701 sftp: silent connections past the limit cost no threads", extra < 120, extra + " more threads for 300 connections");
+                }
+                finally { foreach (var tcp in held) tcp.Dispose(); }
+            }
+        }
+
+        // ---------------- the Preferences pages, built off screen ----------------
+
+        /// <summary>
+        /// Whether a control is itself set to show. Control.Visible also asks
+        /// every parent, and this window is never put on screen.
+        /// </summary>
+        private static bool Shows(System.Windows.Forms.Control control) =>
+            (bool)typeof(System.Windows.Forms.Control)
+                .GetMethod("GetState", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .Invoke(control, new object[] { 2 })!;
+
+        private static void Pages()
+        {
+            Exception? failed = null;
+            var thread = new Thread(() =>
+            {
+                try
+                {
+                    using var window = new SettingsForm(new Settings { SpeakEnabled = false }, "SMB server");
+                    window.BuildAllPages();
+                    foreach (var name in new[] { "SMB", "FTP", "SFTP" })
+                    {
+                        var page = window.Pages.FirstOrDefault(p => p.AccessibleName == name + " server settings");
+                        Check($"701 pages: Preferences has the {name} server page", page != null);
+                        if (page == null) continue;
+                        var controls = page.Controls.Cast<System.Windows.Forms.Control>().ToList();
+                        var box = controls.OfType<System.Windows.Forms.CheckBox>().First(c => c.Text.StartsWith("&Turn on"));
+                        var showing = controls.Where(Shows).ToList();
+                        Check($"701 pages: with the {name} server off, only the first paragraph and its box show",
+                            showing.Count == 2 && showing.Contains(box) && showing.Contains(controls[0]), showing.Count + " showing");
+                        box.Checked = true;
+                        Check($"701 pages: ticking it brings the rest of the {name} page back", controls.All(Shows),
+                            controls.Count(c => !Shows(c)) + " still hidden");
+                        box.Checked = false;
+                        Check($"701 pages: and unticking hides it again", controls.Count(Shows) == 2);
+
+                        var buttons = controls.SelectMany(c => c is System.Windows.Forms.Button b
+                            ? new[] { b } : c.Controls.OfType<System.Windows.Forms.Button>()).Select(b => b.Text).ToList();
+                        Check($"701 pages: the {name} page's buttons say folder or drive to share, and Allow through Windows Firewall",
+                            buttons.Contains("&Browse for the folder or drive to share...") && buttons.Contains("Allow through Windows Fire&wall..."),
+                            string.Join(" | ", buttons));
+                        var labels = controls.SelectMany(c => c.Controls.OfType<System.Windows.Forms.Label>()).Select(l => l.Text).ToList();
+                        Check($"701 pages: its folder box is labelled Folder or drive to share", labels.Contains("&Folder or drive to share:"),
+                            string.Join(" | ", labels));
+                    }
+                    var ftp = window.Pages.First(p => p.AccessibleName == "FTP server settings");
+                    Check("701 pages: the FTP page has Encrypted connections only",
+                        ftp.Controls.OfType<System.Windows.Forms.CheckBox>().Any(c => c.Text.StartsWith("&Encrypted connections only")));
+                }
+                catch (Exception ex) { failed = ex; }
+            });
+            thread.SetApartmentState(ApartmentState.STA);
+            thread.Start();
+            if (!thread.Join(TimeSpan.FromSeconds(30))) Check("701 pages: the Preferences pages build in time", false, "still building after 30 seconds");
+            Check("701 pages: the Preferences pages build without an error", failed == null, failed?.ToString());
+        }
+
+        // ---------------- wired into the app ----------------
+
+        private static void Wiring()
+        {
+            string Source(string name)
+            {
+                var dir = AppContext.BaseDirectory;
+                for (int i = 0; i < 8 && dir != null; i++, dir = Path.GetDirectoryName(dir))
+                {
+                    var path = Path.Combine(dir, "src", name);
+                    if (File.Exists(path)) return File.ReadAllText(path);
+                }
+                return "";
+            }
+
+            var tray = Source("TrayApplicationContext.cs");
+            var form = Source("SettingsForm.cs");
+            var servers = Source("FileServers.cs");
+            if (tray.Length == 0 || form.Length == 0 || servers.Length == 0)
+            {
+                Console.WriteLine("  (sources not beside the tests: wiring not checked)");
+                return;
+            }
+            foreach (var command in new[] { "-server-on", "-server-off", "-server-status", "\"sftp-server-fingerprint\"", "\"firewall-status\"",
+                         "\"allow-through-firewall\"", "\"remove-from-firewall\"", "\"settings\"", "\"setting\"" })
+                Check($"701 wiring: the tray has the command {command.Trim('"')}", tray.Contains(command));
+            Check("701 wiring: the app's servers go over Tailscale", tray.Contains("UseTailscale = true"));
+            Check("701 wiring: the firewall button says Remove once it is allowed",
+                form.Contains("Remove from Windows Fire&wall") && form.Contains("Allow through Windows Fire&wall"));
+            Check("701 wiring: unticking a server hides its settings", form.Contains("c != enable && c != intro"));
+            Check("701 wiring: the firewall rule is made without a command shell", !servers.Contains("cmd.exe"));
+            Check("701 wiring: FTP is given its transfer ports", servers.Contains("FtpPassivePorts(c.Port)"));
         }
     }
 }

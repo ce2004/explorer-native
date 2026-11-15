@@ -1,3 +1,15 @@
+7.1.0
+New: Explorer Native now talks to JAWS, Narrator and other screen readers when NVDA isn't running, or while NVDA is restarting. With NVDA running, nothing changes.
+New: ExplorerNative --do bug-report writes one text file on your desktop to send with a bug report: the version, your Windows build, your settings and the last lines of the logs. Passwords, keys, sign-ins and email addresses are taken out. It works even when Explorer Native is stuck or has closed.
+New: Explorer Native now keeps a note of errors it recovers from by itself, so a bug report can show what went wrong. Read it with ExplorerNative --read-log errors.log.
+Bug fixed: if you set up Google Drive with the wrong kind of Google client, a deleted client, the Drive API switched off, or an account that wasn't added as a test user, Explorer Native only said it couldn't connect or that sign-in wasn't finished. Now it says which part is wrong and what to change in the Google Cloud console.
+Bug fixed: when your Apple Music sign-in expired, lists and songs failed without saying why. Now it says "Your Apple Music sign-in has expired. Load a new cookies file in Preferences, Apple Music." and asks once whether to open that page.
+Bug fixed: the SMB server could only be reached over IPv4, so a device that found this PC by its IPv6 address could not connect. It now listens on IPv6 too, like the FTP and SFTP servers.
+Bug fixed: if something unexpected went wrong while refreshing, deleting, opening a folder from another program, checking for updates, or playing the next song of an Apple Music station, Explorer Native could close. It now keeps running and notes the error.
+Bug fixed: pressing OK in the Compress window with a slow drive as the place to save could freeze the window for up to two seconds.
+Changed: the server pages now say plainly that each server listens on every network this PC joins, and that allowing it through Windows Firewall opens it to the internet too if this PC has its own internet address.
+Changed: every release is now tested before it is published, so a build that fails its tests never reaches Check for updates.
+
 7.0.1
 New: the SMB, FTP and SFTP servers now work over Tailscale by themselves. While a server is on, your other devices on your Tailscale network reach it at this PC's Tailscale name and the server's port. There is nothing to set up and Windows Firewall is not involved. The server's status line says the name to use. Nothing is opened to the internet.
 New: on each server page, the firewall button now says Remove from Windows Firewall once the servers are allowed through, and takes the rule away again.
