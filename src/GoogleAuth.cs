@@ -418,7 +418,7 @@ namespace ExplorerNative
                     if (!node.TryGetProperty("client_secret", out var secret)) continue;
                     // One an older build left in the clear is encrypted now.
                     if (!ProtectedFile.IsProtected(bytes))
-                        try { ProtectedFile.WriteAllText(path, ProtectedFile.Decode(bytes)); } catch { }
+                        try { ProtectedFile.WriteAllText(path, ProtectedFile.Decode(bytes)); } catch (Exception ex) { Diag.Note(ex); }
                     return (id.GetString() ?? "", secret.GetString() ?? "");
                 }
                 catch
@@ -467,7 +467,7 @@ namespace ExplorerNative
 
                 if (!MayConsent)
                 {
-                    try { SignInLapsed?.Invoke(); } catch { }
+                    try { SignInLapsed?.Invoke(); } catch (Exception ex) { Diag.Note(ex); }
                     throw new GoogleSignInRequiredException();
                 }
 
@@ -610,7 +610,7 @@ namespace ExplorerNative
             // waiting on a browser tab somewhere else — for up to the thirty
             // minutes below, with nothing else to explain the pause.
             try { Notify?.Invoke("drive.signin.opened", "Waiting for you to allow access in the browser. If Google says the app is not verified, choose Advanced, then Go to the app."); }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
 
             // Thirty minutes, not three. A first sign-in on a new PC is account
             // choice, two-step verification, the "unverified app" warning and
@@ -640,7 +640,7 @@ namespace ExplorerNative
                             "user in the Google Cloud console, under Google Auth platform, Audience. Then press " +
                             "Connect Google Drive again.");
                     }
-                    catch { }
+                    catch (Exception ex) { Diag.Note(ex); }
                     throw;
                 }
                 query = context.Request.QueryString;
@@ -740,9 +740,10 @@ namespace ExplorerNative
                 Directory.CreateDirectory(Path.GetDirectoryName(_tokenPath)!);
                 File.WriteAllBytes(_tokenPath, Protect(Encoding.UTF8.GetBytes(_refreshToken)));
             }
-            catch
+            catch (Exception ex)
             {
                 // Losing the stored token costs a sign-in, not the session.
+                Diag.Note(ex);
             }
         }
 

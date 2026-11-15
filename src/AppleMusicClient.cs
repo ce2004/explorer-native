@@ -520,7 +520,7 @@ namespace ExplorerNative
                 {
                     lock (favorites) answered.UnionWith(batch);   // none of them rated
                 }
-                catch (AppleMusicException) { }   // these stay unknown; the next listing asks again
+                catch (AppleMusicException ex) { Diag.Note(ex); }   // these stay unknown; the next listing asks again
                 finally { gate.Release(); }
             })).ConfigureAwait(false);
             return (favorites, answered);

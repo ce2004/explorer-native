@@ -143,7 +143,7 @@ namespace ExplorerNative
                     if (_tray.Visible) _tray.ShowBalloonTip(6000, title, text, ToolTipIcon.Info);
                     else _toastWaiting = (title, text);
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
             });
 
             // Put in the notification area once the message loop first has
@@ -271,17 +271,17 @@ namespace ExplorerNative
             _sweeps = System.Threading.Tasks.Task.Run(() =>
             {
                 // Anything left by a run that was killed before it could tidy up.
-                try { StreamingSource.SweepOldCopies(); } catch { }
+                try { StreamingSource.SweepOldCopies(); } catch (Exception ex) { Diag.Note(ex); }
 
                 // Files taken out of archives by a run before this one, and
                 // copies from them older than a day.
-                try { ArchiveBrowser.SweepCache(System.Diagnostics.Process.GetCurrentProcess().StartTime); } catch { }
+                try { ArchiveBrowser.SweepCache(System.Diagnostics.Process.GetCurrentProcess().StartTime); } catch (Exception ex) { Diag.Note(ex); }
 
                 // Same idea, one layer down: a sync root registration and a drive
                 // letter both outlive the process that made them, so a run that was
                 // killed rather than closed leaves a letter pointing at a folder full
                 // of placeholders with nobody left to hydrate them.
-                try { GoogleDrive.SweepOrphans(sweepFor); } catch { }
+                try { GoogleDrive.SweepOrphans(sweepFor); } catch (Exception ex) { Diag.Note(ex); }
             });
 
             // Google expires a refresh token after seven days for an app that has
@@ -330,7 +330,7 @@ namespace ExplorerNative
             // so files still on their way to Google Drive are sent first; see
             // SessionEndWindow. Made before Drive can mount, on this thread.
             try { _sessionEnd = new SessionEndWindow(() => _drive.UploadNames, () => Quit(sessionEnding: true)); }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
 
             if (_settings.GoogleDriveEnabled) MountGoogleDrive(mayConsent: false);
             ApplyAudioSettings();
@@ -402,7 +402,7 @@ namespace ExplorerNative
             if (_toastWaiting is var (title, text))
             {
                 _toastWaiting = null;
-                try { _tray.ShowBalloonTip(6000, title, text, ToolTipIcon.Info); } catch { }
+                try { _tray.ShowBalloonTip(6000, title, text, ToolTipIcon.Info); } catch (Exception ex) { Diag.Note(ex); }
             }
         }
 
@@ -427,7 +427,7 @@ namespace ExplorerNative
                 EnsureInstalledIfTakingOverFolders();
                 if (ShellRegistration.Reconcile(_settings)) _settings.Save();
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         private System.Threading.Timer? _settingsRetry;
@@ -806,7 +806,7 @@ namespace ExplorerNative
             // Never after Quit's last save: an update never changes a setting.
             if (_quitting) return;
             _settings.GoogleDriveEnabled = false;
-            try { _settings.Save(); } catch { }
+            try { _settings.Save(); } catch (Exception ex) { Diag.Note(ex); }
             _drive.Unmount();
 
             var body = (problem == null
@@ -871,7 +871,7 @@ namespace ExplorerNative
                     : $"Sending {names.Count} files to Google Drive before it disconnects");
             _driveGoingDown = _driveGoingDown.ContinueWith(_ =>
             {
-                try { _drive.Unmount(); } catch { }
+                try { _drive.Unmount(); } catch (Exception ex) { Diag.Note(ex); }
             }, CancellationToken.None, System.Threading.Tasks.TaskContinuationOptions.None,
                 System.Threading.Tasks.TaskScheduler.Default);
         }
@@ -1835,7 +1835,7 @@ namespace ExplorerNative
             }
             catch (AppleMusicException ex) { SayAudio("applemusic.failed", ex.Message); }
             catch (OperationCanceledException) { SayAudio("applemusic.failed", "Apple Music took too long to answer."); }
-            catch (Exception ex) { SayAudio("applemusic.failed", "Apple Music couldn't get the lyrics: " + ex.Message); }
+            catch (Exception ex) { Diag.Note(ex); SayAudio("applemusic.failed", "Apple Music couldn't get the lyrics: " + ex.Message); }
             finally { _lyricsBusy = false; }
         }
 
@@ -2213,7 +2213,7 @@ namespace ExplorerNative
                 System.Threading.Tasks.Task.Run(() =>
                 {
                     try { _audio.Warm(string.IsNullOrEmpty(preload) ? null : preload); }
-                    catch { }
+                    catch (Exception ex) { Diag.Note(ex); }
                 });
             });
         }
@@ -2471,7 +2471,7 @@ namespace ExplorerNative
                 // A station has no place to go back to: it just plays again.
                 _settings.AudioResumeSeconds = _audio.IsLive ? 0 : (int)Math.Max(0, _audio.PositionSeconds);
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>
@@ -2507,7 +2507,7 @@ namespace ExplorerNative
                 try
                 {
                     await System.Threading.Tasks.Task.Delay(1500);
-                    if (wasRestart) PostUi(() => { try { if (!_quitting) _settings.Save(); } catch { } });
+                    if (wasRestart) PostUi(() => { try { if (!_quitting) _settings.Save(); } catch (Exception ex) { Diag.Note(ex); } });
                     if (file.Length == 0 && apple.Length == 0) return;
                     if (apple.Length > 0)
                     {
@@ -2541,7 +2541,7 @@ namespace ExplorerNative
                         await System.Threading.Tasks.Task.Delay(2000);
                     }
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
             });
         }
 
@@ -2739,7 +2739,7 @@ namespace ExplorerNative
             SayAudio("audio.handedover", $"Cannot play {System.IO.Path.GetFileName(path)}, opening it instead");
             // Off this thread: opening it resolves the folder and may start a
             // process there, and the track failed because that share went away.
-            System.Threading.Tasks.Task.Run(() => { try { FileLauncher.Open(path); } catch { } });
+            System.Threading.Tasks.Task.Run(() => { try { FileLauncher.Open(path); } catch (Exception ex) { Diag.Note(ex); } });
         }
 
         /// <summary>
@@ -3433,7 +3433,7 @@ namespace ExplorerNative
                     if (GetForegroundWindow() == window && !form.ContainsFocus)
                         form.RestoreListFocusExternally();
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
             }
         }
 
@@ -3549,7 +3549,7 @@ namespace ExplorerNative
                 // On its own: at the end of a session WinForms may already have
                 // closed the window, and a throw here skipped everything below,
                 // the Drive drain included.
-                try { _form?.AdoptSettings(_settings); } catch { }
+                try { _form?.AdoptSettings(_settings); } catch (Exception ex) { Diag.Note(ex); }
                 _settings.Save();
 
                 _hold.Dispose();
@@ -3573,7 +3573,7 @@ namespace ExplorerNative
 
                 // Apple's player too: its browser is closed and its profile in
                 // %TEMP% deleted now, not left for the next start to sweep.
-                try { AppleMusicPlayer.Shutdown(); } catch { }
+                try { AppleMusicPlayer.Shutdown(); } catch (Exception ex) { Diag.Note(ex); }
 
                 // Anything the player had in flight against the letter has to
                 // have come back before the provider that answers it goes. The
@@ -3629,7 +3629,7 @@ namespace ExplorerNative
                     _form.Dispose();
                 }
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
 
             // Anything handed over while quitting, to a copy that will wait for
             // this one's lock. Through the shell, so it inherits nothing.
@@ -3643,7 +3643,7 @@ namespace ExplorerNative
 
             // The last write, after the window's own: anything that arrived since
             // the save above, and the file as it now is.
-            try { WithWaitingSettings(_settings).Save(); } catch { }
+            try { WithWaitingSettings(_settings).Save(); } catch (Exception ex) { Diag.Note(ex); }
 
             // The session window goes with an ordinary quit. At the end of a
             // session this is running inside that window's WM_ENDSESSION, and it
@@ -3670,7 +3670,7 @@ namespace ExplorerNative
                         UseShellExecute = true,
                     });
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
             }
 
             ExitThread();

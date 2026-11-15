@@ -114,7 +114,7 @@ namespace ExplorerNative
                     s.FtpServerCertificate = Convert.ToBase64String(NewCertificate());
                     changed = true;
                 }
-                catch { }   // FTP still works, without TLS on offer
+                catch (Exception ex) { Diag.Note(ex); }   // FTP still works, without TLS on offer
             }
             changed |= EnsureSftpKey(s);
             return changed;
@@ -271,6 +271,7 @@ namespace ExplorerNative
                 catch (Exception ex)
                 {
                     // Nothing a server does may take the others, or the app, with it.
+                    Diag.Note(ex);
                     SetProblem(config.Kind, $"The {NameOf(config.Kind)} server could not start: {ex.Message}");
                     changed = true;
                 }
@@ -285,7 +286,7 @@ namespace ExplorerNative
                     _retry.Change(LookAgainEvery, Timeout.InfiniteTimeSpan);
                 }
             }
-            if (changed) { try { Changed?.Invoke(); } catch { } }
+            if (changed) { try { Changed?.Invoke(); } catch (Exception ex) { Diag.Note(ex); } }
         }
 
         private void LookAgain()
@@ -317,7 +318,7 @@ namespace ExplorerNative
                 {
                     var still = config.Enabled ? PortsOf(config) : Array.Empty<int>();
                     foreach (int port in PortsOf(was.Config))
-                        if (Array.IndexOf(still, port) < 0) { try { StopForward(port); } catch { } }
+                        if (Array.IndexOf(still, port) < 0) { try { StopForward(port); } catch (Exception ex) { Diag.Note(ex); } }
                 }
                 if (!config.Enabled)
                 {
@@ -369,6 +370,7 @@ namespace ExplorerNative
             try { server = Make(config); }
             catch (Exception ex)
             {
+                Diag.Note(ex);
                 var why = ex is InvalidOperationException ? ex.Message : $"{ex.Message}";
                 return Fail(kind, $"The {name} server could not start. {why}", announce: true);
             }
@@ -498,7 +500,7 @@ namespace ExplorerNative
 
         private void Say(string id, string sentence)
         {
-            try { Said?.Invoke(id, sentence); } catch { }
+            try { Said?.Invoke(id, sentence); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         private static IDisposable Make(Config c)

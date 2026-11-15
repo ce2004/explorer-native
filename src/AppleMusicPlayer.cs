@@ -812,7 +812,7 @@ namespace ExplorerNative
                 Reset();
                 Start(path, catalogId, name, -1, startAt: 0, retried: true, how: StartKind.Restarted);
             }
-            catch (Exception ex) { Log("watch: " + ex.Message); }
+            catch (Exception ex) { Diag.Note(ex); Log("watch: " + ex.Message); }
         }
 
         /// <summary>
@@ -1124,33 +1124,38 @@ namespace ExplorerNative
         /// </summary>
         private static async void PlayAutoplay(string finished, bool fromSkip = false)
         {
-            int mine = Volatile.Read(ref _generation);
-            if (AppleMusic.Autoplay)   // Preferences, Apple Music
+            // Not a UI event handler: nothing may escape an async void.
             try
             {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                var rows = await AppleMusic.StartAutoplayAsync(finished, cts.Token).ConfigureAwait(true);
-                if (Volatile.Read(ref _generation) != mine) return;   // something else was played meanwhile
-                foreach (var row in rows)
-                    if (!row.IsFolder && !string.Equals(AppleMusic.CatalogIdOrNull(row.Path), AppleMusic.CatalogIdOrNull(finished), StringComparison.Ordinal))
-                    {
-                        // The finished list's queue goes: Autoplay goes on like a station.
-                        lock (Gate) { _listQueue = null; _listFolder = null; _history.Clear(); }
-                        StartPath(row.Path);
-                        return;
-                    }
+                int mine = Volatile.Read(ref _generation);
+                if (AppleMusic.Autoplay)   // Preferences, Apple Music
+                try
+                {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                    var rows = await AppleMusic.StartAutoplayAsync(finished, cts.Token).ConfigureAwait(true);
+                    if (Volatile.Read(ref _generation) != mine) return;   // something else was played meanwhile
+                    foreach (var row in rows)
+                        if (!row.IsFolder && !string.Equals(AppleMusic.CatalogIdOrNull(row.Path), AppleMusic.CatalogIdOrNull(finished), StringComparison.Ordinal))
+                        {
+                            // The finished list's queue goes: Autoplay goes on like a station.
+                            lock (Gate) { _listQueue = null; _listFolder = null; _history.Clear(); }
+                            StartPath(row.Path);
+                            return;
+                        }
+                }
+                catch (Exception ex) { Diag.Note(ex); }
+                if (Volatile.Read(ref _generation) != mine) return;
+                if (fromSkip)
+                {
+                    // Next track with nothing after: the song keeps playing and the
+                    // player stays in charge of the keys.
+                    Say?.Invoke("applemusic.endoflist", "That's the last song in the list");
+                    return;
+                }
+                EndOfList();
+                Say?.Invoke("applemusic.endoflist", "End of the list");
             }
-            catch (Exception) { }
-            if (Volatile.Read(ref _generation) != mine) return;
-            if (fromSkip)
-            {
-                // Next track with nothing after: the song keeps playing and the
-                // player stays in charge of the keys.
-                Say?.Invoke("applemusic.endoflist", "That's the last song in the list");
-                return;
-            }
-            EndOfList();
-            Say?.Invoke("applemusic.endoflist", "End of the list");
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>
@@ -1171,26 +1176,32 @@ namespace ExplorerNative
 
         private static async void PlayNextFromStation(string finished)
         {
-            int mine = Volatile.Read(ref _generation);
+            // Not a UI event handler: nothing may escape an async void.
             try
             {
-                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
-                var folder = Path.GetDirectoryName(finished)!;
-                var more = await AppleMusic.MoreFromStationAsync(folder, cts.Token).ConfigureAwait(true);
-                if (Volatile.Read(ref _generation) != mine) return;   // something else was played meanwhile
-                // A station changed in Up next keeps a list of its own: the new songs join it.
-                lock (Gate) _listQueue?.AddRange(more.Where(r => !r.IsFolder).Select(r => r.Path));
-                foreach (var row in more)
-                    if (!row.IsFolder) { StartPath(row.Path); return; }
-                EndOfList();
-                Say?.Invoke("applemusic.endoflist", "The station has no more songs");
+                int mine = Volatile.Read(ref _generation);
+                try
+                {
+                    using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                    var folder = Path.GetDirectoryName(finished)!;
+                    var more = await AppleMusic.MoreFromStationAsync(folder, cts.Token).ConfigureAwait(true);
+                    if (Volatile.Read(ref _generation) != mine) return;   // something else was played meanwhile
+                    // A station changed in Up next keeps a list of its own: the new songs join it.
+                    lock (Gate) _listQueue?.AddRange(more.Where(r => !r.IsFolder).Select(r => r.Path));
+                    foreach (var row in more)
+                        if (!row.IsFolder) { StartPath(row.Path); return; }
+                    EndOfList();
+                    Say?.Invoke("applemusic.endoflist", "The station has no more songs");
+                }
+                catch (Exception ex)
+                {
+                    Diag.Note(ex);
+                    if (Volatile.Read(ref _generation) != mine) return;
+                    EndOfList();
+                    Say?.Invoke("applemusic.endoflist", "The station has no more songs");
+                }
             }
-            catch (Exception)
-            {
-                if (Volatile.Read(ref _generation) != mine) return;
-                EndOfList();
-                Say?.Invoke("applemusic.endoflist", "The station has no more songs");
-            }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>Enter on a song row: start it in Apple's player. Returns false only if it isn't a song.</summary>
@@ -1617,7 +1628,7 @@ namespace ExplorerNative
                     }
                 }
             }
-            catch (JsonException) { }
+            catch (JsonException ex) { Diag.Note(ex); }
         }
 
         /// <summary>
