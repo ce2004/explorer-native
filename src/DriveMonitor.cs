@@ -125,7 +125,7 @@ namespace ExplorerNative
             long tick = Environment.TickCount64;
             if (!now && tick - Interlocked.Read(ref _lastProgressEvent) < 500) return;
             Interlocked.Exchange(ref _lastProgressEvent, tick);
-            try { Changed?.Invoke(); } catch { }
+            try { Changed?.Invoke(); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>A download part way through, and which Drive file it is part of.</summary>
@@ -472,7 +472,7 @@ namespace ExplorerNative
                     ProtectedFile.WriteAllUtf8(_file, JsonSerializer.SerializeToUtf8Bytes(hours));
                     _unsaved = false;
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
             }
 
             /// <summary>Writes what the last 30 seconds added, if anything (on the way out).</summary>
@@ -599,7 +599,7 @@ namespace ExplorerNative
             foreach (var (pair, ticket) in wanted)
                 _ = Task.Run(() => WatchAsWanted(pair, ticket));
 
-            try { Changed?.Invoke(); } catch { }
+            try { Changed?.Invoke(); } catch (Exception ex) { Diag.Note(ex); }
             SyncNow();
         }
 
@@ -776,9 +776,9 @@ namespace ExplorerNative
             _ = Task.Run(() =>
             {
                 try { StatusOf(pairId); }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
                 finally { lock (_gate) _loadingStatus.Remove(pairId); }
-                try { Changed?.Invoke(); } catch { }
+                try { Changed?.Invoke(); } catch (Exception ex) { Diag.Note(ex); }
             });
             return null;
         }
@@ -786,7 +786,7 @@ namespace ExplorerNative
         private void SetStatus(string pairId, PairStatus status)
         {
             lock (_gate) _status[pairId] = status;
-            try { Changed?.Invoke(); } catch { }
+            try { Changed?.Invoke(); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, SyncLive> _live = new();
@@ -808,7 +808,7 @@ namespace ExplorerNative
             long now = Environment.TickCount64;
             if (now - Interlocked.Read(ref _lastProgressEvent) < 500) return;
             Interlocked.Exchange(ref _lastProgressEvent, now);
-            try { Changed?.Invoke(); } catch { }
+            try { Changed?.Invoke(); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         private async Task LoopAsync()
@@ -826,7 +826,7 @@ namespace ExplorerNative
 
                 try { await PassAsync(token).ConfigureAwait(false); }
                 catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
             }
         }
 
@@ -910,7 +910,7 @@ namespace ExplorerNative
                 File.WriteAllText(marker, DateTime.UtcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture));
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>Allocated by one pass, above which its memory is handed back to Windows straight after.</summary>
@@ -1048,7 +1048,7 @@ namespace ExplorerNative
                         // Outside a pass (Keep on Drive only, Put back) only Pause and Remove are heard.
                         _passGeneration.Remove(pair.Id);
                     }
-                    try { Changed?.Invoke(); } catch { }
+                    try { Changed?.Invoke(); } catch (Exception ex) { Diag.Note(ex); }
                 }
             }
             return true;
@@ -1340,7 +1340,7 @@ namespace ExplorerNative
                         changedOnPc.Folders.UnionWith(onDrive);
                     }
                 }
-                catch (Exception ex) when (!token.IsCancellationRequested && ex is not PairStoppedException) { }
+                catch (Exception ex) when (!token.IsCancellationRequested && ex is not PairStoppedException) { Diag.Note(ex); }
             }
 
             bool links = false;
@@ -2165,7 +2165,7 @@ namespace ExplorerNative
                     if (!knownAtStart.Contains(path) || !full) header.FolderIds[path] = id;
                 header.ShardFolders = shardFolders.ToList();
                 header.RecordFolders = recordFolders.ToList();
-                try { SaveState(pair.Id, header); } catch { }
+                try { SaveState(pair.Id, header); } catch (Exception ex) { Diag.Note(ex); }
                 throw;
             }
 
@@ -2993,7 +2993,7 @@ namespace ExplorerNative
                 if (state.Store != null)
                 {
                     long began = Environment.TickCount64;
-                    try { state.Store.SaveSlice(state); } catch { }
+                    try { state.Store.SaveSlice(state); } catch (Exception ex) { Diag.Note(ex); }
                     lock (_gate) _saveCost[pairId] = Environment.TickCount64 - began;
                     return;
                 }
@@ -3007,7 +3007,7 @@ namespace ExplorerNative
                     File.Move(temp, path, overwrite: true);
                     lock (_gate) _saveCost[pairId] = Environment.TickCount64 - started;
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
             }
         }
 
@@ -3124,7 +3124,7 @@ namespace ExplorerNative
             }
             try { _loop.Wait(StopWait); } catch { }
             // The last 30 seconds of uploads are kept for the 24-hour tally too.
-            try { _uploadedRecently?.Flush(); } catch { }
+            try { _uploadedRecently?.Flush(); } catch (Exception ex) { Diag.Note(ex); }
             if (Current == this) Current = null;
         }
     }

@@ -236,7 +236,7 @@ namespace ExplorerNative
                     }
                 }
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
             finally
             {
                 try { watcher?.Dispose(); } catch { }
