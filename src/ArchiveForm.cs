@@ -234,7 +234,23 @@ namespace ExplorerNative
             _name.Select(0, Math.Max(0, keep));
         }
 
-        private void Accept()
+        private bool _accepting;
+
+        /// <summary>
+        /// OK. An async void off a click: guarded, and one at a time, because the
+        /// existence check below is awaited and a second Enter would otherwise
+        /// ask twice.
+        /// </summary>
+        private async void Accept()
+        {
+            if (_accepting) return;
+            _accepting = true;
+            try { await AcceptAsync(); }
+            catch (Exception ex) { Diag.Note(ex); }
+            finally { _accepting = false; }
+        }
+
+        private async Task AcceptAsync()
         {
             var typed = _name.Text.Trim();
 
@@ -260,10 +276,11 @@ namespace ExplorerNative
 
             var full = Path.Combine(_folder, typed);
 
-            // Bounded. This runs on the UI thread of a modal dialog, and the
-            // folder being written into can be a share that has gone to sleep —
-            // an unbounded pair of existence checks is the window not answering
-            // with no way to tell why. If it does not come back in two seconds
+            // Bounded, and awaited rather than waited on. This is the UI thread
+            // of a modal dialog, and the folder being written into can be a share
+            // that has gone to sleep — blocking on the existence checks is the
+            // window not answering with no way to tell why (it was a two second
+            // freeze at worst; now the window keeps answering). If it does not come back in two seconds
             // the question is asked anyway: a "replace it?" about a file that
             // turns out not to be there costs one keystroke, and the opposite
             // assumption costs somebody's archive.
@@ -276,7 +293,12 @@ namespace ExplorerNative
                 catch { return false; }
             });
 
-            bool alreadyThere = probe.Wait(TimeSpan.FromSeconds(2)) ? probe.Result : true;
+            bool alreadyThere = await Task.WhenAny(probe, Task.Delay(TimeSpan.FromSeconds(2))) == probe
+                ? probe.Result
+                : true;
+
+            // Escape while the check ran closed the dialog: nothing more to do.
+            if (IsDisposed || DialogResult == DialogResult.Cancel) return;
 
             if (alreadyThere)
             {
