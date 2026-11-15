@@ -77,7 +77,7 @@ namespace ExplorerNative
             var dir = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
             while (dir != null && !System.IO.Directory.Exists(System.IO.Path.Combine(dir.FullName, "src"))) dir = dir.Parent;
             string? main = null;
-            try { if (dir != null) main = System.IO.File.ReadAllText(System.IO.Path.Combine(dir.FullName, "src", "MainForm.cs")); }
+            try { if (dir != null) main = SourceFiles.Read(System.IO.Path.Combine(dir.FullName, "src", "MainForm.cs")); }
             catch { }
             if (main == null) { check("MainForm.cs can be read", false, null); return; }
 
@@ -122,7 +122,7 @@ namespace ExplorerNative
 
             string? Other(string name)
             {
-                try { return System.IO.File.ReadAllText(System.IO.Path.Combine(dir!.FullName, "src", name)); }
+                try { return SourceFiles.Read(System.IO.Path.Combine(dir!.FullName, "src", name)); }
                 catch { return null; }
             }
             var tray = Other("TrayApplicationContext.cs") ?? "";

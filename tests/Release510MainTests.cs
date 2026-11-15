@@ -22,7 +22,7 @@ namespace ExplorerNative
             var dir = new DirectoryInfo(AppContext.BaseDirectory);
             while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "src"))) dir = dir.Parent;
             if (dir == null) return "";
-            try { return File.ReadAllText(Path.Combine(dir.FullName, "src", name)); } catch { return ""; }
+            try { return SourceFiles.Read(Path.Combine(dir.FullName, "src", name)); } catch { return ""; }
         }
 
         public static async Task RunAll(Action<string, bool, string?> check, Action<string, string, string> equal)

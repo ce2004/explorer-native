@@ -324,6 +324,31 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            // MainForm's logic in plain classes, tested as code rather than read as text.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "mainformlogic")
+            {
+                await Guard("MainFormLogicTests", () => { MainFormLogicTests.RunAll(Check, Equal); return Task.CompletedTask; });
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
+            // The checks in this file that read MainForm or DriveMonitor's source,
+            // which otherwise run only in the whole suite.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "sourceshape")
+            {
+                CountedSpeechTests();
+                DriveNeverSelfCancelsTests();
+                WindowTitleTests();
+                ReservedShortcutTests();
+                await ShellLinkTests();
+                PaneNamingTests();
+                FixedBehaviourTests();
+                SyncDeleteTests();
+                SyncAdoptionTests();
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             // Just searching, the shortcuts list and the 4.2.0 fixes.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "search")
             {
@@ -707,6 +732,7 @@ namespace ExplorerNative
             await Guard("AudioFixTests", () => { AudioFixTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("UpdateFixTests", () => UpdateFixTests.RunAll(Check, Equal));
             await Guard("MainFixTests", () => { MainFixTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("MainFormLogicTests", () => { MainFormLogicTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("DeleteTests", () => { DeleteTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("Round2FixTests", () => Round2FixTests.RunAll(Check, Equal));
             await Guard("ShortcutSortDetailsTests", () => ShortcutSortDetailsTests.RunAll(Check, Equal));
@@ -3897,7 +3923,7 @@ namespace ExplorerNative
             if (dir == null) return null;
 
             var path = Path.Combine(dir.FullName, "src", name);
-            try { return File.Exists(path) ? File.ReadAllText(path) : null; }
+            try { return File.Exists(path) ? SourceFiles.Read(path) : null; }
             catch { return null; }
         }
 

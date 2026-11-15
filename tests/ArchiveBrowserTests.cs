@@ -358,7 +358,7 @@ namespace ExplorerNative
             while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "src"))) dir = dir.Parent;
             if (dir == null) return null;
             var path = Path.Combine(dir.FullName, "src", name);
-            try { return File.ReadAllText(path); } catch { return null; }
+            try { return SourceFiles.Read(path); } catch { return null; }
         }
     }
 }

@@ -65,10 +65,26 @@ namespace ExplorerNative
                 main != null && CountOf(main, "entries = FilterIncoming(pane, entries);") == 3);
             Check("Escape in a filtered list clears it",
                 main != null && main.Contains("case Keys.Escape when pane.Filter != null:", StringComparison.Ordinal));
+            // The rules are FolderFiltering's (tested as code in MainFormLogicTests);
+            // what is left to read is that MainForm goes through them.
             Check("the status bar says how many show",
-                main != null && CountOf(main, "CountSaid(pane, total)") == 3);
+                main != null && main.Contains("var listed = $\"{prefix}{CountSaid(pane, total)}{more}\";", StringComparison.Ordinal) &&
+                wiring != null && wiring.Contains("FolderFiltering.CountSaid(pane.Filter, FilterKey(pane), total)", StringComparison.Ordinal));
             Check("rows for another folder end the filter",
-                wiring != null && wiring.Contains("if (pane.Filter.Key != FilterKey(pane)) { pane.Filter = null; return entries; }", StringComparison.Ordinal));
+                wiring != null && wiring.Contains("return FolderFiltering.Incoming(ref pane.Filter, FilterKey(pane), entries);", StringComparison.Ordinal));
+            {
+                var all = new List<ListEntry> { new(@"C:\a\live set.flac", "live set.flac", false, 10, Now), new(@"C:\a\notes.txt", "notes.txt", false, 5, Now) };
+                FolderFilter<ListEntry>? on = FolderFiltering.For("C:\\a\n", all);
+                on.SetText("live");
+                var fresh = new List<ListEntry>(all) { new(@"C:\a\live two.flac", "live two.flac", false, 7, Now) };
+                Equal("rows for the same list are filtered", "2",
+                    FolderFiltering.Incoming(ref on, "C:\\a\n", fresh).Count.ToString());
+                Equal("and the status bar says so", "Showing 2 of 3, filtered, Escape shows all",
+                    FolderFiltering.CountSaid(on, "C:\\a\n", 2));
+                var other = FolderFiltering.Incoming(ref on, "C:\\b\n", fresh);
+                Check("rows for another folder end the filter, and come through whole", on == null && other.Count == 3);
+                Equal("with no filter the count is the plain one", "3 items", FolderFiltering.CountSaid(on, "C:\\b\n", 3));
+            }
             Check("Ctrl+F is in the shortcuts list",
                 BuiltInShortcuts.Lines().Exists(l => l.StartsWith("Ctrl+F:", StringComparison.Ordinal)));
         }
@@ -85,7 +101,7 @@ namespace ExplorerNative
             var dir = new DirectoryInfo(AppContext.BaseDirectory);
             while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "src"))) dir = dir.Parent;
             var path = dir == null ? null : Path.Combine(dir.FullName, "src", name);
-            return path != null && File.Exists(path) ? File.ReadAllText(path) : null;
+            return path != null && File.Exists(path) ? SourceFiles.Read(path) : null;
         }
 
         private static readonly DateTime Now = new(2026, 11, 4, 15, 30, 0);   // a Wednesday

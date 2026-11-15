@@ -215,7 +215,7 @@ namespace ExplorerNative
         {
             var p = FindSrc(name);
             Check($"source file {name} found", p != null);
-            return p == null ? "" : File.ReadAllText(p);
+            return p == null ? "" : SourceFiles.Read(p);
         }
 
         /// <summary>The text of a member, from its signature to the next blank-line-free method end (brace matched).</summary>

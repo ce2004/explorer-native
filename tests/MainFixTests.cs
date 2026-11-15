@@ -231,7 +231,7 @@ namespace ExplorerNative
             while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "src"))) dir = dir.Parent;
             if (dir == null) return null;
             var path = Path.Combine(dir.FullName, "src", name);
-            return File.Exists(path) ? File.ReadAllText(path) : null;
+            return File.Exists(path) ? SourceFiles.Read(path) : null;
         }
 
         private static void SourceRules()
@@ -301,7 +301,7 @@ namespace ExplorerNative
                 main.Contains("RegisterDeviceNotificationW", StringComparison.Ordinal));
 
             Check("a progressive load merges sorted batches instead of re-sorting on the UI thread",
-                main.Contains("_shown = MergeSorted(_shown, fresh, _order);", StringComparison.Ordinal) &&
+                main.Contains("_shown = ListSorting.MergeSorted(_shown, fresh, _order);", StringComparison.Ordinal) &&
                 !main.Contains("_form.SortLikeAFolder(new List<Entry>(_shown))", StringComparison.Ordinal));
 
             Check("type-ahead searches the names folded when the folder was listed",

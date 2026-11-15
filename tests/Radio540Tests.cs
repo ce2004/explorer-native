@@ -183,7 +183,7 @@ namespace ExplorerNative
         {
             var dir = new DirectoryInfo(AppContext.BaseDirectory);
             while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "src"))) dir = dir.Parent;
-            try { return dir == null ? "" : File.ReadAllText(Path.Combine(dir.FullName, "src", name)); }
+            try { return dir == null ? "" : SourceFiles.Read(Path.Combine(dir.FullName, "src", name)); }
             catch { return ""; }
         }
 

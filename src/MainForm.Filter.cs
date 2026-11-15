@@ -1,42 +1,30 @@
 using System;
 using System.Collections.Generic;
 using System.Windows.Forms;
+using Entry = ExplorerNative.ListEntry;
 
 namespace ExplorerNative
 {
     // Filter this folder (Ctrl+F): the list narrowed in place as you type.
-    // The rule is SearchQuery's; the rows are the pane's own, never a new listing.
+    // The box and the wiring; the rules are in FolderFiltering.
     public sealed partial class MainForm
     {
         /// <summary>Set while the filter itself puts rows in, so they are not filtered twice.</summary>
         private bool _applyingFilter;
 
         /// <summary>Which list a filter belongs to: the folder, and the search shown in it.</summary>
-        private static string FilterKey(Pane pane) => pane.CurrentPath + "\n" + (pane.SearchTerm ?? "");
+        private static string FilterKey(Pane pane) => FolderFiltering.KeyFor(pane.CurrentPath, pane.SearchTerm);
 
-        /// <summary>
-        /// Rows on their way into a pane. With a filter on they are kept whole
-        /// in the filter and only the matches shown, so a reload or a watcher's
-        /// new file follows the filter; rows for another list end it.
-        /// </summary>
+        /// <summary>Rows on their way into a pane, through its filter (<see cref="FolderFiltering.Incoming"/>).</summary>
         private List<Entry> FilterIncoming(Pane pane, List<Entry> entries)
         {
             if (_applyingFilter || pane.Filter == null) return entries;
-            if (pane.Filter.Key != FilterKey(pane)) { pane.Filter = null; return entries; }
-            pane.Filter.All = entries;
-            return pane.Filter.Apply(entries);
+            return FolderFiltering.Incoming(ref pane.Filter, FilterKey(pane), entries);
         }
 
         /// <summary>Rows changed in place while filtered (a file still being written) carried into the whole list.</summary>
-        private static void TakeInPlaceChanges(Pane pane, FolderFilter<Entry> filter)
-        {
-            if (ReferenceEquals(pane.Entries, filter.All)) return;
-            var now = new Dictionary<string, Entry>(pane.Entries.Count, StringComparer.OrdinalIgnoreCase);
-            foreach (var row in pane.Entries) now[row.Path] = row;
-            var all = new List<Entry>(filter.All.Count);
-            foreach (var row in filter.All) all.Add(now.TryGetValue(row.Path, out var newer) ? newer : row);
-            filter.All = all;
-        }
+        private static void TakeInPlaceChanges(Pane pane, FolderFilter<Entry> filter) =>
+            FolderFiltering.TakeInPlaceChanges(pane.Entries, filter);
 
         private void FilterThisFolder()
         {
@@ -50,7 +38,7 @@ namespace ExplorerNative
 
             var filter = pane.Filter;
             if (filter == null || filter.Key != FilterKey(pane))
-                filter = new FolderFilter<Entry>(FilterKey(pane), pane.Entries, e => (e.Name, e.IsDir, e.Size, e.Modified));
+                filter = FolderFiltering.For(FilterKey(pane), pane.Entries);
             pane.Filter = filter;
 
             var name = pane.SearchTerm != null ? "these results" : FolderDisplayName(pane.CurrentPath);
@@ -108,8 +96,6 @@ namespace ExplorerNative
 
         /// <summary>The count part of the status bar: "Showing 12 of 5,000, filtered" while a filter is on.</summary>
         private static string CountSaid(Pane pane, int total) =>
-            pane.Filter is { Narrows: true } filter && filter.Key == FilterKey(pane)
-                ? FolderFilterWords.Showing(total, filter.All.Count) + ", filtered, Escape shows all"
-                : NameRules.Items(total);
+            FolderFiltering.CountSaid(pane.Filter, FilterKey(pane), total);
     }
 }

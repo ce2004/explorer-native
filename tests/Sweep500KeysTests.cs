@@ -173,7 +173,7 @@ namespace ExplorerNative
             idle.Accept('z', 6000);
             Equal("holding with no word typed holds nothing", "", idle.Current(6300));
 
-            var src = File.ReadAllText(Path.Combine(SourceDir(), "MainForm.cs"));
+            var src = SourceFiles.Read(Path.Combine(SourceDir(), "MainForm.cs"));
             string Body(string start)
             {
                 int i = src.IndexOf(start, StringComparison.Ordinal);

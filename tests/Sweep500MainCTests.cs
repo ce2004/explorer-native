@@ -118,10 +118,12 @@ namespace ExplorerNative
             Check("a held Tab restarts one timer instead of starting one per press",
                 say.Contains("_emptyTimer.Stop();", StringComparison.Ordinal) &&
                 !say.Replace("if (_emptyTimer == null)", "").Contains("var wait = new", StringComparison.Ordinal));
-            var words = Body(main, "private static string EmptyWords(");
+            // The words themselves are SelectionSpeech's, tested as code.
             Check("an empty Apple Music list is a list, as navigation says",
                 say.Contains("EmptyWords(", StringComparison.Ordinal) &&
-                words.Contains("AppleMusic.Is", StringComparison.Ordinal) && words.Contains("This list is empty", StringComparison.Ordinal));
+                main.Contains("private static string EmptyWords(Pane pane) => SelectionSpeech.EmptyWords(pane.CurrentPath, pane.SearchTerm);", StringComparison.Ordinal) &&
+                SelectionSpeech.EmptyWords(AppleMusic.Root + "\\Library", null) == "This list is empty" &&
+                SelectionSpeech.EmptyWords(@"C:\Music", null) == "This folder is empty");
         }
 
         // Bug 3: on the Drive letter Compress, Extract and Extract here can
@@ -196,7 +198,7 @@ namespace ExplorerNative
             var dir = new DirectoryInfo(AppContext.BaseDirectory);
             while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "src"))) dir = dir.Parent;
             if (dir == null) return null;
-            try { return File.ReadAllText(Path.Combine(dir.FullName, "src", name)); } catch { return null; }
+            try { return SourceFiles.Read(Path.Combine(dir.FullName, "src", name)); } catch { return null; }
         }
     }
 }
