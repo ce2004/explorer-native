@@ -2081,7 +2081,7 @@ namespace ExplorerNative
             AddInfo(panel,
                 "Over Tailscale there is nothing more to do: while the server is on, your other devices on your " +
                 "Tailscale network reach it at this PC's Tailscale name and the port above. Tailscale carries it, " +
-                "so Windows Firewall is not in the way, and nothing is opened to the internet." +
+                "so Windows Firewall is not in the way, and Tailscale opens nothing to the internet." +
                 (kind == FileServers.Kind.Ftp
                     ? " Transfers use the eight ports after the FTP port, and those are carried too."
                     : ""));
@@ -2139,9 +2139,10 @@ namespace ExplorerNative
             };
             panel.Controls.Add(firewall);
             AddInfo(panel,
-                "For devices that are not on your Tailscale network: Windows Firewall blocks them until it is told " +
-                "to let them in. The button does that, once, and asks for an administrator. It covers every network " +
-                "this PC joins, public ones too, so the password is what protects your files there. " +
+                "For devices that are not on your Tailscale network: the server listens on every network this PC joins, " +
+                "and Windows Firewall blocks them until it is told to let them in. The button does that, once, and asks " +
+                "for an administrator. It covers every network this PC joins, public ones too, and the internet itself " +
+                "if this PC has an internet address of its own, so the password is what protects your files there. " +
                 "Once it is allowed, the same button takes it away again.");
 
             static string Shown(string user) => user.Length == 0 ? "name" : user;

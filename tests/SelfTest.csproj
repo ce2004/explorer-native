@@ -231,6 +231,7 @@
     <Compile Include="..\src\SmbFileServer.cs" />
     <Compile Include="Release700Tests.cs" />
     <Compile Include="Release701Tests.cs" />
+    <Compile Include="ServerAttackTests.cs" />
   </ItemGroup>
 
   <ItemGroup>

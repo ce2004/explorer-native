@@ -82,12 +82,58 @@ namespace ExplorerNative
             var accounts = new IndependentNTLMAuthenticationProvider(
                 name => string.Equals(name, _user, StringComparison.OrdinalIgnoreCase) ? _password : null,
                 TriesInWindow, TryWindow);
-            var server = new SMBServer(shares, new GSSProvider(accounts));
+            // One sign-in provider for both: its lockout counts tries over
+            // IPv4 and IPv6 together, so a second address family is not a
+            // second set of ten guesses.
+            var gss = new GSSProvider(accounts);
+            var server = new SMBServer(shares, gss);
+            StartOn(server, IPAddress.Any);
+            _server = server;
+
+            // The library's socket is one address family only (it never sets
+            // dual mode), so IPv6 needs a server of its own on the same port.
+            // FTP and SFTP listen on both, and the SMB page promises the same
+            // reach: every network this PC joins. Without it a Mac or phone
+            // that found this PC by an IPv6 address could not connect.
+            // A PC with IPv6 turned off simply has no IPv6 listener.
+            if (Socket.OSSupportsIPv6)
+            {
+                var six = new SMBServer(shares, gss);
+                try
+                {
+                    StartOn(six, IPAddress.IPv6Any);
+                    _serverSix = six;
+                }
+                catch (InvalidOperationException ex) when (ex.InnerException is SocketException
+                {
+                    SocketErrorCode: SocketError.AddressFamilyNotSupported or SocketError.ProtocolNotSupported or SocketError.AddressNotAvailable,
+                })
+                {
+                    // IPv6 is installed but not usable here: IPv4 alone, as before.
+                }
+                catch
+                {
+                    // Anything else (another program on this port over IPv6) is
+                    // the same refusal as for IPv4: half a server is not on.
+                    _server = null;
+                    try { server.Stop(); } catch { }
+                    throw;
+                }
+            }
+        }
+
+        private SMBServer? _serverSix;
+
+        /// <summary>The address family listened on, for the tests: IPv4 always, IPv6 when this PC has it.</summary>
+        internal bool ListensOnIPv6 => _serverSix != null;
+
+        private void StartOn(SMBServer server, IPAddress address)
+        {
             try
             {
-                StartOnPort.Invoke(server, new object?[]
+                StartOnPort!.Invoke(server, new object?[]
                 {
-                    IPAddress.Any, SMBTransportType.DirectTCPTransport, _port,
+                    address, SMBTransportType.DirectTCPTransport, _port,
                     false,  // SMB 1: never
                     true, true, (TimeSpan?)null,
                 });
@@ -101,14 +147,16 @@ namespace ExplorerNative
                         ? $"Windows would not let Explorer Native listen on port {_port}."
                         : $"The SMB server could not start: {inner.Message}", inner);
             }
-            _server = server;
         }
 
         public void Dispose()
         {
             var server = _server;
+            var six = _serverSix;
             _server = null;
+            _serverSix = null;
             try { server?.Stop(); } catch { }
+            try { six?.Stop(); } catch { }
         }
 
         /// <summary>
