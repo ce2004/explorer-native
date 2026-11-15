@@ -1190,7 +1190,7 @@ namespace ExplorerNative
                 try { File.Move(from, to, overwrite: true); }
                 catch
                 {
-                    try { File.SetAttributes(to, attributes); } catch { }
+                    try { File.SetAttributes(to, attributes); } catch (Exception ex) { Diag.Note(ex); }
                     throw;
                 }
             }

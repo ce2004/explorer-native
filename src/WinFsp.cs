@@ -730,7 +730,7 @@ namespace ExplorerNative
         private static void OnCleanup(IntPtr fs, IntPtr context, char* name, uint flags)
         {
             try { Owner(fs).Cleanup(Context(context), Text(name), flags); }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         [UnmanagedCallersOnly]
@@ -742,7 +742,7 @@ namespace ExplorerNative
                 try { Owner(fs).Close(handle.Target!); }
                 finally { handle.Free(); }
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         [UnmanagedCallersOnly]
@@ -868,7 +868,7 @@ namespace ExplorerNative
         private static void OnDispatcherStopped(IntPtr fs, byte normally)
         {
             try { Owner(fs).DispatcherStopped(normally != 0); }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         // ---- security -------------------------------------------------------------

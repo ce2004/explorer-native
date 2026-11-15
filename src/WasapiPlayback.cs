@@ -359,8 +359,8 @@ namespace ExplorerNative
 
         public WasapiPlayback()
         {
-            _reportStarving = _ => { try { Starved?.Invoke(true); } catch { } };
-            _reportFed = _ => { try { Starved?.Invoke(false); } catch { } };
+            _reportStarving = _ => { try { Starved?.Invoke(true); } catch (Exception ex) { Diag.Note(ex); } };
+            _reportFed = _ => { try { Starved?.Invoke(false); } catch (Exception ex) { Diag.Note(ex); } };
         }
 
         public double Duration => _decoder?.Duration ?? 0;
@@ -1527,7 +1527,7 @@ namespace ExplorerNative
                         ended = true;
                     }
                 }
-                if (ended) ThreadPool.QueueUserWorkItem(_ => { try { Finished?.Invoke(); } catch { } });
+                if (ended) ThreadPool.QueueUserWorkItem(_ => { try { Finished?.Invoke(); } catch (Exception ex) { Diag.Note(ex); } });
             }
 
             // Short of what the device asked for, with the source still going:
@@ -1762,7 +1762,7 @@ namespace ExplorerNative
                 // Anything picked is always answered.
                 bool retrying = automatic && old.Lost;
                 if (!(retrying && _lostFailureSaid))
-                    try { DeviceSwitched?.Invoke(refused, false); } catch { }
+                    try { DeviceSwitched?.Invoke(refused, false); } catch (Exception ex) { Diag.Note(ex); }
                 if (retrying) _lostFailureSaid = true;
                 return false;
             }
@@ -1896,7 +1896,7 @@ namespace ExplorerNative
             _lastSwitchProblem = "";
             Diagnostic = fresh.Diagnostic;
 
-            try { DeviceSwitched?.Invoke(DisplayNameOf(fresh), true); } catch { }
+            try { DeviceSwitched?.Invoke(DisplayNameOf(fresh), true); } catch (Exception ex) { Diag.Note(ex); }
             return true;
         }
 

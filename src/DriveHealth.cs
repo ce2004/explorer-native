@@ -97,7 +97,7 @@ namespace ExplorerNative
 
         private void Raise(DriveState state)
         {
-            try { Changed?.Invoke(state); } catch { }
+            try { Changed?.Invoke(state); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>

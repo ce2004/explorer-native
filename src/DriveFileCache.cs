@@ -491,10 +491,11 @@ namespace ExplorerNative
             catch (OperationCanceledException)
             {
             }
-            catch
+            catch (Exception ex)
             {
                 // A download that dies leaves the file readable: the reads fall
                 // through to Drive one chunk at a time. Slower, not broken.
+                Diag.Note(ex);
             }
         }
 
@@ -549,9 +550,10 @@ namespace ExplorerNative
                 long want = Math.Min(DriveCachePool.ChunkBytes, Size - (long)index * DriveCachePool.ChunkBytes);
                 fetched = bytes.Length >= want;
             }
-            catch
+            catch (Exception ex)
             {
                 // Cancelled, or Drive did not answer: handled below.
+                Diag.Note(ex);
             }
             finally
             {

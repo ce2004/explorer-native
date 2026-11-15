@@ -74,7 +74,7 @@ namespace ExplorerNative
                 Directory.CreateDirectory(DriveMonitor.StateDirectory);
                 ProtectedFile.WriteAllUtf8(PathOf(pairId), Encoding.UTF8.GetBytes(string.Join("\n", lines)));
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>

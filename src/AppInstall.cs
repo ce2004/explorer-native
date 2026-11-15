@@ -241,8 +241,8 @@ namespace ExplorerNative
                 File.Move(staged, target, overwrite: true);
                 return false;
             }
-            catch (IOException) { }
-            catch (UnauthorizedAccessException) { }
+            catch (IOException ex) { Diag.Note(ex); }
+            catch (UnauthorizedAccessException ex) { Diag.Note(ex); }
 
             try
             {
@@ -265,7 +265,7 @@ namespace ExplorerNative
                 // Put back exactly what was there. Better a failed install than a
                 // path that names nothing, which for the registered handler of
                 // every folder on the machine means no file manager at all.
-                try { File.Move(retired, target); } catch { }
+                try { File.Move(retired, target); } catch (Exception ex) { Diag.Note(ex); }
                 TryDelete(staged);
                 throw;
             }

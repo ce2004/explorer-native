@@ -127,7 +127,7 @@ namespace ExplorerNative
                         SHA256.HashData(File.ReadAllBytes(exe)).AsSpan().SequenceEqual(want))
                         return exe;
                 }
-                catch (IOException) { }
+                catch (IOException ex) { Diag.Note(ex); }
 
                 Directory.CreateDirectory(folder);
                 var temp = Path.Combine(folder, $"7za.{Guid.NewGuid():N}.tmp");
@@ -755,7 +755,7 @@ namespace ExplorerNative
                                 else current.Append(c);
                             }
                     }
-                    catch { }
+                    catch (Exception ex) { Diag.Note(ex); }
                     Flush();
                 }) { IsBackground = true, Name = "7-Zip decompress messages" };
                 _errors.Start();
@@ -846,7 +846,7 @@ namespace ExplorerNative
             {
                 feeder = new Thread(() =>
                 {
-                    try { feed(process.StandardInput.BaseStream); } catch { }
+                    try { feed(process.StandardInput.BaseStream); } catch (Exception ex) { Diag.Note(ex); }
                     try { process.StandardInput.Close(); } catch { }
                 }) { IsBackground = true, Name = "7-Zip input" };
                 feeder.Start();
@@ -891,7 +891,7 @@ namespace ExplorerNative
                             else current.Append(c);
                         }
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
                 Flush();
             }) { IsBackground = true, Name = "7-Zip output" };
             reader.Start();

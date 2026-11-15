@@ -266,7 +266,7 @@ namespace ExplorerNative
                     Thread.Sleep(SniffWaitMilliseconds);
                 }
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
             finally
             {
                 try { source.Position = 0; } catch { }

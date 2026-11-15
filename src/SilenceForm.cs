@@ -254,7 +254,7 @@ namespace ExplorerNative
                 if (MaySpeak())
                 {
                     try { Speech.Speak("Back to the defaults", interrupt: false); }
-                    catch { }
+                    catch (Exception ex) { Diag.Note(ex); }
                 }
             };
 

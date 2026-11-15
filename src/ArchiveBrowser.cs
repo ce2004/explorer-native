@@ -481,7 +481,7 @@ namespace ExplorerNative
             }
             else
             {
-                try { damaged = File.ReadAllText(finished) == "damaged"; } catch { }
+                try { damaged = File.ReadAllText(finished) == "damaged"; } catch (Exception ex) { Diag.Note(ex); }
             }
 
             var listing = ArchiveListing.Build(archivePath, format, tree, key, WalkTree(tree, token), token);
@@ -925,7 +925,7 @@ namespace ExplorerNative
             long now = Environment.TickCount64, last = Interlocked.Read(ref _lastIdleSweep);
             if (last != 0 && now - last < 3_600_000) return;
             if (Interlocked.CompareExchange(ref _lastIdleSweep, now, last) != last) return;
-            ArchiveWorkers.Run(() => { try { SweepIdle(CacheRoot, DateTime.UtcNow); } catch { } });
+            ArchiveWorkers.Run(() => { try { SweepIdle(CacheRoot, DateTime.UtcNow); } catch (Exception ex) { Diag.Note(ex); } });
         }
 
         /// <summary>
@@ -1052,7 +1052,7 @@ namespace ExplorerNative
                 length = info.Length;
                 ticks = info.LastWriteTimeUtc.Ticks;
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
             return $"{archivePath.ToUpperInvariant()}|{length}|{ticks}";
         }
 

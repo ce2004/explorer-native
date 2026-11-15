@@ -27,3 +27,12 @@ Part of the Explorer Native notes for Claude; CLAUDE.md says when to read this f
 
 - Group `perf`, and the end of the whole run: `TIMING <name> <ms> ms` lines, each the median of five, the same names every release: `startup` (the exe to its `--help` answer, only with `EXPLORERNATIVE_PERF_EXE`), `open-folder-10000` (one scan of 10,000 files and the pane's logical sort), `search-10000` (FileSearch.Local for one name), `drive-first-listing` (a fresh DriveClient listing 2,000 files from FakeDrive). On GitHub the table also goes to the job summary. Nothing fails for being slow; compare the lines between releases.
 - This PC, 7.1.0: open-folder-10000 about 25 ms, search-10000 about 9 ms, drive-first-listing about 20 ms, startup about 45 ms warm.
+- The suite runs with `Diag.Enabled` off (Tests.Main), so its own failures never land in the real errors.log. A test of something that logs turns it on with `Settings.OverrideAppDataDir` set to a temp folder, as DiagTests does.
+- 7.1.0 first pass: 128 of the 517 empty catches outside MainForm, DriveMonitor, the tray, Google, Apple Music, servers and Program now log; 389 stay empty in the best-effort categories above. The excluded files (314 empty catches) were done after merging, see below.
+
+## Blocking and threading (7.1.0 audit)
+
+- Bounded checks on the UI thread are awaited with `Task.WhenAny(probe, Task.Delay(n))`, never `probe.Wait(n)` (ArchiveForm.Accept was the one that did; now a guarded async void that returns if the dialog closed meanwhile).
+- No .Wait, .Result, GetResult or Thread.Sleep sits inside a lock block anywhere in src; the hits are Monitor.Wait, which releases the lock.
+- Accepted UI-thread waits, by design: Settings.Load/Save retry sleeps on a sharing conflict (at most about 375 ms), ProtectedFile.AppendLine retries on a sharing violation (up to 2 s), the quit path's bounded waits (tray ClearOpened 5 s, the Drive drain, AudioPlayer.Dispose 5 s, AudioEditorForm.WaitForReplaces 10 s), and Program's startup GetResult on settings loading before any window exists.
+- Everything else found (ConnectServer, DriveMount, WinFsp dispatcher, audio pump, Radio, StreamingSource, encoders, SingleInstance pipe) runs on its own thread or a worker, or reads a task already finished.

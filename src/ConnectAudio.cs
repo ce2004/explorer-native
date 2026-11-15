@@ -157,7 +157,7 @@ namespace ExplorerNative
                 {
                     // Only a very long track: the decoder resamples it down so the whole of it fits.
                     bool moved = false;
-                    try { moved = decoder.Reopen(plan.Rate, decoder.Channels) && decoder.SampleRate == plan.Rate; } catch { }
+                    try { moved = decoder.Reopen(plan.Rate, decoder.Channels) && decoder.SampleRate == plan.Rate; } catch (Exception ex) { Diag.Note(ex); }
                     if (!moved)
                     {
                         int at = decoder.SampleRate > 0 ? decoder.SampleRate : rate;

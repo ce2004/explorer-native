@@ -132,7 +132,7 @@ namespace ExplorerNative
                     return reader;
                 }
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
 
             reader.Dispose();
             return null;

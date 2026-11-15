@@ -983,7 +983,7 @@ namespace ExplorerNative
                                 return Path.GetFileName(at);
                         }
                         catch (OperationCanceledException) when (token.IsCancellationRequested) { throw; }
-                        catch { }
+                        catch (Exception ex) { Diag.Note(ex); }
                     }
                 }
 

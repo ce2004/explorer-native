@@ -62,7 +62,7 @@ namespace ExplorerNative
                     var names = _pendingNames();
                     if (names.Count > 0 && !_blocking) _blocking = ShutdownBlockReasonCreate(Handle, ReasonFor(names));
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
                 m.Result = (IntPtr)1;
                 return;
             }
@@ -78,7 +78,7 @@ namespace ExplorerNative
                         _endNow();
                     }
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
                 finally { Unblock(); }
                 m.Result = IntPtr.Zero;
                 return;

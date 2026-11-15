@@ -199,7 +199,7 @@ namespace ExplorerNative
             int generation = _generation;
             _inAction = true;
             try { action(++_repeat); }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
             finally { _inAction = false; }
 
             // Stopped from inside the action, or while it ran — or stopped and

@@ -58,9 +58,9 @@ namespace ExplorerNative
             {
                 if (!Enabled || ex == null) return;
                 if (ex is OperationCanceledException || ex is ThreadInterruptedException) return;
-                var line = Format(ex, member, file, DateTime.Now);
+                // Throttle first: a call that is not written costs a lookup, not a format.
                 if (!Admit(KeyOf(ex, member, file), DateTime.UtcNow)) return;
-                Pending.Enqueue(line);
+                Pending.Enqueue(Format(ex, member, file, DateTime.Now));
                 if (Interlocked.Exchange(ref _writing, 1) == 0)
                     Task.Run(Drain);
             }

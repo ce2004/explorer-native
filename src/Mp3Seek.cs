@@ -153,7 +153,7 @@ namespace ExplorerNative
                 // Set however the walk ends — finished, closed, abandoned or
                 // thrown — so nobody waits on it for ever.
                 try { hold?.Wait(); Walk(); }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
                 finally { _walkDone.Set(); }
             })
             {

@@ -1091,7 +1091,7 @@ namespace ExplorerNative
                     new Dictionary<string, string>(), null, limit.Token, retry: false).ConfigureAwait(false);
                 RememberOpenRouterPrices(json);
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>A model's price per token, or null when nobody knows it.</summary>

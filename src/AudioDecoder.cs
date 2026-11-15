@@ -1091,7 +1091,7 @@ namespace ExplorerNative
                     _virtual = false;
                 }
             }
-            catch { }
+            catch (Exception ex) { Diag.Note(ex); }
         }
 
         /// <summary>

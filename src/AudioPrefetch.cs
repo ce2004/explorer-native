@@ -130,7 +130,7 @@ namespace ExplorerNative
                 if (notify != null)
                 {
                     try { notify("audiofile.prefetch", "Reading ahead " + Path.GetFileName(path)); }
-                    catch { }
+                    catch (Exception ex) { Diag.Note(ex); }
                 }
 
                 var buffer = new byte[BufferBytes];

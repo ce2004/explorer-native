@@ -143,6 +143,11 @@ namespace ExplorerNative
 
             KeepDriveTraceToItself();
 
+            // The suite's own failures (fake servers hung up on, files deleted
+            // under a test) must never land in the app's real errors.log.
+            // DiagTests turns it on inside a temporary folder.
+            Diag.Enabled = false;
+
             // The live sync run is hours of real uploads, with no checks between.
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") is not ("livesync" or "syncmemory" or "playprobe" or "archivebench" or "sizebench" or "convertprobe")) StartWatchdog();
 
@@ -371,6 +376,13 @@ namespace ExplorerNative
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "release701")
             {
                 await Guard("Release701Tests", () => Release701Tests.RunAll(Check, Equal));
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+            // errors.log: one line for an exception caught and let go.
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "diag")
+            {
+                await Guard("DiagTests", () => DiagTests.RunAll(Check, Equal));
                 Console.WriteLine($"\n{_passed} passed, {_failed} failed");
                 return _failed == 0 ? 0 : 1;
             }
@@ -737,6 +749,7 @@ namespace ExplorerNative
             await Guard("Release700Tests", () => Release700Tests.RunAll(Check, Equal));
             await Guard("Release701Tests", () => Release701Tests.RunAll(Check, Equal));
             await Guard("UserFixesTests", () => UserFixesTests.RunAll(Check, Equal));
+            await Guard("DiagTests", () => DiagTests.RunAll(Check, Equal));
             await Guard("DriveClientCacheTests", () => DriveClientCacheTests.RunAll(Check, Equal));
             await Guard("TagEditTests", () => { TagEditTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("AudioConvertTests", () => AudioConvertTests.RunAll(Check, Equal));

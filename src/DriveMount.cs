@@ -835,7 +835,7 @@ namespace ExplorerNative
             private void Tick()
             {
                 // A throw on a timer thread ends the process.
-                try { _work(); } catch { }
+                try { _work(); } catch (Exception ex) { Diag.Note(ex); }
                 Settle();
             }
 
@@ -1084,7 +1084,7 @@ namespace ExplorerNative
 
             // Never on the caller's account. A handler that throws inside a
             // read the volume is answering would fail that read.
-            try { notify(id, message); } catch { }
+            try { notify(id, message); } catch (Exception ex) { Diag.Note(ex); }
         }
 
         // Which files have had their first and their last byte served. Only used
@@ -1492,7 +1492,7 @@ namespace ExplorerNative
                 _log($"  populate '{relative}': offline, {held.Length} entries from the last listing");
                 if (held.Length > 0 && onPlaced != null)
                 {
-                    try { onPlaced(held); } catch { }
+                    try { onPlaced(held); } catch (Exception ex) { Diag.Note(ex); }
                 }
                 _answeredOffline[relative] = true;
                 populated = true;
@@ -1523,7 +1523,7 @@ namespace ExplorerNative
                 placedCount += placedPage.Count;
                 if (placedPage.Count > 0 && onPlaced != null)
                 {
-                    try { onPlaced(placedPage); } catch { }
+                    try { onPlaced(placedPage); } catch (Exception ex) { Diag.Note(ex); }
                 }
             }
 

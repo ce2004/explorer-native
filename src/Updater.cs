@@ -88,6 +88,7 @@ namespace ExplorerNative
             catch (Exception ex) when (ex is not OutOfMemoryException)
             {
                 // The update itself is known; only its history is not.
+                Diag.Note(ex);
             }
 
             return found.OrderByDescending(f => f.Key).Select(f => new Missed(f.Key, f.Value)).ToList();
@@ -360,7 +361,7 @@ namespace ExplorerNative
                     }
                 }
                 catch (OperationCanceledException) when (cancel.IsCancellationRequested) { TryDelete(packed); throw; }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
                 TryDelete(packed);
                 TryDelete(partial);
             }
@@ -435,7 +436,7 @@ namespace ExplorerNative
         /// </summary>
         public static Process StartInstall(string exe, Release release)
         {
-            try { ProtectedFile.WriteAllText(MarkerPath, Text(release.Version)); } catch { }
+            try { ProtectedFile.WriteAllText(MarkerPath, Text(release.Version)); } catch (Exception ex) { Diag.Note(ex); }
 
             return Process.Start(new ProcessStartInfo(exe, "--update --quiet") { UseShellExecute = true })
                 ?? throw new InvalidOperationException("The installer did not start.");

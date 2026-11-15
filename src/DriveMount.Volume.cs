@@ -215,7 +215,7 @@ namespace ExplorerNative
                 }
                 if (moved is { } m)
                 {
-                    try { OnLetterMoved?.Invoke(m.From, m.To); } catch { }
+                    try { OnLetterMoved?.Invoke(m.From, m.To); } catch (Exception ex) { Diag.Note(ex); }
                 }
                 _probe.Pace();
                 if (state == DriveState.Online) KickUploads();
@@ -256,7 +256,7 @@ namespace ExplorerNative
                     NetworkChange.NetworkAvailabilityChanged += OnAvailability;
                     NetworkChange.NetworkAddressChanged += OnAddress;
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
                 Pace();
             }
 
@@ -485,7 +485,7 @@ namespace ExplorerNative
                 {
                     _missRelisted[parent] = now;
                     ForgetKey(parent);
-                    try { PopulateKey(parent, interactive: true); } catch { }
+                    try { PopulateKey(parent, interactive: true); } catch (Exception ex) { Diag.Note(ex); }
                     row = RowIn(parent, leaf);
                 }
             }
@@ -515,7 +515,7 @@ namespace ExplorerNative
                     ForgetKey(key);
                     PopulateKey(key, interactive: true);
                 }
-                catch { }
+                catch (Exception ex) { Diag.Note(ex); }
                 finally { _refreshing.TryRemove(key, out _); }
             });
         }

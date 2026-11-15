@@ -1956,7 +1956,7 @@ namespace ExplorerNative
                 if (remote == null && !ReferenceEquals(io, path))
                 {
                     if (AudioDecoder.IsAiffName(Path.GetExtension(path))) openAs = io;
-                    else try { remote = new FileRangeSource(io); } catch { }
+                    else try { remote = new FileRangeSource(io); } catch (Exception ex) { Diag.Note(ex); }
                 }
                 long bytes = remote?.Length ?? 0;
                 if (remote == null)
@@ -2325,7 +2325,7 @@ namespace ExplorerNative
             {
                 var who = key[5..];   // past "user:" or "addr:"
                 _log?.Invoke($"Connect: {FreeCodeTries} wrong pairing codes from {who}; each try now waits");
-                try { CodeGuessing?.Invoke(who); } catch { }
+                try { CodeGuessing?.Invoke(who); } catch (Exception ex) { Diag.Note(ex); }
             }
         }
 
