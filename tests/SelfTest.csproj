@@ -82,6 +82,7 @@
     <Compile Include="..\src\WinFsp.cs" />
     <Compile Include="..\src\WinFspSetup.cs" />
     <Compile Include="WinFspTests.cs" />
+    <Compile Include="DiagTests.cs" />
     <Compile Include="Release510DriveTests.cs" />
     <Compile Include="Release510MainTests.cs" />
     <Compile Include="Release510ArchivesTests.cs" />
