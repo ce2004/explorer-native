@@ -409,7 +409,7 @@ namespace ExplorerNative
             while (at != null && !System.IO.Directory.Exists(System.IO.Path.Combine(at.FullName, "src"))) at = at.Parent;
             if (at == null) return "";
             var path = System.IO.Path.Combine(at.FullName, "src", name);
-            try { return System.IO.File.Exists(path) ? System.IO.File.ReadAllText(path) : ""; }
+            try { return System.IO.File.Exists(path) ? SourceFiles.Read(path) : ""; }
             catch { return ""; }
         }
     }

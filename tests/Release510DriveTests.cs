@@ -22,7 +22,7 @@ namespace ExplorerNative
             while (at != null && !Directory.Exists(Path.Combine(at.FullName, "src"))) at = at.Parent;
             if (at == null) return "";
             var path = Path.Combine(at.FullName, "src", name);
-            try { return File.Exists(path) ? File.ReadAllText(path) : ""; }
+            try { return File.Exists(path) ? SourceFiles.Read(path) : ""; }
             catch { return ""; }
         }
 

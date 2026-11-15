@@ -1581,7 +1581,7 @@ namespace ExplorerNative
             for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)
             {
                 var candidate = Path.Combine(dir.FullName, "src", file);
-                if (File.Exists(candidate)) return File.ReadAllText(candidate).Contains(text, StringComparison.Ordinal);
+                if (File.Exists(candidate)) return SourceFiles.Read(candidate).Contains(text, StringComparison.Ordinal);
             }
             return false;
         }

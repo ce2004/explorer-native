@@ -928,7 +928,7 @@ namespace ExplorerNative
         {
             var dir = new DirectoryInfo(AppContext.BaseDirectory);
             while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "src"))) dir = dir.Parent;
-            try { return dir == null ? "" : File.ReadAllText(Path.Combine(dir.FullName, "src", name)); }
+            try { return dir == null ? "" : SourceFiles.Read(Path.Combine(dir.FullName, "src", name)); }
             catch { return ""; }
         }
 
@@ -1207,7 +1207,7 @@ namespace ExplorerNative
             while (dir != null && !Directory.Exists(Path.Combine(dir.FullName, "src"))) dir = dir.Parent;
             if (dir == null) return null;
             var path = Path.Combine(dir.FullName, "src", name);
-            return File.Exists(path) ? File.ReadAllText(path) : null;
+            return File.Exists(path) ? SourceFiles.Read(path) : null;
         }
 
         private static float[] ReadAll(string path, out int rate)

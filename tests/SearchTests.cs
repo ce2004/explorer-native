@@ -611,7 +611,7 @@ namespace ExplorerNative
             for (int up = 0; up < 8 && here != null; up++, here = here.Parent)
             {
                 var candidate = Path.Combine(here.FullName, "src", name);
-                if (File.Exists(candidate)) return File.ReadAllText(candidate);
+                if (File.Exists(candidate)) return SourceFiles.Read(candidate);
             }
 
             return null;

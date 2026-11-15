@@ -7,98 +7,12 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using Entry = ExplorerNative.ListEntry;
 
 namespace ExplorerNative
 {
     public sealed partial class MainForm : Form
     {
-        /// <summary>One row. Built once during enumeration, formatted on demand.</summary>
-        private sealed record Entry(string Path, string Name, bool IsDir, long Size, DateTime Modified)
-        {
-            public string? SizeOverride { get; set; }
-
-            /// <summary>
-            /// What the Name column says, when that is not simply the file's
-            /// name. Search results use it to carry the folder a hit came out of
-            /// — "Lovesick.flac, in 2019" — because a results list gathers names
-            /// from all over a tree and three rows called the same thing with no
-            /// way to tell them apart is the one thing it must not do.
-            /// </summary>
-            public string? DisplayOverride { get; set; }
-
-            /// <summary>
-            /// The name's key for <see cref="NameRules.CompareNames(string, byte[], string, string, byte[], string)"/>,
-            /// while a listing is being sorted, and null otherwise. Made on the
-            /// worker, read by the merge on the UI thread, and dropped once the
-            /// listing is in order: nothing sorts it again, and it would be about
-            /// eighty bytes a row kept for nothing. A null key is never wrong,
-            /// only slower, so a reader racing the drop is still right.
-            /// </summary>
-            public byte[]? NameKey;
-
-            /// <summary>
-            /// Type-ahead's view of the row, folded once rather than on every
-            /// keystroke: <c>TypeAhead.Fold</c> of what the Name column shows with
-            /// extensions on. For plain ASCII that is the name itself and costs
-            /// nothing. Made on the worker as a folder is listed, or on first use
-            /// for rows made anywhere else.
-            /// </summary>
-            private string? _folded;
-
-            /// <summary>
-            /// How much of <see cref="_folded"/> is the name without its
-            /// extension, or -1 until it is asked. A slice rather than a second
-            /// string, because folding works a character at a time and a plain
-            /// extension folds to itself; <see cref="_foldedStem"/> is for the
-            /// rare name where that cannot be shown to hold.
-            /// </summary>
-            private int _stemLength = -1;
-            private string? _foldedStem;
-
-            /// <summary>Folds now, off the UI thread, so the first keystroke does not.</summary>
-            public void PrepareTypeAhead()
-            {
-                var whole = _folded = TypeAhead.Fold(DisplayOverride ?? Name);
-                MeasureStem(whole);
-            }
-
-            /// <summary>
-            /// What type-ahead matches against: <c>TypeAhead.Fold(DisplayNameOf(entry))</c>,
-            /// without building either string on the keystroke.
-            /// </summary>
-            public ReadOnlySpan<char> FoldedDisplayName(bool showExtensions)
-            {
-                var whole = _folded ??= TypeAhead.Fold(DisplayOverride ?? Name);
-                if (showExtensions || DisplayOverride != null || IsDir) return whole;
-
-                if (_stemLength < 0) MeasureStem(whole);
-                return _foldedStem ?? whole.AsSpan(0, _stemLength);
-            }
-
-            private void MeasureStem(string whole)
-            {
-                int dot = Name.LastIndexOf('.');
-                if (DisplayOverride != null || IsDir || dot <= 0) { _stemLength = whole.Length; return; }
-
-                // Plain ASCII: the fold is the name, and the stem is up to the dot.
-                if (ReferenceEquals(whole, Name)) { _stemLength = dot; return; }
-
-                // Otherwise the fold of the name is the fold of its stem followed
-                // by the fold of its extension, which for a plain extension is
-                // the extension. Checked against folding the stem on its own for
-                // 591,000 names, real ones and ones built to break it.
-                var extension = Name.AsSpan(dot);
-                if (System.Text.Ascii.IsValid(extension) && whole.AsSpan().EndsWith(extension, StringComparison.Ordinal))
-                {
-                    _stemLength = whole.Length - extension.Length;
-                    return;
-                }
-
-                _foldedStem = TypeAhead.Fold(System.IO.Path.GetFileNameWithoutExtension(Name));
-                _stemLength = _foldedStem.Length;
-            }
-        }
-
         private sealed class Pane
         {
             public required ListView List;
@@ -4789,7 +4703,7 @@ namespace ExplorerNative
             {
                 if (batch.Count == 0 || !_enabled) return;
                 var sorted = new List<Entry>(batch);
-                PrepareSortKeys(sorted);
+                ListSorting.PrepareSortKeys(sorted);
                 sorted.Sort(_order);
                 _arrived.Enqueue(sorted);
             }
@@ -4827,7 +4741,7 @@ namespace ExplorerNative
                     foreach (var entry in batch)
                         if (_seen.Add(entry.Path)) unseen.Add(entry);
                     if (unseen.Count == 0) continue;
-                    fresh = fresh == null ? unseen : MergeSorted(fresh, unseen, _order);
+                    fresh = fresh == null ? unseen : ListSorting.MergeSorted(fresh, unseen, _order);
                 }
                 if (fresh == null) return;
 
@@ -4856,7 +4770,7 @@ namespace ExplorerNative
                 // Each batch is already in order, and so is what is shown:
                 // one linear merge, and a new list, because the pane holds
                 // the last one.
-                _shown = MergeSorted(_shown, fresh, _order);
+                _shown = ListSorting.MergeSorted(_shown, fresh, _order);
                 Put(_shown, unchanged: lo);
             }
 
@@ -5336,47 +5250,12 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// The sort order every list in this application uses: the chosen column,
-        /// the chosen direction, and folders first when that is asked for.
-        ///
-        /// Shared with search results rather than written twice. Results came
-        /// back sorted by name and direction only, so somebody with "folders
-        /// first" set got it everywhere except the one list where a folder and a
-        /// file are most easily confused for each other.
+        /// The sort order every list in this application uses, for this folder
+        /// (<see cref="ListSorting.SortLikeAFolder"/>).
         /// </summary>
-        private List<Entry> SortLikeAFolder(List<Entry> result, string? folder)
-        {
-            PrepareSortKeys(result);
-            result.Sort(ListOrder(folder));
+        private List<Entry> SortLikeAFolder(List<Entry> result, string? folder) =>
+            ListSorting.SortLikeAFolder(result, ListOrder(folder));
 
-            // In order now, and nothing sorts this list again: a new order is a
-            // new listing. The keys would only be memory.
-            foreach (var row in result) row.NameKey = null;
-            return result;
-        }
-
-        /// <summary>
-        /// Gives each row the key its name sorts by, so the sort compares bytes
-        /// instead of calling into Windows n log n times. Rows that already have
-        /// one — a progressive load keyed them batch by batch — keep it. Spread
-        /// over the cores for a big folder; this runs on a worker, apart from
-        /// search results, which stop at ten thousand.
-        /// </summary>
-        private static void PrepareSortKeys(List<Entry> rows)
-        {
-            if (rows.Count >= 8192)
-                Parallel.For(0, rows.Count, i => rows[i].NameKey ??= NameRules.LogicalKey(rows[i].Name));
-            else
-                foreach (var row in rows) row.NameKey ??= NameRules.LogicalKey(row.Name);
-        }
-
-        /// <summary>
-        /// The whole order as one comparison: folders first when asked, then the
-        /// column, then the direction. Total, because every column falls back to
-        /// the name and the name to the path — which is what lets a progressive
-        /// load sort each batch on the worker and merge it into what is already
-        /// shown, instead of re-sorting everything on the UI thread every tick.
-        /// </summary>
         /// <summary>
         /// The order a folder is listed in: its own, chosen from File, Sort this
         /// folder by, or the one in Preferences. Safe on a worker, because
@@ -5388,30 +5267,8 @@ namespace ExplorerNative
             return (_settings.SortBy, _settings.SortAscending);
         }
 
-        private (SortColumn By, bool Ascending)? FolderSortOf(string? folder)
-        {
-            if (string.IsNullOrEmpty(folder)) return null;
-            var sorts = _settings.FolderSorts;
-            if (sorts == null || sorts.Count == 0) return null;
-
-            var key = FolderSortKey(folder);
-            string? value = null;
-            foreach (var pair in sorts)
-                if (string.Equals(FolderSortKey(pair.Key), key, StringComparison.OrdinalIgnoreCase)) { value = pair.Value; break; }
-            if (value == null) return null;
-
-            var words = value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-            if (words.Length == 0 || !Enum.TryParse<SortColumn>(words[0], ignoreCase: true, out var by)) return null;
-            bool ascending = words.Length < 2 || !words[1].Equals("descending", StringComparison.OrdinalIgnoreCase);
-            return (by, ascending);
-        }
-
-        private static string FolderSortKey(string folder)
-        {
-            var trimmed = Path.TrimEndingDirectorySeparator(folder);
-            // "C:" alone means the current directory on C:, so a root keeps its slash.
-            return trimmed.EndsWith(':') ? trimmed + "\\" : trimmed;
-        }
+        private (SortColumn By, bool Ascending)? FolderSortOf(string? folder) =>
+            ListSorting.FolderSortOf(_settings.FolderSorts, folder);
 
         /// <summary>
         /// Gives the folder its own order, or with null hands it back to the
@@ -5419,10 +5276,10 @@ namespace ExplorerNative
         /// </summary>
         private void SetFolderSort(string folder, (SortColumn By, bool Ascending)? sort)
         {
-            var key = FolderSortKey(folder);
+            var key = ListSorting.FolderSortKey(folder);
             var sorts = new Dictionary<string, string>();
             foreach (var pair in _settings.FolderSorts ?? new())
-                if (!string.Equals(FolderSortKey(pair.Key), key, StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(ListSorting.FolderSortKey(pair.Key), key, StringComparison.OrdinalIgnoreCase))
                     sorts[pair.Key] = pair.Value;
             if (sort is { } s)
                 sorts[key] = s.By + (s.Ascending ? " ascending" : " descending");
@@ -5434,7 +5291,7 @@ namespace ExplorerNative
             var (by, ascending) = SortFor(folder);
             AnnounceOperation("nav.sorted",
                 (sort == null ? "Default order, " : "") +
-                $"sorted by {SortName(by)}, {(ascending ? "ascending" : "descending")}");
+                $"sorted by {ListSorting.SortName(by)}, {(ascending ? "ascending" : "descending")}");
         }
 
         private static bool StartsAscending(SortColumn column) => NameRules.StartsAscending(column);
@@ -5476,13 +5333,6 @@ namespace ExplorerNative
                 ShowStatus("Could not sort: " + ex.Message);
             }
         }
-
-        private static string SortName(SortColumn column) => NameRules.SortsAs(column) switch
-        {
-            SortColumn.Size => "size",
-            SortColumn.Modified => "date modified",
-            _ => "name",
-        };
 
         /// <summary>File, Sort this folder by: ticks set as it opens, from the active pane's folder.</summary>
         private ToolStripMenuItem BuildSortMenu()
@@ -5610,83 +5460,20 @@ namespace ExplorerNative
         /// <summary>True when the folder is on its own default order (nothing chosen for it).</summary>
         private bool AppleSortIsDefault(string folder)
         {
-            var key = FolderSortKey(folder);
+            var key = ListSorting.FolderSortKey(folder);
             foreach (var pair in _settings.FolderSorts ?? new())
-                if (string.Equals(FolderSortKey(pair.Key), key, StringComparison.OrdinalIgnoreCase)
+                if (string.Equals(ListSorting.FolderSortKey(pair.Key), key, StringComparison.OrdinalIgnoreCase)
                     && pair.Value.StartsWith(AppleSortPrefix, StringComparison.Ordinal))
                     return false;
             return true;
         }
 
+        /// <summary>The whole order for this folder as one comparison (<see cref="ListSorting.ListOrder"/>).</summary>
         private Comparison<Entry> ListOrder(string? folder)
         {
             var (by, ascending) = SortFor(folder);
-            var cmp = ComparerFor(by);
-            bool foldersFirst = _settings.FoldersFirst;
-            return (a, b) =>
-            {
-                if (foldersFirst && a.IsDir != b.IsDir) return a.IsDir ? -1 : 1;
-                int c = cmp(a, b);
-                return ascending ? c : -c;
-            };
+            return ListSorting.ListOrder(by, ascending, _settings.FoldersFirst);
         }
-
-        /// <summary>
-        /// A short sorted batch merged into a long sorted list: each new entry's
-        /// place is found by binary search from the last one's, and the rows in
-        /// between are copied without being compared. That is m log n
-        /// comparisons rather than n + m — which matters because a logical name
-        /// comparison is a call into Windows, and a plain merge of 100,000 rows
-        /// spent 80ms of the UI thread on one tick doing them.
-        /// </summary>
-        private static List<Entry> MergeSorted(List<Entry> into, List<Entry> batch, Comparison<Entry> order)
-        {
-            var merged = new List<Entry>(into.Count + batch.Count);
-            int from = 0;
-            foreach (var item in batch)
-            {
-                int lo = from, hi = into.Count;
-                while (lo < hi)
-                {
-                    int mid = (lo + hi) >>> 1;
-                    if (order(into[mid], item) <= 0) lo = mid + 1;
-                    else hi = mid;
-                }
-                for (int k = from; k < lo; k++) merged.Add(into[k]);
-                merged.Add(item);
-                from = lo;
-            }
-            for (int k = from; k < into.Count; k++) merged.Add(into[k]);
-            return merged;
-        }
-
-        /// <summary>
-        /// The comparison, chosen once rather than re-decided inside every
-        /// comparison. Sorting is n log n calls, so a switch on a settings
-        /// property in the body was evaluated a quarter of a million times on a
-        /// twenty-thousand file folder for an answer that never changes.
-        ///
-        /// Every comparison falls back to the name, so the order is total: List
-        /// .Sort is unstable, and without a tie-break equal-sized files shuffled
-        /// on every refresh.
-        /// </summary>
-        private static Comparison<Entry> ComparerFor(SortColumn column) => NameRules.SortsAs(column) switch
-        {
-            SortColumn.Size => static (a, b) =>
-            {
-                int c = a.Size.CompareTo(b.Size);
-                return c != 0 ? c : CompareNames(a, b);
-            },
-            SortColumn.Modified => static (a, b) =>
-            {
-                int c = a.Modified.CompareTo(b.Modified);
-                return c != 0 ? c : CompareNames(a, b);
-            },
-            _ => static (a, b) => CompareNames(a, b),
-        };
-
-        private static int CompareNames(Entry a, Entry b) =>
-            NameRules.CompareNames(a.Name, a.NameKey, a.Path, b.Name, b.NameKey, b.Path);
 
         // ---------- Archives as folders ----------
 
@@ -6174,10 +5961,10 @@ namespace ExplorerNative
         /// <summary>The order chosen for an Apple Music folder, or its own when none has been.</summary>
         private (AppleMusic.Sort By, bool Ascending) AppleSortFor(string folder)
         {
-            var key = FolderSortKey(folder);
+            var key = ListSorting.FolderSortKey(folder);
             foreach (var pair in _settings.FolderSorts ?? new())
             {
-                if (!string.Equals(FolderSortKey(pair.Key), key, StringComparison.OrdinalIgnoreCase)) continue;
+                if (!string.Equals(ListSorting.FolderSortKey(pair.Key), key, StringComparison.OrdinalIgnoreCase)) continue;
                 var words = pair.Value.Split(' ', StringSplitOptions.RemoveEmptyEntries);
                 if (words.Length > 0 && words[0].StartsWith(AppleSortPrefix, StringComparison.Ordinal) &&
                     Enum.TryParse<AppleMusic.Sort>(words[0].Substring(AppleSortPrefix.Length), out var by))
@@ -6192,10 +5979,10 @@ namespace ExplorerNative
         /// <summary>Gives an Apple Music folder its own order (null: its default), and shows it at once.</summary>
         private void SetAppleSort(string folder, (AppleMusic.Sort By, bool Ascending)? sort)
         {
-            var key = FolderSortKey(folder);
+            var key = ListSorting.FolderSortKey(folder);
             var sorts = new Dictionary<string, string>();
             foreach (var pair in _settings.FolderSorts ?? new())
-                if (!string.Equals(FolderSortKey(pair.Key), key, StringComparison.OrdinalIgnoreCase))
+                if (!string.Equals(ListSorting.FolderSortKey(pair.Key), key, StringComparison.OrdinalIgnoreCase))
                     sorts[pair.Key] = pair.Value;
             if (sort is { } s)
                 sorts[key] = AppleSortPrefix + s.By + (s.Ascending ? " ascending" : " descending");
@@ -7244,7 +7031,7 @@ namespace ExplorerNative
                 AnnounceSelectionChange(ctrlHeld: true);
             }
             int selected = Active.List.SelectedIndices.Count;
-            AnnounceOperation("select.count", selected == 0 ? "Nothing selected" : $"{NameRules.Items(selected)} selected");
+            AnnounceOperation("select.count", SelectionSpeech.TotalSelectedSaid(selected));
         }
 
         /// <summary>
@@ -8238,14 +8025,8 @@ namespace ExplorerNative
             bool isIn = pane.List.SelectedIndices.Contains(index);
             var name = DisplayNameOf(pane.Entries[index]);
 
-            // The count only when it adds something: "song.flac selected, 1
-            // selected" said the same thing twice. Nor while Ctrl is held: the
-            // total is said once, when it is let go (List_KeyUp).
             AnnounceOperation("select.count",
-                (isIn && selected == 1) || ctrlHeld || (ModifierKeys & Keys.Control) != 0
-                    ? $"{(isIn ? "Selected" : "Not selected")} {name}"
-                : selected == 0 ? $"Not selected {name}"
-                : $"{(isIn ? "Selected" : "Not selected")} {name}, {selected:N0} selected in all");
+                SelectionSpeech.RowSelectionSaid(name, isIn, selected, ctrlHeld || (ModifierKeys & Keys.Control) != 0));
         }
 
         private void List_ColumnClick(object? sender, ColumnClickEventArgs e)
@@ -8369,7 +8150,7 @@ namespace ExplorerNative
             // select.all, not select.count: this is Ctrl+A reporting what it did.
             // select.count is the running selection total in the status bar, which
             // is a different message with a different reason to be off.
-            AnnounceOperation("select.all", $"Selected {NameRules.Items(count)}");
+            AnnounceOperation("select.all", SelectionSpeech.SelectAllSaid(count));
         }
 
         /// <summary>
@@ -8570,13 +8351,8 @@ namespace ExplorerNative
         /// <summary>Set while SetActiveTab moves focus, so SayIfEmpty knows the tab announcement follows.</summary>
         private bool _switchingTab;
 
-        /// <summary>What an empty list is called: the same words navigation uses.</summary>
-        private static string EmptyWords(Pane pane) =>
-            pane.SearchTerm != null ? "No results"
-            : string.Equals(pane.CurrentPath, AppleMusic.SearchFolder, StringComparison.OrdinalIgnoreCase)
-                ? "No searches yet. Press F1 to search Apple Music"
-            : AppleMusic.Is(pane.CurrentPath) ? "This list is empty"
-            : "This folder is empty";
+        /// <summary>What an empty list is called (<see cref="SelectionSpeech.EmptyWords"/>).</summary>
+        private static string EmptyWords(Pane pane) => SelectionSpeech.EmptyWords(pane.CurrentPath, pane.SearchTerm);
 
         /// <summary>Nothing listed, and nothing on its way: not a folder still loading.</summary>
         private static bool IsEmptyAndSettled(Pane pane) =>
@@ -9412,7 +9188,7 @@ namespace ExplorerNative
             // skip past it, or merge into it.
             var claimed = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var path in selection)
-                if (ParentIs(path, destination))
+                if (TransferRules.ParentIs(path, destination))
                     claimed.Add(Path.GetFileName(Path.TrimEndingDirectorySeparator(path)));
 
             int done = 0;
@@ -9425,7 +9201,7 @@ namespace ExplorerNative
 
                 try
                 {
-                    bool sameFolder = ParentIs(path, destination);
+                    bool sameFolder = TransferRules.ParentIs(path, destination);
                     bool folder = await Task.Run(() => Directory.Exists(path));
 
                     // Its folder listed recently enough to name it from — once per
@@ -9539,8 +9315,7 @@ namespace ExplorerNative
                     {
                         // Into itself or one of its own subfolders: refused here,
                         // not left for Google to answer.
-                        var into = destination.TrimEnd('\\') + "\\";
-                        if (into.StartsWith(path.TrimEnd('\\') + "\\", StringComparison.OrdinalIgnoreCase))
+                        if (TransferRules.IntoItself(path, destination))
                         {
                             errors.Add($"{wanted}: a folder cannot be moved into itself");
                             continue;
@@ -9595,26 +9370,6 @@ namespace ExplorerNative
         }
 
         /// <summary>What is inside a Drive folder, as paths. Not on the UI thread.</summary>
-        /// <summary>
-        /// Whether <paramref name="path"/> sits directly in
-        /// <paramref name="folder"/>. Compared as full paths with the root's
-        /// separator kept: trimmed by hand, "G:\" and "G:" never matched, and an
-        /// item pasted onto itself at the top of the letter was replaced — or,
-        /// merged, trashed. Text only; nothing is asked of the disk.
-        /// </summary>
-        private static bool ParentIs(string path, string folder)
-        {
-            try
-            {
-                var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(path));
-                return parent != null && string.Equals(
-                    Path.TrimEndingDirectorySeparator(Path.GetFullPath(parent)),
-                    Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder)),
-                    StringComparison.OrdinalIgnoreCase);
-            }
-            catch { return false; }
-        }
-
         private static string[]? ChildrenOnDrive(GoogleDrive drive, string folder)
         {
             drive.Forget(folder);
@@ -9695,14 +9450,7 @@ namespace ExplorerNative
             var choice = ConflictForm.Ask(this, clashing, FolderDisplayName(destination));
             RestoreListFocus();
 
-            return choice switch
-            {
-                FileOperations.ConflictChoice.Overwrite => PasteConflictPolicy.Overwrite,
-                FileOperations.ConflictChoice.Skip => PasteConflictPolicy.Skip,
-                FileOperations.ConflictChoice.Rename => PasteConflictPolicy.AutoRename,
-                FileOperations.ConflictChoice.FillGaps => PasteConflictPolicy.FillGaps,
-                _ => null,
-            };
+            return TransferRules.PolicyFor(choice);
         }
 
         /// <summary>
@@ -9754,33 +9502,9 @@ namespace ExplorerNative
             return (clashing, checkedIt);
         }
 
-        /// <summary>
-        /// How many files to copy at once, which is a different question when the
-        /// files are coming off Google Drive.
-        ///
-        /// Everywhere else the answer is "as many as the machine can usefully
-        /// have in flight" — a NAS spends its time waiting on round trips and
-        /// eight or sixteen requests outstanding is the difference between usable
-        /// and not. Reading a placeholder is round trips too, so the same
-        /// reasoning looks like it should apply, and it is exactly backwards.
-        ///
-        /// A Drive read is not waiting on latency, it is *using the link*, and
-        /// the link is about three megabytes a second however many ways it is
-        /// split. Sixteen at once does not make the copy faster; it makes every
-        /// one of the sixteen sixteen times slower, and a read slow enough is a
-        /// read Windows abandons — "the cloud operation was not completed before
-        /// the time-out period expired". Sixteen files failing one at a time is
-        /// what a folder copied off the drive actually looked like.
-        ///
-        /// One, then. The whole link goes to the file being copied, that file
-        /// finishes at the speed of the link, and the next one starts. The total
-        /// is the same and nothing times out.
-        /// </summary>
-        private int TransferThreads(string[] paths)
-        {
-            bool fromDrive = Drive != null && paths.Any(p => Drive.Owns(p));
-            return fromDrive ? 1 : FileOperations.RecommendedThreads;
-        }
+        /// <summary>How many files to copy at once (<see cref="TransferRules.ThreadsFor"/>).</summary>
+        private int TransferThreads(string[] paths) =>
+            TransferRules.ThreadsFor(paths, Drive == null ? null : Drive.Owns);
 
         private async Task<bool> RunTransfer(string[] paths, string destination, bool move,
             PasteConflictPolicy? forced = null)
@@ -9795,44 +9519,25 @@ namespace ExplorerNative
         private async Task<bool> RunTransferCore(string[] paths, string destination, bool move, PasteConflictPolicy? forced, int carryId)
         {
             // Cut and paste into the folder the items are already in is nothing
-            // to do. It was a collision of each item with itself, so under keep
-            // both everything came back renamed "a (2)" and the clipboard was
-            // cleared. A string comparison, so it costs nothing on a share; the
-            // engines refuse it as well. The clipboard keeps the cut, as File
-            // Explorer's does.
+            // to do (TransferRules.NotAlreadyIn).
             if (move)
             {
-                var elsewhere = paths.Where(p =>
-                {
-                    var name = Path.GetFileName(p.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
-                    return string.IsNullOrEmpty(name) || !FileOperations.SamePath(Path.Combine(destination, name), p);
-                }).ToArray();
+                var elsewhere = TransferRules.NotAlreadyIn(paths, destination);
 
                 if (elsewhere.Length == 0)
                 {
-                    AnnounceOperation("move.done", paths.Length == 1
-                        ? "Already in this folder"
-                        : "Already in this folder; nothing to move");
+                    AnnounceOperation("move.done", TransferRules.AlreadyHereSaid(paths.Length));
                     return false;
                 }
                 paths = elsewhere;
             }
 
             // A move is finished on Drive by trashing and elsewhere by robocopy,
-            // and a selection holding both went down one path or the other for
-            // all of it: the local half copied rather than moved, was then counted
-            // as "could not remove from Google Drive", and "Move complete" was
-            // said with the originals still in place. Search results are where
-            // such a selection comes from.
-            if (move && Drive is { } drive)
+            // and a selection holding both is refused (TransferRules.MixesDrive).
+            if (move && Drive is { } drive && TransferRules.MixesDrive(paths, drive.Owns))
             {
-                int onDrive = paths.Count(p => drive.Owns(p));
-                if (onDrive > 0 && onDrive < paths.Length)
-                {
-                    AnnounceOperation("move.failed",
-                        "Some of these are on Google Drive and some are not; move them separately");
-                    return false;
-                }
+                AnnounceOperation("move.failed", TransferRules.MixedMoveSaid);
+                return false;
             }
 
             // Out of Drive, a move ends with the originals trashed. Something the
@@ -12110,7 +11815,7 @@ namespace ExplorerNative
                 var (bytes, files, folders) = archive.Measure(inner);
                 var measured = SizeFormatter.Format(bytes, _settings.SizeUnits);
                 SetSizeOverride(pane, path, measured);
-                AnnounceOperation("size.done", SizeSentence(Path.GetFileName(path), measured, files, folders, true));
+                AnnounceOperation("size.done", SelectionSpeech.SizeSentence(Path.GetFileName(path), measured, files, folders, true));
                 return;
             }
 
@@ -12165,25 +11870,12 @@ namespace ExplorerNative
                 // One id for both endings. A walk that ran out of time still answers
                 // the question that was asked, and the sentence says it is partial.
                 AnnounceOperation("size.done",
-                    SizeSentence(Path.GetFileName(path), size, result.Files, result.Folders, result.Complete));
+                    SelectionSpeech.SizeSentence(Path.GetFileName(path), size, result.Files, result.Folders, result.Complete));
             }
             catch (Exception ex)
             {
                 if (!IsDisposed) Announce($"Could not measure {Path.GetFileName(path)}: {ex.Message}", isError: true);
             }
-        }
-
-        /// <summary>
-        /// "Music is 14.2 GB, 3,120 files in 12 folders" — counts that agree
-        /// with their nouns, and no "in 0 folders". A walk that ran out of time
-        /// says it is a lower bound.
-        /// </summary>
-        internal static string SizeSentence(string name, string size, long files, long folders, bool complete)
-        {
-            if (!complete) return $"{name} is at least {size}; measuring stopped before the end";
-            static string Of(long n, string noun) => $"{n:N0} {noun}{(n == 1 ? "" : "s")}";
-            var contents = folders > 0 ? $"{Of(files, "file")} in {Of(folders, "folder")}" : Of(files, "file");
-            return $"{name} is {size}, {contents}";
         }
 
         /// <summary>
@@ -12502,13 +12194,10 @@ namespace ExplorerNative
         {
             var count = Active.Entries.Count;
             var where = IsDrivesView ? "Drives" : AppleMusic.DisplayPath(Active.CurrentPath);
-            Announce($"{TabSaid(", ")}{where}, {count} item{(count == 1 ? "" : "s")}");
+            Announce(SelectionSpeech.FolderSaid(TabSaid(", "), where, count));
         }
 
         // ---------- Status & speech ----------
-
-        /// <summary>Summing sizes across a very large selection is not worth the pause it causes.</summary>
-        private const int MaxSelectionToSum = 5000;
 
         /// <summary>
         /// Non-zero while the list is being rebuilt or bulk-selected, so the
@@ -12573,33 +12262,21 @@ namespace ExplorerNative
             // the end — which is the whole reason the cap is reported at all.
             var more = pane.SearchTruncated ? ", and there are more" : "";
 
+            var listed = $"{prefix}{CountSaid(pane, total)}{more}";
             if (selected == 0)
             {
-                SetStatusText($"{prefix}{CountSaid(pane, total)}{more}");
+                SetStatusText(listed);
                 return;
             }
 
-            // Nothing in Apple Music has a size to add up.
-            if (selected > MaxSelectionToSum || AppleMusic.Is(pane.CurrentPath))
+            if (!SelectionSpeech.SumsSizes(selected, pane.CurrentPath))
             {
-                SetStatusText($"{prefix}{CountSaid(pane, total)}{more}, {selected} selected");
+                SetStatusText(SelectionSpeech.StatusSaid(listed, selected));
                 return;
             }
 
-            long bytes = 0;
-            var entries = pane.Entries;
-            foreach (int i in pane.List.SelectedIndices)
-            {
-                if (i < 0 || i >= entries.Count) continue;
-                var entry = entries[i];
-                // Folders carry -1 as "not measured"; adding it would understate
-                // the total by one byte per folder in the selection.
-                if (!entry.IsDir && entry.Size > 0) bytes += entry.Size;
-            }
-
-            SetStatusText(
-                $"{prefix}{CountSaid(pane, total)}{more}, {selected} selected " +
-                $"({SizeFormatter.Format(bytes, _settings.SizeUnits)})");
+            long bytes = SelectionSpeech.SelectedBytes(pane.Entries, pane.List.SelectedIndices);
+            SetStatusText(SelectionSpeech.StatusSaid(listed, selected, SizeFormatter.Format(bytes, _settings.SizeUnits)));
         }
 
         /// <summary>

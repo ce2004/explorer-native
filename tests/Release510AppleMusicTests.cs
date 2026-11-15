@@ -48,7 +48,7 @@ namespace ExplorerNative
             var at = new System.IO.DirectoryInfo(AppContext.BaseDirectory);
             while (at != null && !System.IO.Directory.Exists(System.IO.Path.Combine(at.FullName, "src"))) at = at.Parent;
             var path = at == null ? "" : System.IO.Path.Combine(at.FullName, "src", name);
-            return path.Length > 0 && System.IO.File.Exists(path) ? System.IO.File.ReadAllText(path) : "";
+            return path.Length > 0 && System.IO.File.Exists(path) ? SourceFiles.Read(path) : "";
         }
 
         private static HttpResponseMessage Answer(HttpStatusCode code, string body = "{}") =>
