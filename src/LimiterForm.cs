@@ -8,7 +8,7 @@ namespace ExplorerNative
     /// The limiter's three controls, as three lists you arrow through.
     ///
     /// Every one of them changes the sound on the arrow press, not when the
-    /// dialog is dismissed — the same bargain <see cref="SpeedForm"/> makes, for
+    /// dialog is dismissed, the same bargain <see cref="SpeedForm"/> makes, for
     /// the same reason and more so. A compressor's attack, release and ceiling
     /// are three different ways of describing something that can only be judged
     /// by ear, against the actual music, and a dialog that applies its answer at
@@ -17,7 +17,7 @@ namespace ExplorerNative
     ///
     /// This is deliberately not on the Audio preferences page. It belongs where
     /// you are when you need it, which is in the middle of a track with the
-    /// keyboard in your hand — hence a menu item and a global shortcut, and
+    /// keyboard in your hand, hence a menu item and a global shortcut, and
     /// hence a dialog small enough to leave open while listening.
     ///
     /// Drop-down lists rather than sliders or number boxes. Arrowing a list
@@ -97,7 +97,7 @@ namespace ExplorerNative
             // The fourth control, and it belongs here rather than in Preferences
             // for exactly the reason the other three do: it is a change you make
             // while listening and judge by ear. It is also the one most worth
-            // toggling back and forth — at ordinary volumes it is the difference
+            // toggling back and forth, at ordinary volumes it is the difference
             // between the limiter doing very little and doing a great deal.
             var wholeRangeBox = new SpokenCheckBox
             {
@@ -110,7 +110,7 @@ namespace ExplorerNative
             wholeRangeBox.AccessibleDescription =
                 "Off, the limiter does nothing at or below 100 percent volume, and above that the " +
                 "lift grows with the square of the volume. On, the whole lift is available at any " +
-                "volume, including a very quiet one — which is the setting for listening into a " +
+                "volume, including a very quiet one, which is the setting for listening into a " +
                 "recording rather than for making one loud. Applies as you change it. Escape puts " +
                 "it back.";
             Controls.Add(wholeRangeBox);

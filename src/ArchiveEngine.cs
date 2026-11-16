@@ -14,7 +14,7 @@ namespace ExplorerNative
     ///
     /// Three, not a number from one to nine. Nine levels is a scale where nobody
     /// can say what six means, and this application already has a rule about
-    /// offering a value somebody would actually pick — see SettingChoices and the
+    /// offering a value somebody would actually pick, see SettingChoices and the
     /// combo boxes that used to step by a hundred. What the three mean is a
     /// measured fact about the trade, not a preference: on the corpus in
     /// CLAUDE.md, zipped, Fastest is five times quicker than Smallest and 8.4%
@@ -57,7 +57,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// How much smaller it came out, as a percentage, or null when the
-        /// question does not apply — an empty archive, or an extraction, where
+        /// question does not apply, an empty archive, or an extraction, where
         /// there is no ratio to report.
         /// </summary>
         public double? Saved =>
@@ -186,7 +186,7 @@ namespace ExplorerNative
                     }
                     else
                     {
-                        // Gone between being chosen and being compressed — moved,
+                        // Gone between being chosen and being compressed, moved,
                         // deleted, a share that dropped. Silently skipped, it made
                         // "Created x.7z" with no file and an empty zip.
                         unreadable?.Add($"{name}: it is no longer there");
@@ -226,7 +226,7 @@ namespace ExplorerNative
 
                 // One scan, not three. EnumerateFileSystemInfos already carries
                 // attributes, length and timestamp out of the call that found the
-                // entry — asking again per file is three round trips on a share.
+                // entry, asking again per file is three round trips on a share.
                 var name = prefix + "/" + child.Name;
 
                 // A link is followed by nothing here. A junction into a parent
@@ -236,7 +236,7 @@ namespace ExplorerNative
                 // file somebody does not know is missing.
                 //
                 // Only a link. Every reparse point used to be skipped, and a cloud
-                // placeholder or a deduplicated file is one — so a folder on the
+                // placeholder or a deduplicated file is one, so a folder on the
                 // Drive letter compressed to an archive of empty folders.
                 if ((child.Attributes & FileAttributes.ReparsePoint) != 0)
                 {
@@ -274,15 +274,15 @@ namespace ExplorerNative
         /// anywhere.
         ///
         /// This is the check that stops an archive writing outside the folder it
-        /// is being extracted into. The attack is old enough to have a name — zip
-        /// slip — and it is one line of archive to mount: an entry called
+        /// is being extracted into. The attack is old enough to have a name, zip
+        /// slip, and it is one line of archive to mount: an entry called
         /// "../../../../Windows/System32/whatever", or "C:\Windows\whatever", or
         /// a name with a drive-relative "C:file" in it. Every one of those is a
         /// legal string in both zip and tar, and neither format has any opinion
         /// about it; the extractor is the only thing standing there.
         ///
         /// It is done by resolving the combined path and then checking the result
-        /// is genuinely underneath the root, rather than by looking for ".." in
+        /// is really underneath the root, rather than by looking for ".." in
         /// the name. Searching for the dangerous string is how this is usually got
         /// wrong: "a/..%2f", "a/.../b" on some readers, a name where the ".." only
         /// appears after a symlink is followed. Resolving first and comparing
@@ -307,8 +307,8 @@ namespace ExplorerNative
             }
 
             // A single leading slash is dropped rather than refused, because that
-            // is what every tar implementation does with one — "Removing leading
-            // '/' from member names" — and the result lands inside the destination
+            // is what every tar implementation does with one, "Removing leading
+            // '/' from member names", and the result lands inside the destination
             // like any other relative name.
             var cleaned = slashed.Trim('/');
             if (cleaned.Length == 0) return null;
@@ -335,7 +335,7 @@ namespace ExplorerNative
                 // A name made on Linux can hold characters Windows will not store,
                 // and a reserved device name or a trailing dot produces a file
                 // that cannot afterwards be opened or deleted. Refused with the
-                // name attached rather than quietly renamed: a silent rename is a
+                // name attached rather than silently renamed: a silent rename is a
                 // file somebody later cannot find, and a silent drop is a file
                 // they do not know is missing.
                 if (NameRules.DescribeBadName(segment) is { } complaint)
@@ -412,7 +412,7 @@ namespace ExplorerNative
             /// what comes out of it.
             ///
             /// Knowing the uncompressed totals means listing the archive first,
-            /// and for a compressed tar that is a whole decompression — measured,
+            /// and for a compressed tar that is a whole decompression, measured,
             /// about half the time of the extraction. So an extraction with
             /// nothing to collide with skips it and reports how much of the
             /// archive has been read, which is honest at both ends and smooth in
@@ -430,7 +430,7 @@ namespace ExplorerNative
             /// Names the thing being worked on.
             ///
             /// Forced, because the name is the one field where being a tenth of a
-            /// second stale shows the wrong file against a finished count — the
+            /// second stale shows the wrong file against a finished count, the
             /// same reason DriveUpload forces a report as each file lands.
             /// </summary>
             public void Starting(string name)
@@ -494,7 +494,7 @@ namespace ExplorerNative
                 }
 
                 // Never past the end. An entry the system tar adds that was not in
-                // the plan — a link it stored, a name that could not be matched —
+                // the plan, a link it stored, a name that could not be matched,
                 // took the bar to 154 percent.
                 if (total > 0) done = Math.Min(done, total);
                 if (itemsTotal > 0) items = Math.Min(items, itemsTotal);
@@ -596,7 +596,7 @@ namespace ExplorerNative
             // nothing and costing the archive.
             //
             // Every engine opens its output FileMode.Create, which truncates
-            // what is already there before a single entry is written — so
+            // what is already there before a single entry is written, so
             // "Replace it?" answered yes, then Escape two seconds later, left a
             // few megabytes of headers under the old name with no central
             // directory. The cleanup below could not help: it deliberately keeps
@@ -604,7 +604,7 @@ namespace ExplorerNative
             // else's, and by then somebody else's file was already gone.
             //
             // The extension stays last: bsdtar chooses the format from the name,
-            // and "x.7z.creating-1234" chose none it knew — replacing any .7z,
+            // and "x.7z.creating-1234" chose none it knew, replacing any .7z,
             // .tar.xz, .tar.zst or .tar.bz2 failed with "Unknown module name".
             string working = existed ? StagingName(archivePath, format) : archivePath;
 
@@ -617,7 +617,7 @@ namespace ExplorerNative
                     _ => BsdTar.Create(plan, working, format, level, threads, reporter, errors, token),
                 };
 
-                // Files were chosen and not one of them went in — every one was
+                // Files were chosen and not one of them went in, every one was
                 // locked by another program. That is a failure, like the empty
                 // plan above, and not an archive: re-making a backup over the
                 // old one replaced a good archive with an empty one (a .tar of
@@ -675,7 +675,7 @@ namespace ExplorerNative
                 // right name and the right extension and it opens to an error
                 // somewhere in the middle, at whatever later moment somebody
                 // needs what is in it. It is only removed if this call is what
-                // created it — an archive that was already there before a
+                // created it, an archive that was already there before a
                 // cancelled second attempt is somebody else's file.
                 if (!finished)
                 {
@@ -693,7 +693,7 @@ namespace ExplorerNative
         /// Everything inside an archive, without extracting any of it.
         ///
         /// Wanted twice over: for the totals a progress window is about, and to
-        /// find out which names would collide before a single byte is written —
+        /// find out which names would collide before a single byte is written,
         /// which is what lets the same conflict question a paste asks be asked
         /// here, once, at the start, rather than file by file halfway through.
         /// </summary>
@@ -775,7 +775,7 @@ namespace ExplorerNative
             // writes to disk itself. So it extracts into a staging folder inside
             // the destination and the conflict rules are applied to the result,
             // which means the question is asked after the decompression rather
-            // than before it — and every name in it is correct.
+            // than before it, and every name in it is correct.
             // A zip with protected files is taken out by 7-Zip, which asks for the password.
             if (format.Engine == ArchiveEngineKind.BsdTar || IsProtectedZip(archivePath, format, token))
             {
@@ -811,7 +811,7 @@ namespace ExplorerNative
 
             // The listing is for two things: the totals, and the names that
             // might collide with what is already there. Into a folder that does
-            // not exist yet — which is what Extract makes — nothing can collide,
+            // not exist yet, which is what Extract makes, nothing can collide,
             // and for a tar the listing is a whole decompression of its own,
             // about half the time the extraction takes. So it is not done, and
             // the progress is measured through the archive file instead.
@@ -909,7 +909,7 @@ namespace ExplorerNative
         ///
         /// Every extractor used to open the target itself. A cancel, a read
         /// error or a truncated archive then left a file at the real name that
-        /// looked complete and was not — and under Replace, the file it was
+        /// looked complete and was not, and under Replace, the file it was
         /// replacing had already been emptied. Now the name is only ever the old
         /// file or the whole new one.
         /// </summary>
@@ -941,7 +941,7 @@ namespace ExplorerNative
                 ".extracting-" + Guid.NewGuid().ToString("N")[..12] + ".tmp");
 
             // Readable as well, so a writer can check what it wrote before it
-            // is given its name — the bare .gz reads back its last member.
+            // is given its name, the bare .gz reads back its last member.
             FileStream Open()
             {
                 var options = new FileStreamOptions
@@ -1079,8 +1079,8 @@ namespace ExplorerNative
         {
             var tag = ".creating-" + Guid.NewGuid().ToString("N")[..8];
 
-            // Whichever of the format's extensions the name actually ends with —
-            // ".txz" as well as ".tar.xz" — or bsdtar cannot tell the format.
+            // Whichever of the format's extensions the name actually ends with,
+            // ".txz" as well as ".tar.xz", or bsdtar cannot tell the format.
             var extension = format.Extensions
                 .Where(e => archivePath.EndsWith(e, StringComparison.OrdinalIgnoreCase))
                 .OrderByDescending(e => e.Length)

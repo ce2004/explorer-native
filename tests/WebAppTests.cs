@@ -21,7 +21,7 @@ namespace ExplorerNative
     /// <summary>
     /// Explorer Native Connect: the HTTP server the iPhone app talks to, driven over a real socket.
     ///
-    /// Loopback only, on a port nobody else holds, against a folder of temporary files — never a real drive,
+    /// Loopback only, on a port nobody else holds, against a folder of temporary files, never a real drive,
     /// and never the Drive letter, where a test process reading a placeholder can fail to exit. What is worth
     /// testing here is exactly the part a phone cannot tell you about: a byte range off by one is a player that
     /// seeks to the wrong place, a HEAD with a body is a kept-alive connection that reads garbage as its next
@@ -3913,7 +3913,7 @@ namespace ExplorerNative
             var js = File.ReadAllText(Path.Combine(WebDir(), "app.js"));
             Check("More offers Restore straight inside Drive's trash", js.Contains("if (inDriveTrash(full)) items.push(['restore', 'Restore'])"));
             Check("and calls Delete there Delete forever", js.Contains("underDriveTrash(full) ? ['delete', 'Delete forever']"));
-            Check("Delete in the trash says plainly that it deletes forever", Regex(js, @"if \(paths\.some\(underDriveTrash\)\)\s*\{\s*await dialog\(\{ title: 'Delete forever', body: 'Deleting from the Google Drive trash deletes it forever"));
+            Check("Delete in the trash says clearly that it deletes forever", Regex(js, @"if \(paths\.some\(underDriveTrash\)\)\s*\{\s*await dialog\(\{ title: 'Delete forever', body: 'Deleting from the Google Drive trash deletes it forever"));
             Check("after a Drive delete the phone says Undo is there", js.Contains("'Moved to Google Drive trash. Undo is available.'") && js.Contains("if (r.undo) offerUndo(r.undo)"));
             Check("for about ten seconds", Regex(js, @"undoTimer = setTimeout\(hideUndo, 10000\)"));
             Check("and a hidden Undo button gives focus back", Regex(js, @"if \(had\) \$\('files-title'\)\.focus\(\)"));

@@ -222,7 +222,7 @@ namespace ExplorerNative
         private readonly Dictionary<Kind, DateTime> _waitingSince = new();
         private readonly HashSet<Kind> _saidWaiting = new();
 
-        /// <summary>How long a server waits quietly for its folder at start-up before saying so.</summary>
+        /// <summary>How long a server waits silently for its folder at start-up before saying so.</summary>
         internal static TimeSpan SayWaitingAfter { get; set; } = TimeSpan.FromMinutes(2);
         private Settings? _wanted;
         private Task _work = Task.CompletedTask;
@@ -348,7 +348,7 @@ namespace ExplorerNative
             if (!there)
             {
                 // Often the Google Drive letter, which arrives a while after
-                // the app starts: looked for again quietly. Said at once when
+                // the app starts: looked for again silently. Said at once when
                 // somebody has just pressed OK, otherwise only if it is still
                 // not there after a while, and only once.
                 var waiting = $"The {name} server is waiting for {config.Folder}, which is not there right now. " +

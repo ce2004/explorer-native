@@ -14,12 +14,12 @@ namespace ExplorerNative
     /// Deflate is a single stream of back-references into the last 32KB of what
     /// it has already emitted, so one deflate stream cannot be produced by more
     /// than one thread. That is the whole difficulty, and it is why gzip is
-    /// single-threaded everywhere it appears — including in the tar.exe Windows
+    /// single-threaded everywhere it appears, including in the tar.exe Windows
     /// ships, measured here at 11 MB/s with one core busy and the rest idle.
     ///
     /// RFC 1952 section 2.2: "A gzip file consists of a series of 'members'
-    /// (compressed data sets)." Members are self-contained — header, deflate
-    /// stream, checksum, length — and a decompressor is required to run through
+    /// (compressed data sets)." Members are self-contained, header, deflate
+    /// stream, checksum, length, and a decompressor is required to run through
     /// all of them and concatenate the results. So the input is cut into chunks,
     /// each chunk is compressed into a member of its own by whichever worker is
     /// free, and the members are written out in order. The result is an ordinary
@@ -27,8 +27,8 @@ namespace ExplorerNative
     /// because it is one.
     ///
     /// This is what pigz does, and it costs about what pigz costs. A chunk cannot
-    /// refer back into the chunk before it, so the first 32KB of each one — the
-    /// length of the window — compresses without history. At
+    /// refer back into the chunk before it, so the first 32KB of each one, the
+    /// length of the window, compresses without history. At
     /// <see cref="ChunkBytes"/> that is under one percent of the data, plus
     /// eighteen bytes of member overhead per chunk. Measured on the corpus in
     /// CLAUDE.md: 41 MB/s against the system tar's 11, for an archive **0.09%**
@@ -37,7 +37,7 @@ namespace ExplorerNative
     /// One honest limitation, and it is the format's rather than this code's: the
     /// four-byte uncompressed length in the trailer belongs to the last member,
     /// not to the file. Anything that reads the size of a .gz without
-    /// decompressing it — "gzip -l" — reports the size of the final chunk. That
+    /// decompressing it, "gzip -l", reports the size of the final chunk. That
     /// is equally true of anything pigz produces and of two .gz files
     /// concatenated with copy, and it is not true of anything that actually
     /// decompresses, which is everything that matters.
@@ -49,7 +49,7 @@ namespace ExplorerNative
         ///
         /// The trade is ratio against memory, and it is decided by deflate's 32KB
         /// window rather than by taste. Every chunk begins with no history, so
-        /// the fraction of the data compressed worse is 32KB divided by this —
+        /// the fraction of the data compressed worse is 32KB divided by this,
         /// 0.8% at two megabytes, 3% at half a megabyte, 25% at 128KB. Going the
         /// other way, in-flight memory is roughly this times the worker count
         /// twice over (a chunk being compressed and a chunk waiting to be
@@ -87,7 +87,7 @@ namespace ExplorerNative
             /// same as how many may be queued.
             ///
             /// Taken here and released by the worker the moment its member is
-            /// finished — not by the emitter when it writes one out. Releasing it
+            /// finished, not by the emitter when it writes one out. Releasing it
             /// at the far end would mean a chunk that had already been compressed
             /// went on holding a worker's place in the queue while it waited its
             /// turn to be written, and the number actually compressing would
@@ -116,7 +116,7 @@ namespace ExplorerNative
             private sealed record Chunk(byte[] Buffer, int Length);
 
             /// <summary>
-            /// One raw deflate stream rather than gzip members — what a zip entry
+            /// One raw deflate stream rather than gzip members, what a zip entry
             /// holds. See the constructor.
             /// </summary>
             private readonly bool _raw;
@@ -133,7 +133,7 @@ namespace ExplorerNative
             /// entry too big to hand to a worker whole. Each chunk is deflated on
             /// its own and ended with a sync flush, which leaves it byte-aligned
             /// and not final, so the chunks joined end to end are one valid stream
-            /// once a final empty block is added — the same cut pigz makes, and
+            /// once a final empty block is added, the same cut pigz makes, and
             /// the same price: each chunk starts without the 32KB of history the
             /// one before it would have given. A zip of one 70MB log was deflated
             /// by the writer thread alone, and was most of the time of the whole
@@ -203,7 +203,7 @@ namespace ExplorerNative
             /// <summary>
             /// Hands the filled buffer to a worker and takes a fresh one.
             ///
-            /// The buffer is given away rather than copied out of — a chunk is two
+            /// The buffer is given away rather than copied out of, a chunk is two
             /// megabytes and copying every one of them would be a second pass over
             /// the whole input for no reason. The replacement is allocated here
             /// because the old one belongs to a worker until the member is
@@ -287,7 +287,7 @@ namespace ExplorerNative
             ///
             /// One thread, deliberately. The output is a file being appended to
             /// and there is exactly one right order for what goes into it, so
-            /// there is nothing here to parallelise — the work this feature had to
+            /// there is nothing here to parallelise, the work this feature had to
             /// spread across cores is the deflate, and that is already elsewhere.
             /// </summary>
             private void Emit()
@@ -323,7 +323,7 @@ namespace ExplorerNative
                 if (failure == null) return;
 
                 // A cancellation stays a cancellation. Disposal finishes the last
-                // member, which takes a lane — and taking a lane on a token that
+                // member, which takes a lane, and taking a lane on a token that
                 // has just been cancelled throws, so the failure recorded here is
                 // routinely the cancellation itself. Wrapped in an IOException it
                 // stopped matching the catch that reports "Compressing cancelled"
@@ -336,14 +336,14 @@ namespace ExplorerNative
             }
 
             /// <summary>
-            /// Flush cannot mean what it usually means here, and quietly doing
+            /// Flush cannot mean what it usually means here, and silently doing
             /// nothing is the honest answer.
             ///
             /// Flushing a compressor normally means "end the block so what I have
             /// given you so far is readable". Doing that per call would end a
             /// member per call, and a TarWriter that flushes after each entry
             /// would turn a folder of ten thousand small files into ten thousand
-            /// gzip members — eighteen bytes of overhead each and no compression
+            /// gzip members, eighteen bytes of overhead each and no compression
             /// across any of them. Nothing waits to read this stream while it is
             /// being written, so there is nobody for a flush to be for.
             /// </summary>
@@ -411,9 +411,9 @@ namespace ExplorerNative
         /// believed piece ends where the next begins, so every cut that is
         /// used is a real boundary between members.
         ///
-        /// Anything else — a member written by another tool (a name, a time),
+        /// Anything else, a member written by another tool (a name, a time),
         /// a file of one member, the ten bytes turning up by chance inside the
-        /// compressed data, damage, something after the end — makes a piece
+        /// compressed data, damage, something after the end, makes a piece
         /// that is not believed. From the start of that piece the rest of the
         /// file is read the ordinary way, one thread and GZipStream, exactly as
         /// before, so what comes out and every error it raises are what they
@@ -745,7 +745,7 @@ namespace ExplorerNative
         /// The single-file .gz path. There is no container and no name inside the
         /// result: what comes back out is the bytes that went in, which is why
         /// <see cref="ArchiveFormats.SuggestedName"/> keeps the whole original
-        /// name — "song.flac.gz" is the only record that it was a .flac.
+        /// name, "song.flac.gz" is the only record that it was a .flac.
         /// </summary>
         public static void CompressFile(string source, string destination, int threads,
             CompressionLevel level, Action<long>? read, CancellationToken token)

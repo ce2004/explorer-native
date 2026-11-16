@@ -1688,7 +1688,7 @@ namespace ExplorerNative
                     // (trashed on the website): this becomes a new file. Should
                     // the old one be there after all, it is trashed below. A new
                     // file is a create, sent once like any other (SendOnceAsync):
-                    // sent plainly, an answer lost on the way back could be a
+                    // sent clearly, an answer lost on the way back could be a
                     // second copy, or fail the file when Drive would not say.
                     lock (_fastGate) state.Uploads.Remove(path);
                     sent = await SendOnceAsync(pair, client, () => Send(null, null), local.Size, token).ConfigureAwait(false);

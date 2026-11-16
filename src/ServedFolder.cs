@@ -70,7 +70,7 @@ namespace ExplorerNative
             if (name.Length == 0 || name.Length > 255) return false;
             if (name == "." || name == "..") return false;
 
-            // Windows quietly drops a trailing dot or space, so "secret.txt."
+            // Windows silently drops a trailing dot or space, so "secret.txt."
             // would open "secret.txt" behind the back of any check on the name.
             char last = name[name.Length - 1];
             if (last == '.' || last == ' ') return false;

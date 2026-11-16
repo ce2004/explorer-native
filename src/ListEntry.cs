@@ -13,7 +13,7 @@ namespace ExplorerNative
         /// <summary>
         /// What the Name column says, when that is not simply the file's
         /// name. Search results use it to carry the folder a hit came out of
-        /// — "Lovesick.flac, in 2019" — because a results list gathers names
+        /// "Lovesick.flac, in 2019", because a results list gathers names
         /// from all over a tree and three rows called the same thing with no
         /// way to tell them apart is the one thing it must not do.
         /// </summary>

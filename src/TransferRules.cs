@@ -69,7 +69,7 @@ namespace ExplorerNative
         /// Whether <paramref name="path"/> sits directly in
         /// <paramref name="folder"/>. Compared as full paths with the root's
         /// separator kept: trimmed by hand, "G:\" and "G:" never matched, and an
-        /// item pasted onto itself at the top of the letter was replaced — or,
+        /// item pasted onto itself at the top of the letter was replaced, or,
         /// merged, trashed. Text only; nothing is asked of the disk.
         /// </summary>
         internal static bool ParentIs(string path, string folder)
@@ -100,7 +100,7 @@ namespace ExplorerNative
         /// files are coming off Google Drive.
         ///
         /// Everywhere else the answer is "as many as the machine can usefully
-        /// have in flight" — a NAS spends its time waiting on round trips and
+        /// have in flight", a NAS spends its time waiting on round trips and
         /// eight or sixteen requests outstanding is the difference between usable
         /// and not. Reading a placeholder is round trips too, so the same
         /// reasoning looks like it should apply, and it is exactly backwards.
@@ -109,7 +109,7 @@ namespace ExplorerNative
         /// the link is about three megabytes a second however many ways it is
         /// split. Sixteen at once does not make the copy faster; it makes every
         /// one of the sixteen sixteen times slower, and a read slow enough is a
-        /// read Windows abandons — "the cloud operation was not completed before
+        /// read Windows abandons, "the cloud operation was not completed before
         /// the time-out period expired". Sixteen files failing one at a time is
         /// what a folder copied off the drive actually looked like.
         ///

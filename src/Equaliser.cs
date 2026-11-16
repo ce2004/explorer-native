@@ -11,7 +11,7 @@ namespace ExplorerNative
     /// render loop means the samples are ours, so an equaliser is arithmetic in a
     /// loop we wrote rather than an effect handed to something that may or may
     /// not give the audio back. The one time this application inserted an MFT to
-    /// change the sound, the player went silent and stayed silent — that story is
+    /// change the sound, the player went silent and stayed silent, that story is
     /// in CLAUDE.md under "The gain effect, and why not to try it again", and the
     /// conclusion it reached is the reason this file is plain C#.
     ///
@@ -28,15 +28,15 @@ namespace ExplorerNative
         /// <summary>
         /// The band centres, in hertz.
         ///
-        /// Twenty of them, starting at 32Hz and ending at 20kHz — which works
+        /// Twenty of them, starting at 32Hz and ending at 20kHz, which works
         /// out at almost exactly half an octave a step, and they are the ISO
         /// preferred numbers for that spacing rather than the raw powers. A
         /// slider labelled "355 hertz" is a number somebody has seen on an
         /// equaliser before; 354.8 is the same frequency and reads as a machine
         /// talking.
         ///
-        /// Half an octave is the useful resolution for this. An octave apart —
-        /// the ten-band layout on consumer gear — is coarse enough that pulling
+        /// Half an octave is the useful resolution for this. An octave apart,
+        /// the ten-band layout on consumer gear, is coarse enough that pulling
         /// one band takes a whole instrument with it. A third of an octave, the
         /// thirty-one band studio layout, is finer than anyone can hear one
         /// slider of, and thirty-one is a long way to arrow.
@@ -57,7 +57,7 @@ namespace ExplorerNative
         /// The furthest a band will go, in decibels, in either direction.
         ///
         /// Twenty-four, which is sixteen times the amplitude up and a sixteenth
-        /// down. Twelve was the cautious number — it is what most hardware
+        /// down. Twelve was the cautious number, it is what most hardware
         /// graphic equalisers offer, and it is chosen there partly because an
         /// analogue filter bank gets noisy past it. None of that applies to
         /// arithmetic, and a band that cannot be pushed far enough to hear what
@@ -65,7 +65,7 @@ namespace ExplorerNative
         ///
         /// It is a lot of gain. Twenty bands at +24 is +24dB of programme
         /// material, which will clip against anything but a very quiet
-        /// recording — and that is reported rather than prevented, the same way
+        /// recording, and that is reported rather than prevented, the same way
         /// the volume control's own headroom is. See ApplyGainAndMeasure: this
         /// application counts what goes past full scale instead of deciding on
         /// the hardware's behalf that it may not.
@@ -80,8 +80,8 @@ namespace ExplorerNative
         /// them: raise all twenty sliders to the same place expecting a flat six
         /// decibels and you get six decibels with a ripple through it, which is
         /// audible as a comb rather than as volume. Overlapping them so each band
-        /// reaches about seven tenths of an octave — Q of 2 against half-octave
-        /// centres — makes neighbouring bands sum smoothly, at the cost of one
+        /// reaches about seven tenths of an octave, Q of 2 against half-octave
+        /// centres, makes neighbouring bands sum smoothly, at the cost of one
         /// slider pulling a little of its neighbour's range with it.
         ///
         /// That trade is the right way round here. A curve you draw with several
@@ -102,7 +102,7 @@ namespace ExplorerNative
         /// | 1.8 | 64.4dB | 59.4dB | 5.0dB |
         /// | 2.0 | 60.1dB | 54.3dB | 5.7dB |
         ///
-        /// Wider filters overlap more, so the dips between them fill in — and
+        /// Wider filters overlap more, so the dips between them fill in, and
         /// the same overlap means every band is also being lifted by its
         /// neighbours, so the total runs away. Q of 1.2 is smoother and turns a
         /// request for 24 decibels into 85. The ripple is about a tenth of the
@@ -114,7 +114,7 @@ namespace ExplorerNative
         /// band at +24 measures +24, its neighbours three octaves away do not
         /// move, and a curve drawn across several bands comes out as that curve.
         /// All twenty at the maximum is 60dB of gain into a signal that is
-        /// already clipping — a setting with no musical meaning, and the wrong
+        /// already clipping, a setting with no musical meaning, and the wrong
         /// one to design the useful case around.
         /// </summary>
         private const double BandQ = 2.0;
@@ -135,7 +135,7 @@ namespace ExplorerNative
         /// How long a slider takes to arrive, in seconds.
         ///
         /// Not instant. Swapping a biquad's coefficients between one sample and
-        /// the next steps the output, and a step is a click — on twenty bands at
+        /// the next steps the output, and a step is a click, on twenty bands at
         /// once, a crunch. Twenty milliseconds is fast enough that the slider and
         /// the sound move together and slow enough that nothing snaps.
         /// </summary>
@@ -145,7 +145,7 @@ namespace ExplorerNative
         /// Below this, a filter's state is treated as having decayed to nothing.
         ///
         /// A biquad at 32Hz has poles very close to the unit circle, so after the
-        /// music stops its state rings down for seconds — through the range where
+        /// music stops its state rings down for seconds, through the range where
         /// floating point stops being fast and starts being denormal. Flushed
         /// once per buffer, which is long before anything reaches that range and
         /// costs two comparisons per band per channel.
@@ -182,7 +182,7 @@ namespace ExplorerNative
         /// Off is a bypass, not a bank of filters set to zero decibels. A biquad
         /// at unity gain is still arithmetic on every sample and still rounds,
         /// and "off" in this application has always meant the samples come out
-        /// exactly as they went in — <see cref="TimeStretch"/> makes the same
+        /// exactly as they went in, <see cref="TimeStretch"/> makes the same
         /// promise at normal speed. It also means somebody can compare a curve
         /// against no curve at all rather than against a slightly rounded one.
         /// </summary>
@@ -239,7 +239,7 @@ namespace ExplorerNative
 
         // Deliberately not reset on a seek, unlike TimeStretch next door. What
         // the stretcher holds after a jump is a fifth of a second of the old
-        // position — real audio from the wrong place, which has to go. What a
+        // position, real audio from the wrong place, which has to go. What a
         // biquad holds is a decaying tail, and a 32Hz one takes about fifty
         // milliseconds to fade out. Emptying it makes a step where letting it
         // ring makes a fade, and a step is the click this file goes to some
@@ -247,7 +247,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Filters one buffer in place. <paramref name="count"/> is samples, not
-        /// frames — channels interleaved, as the renderer holds them.
+        /// frames, channels interleaved, as the renderer holds them.
         /// </summary>
         public void Process(float[] buffer, int count, int channels, int sampleRate)
         {
@@ -256,7 +256,7 @@ namespace ExplorerNative
             if (sampleRate <= 0) sampleRate = 48000;
 
             // Off, or flat and settled: the samples come out exactly as they went
-            // in. Not "multiplied by one" — untouched.
+            // in. Not "multiplied by one", untouched.
             if (!Enabled)
             {
                 // The filters must not carry state across a bypass. Coming back
@@ -304,7 +304,7 @@ namespace ExplorerNative
                         double x = buffer[i];
 
                         // Transposed direct form II. Chosen over the direct form
-                        // for the reason it usually is — its state holds values
+                        // for the reason it usually is, its state holds values
                         // on the order of the signal rather than of the signal
                         // divided by the pole radius, so a 32Hz filter with poles
                         // this close to the unit circle keeps its precision
@@ -318,12 +318,12 @@ namespace ExplorerNative
 
                     // Flushed here rather than inside the loop. What this is for
                     // is the long ring-down after the music stops, which takes
-                    // seconds — checking once every ten milliseconds catches it
+                    // seconds, checking once every ten milliseconds catches it
                     // with an enormous margin and costs nothing per sample.
                     //
                     // And anything not finite is zero too. One NaN sample in a
                     // damaged float file got into the state, and every
-                    // comparison with NaN is false, so it stayed — the band put
+                    // comparison with NaN is false, so it stayed, the band put
                     // out NaN for the rest of the track.
                     _state[s] = double.IsFinite(s1) && (s1 <= -Denormal || s1 >= Denormal) ? s1 : 0.0;
                     _state[s + 1] = double.IsFinite(s2) && (s2 <= -Denormal || s2 >= Denormal) ? s2 : 0.0;
@@ -372,7 +372,7 @@ namespace ExplorerNative
         /// <summary>
         /// Works out the twenty biquads from where the bands currently are.
         ///
-        /// Robert Bristow-Johnson's cookbook formulas — the peaking and shelving
+        /// Robert Bristow-Johnson's cookbook formulas, the peaking and shelving
         /// sections everybody uses, and worth using here rather than inventing
         /// something: they are the design where a gain of +6dB really is +6dB at
         /// the centre, where a cut is the exact mirror of the matching boost, and
@@ -408,7 +408,7 @@ namespace ExplorerNative
                 // This is what makes the end sliders keep the promise their
                 // labels make, and getting it wrong was measurable. A shelf is
                 // at *half* its gain at the corner and reaches full gain well
-                // beyond it — so a high shelf with its corner on 20kHz reads
+                // beyond it, so a high shelf with its corner on 20kHz reads
                 // +2dB at 18kHz for a slider set to +12, and everything else it
                 // could have lifted is above the Nyquist frequency of a CD.
                 // The top slider did almost nothing, which is exactly what the
@@ -416,8 +416,8 @@ namespace ExplorerNative
                 //
                 // Placed at the geometric midpoint between this band and its
                 // neighbour, each shelf takes over precisely where the last
-                // peaking band's reach ends, and the band's own centre — the
-                // number printed under the slider — sits in the part of the
+                // peaking band's reach ends, and the band's own centre, the
+                // number printed under the slider, sits in the part of the
                 // shelf that has the whole of the gain.
                 if (lowShelf) frequency = Math.Sqrt(frequency * Frequencies[1]);
                 if (highShelf)
@@ -436,7 +436,7 @@ namespace ExplorerNative
 
                     // Emptied on the way past. A band gliding back to flat stops
                     // being processed the moment it arrives, so without this its
-                    // filter keeps whatever it was last ringing on — and the next
+                    // filter keeps whatever it was last ringing on, and the next
                     // time somebody raises that slider, however many minutes
                     // later, the first sample out of it is that old audio.
                     for (int c = 0; c < _stateChannels; c++)
@@ -448,7 +448,7 @@ namespace ExplorerNative
                 }
 
                 // Half the decibels, because A is an amplitude either side of
-                // unity and a peaking section applies it twice — once in the
+                // unity and a peaking section applies it twice, once in the
                 // numerator and once in the denominator.
                 double a = Math.Pow(10.0, db / 40.0);
                 double w0 = 2.0 * Math.PI * frequency / sampleRate;

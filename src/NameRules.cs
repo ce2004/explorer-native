@@ -22,8 +22,8 @@ namespace ExplorerNative
         /// **One is just the verb.** "Copied file" names the thing a second time:
         /// the row was read out a moment ago, name and all, so the type is the
         /// least informative word available and it is in the way of the one word
-        /// that matters. This is the same rule the Type column failed — is this
-        /// worth hearing every single time? — applied to a sentence.
+        /// that matters. This is the same rule the Type column failed, is this
+        /// worth hearing every single time?, applied to a sentence.
         ///
         /// **Above one, the number is the whole message.** A selection is the one
         /// thing that cannot be seen by listening: the rows were read as they were
@@ -40,8 +40,8 @@ namespace ExplorerNative
         ///
         /// Different from <see cref="SayCount"/>, which drops the number at one
         /// because "Copied" already says everything. Here the number *is* the
-        /// message — the status bar and the tab announcement exist to say how
-        /// many — so one has to be spelled out rather than left implied.
+        /// message, the status bar and the tab announcement exist to say how
+        /// many, so one has to be spelled out rather than left implied.
         ///
         /// It is a rule rather than an interpolation at each site because the
         /// sites that matter are spoken. "Tab 1, Documents, 1 items" was read out
@@ -50,14 +50,14 @@ namespace ExplorerNative
         /// argued over.
         /// </summary>
         /// <summary>
-        /// Whether an entry is a link — a junction or a symbolic link — as
+        /// Whether an entry is a link, a junction or a symbolic link, as
         /// against any other reparse point.
         ///
         /// Walks here decline to follow links, and used to decline every reparse
-        /// point to do it. A cloud placeholder is one — every file and folder
-        /// under OneDrive's Files On-Demand, and everything on the Drive letter —
+        /// point to do it. A cloud placeholder is one, every file and folder
+        /// under OneDrive's Files On-Demand, and everything on the Drive letter,
         /// and so is a deduplicated file, so a copy, an upload, an archive, a
-        /// search or a size of such a folder quietly left out what was in it.
+        /// search or a size of such a folder silently left out what was in it.
         /// </summary>
         public static bool IsLink(FileSystemInfo entry)
         {
@@ -107,18 +107,18 @@ namespace ExplorerNative
         /// The rule rather than the filesystem, because there is more than one
         /// place a name can already be taken. On disk it is File.Exists; on the
         /// Drive letter it is the listing the folder was populated from, which is
-        /// the only cheap answer there — enumerating placeholders to find out is
+        /// the only cheap answer there, enumerating placeholders to find out is
         /// fifteen milliseconds each and the reason browsing Drive used to be
         /// slow. Both want the same arithmetic and neither should own it.
         ///
         /// <paramref name="folder"/> matters and is not a nicety. A folder has no
         /// extension whatever the dots in its name say, and splitting at the last
-        /// one turned a second copy of "Backup.2024" into "Backup (2).2024" — then
+        /// one turned a second copy of "Backup.2024" into "Backup (2).2024", then
         /// announced it, naming something nobody would recognise as their folder.
         /// </summary>
         /// <summary>
-        /// Whether a path's last name ends in a dot or a space — which Windows
-        /// quietly strips from an ordinary path, so "report." is taken to mean
+        /// Whether a path's last name ends in a dot or a space, which Windows
+        /// silently strips from an ordinary path, so "report." is taken to mean
         /// "report" and a delete or a rename acts on a different file.
         /// </summary>
         public static bool NeedsLiteralPath(string path)
@@ -147,7 +147,7 @@ namespace ExplorerNative
         /// ordinary path silently means "fold", so a copy walked the sibling
         /// folder's files; and "report." beside "report" had a move take the
         /// wrong one. Only fully qualified paths are converted, because the
-        /// literal form resolves nothing — no current directory, no "..".
+        /// literal form resolves nothing, no current directory, no "..".
         /// </summary>
         public static string ExactPath(string path)
         {
@@ -183,7 +183,7 @@ namespace ExplorerNative
         {
             if (!taken(desired)) return desired;
 
-            // A name that starts with its only dot — ".gitignore", ".env" — is
+            // A name that starts with its only dot, ".gitignore", ".env", is
             // all stem. Split as an extension it numbered as " (2).gitignore",
             // with a leading space.
             int dot = desired.LastIndexOf('.');
@@ -218,7 +218,7 @@ namespace ExplorerNative
         ///
         /// Path.Combine takes its second argument as a path, not as a name, so a
         /// typed "..\..\thing" or "C:\Windows\thing" walked straight out of the
-        /// folder the user was looking at — a rename could land anywhere on the
+        /// folder the user was looking at, a rename could land anywhere on the
         /// disk, and "New folder" created in a directory nobody had opened. Names
         /// are checked before they are ever combined with a directory.
         /// </summary>
@@ -285,7 +285,7 @@ namespace ExplorerNative
         ///
         /// Trimming that quote leaves `D:`, which is not the drive. A bare drive
         /// letter means "the current directory on D", and the current directory is
-        /// wherever the process happened to be started from — so opening a drive
+        /// wherever the process happened to be started from, so opening a drive
         /// showed the contents of the application's own folder instead. (This is
         /// the same trap RoboCopyEngine.QuoteDir guards against from the other
         /// direction, when writing a path out to a command line.)
@@ -319,8 +319,8 @@ namespace ExplorerNative
         /// on the first E name in this order whether or not it has an accent.
         ///
         /// The fallback is what makes the order total. List.Sort is unstable, so
-        /// without a decisive tie-break two names the comparison calls equal —
-        /// differing only in case, or only in an accent — swapped places between
+        /// without a decisive tie-break two names the comparison calls equal,
+        /// differing only in case, or only in an accent, swapped places between
         /// refreshes of the same unchanged folder.
         /// </summary>
         public static int CompareNames(string aName, string aPath, string bName, string bPath)
@@ -337,8 +337,8 @@ namespace ExplorerNative
         /// Windows that does the linguistic work again for every pair. Sorting
         /// 100,000 names is n log n of those, so making each name's key once
         /// and comparing bytes took the sort from about 155ms to about 55ms.
-        /// The answer is the same pair by pair — see LogicalKey for how that
-        /// was established — so the order cannot differ, and a missing key on
+        /// The answer is the same pair by pair, see LogicalKey for how that
+        /// was established, so the order cannot differ, and a missing key on
         /// either side is never wrong, only slower.
         /// </summary>
         public static int CompareNames(string aName, byte[]? aKey, string aPath, string bName, byte[]? bKey, string bPath)
@@ -356,11 +356,11 @@ namespace ExplorerNative
         /// StrCmpLogicalW is CompareString with NORM_IGNORECASE and
         /// SORT_DIGITSASNUMBERS in the user's locale: measured against it on
         /// 400,000 pairs of real and made-up names, they never disagreed. The
-        /// sort key of that same comparison agrees too, with one exception —
+        /// sort key of that same comparison agrees too, with one exception,
         /// numbers written in characters outside ASCII ("²", "½", "١", fullwidth
         /// "１") are weighed differently in a key than in a comparison. So a
-        /// name holding one gets no key. With that rule, 2.5 million pairs —
-        /// random, near-identical, and every neighbour in the true order —
+        /// name holding one gets no key. With that rule, 2.5 million pairs,
+        /// random, near-identical, and every neighbour in the true order,
         /// disagreed nowhere, and 82% of a mixed corpus had a key.
         ///
         /// And in case a locale somewhere does something those names did not,

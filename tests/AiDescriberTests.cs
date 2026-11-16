@@ -513,7 +513,7 @@ namespace ExplorerNative
                 try { await AiDescriber.AskAsync(AiProvider.Claude, "sk-ant-t", "m", picture, "x.jpg", turns, cts.Token); }
                 catch (OperationCanceledException) { cancelled = true; }
                 catch (AiException) { }
-                Check("closing stops quietly, without a sentence", cancelled);
+                Check("closing stops silently, without a sentence", cancelled);
             }
             // Nothing to send with.
             Check("no key is said", (await FailsAsync(() => AiDescriber.AskAsync(AiProvider.Claude, " ", "m", picture, "x", turns, CancellationToken.None))).Contains("Preferences"));
@@ -885,7 +885,7 @@ namespace ExplorerNative
                     try { if (saved != null) Clipboard.SetText(saved); else Clipboard.Clear(); } catch { }
                 }
 
-                // Closing stops the answer on its way, quietly.
+                // Closing stops the answer on its way, silently.
                 int saidBefore = window.Said.Count;
                 window.Close();
                 PumpUntil(() => fake.SawCancel, 3000);

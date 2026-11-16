@@ -11,8 +11,8 @@ namespace ExplorerNative
     /// a real tree on disk, and the arithmetic that decides which Drive hits are
     /// under the folder somebody is standing in.
     ///
-    /// The Drive half is testable at all because the part that is hard — scoping
-    /// a search to a subtree, which Drive's query language cannot express — is
+    /// The Drive half is testable at all because the part that is hard, scoping
+    /// a search to a subtree, which Drive's query language cannot express, is
     /// kept as a pure function over a folder graph. A graph built by hand here is
     /// the same shape as the one two `files.list` requests produce, so the
     /// awkward cases (a hit outside the root, a chain that loops, a parent nobody
@@ -109,9 +109,9 @@ namespace ExplorerNative
             Check("something absent does not match",
                 !FileSearch.Matches("Lovesick.flac", "banjo"));
 
-            // An empty search is every file rather than none. It is reachable —
+            // An empty search is every file rather than none. It is reachable,
             // the dialog refuses a blank, but F5 re-runs whatever was searched
-            // for — and "everything" is the answer that cannot lose a file.
+            // for, and "everything" is the answer that cannot lose a file.
             Check("an empty term matches everything", FileSearch.Matches("anything.txt", ""));
 
             SmarterMatchTests();
@@ -223,7 +223,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// The local walk, against a real tree. Recursion is the whole feature —
+        /// The local walk, against a real tree. Recursion is the whole feature,
         /// a search that only looked in the folder it was started in would pass
         /// every test above.
         /// </summary>
@@ -307,8 +307,8 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Which Drive hits count as "under here". Drive cannot answer this — its
-        /// query language has no recursive form — so it is answered from the
+        /// Which Drive hits count as "under here". Drive cannot answer this, its
+        /// query language has no recursive form, so it is answered from the
         /// folder graph, and this is that arithmetic.
         /// </summary>
         private static void DriveScopeTests()
@@ -346,8 +346,8 @@ namespace ExplorerNative
             Equal("searching the account root reaches everything",
                 "M,Y,T", Chain("root", "T", graph));
 
-            // A file with no parent at all — shared into the account rather than
-            // in it — is not somewhere this search can claim it is.
+            // A file with no parent at all, shared into the account rather than
+            // in it, is not somewhere this search can claim it is.
             Check("a hit with no parent is not under anything",
                 DriveSearch.ChainUnder("M", null, graph) == null);
 
@@ -385,7 +385,7 @@ namespace ExplorerNative
         /// steps and only the first was being exercised. The mount can only
         /// answer "what is in this folder with that id" for a folder it has
         /// populated, and the walk populated each folder in order to find the
-        /// next one — leaving the folder at the bottom, the one the hit actually
+        /// next one, leaving the folder at the bottom, the one the hit actually
         /// lives in, never populated. Every result below the top level was
         /// dropped on the floor.
         ///
@@ -431,7 +431,7 @@ namespace ExplorerNative
                 Year, Run(Music, new[] { "Y" }) ?? "<null>");
             Check("and THAT folder is listed too, not merely its parent",
                 populated.Contains(Year),
-                "the folder the hit lives in was left unlisted — every result below the top level is dropped");
+                "the folder the hit lives in was left unlisted, every result below the top level is dropped");
 
             Equal("two levels down resolves the whole way",
                 Takes, Run(Music, new[] { "Y", "T" }) ?? "<null>");
@@ -485,7 +485,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// MainForm needs a message loop and is not compiled into the suite, so
-        /// the wiring is checked by reading it — the same way the Drive branches
+        /// the wiring is checked by reading it, the same way the Drive branches
         /// of New folder, New file and Rename are.
         /// </summary>
         private static void SourceShapeTests()
@@ -507,12 +507,12 @@ namespace ExplorerNative
                 main.Contains("_ = NavigateAsync(folder, preferPath: entry.Path);",
                     StringComparison.Ordinal));
 
-            // The results are not a folder, and two things would quietly replace
+            // The results are not a folder, and two things would silently replace
             // them with one: the folder watcher, and F5.
             Check("the folder watcher does not overwrite a set of results",
                 main.Contains("if (pane.SearchTerm != null) return;", StringComparison.Ordinal));
-            // Deliberately loose: it pins the decision — refresh asks whether
-            // results are showing before it reloads anything — and not the
+            // Deliberately loose: it pins the decision, refresh asks whether
+            // results are showing before it reloads anything, and not the
             // punctuation around it. The tight version broke the moment the call
             // gained a try/catch, which is a test failing for a change that fixed
             // a bug. The guard itself is checked below, by count.
@@ -545,7 +545,7 @@ namespace ExplorerNative
             // Populate is a *synchronous* Drive listing at about 1.3 seconds, and
             // it runs after these awaits. Without ConfigureAwait every one of
             // those continuations comes back to the UI thread, so a search across
-            // five folders is six seconds of frozen window — the one rule this
+            // five folders is six seconds of frozen window, the one rule this
             // codebase does not bend, and the reason LoadEntriesAsync wraps its
             // own Populate in a Task.Run.
             Check("a Drive search never resumes on the thread that asked for it",
@@ -581,7 +581,7 @@ namespace ExplorerNative
                 main.Contains("entries = SortLikeAFolder(entries, root);", StringComparison.Ordinal));
 
             // SearchHere and Refresh_ are both `async void`, and only the search
-            // itself is inside the try — building the rows, naming the pane and
+            // itself is inside the try, building the rows, naming the pane and
             // announcing the count are not. Anything escaping goes to
             // Application.ThreadException and puts the crash dialog up.
             Check("an async void search cannot take the window down with it",
@@ -591,7 +591,7 @@ namespace ExplorerNative
                 "every caller of RunSearchAsync must guard it");
 
             // A second search cancels the first, and the loser must not put the
-            // winner's flag down on its way out — that leaves a search running
+            // winner's flag down on its way out, that leaves a search running
             // that Escape no longer stops.
             Check("a superseded search does not clear the running flag",
                 main.Contains("if (ReferenceEquals(pane.EnumCts, mine)) pane.Searching = false;",

@@ -7,8 +7,8 @@ namespace ExplorerNative
     /// <summary>
     /// Finds the FLAC frame a seek target is in, from the frames themselves.
     ///
-    /// Every FLAC frame header carries its own position — a frame number, or
-    /// in a variable-blocksize stream the sample number — protected by a CRC-8.
+    /// Every FLAC frame header carries its own position, a frame number, or
+    /// in a variable-blocksize stream the sample number, protected by a CRC-8.
     /// Positions only increase through the file, so the frame is found by
     /// bisection, narrowed first by the seek table when there is one. The
     /// decoder is then reopened on the stream's STREAMINFO followed by the file
@@ -154,7 +154,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// "fLaC" and STREAMINFO alone, marked as the last metadata block, with
-        /// the sample count reduced to what is left and the MD5 cleared — it
+        /// the sample count reduced to what is left and the MD5 cleared, it
         /// describes the shortened stream, not the file.
         /// </summary>
         private byte[] HeaderFor(long startSample)
@@ -206,7 +206,7 @@ namespace ExplorerNative
             }
 
             // Part way through a download, the search stays inside what has
-            // arrived — which is enough whenever the target is in it, and the
+            // arrived, which is enough whenever the target is in it, and the
             // last whole frame there says whether it is.
             long held = Bytes.HeldEnd;
             if (lo >= held) return false;
@@ -252,7 +252,7 @@ namespace ExplorerNative
         /// <summary>
         /// The first genuine frame starting at or after <paramref name="from"/>
         /// and before <paramref name="limit"/>: a header that checks out,
-        /// followed by another that continues it — or the last frame of the file.
+        /// followed by another that continues it, or the last frame of the file.
         /// </summary>
         private bool NextFrame(long from, long limit, out Frame frame)
         {

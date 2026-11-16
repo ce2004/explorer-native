@@ -8,13 +8,13 @@ namespace ExplorerNative
     /// <summary>
     /// Finds the MP3 frame a seek target is in, by counting frames.
     ///
-    /// An MPEG audio frame does not say where it is — there is nothing to
-    /// bisect on — so the only exact answer is to walk the frame headers from
+    /// An MPEG audio frame does not say where it is, there is nothing to
+    /// bisect on, so the only exact answer is to walk the frame headers from
     /// the start, which is what every player that seeks MP3 accurately does.
     /// It is a walk over headers, not a decode: for an hour-long file, a read of
     /// the file and a hundred and fifty thousand four-byte parses. It runs once,
     /// in the background, keeps the offset of every eighth frame, and follows a
-    /// download as it arrives — a seek into any part it has walked is exact, and
+    /// download as it arrives, a seek into any part it has walked is exact, and
     /// one past it uses Media Foundation's own.
     ///
     /// Decoding from a frame in the middle of the file needs a little run-up:
@@ -26,10 +26,10 @@ namespace ExplorerNative
     /// matched here rather than argued with: a first frame carrying a Xing or
     /// VBRI header is skipped by it and one carrying LAME's "Info" header is
     /// decoded as a frame of silence. Measured on a variable- and a
-    /// constant-bitrate file made by the same encoder — the difference between
+    /// constant-bitrate file made by the same encoder, the difference between
     /// them is exactly one frame.
     ///
-    /// **And it drops a frame wherever the stream breaks** — after a tag in
+    /// **And it drops a frame wherever the stream breaks**, after a tag in
     /// the middle of the file, a stretch of zeros or junk, anything the frame
     /// parser has to find its way past, the first frame found produces no
     /// output (its bit reservoir points back into bytes that were not audio).
@@ -150,8 +150,8 @@ namespace ExplorerNative
             var hold = HoldWalkForTests;
             new Thread(() =>
             {
-                // Set however the walk ends — finished, closed, abandoned or
-                // thrown — so nobody waits on it for ever.
+                // Set however the walk ends, finished, closed, abandoned or
+                // thrown, so nobody waits on it for ever.
                 try { hold?.Wait(); Walk(); }
                 catch (Exception ex) { Diag.Note(ex); }
                 finally { _walkDone.Set(); }
@@ -196,7 +196,7 @@ namespace ExplorerNative
 
                     // Short, with the bytes said to be held: the download was let
                     // go between the two questions. Waited out, not taken as the
-                    // end — a walk stopped here was marked complete, and the
+                    // end, a walk stopped here was marked complete, and the
                     // length and every later seek believed a partial count.
                     if (chunkLength < 4)
                     {
@@ -212,8 +212,8 @@ namespace ExplorerNative
                 var here = chunk.AsSpan((int)(at - chunkAt), chunkLength - (int)(at - chunkAt));
                 if (!Header.TryParse(here, out var header) || !header.Matches(_format))
                 {
-                    // A tag in the middle — joined audiobook chapters carry one
-                    // each, often with a picture — is stepped over by its size.
+                    // A tag in the middle, joined audiobook chapters carry one
+                    // each, often with a picture, is stepped over by its size.
                     if (here.Length >= 10 && here[0] == 'I' && here[1] == 'D' && here[2] == '3')
                     {
                         long size = ((here[6] & 0x7F) << 21) | ((here[7] & 0x7F) << 14) |
@@ -224,7 +224,7 @@ namespace ExplorerNative
                         continue;
                     }
 
-                    // Lost sync — damage, or the tags at the end. Find where it
+                    // Lost sync, damage, or the tags at the end. Find where it
                     // resumes, however far that is: a 64KB look used to be all
                     // there was, and anything longer ended the walk and called
                     // it complete, so every later seek decoded its way from the
@@ -363,7 +363,7 @@ namespace ExplorerNative
                 if (target >= _walked)
                 {
                     // Past the end of a finished walk is only believable a few
-                    // frames past it — the last frame's own samples. Further than
+                    // frames past it, the last frame's own samples. Further than
                     // that, the walk stopped short of the audio, and Media
                     // Foundation's seek is the better guess.
                     if (!_complete || _walked == 0 || target > _walked + PreRollFrames) return false;
@@ -395,7 +395,7 @@ namespace ExplorerNative
                 (indexedFrame, offset, _) = _offsets[found];
             }
 
-            // From the nearest indexed frame, walking the few in between — never
+            // From the nearest indexed frame, walking the few in between, never
             // across a join, since every join has an entry of its own.
             var header = new byte[4];
             for (long frame = indexedFrame; frame < from; frame++)

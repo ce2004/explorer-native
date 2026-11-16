@@ -11,7 +11,7 @@ namespace ExplorerNative
     /// by every file.
     ///
     /// Chunks rather than one buffer per file, because a whole-file buffer means
-    /// the largest thing you ever open decides the memory ceiling — and there is
+    /// the largest thing you ever open decides the memory ceiling, and there is
     /// a 232MB track in this very Drive. Chunks make the ceiling a policy instead
     /// of an accident, and let a file larger than the whole budget still stream:
     /// the beginning is dropped as the end arrives, which for something being
@@ -42,7 +42,7 @@ namespace ExplorerNative
         public DriveCachePool(long budget) => Budget = budget;
 
         /// <summary>
-        /// Which cache was read most recently, and when — so a download nobody is
+        /// Which cache was read most recently, and when, so a download nobody is
         /// reading can stand aside for the one somebody is.
         /// </summary>
         public void NoteRead(string file)
@@ -125,7 +125,7 @@ namespace ExplorerNative
     /// This exists because of one measured fact: a Drive request costs about a
     /// second whatever is in it. Windows asks a cloud provider for roughly 256KB
     /// at a time, so answering each callback with its own request is a second per
-    /// quarter megabyte — measured at 0.21MB/s, about five minutes for a 68MB
+    /// quarter megabyte, measured at 0.21MB/s, about five minutes for a 68MB
     /// file, and that is what a Drive-to-disk copy really ran at.
     ///
     /// So the callbacks never talk to Drive if they can help it. A worker pulls
@@ -138,21 +138,21 @@ namespace ExplorerNative
     /// sliver the callback asked for, and files it in the pool. One request then
     /// answers the sixteen callbacks that follow it instead of sixteen requests
     /// answering one each. This is the whole difference between 0.2MB/s and the
-    /// link's real speed on the miss path — and the miss path is where a copy
+    /// link's real speed on the miss path, and the miss path is where a copy
     /// lives, because a reader taking bytes as fast as they arrive pins itself to
     /// the downloader's watermark within seconds and never gets ahead again.
     ///
     /// And a chunk is fetched **once**, however many readers want it. The
     /// downloader and the callbacks used to race for the same bytes down separate
     /// requests, each halving the other's share of a link that measures about
-    /// 1MB/s per stream — so the reader's duplicate request made the download it
+    /// 1MB/s per stream, so the reader's duplicate request made the download it
     /// was waiting for slower, which made the next read miss too. Requests in
     /// flight are shared, so a callback that arrives while the downloader is
     /// already fetching its chunk waits for that one rather than starting a
     /// second.
     ///
     /// Measured on a 68.8MB file, cold, Drive to local disk through robocopy:
-    /// 102 seconds — 17.8MB at 5MB/s while the downloader's head start lasted,
+    /// 102 seconds, 17.8MB at 5MB/s while the downloader's head start lasted,
     /// then 51MB at 0.6MB/s once the reader caught it. A long enough file ran out
     /// of the operating system's patience altogether and failed the read with
     /// "the cloud operation was not completed before the time-out period
@@ -173,7 +173,7 @@ namespace ExplorerNative
         ///
         /// One stream is about 1MB/s and it scales nearly linearly to four, so
         /// the old setting was leaving two thirds of the link unused. Past four
-        /// it flattens — 8MB by four measured 3.5 and then 2.9 — and every extra
+        /// it flattens, 8MB by four measured 3.5 and then 2.9, and every extra
         /// stream is one more request competing with the callbacks' own.
         /// </summary>
         private const int Streams = 4;
@@ -218,7 +218,7 @@ namespace ExplorerNative
         /// Chunk requests started and not yet finished.
         ///
         /// A <see cref="Lazy{T}"/> rather than the task itself, because the value
-        /// overload of GetOrAdd has to be handed something already made — and a
+        /// overload of GetOrAdd has to be handed something already made, and a
         /// task that is already made is a request that has already gone out. The
         /// loser of the race never calls Value, so it never sends anything. The
         /// factory overload is the other way round, and is the trap DriveMount
@@ -255,8 +255,8 @@ namespace ExplorerNative
             LastUsed = Environment.TickCount64;
 
             // Not started here. Opening a cache used to start four 4MB requests
-            // at once, so every byte anything read — Explorer looking for a tag
-            // or a thumbnail, a property sheet, an antivirus peek — cost sixteen
+            // at once, so every byte anything read, Explorer looking for a tag
+            // or a thumbnail, a property sheet, an antivirus peek, cost sixteen
             // megabytes of a link that gives three or four a second. The
             // download starts when it is wanted: the file was warmed, or it is
             // being read straight through. See StartPump.
@@ -379,7 +379,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// One whole chunk: from the pool, from a request already in flight, or
-        /// from a new one — in that order.
+        /// from a new one, in that order.
         /// </summary>
         private async Task<byte[]> Chunk(int index)
         {
@@ -424,13 +424,13 @@ namespace ExplorerNative
 
         /// <summary>
         /// Pulls the file down ahead of its reader, <see cref="Streams"/> chunks
-        /// in flight at a time, and through the same door the callbacks use — so
+        /// in flight at a time, and through the same door the callbacks use, so
         /// a chunk somebody is already waiting on is never fetched twice.
         ///
         /// A sliding window rather than batches: it was four requests, then a
         /// wait for the slowest of the four, then four more, so one slow
         /// response idled the other three streams. A failed chunk is tried again
-        /// after a pause rather than ending the download — one 503 used to leave
+        /// after a pause rather than ending the download, one 503 used to leave
         /// the rest of the file to the reads, a chunk at a time.
         /// </summary>
         private async Task Pump(CancellationToken token)
@@ -449,7 +449,7 @@ namespace ExplorerNative
                         // Standing aside while another file is the one being read
                         // and this one is not. Clicking through tracks left a
                         // whole-file download running for each, all splitting a
-                        // link that gives a few megabytes a second between them —
+                        // link that gives a few megabytes a second between them,
                         // and the track somebody had just picked took long enough
                         // to open that it failed. A warmed file nothing has read
                         // yet keeps going until something else is read.
@@ -546,7 +546,7 @@ namespace ExplorerNative
                 var bytes = await Chunk(index);
 
                 // Short means the response ended early. Retried like a failure;
-                // a file genuinely shorter than it says stops after a few.
+                // a file really shorter than it says stops after a few.
                 long want = Math.Min(DriveCachePool.ChunkBytes, Size - (long)index * DriveCachePool.ChunkBytes);
                 fetched = bytes.Length >= want;
             }
@@ -575,7 +575,7 @@ namespace ExplorerNative
         /// <paramref name="length"/> bytes at <paramref name="offset"/>, from
         /// memory where possible.
         ///
-        /// Anything missing is fetched a whole chunk at a time — see the class
+        /// Anything missing is fetched a whole chunk at a time, see the class
         /// comment. <c>FromMemory</c> is false when any part of the answer had to
         /// be waited for, which is what the mount's counters mean by a callback
         /// that was not served from memory.
@@ -706,8 +706,8 @@ namespace ExplorerNative
                     // wait leaves the download running for the next reader.
                     var whole = Chunk(index);
 
-                    // A read that finds its chunk not there yet — the head, the
-                    // tail and the middle a decoder looks at while opening — waits
+                    // A read that finds its chunk not there yet, the head, the
+                    // tail and the middle a decoder looks at while opening, waits
                     // a moment for it and then fetches just its own bytes, once
                     // per chunk. Waiting for the whole chunk was seconds per
                     // region, and an open touches several.
@@ -815,7 +815,7 @@ namespace ExplorerNative
         /// <summary>
         /// Stops the download and gives the memory back.
         ///
-        /// Cancelled, not disposed — the same rule the folder-size walks and the
+        /// Cancelled, not disposed, the same rule the folder-size walks and the
         /// pane work already follow. Pump is still inside an await when this
         /// runs, and its next HttpClient call registers a callback on this
         /// token; registering on a disposed source throws ObjectDisposedException
@@ -831,7 +831,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Stops this instance's download and leaves the pool alone — for a
+        /// Stops this instance's download and leaves the pool alone, for a
         /// duplicate that lost the race to be the file's cache. What it fetched is
         /// filed under its own key, which nothing will ask for, so that goes too;
         /// the winner's chunks are under another.

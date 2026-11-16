@@ -42,7 +42,7 @@ namespace ExplorerNative
     ///
     /// The Audio menu needs several of these facts to label itself, and asking
     /// the player for them one at a time as the menu opens invites the state to
-    /// change halfway down — a menu reading "Pause" above "Unmute" for a track
+    /// change halfway down, a menu reading "Pause" above "Unmute" for a track
     /// that stopped in between.
     /// </summary>
     public sealed record AudioSnapshot(
@@ -75,7 +75,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// How far the step is allowed to grow while held. 1 means no
-        /// acceleration at all — the right answer for anything whose step is
+        /// acceleration at all, the right answer for anything whose step is
         /// already large, since the growth is there to rescue a step of one.
         /// </summary>
         public int AccelerationCap { get; init; } = 20;
@@ -87,7 +87,7 @@ namespace ExplorerNative
         /// Volume wants a harder ramp than everything else because its range is
         /// ten times what it was: the dial goes to 1000 now, and a curve tuned
         /// for 0 to 100 takes ten times as long to cross it. The cap moved with
-        /// it — 60 was chosen when the top was 300, and leaving it there turned
+        /// it, 60 was chosen when the top was 300, and leaving it there turned
         /// a held key from a sweep into a countdown the moment the range grew.
         /// </summary>
         public int AccelerationEvery { get; init; } = 3;
@@ -98,7 +98,7 @@ namespace ExplorerNative
         ///
         /// Volume takes less. The delay exists so a tap cannot be read as a hold,
         /// and the cost of getting that wrong is proportional to the damage one
-        /// extra repeat does — for play/pause it is the difference between
+        /// extra repeat does, for play/pause it is the difference between
         /// playing and paused, and for volume it is five percent.
         /// </summary>
         public int HoldDelayMilliseconds { get; init; }
@@ -112,7 +112,7 @@ namespace ExplorerNative
         public string MenuText { get; init; } = "";
 
         /// <summary>
-        /// The wording for the other state of a toggle — "&amp;Play" against
+        /// The wording for the other state of a toggle, "&amp;Play" against
         /// "&amp;Pause". Deliberately the same letter, so the key does not move
         /// under the hand when the state changes.
         /// </summary>
@@ -124,7 +124,7 @@ namespace ExplorerNative
         ///
         /// The catalogue supplies the routing, not the wording. The player knows
         /// the real volume, the real time and the real file name and this list
-        /// does not, so the sentence still comes from the player — only the
+        /// does not, so the sentence still comes from the player, only the
         /// decision about whether anybody hears it comes from here.
         /// </summary>
         public string NotificationId { get; init; } = "";
@@ -132,7 +132,7 @@ namespace ExplorerNative
 
     /// <summary>
     /// The one list of audio shortcuts. Preferences builds its rows from it, the
-    /// Audio menu builds its items from it, and the tray registers from it — so
+    /// Audio menu builds its items from it, and the tray registers from it, so
     /// an action added here appears in all three without any of them being
     /// edited.
     ///
@@ -153,14 +153,14 @@ namespace ExplorerNative
         ///
         /// Skipping needs it for a different reason and needs it more. A seek
         /// costs about a millisecond now that the track plays out of memory,
-        /// which is what the old throttle was removed for — but *cost* was never
+        /// which is what the old throttle was removed for, but *cost* was never
         /// the problem with holding the key. Distance was. Fifty ten-second
         /// skips a second is five hundred seconds of track per second held, so a
         /// three minute song is over in under half a second of holding, and the
         /// end is where it stays: every press after that clamps to the same
         /// place and the key reads as dead. That is what "holding or hitting
         /// skip isn't perfect, hitting it twice keeps it at the same place"
-        /// turned out to be — the first press had already run to the end.
+        /// turned out to be, the first press had already run to the end.
         ///
         /// Eight a second is eighty seconds of track per second held. This
         /// application's own Preferences page has claimed skipping ran at that
@@ -172,7 +172,7 @@ namespace ExplorerNative
         /// Volume starts repeating sooner than the general setting.
         ///
         /// A wrongly-detected hold costs one extra step, and one extra step of
-        /// volume is five percent — against play/pause, where it is the
+        /// volume is five percent, against play/pause, where it is the
         /// difference between playing and paused. So volume can afford to be
         /// twitchier, and it is the key most often held.
         /// </summary>
@@ -184,8 +184,8 @@ namespace ExplorerNative
         /// Skipping used not to accelerate at all, on the grounds that a
         /// ten-second step is already large enough not to need rescuing. That
         /// reasoning assumed the step *is* ten seconds. It is whatever "Skip by"
-        /// is set to, and at one second — a perfectly reasonable setting for
-        /// finding your place in a podcast — a held key covered eight seconds of
+        /// is set to, and at one second, a perfectly reasonable setting for
+        /// finding your place in a podcast, a held key covered eight seconds of
         /// track per second and crossing a three minute song took twenty-two
         /// seconds of holding. Which is what "make skipping faster" meant.
         ///
@@ -234,7 +234,7 @@ namespace ExplorerNative
             // Skipping repeats on the slower clock and does not accelerate. Both
             // halves are about distance rather than cost: at the general rate a
             // held key covers five hundred seconds of track per second, which is
-            // a three minute song finished in under half a second of holding —
+            // a three minute song finished in under half a second of holding,
             // and then stuck at the end, where every further press clamps to the
             // same place. See NudgeRepeatMilliseconds.
             new AudioActionInfo(AudioAction.SeekBackward, "Skip backward", true,
@@ -251,8 +251,8 @@ namespace ExplorerNative
 
             // The long skip is sixty seconds a press, so a held key covers eight
             // minutes a second even on the slow clock. That is the right speed
-            // for the thing it exists for — moving through something an hour
-            // long — and the wrong one for anything else, which is why it has
+            // for the thing it exists for, moving through something an hour
+            // long, and the wrong one for anything else, which is why it has
             // its own pair of shortcuts rather than being the same key faster.
             new AudioActionInfo(AudioAction.SeekBackwardLong, "Long skip backward", true,
                 s => s.AudioSeekBackwardLongShortcut, (s, v) => s.AudioSeekBackwardLongShortcut = v)
@@ -345,7 +345,7 @@ namespace ExplorerNative
             // And the same again, for the three numbers that shape the limiter.
             // They are not on the preferences page on purpose: an attack time is
             // only meaningful against music that is actually playing, so this
-            // has to be reachable from where you are when you need it — which is
+            // has to be reachable from where you are when you need it, which is
             // in the middle of a track with the keyboard in your hand.
             //
             // L, because P, S, U, D, M, B, F, K, W, T, C, V, R, Y, I, O, A, G
@@ -362,7 +362,7 @@ namespace ExplorerNative
             // playing and each band lands on the sound as you arrow it.
             //
             // **Q, and it used to be E.** Silence reduction arrived later and
-            // every letter in those two words was already an access key here —
+            // every letter in those two words was already an access key here,
             // the menu has taken P, S, U, D, M, B, F, K, W, T, C, V, L, R, Y, I,
             // O, A, G, N and H between them. J, Q, X and Z were what was left,
             // and "equaliser" is the only label in the whole menu that contains
@@ -379,7 +379,7 @@ namespace ExplorerNative
                 { NotificationId = "audio.equaliser.dialog", MenuText = "E&qualiser…" },
 
             // Pitch, beside speed and on the same terms. The two are separate
-            // controls because the audio path keeps them separate — the
+            // controls because the audio path keeps them separate, the
             // stretcher changes length without pitch and the resampler changes
             // both, and dividing one by the other is what lets either move on
             // its own. See Resampler.
@@ -397,7 +397,7 @@ namespace ExplorerNative
             // anybody can decide on, it is a thing you set while listening to the
             // gaps it is deciding about.
             //
-            // E, which the equaliser above gave up for it — see the note there.
+            // E, which the equaliser above gave up for it, see the note there.
             // The access key is on the second word because S, R, D, U, C, T, I, O
             // and N are every other letter in "silence reduction" and every one
             // of them was already taken.
@@ -426,7 +426,7 @@ namespace ExplorerNative
         /// How much bigger a step gets the longer its key is held.
         ///
         /// A held key that moves the volume one percent at a time takes seconds
-        /// to cross the dial — that is not a volume control, it is a countdown,
+        /// to cross the dial, that is not a volume control, it is a countdown,
         /// and no repeat rate fixes it because ten milliseconds is as fast as a
         /// timer goes. The step grows every third repeat instead, so a tap is
         /// still exactly one step and a hold sweeps the whole range in well under
@@ -478,7 +478,7 @@ namespace ExplorerNative
     /// A list of extensions rather than an attempt to ask Windows what it can
     /// decode: there is no cheap way to ask, the answer changes with whatever
     /// codec packages are installed, and a file the engine turns out not to
-    /// handle is recovered anyway — the failure hands it to the associated
+    /// handle is recovered anyway, the failure hands it to the associated
     /// application, which is where it would have gone in the first place.
     /// </summary>
     public static class AudioFiles
@@ -494,8 +494,8 @@ namespace ExplorerNative
         /// the camera was running or not, and for somebody listening rather than
         /// watching, handing it to a video player is handing it to a window with
         /// no keyboard route to the volume. They are the same MPEG-4 container
-        /// `.m4a` already is — the registry points all three at byte-stream
-        /// handler {271C3902-…} — and <see cref="AudioDecoder"/> deselects every
+        /// `.m4a` already is, the registry points all three at byte-stream
+        /// handler {271C3902-…}, and <see cref="AudioDecoder"/> deselects every
         /// stream and then selects only the first *audio* one, so a video track
         /// is never read rather than being skipped over.
         ///
@@ -508,13 +508,13 @@ namespace ExplorerNative
 
         /// <summary>
         /// Whether Media Foundation has anything at all registered that can open
-        /// this kind of file — asked of the registry rather than assumed.
+        /// this kind of file, asked of the registry rather than assumed.
         ///
         /// This exists because the obvious advice is wrong on this machine, and
         /// wrong advice about a file that will not play is worse than none. The
         /// Web Media Extensions are the documented answer for Ogg and Opus, they
         /// are installed here (2.1.38.0, ARM64), and Opus still fails with
-        /// MF_E_UNSUPPORTED_BYTESTREAM_TYPE — because that package registers its
+        /// MF_E_UNSUPPORTED_BYTESTREAM_TYPE, because that package registers its
         /// handlers *inside the package*, where only other packaged applications
         /// can see them. A plain desktop program gets nothing.
         ///
@@ -561,7 +561,7 @@ namespace ExplorerNative
             // Ogg Vorbis and Opus are decoded here rather than by Windows, so a
             // failure on one of those is about the file and not about what is
             // installed. Saying "Windows has no decoder" would be true and
-            // completely beside the point — it never had one, and it is not
+            // completely beside the point, it never had one, and it is not
             // being asked.
             if (OggDecoder.Handles(extension)) return "";
 
@@ -593,7 +593,7 @@ namespace ExplorerNative
             foreach (var always in AlwaysPlayed.Split(';'))
                 if (string.Equals(always, extension, StringComparison.OrdinalIgnoreCase)) return true;
 
-            // Empty means the defaults, not "nothing is audio" — Settings puts the
+            // Empty means the defaults, not "nothing is audio", Settings puts the
             // default list back when the box is cleared, and a caller that has not
             // been through Settings must land in the same place.
             if (string.IsNullOrWhiteSpace(configured)) configured = DefaultExtensions;

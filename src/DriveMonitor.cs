@@ -1207,7 +1207,7 @@ namespace ExplorerNative
                 if (e is SocketException or TaskCanceledException or TimeoutException) return true;
 
                 // Only one that never got an answer. One with a status is
-                // Google's answer — a 403 rate limit among them, which is waited
+                // Google's answer, a 403 rate limit among them, which is waited
                 // out, not mistaken for the connection going.
                 if (e is HttpRequestException { StatusCode: null }) return true;
             }

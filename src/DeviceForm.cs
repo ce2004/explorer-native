@@ -15,7 +15,7 @@ namespace ExplorerNative
     /// check. Escape puts back whatever was playing when it opened, so trying
     /// the list costs nothing.
     ///
-    /// That only works because switching is quick — the ring buffer and the
+    /// That only works because switching is quick, the ring buffer and the
     /// decoder survive the move, so the music carries on from where it was. See
     /// WasapiPlayback.SwitchNow.
     /// </summary>
@@ -76,7 +76,7 @@ namespace ExplorerNative
             int at = _ids.IndexOf(_original);
 
             // A saved device that is no longer plugged in is not in the list, so
-            // the list falls back to its first entry — "Follow the system
+            // the list falls back to its first entry, "Follow the system
             // default". SelectedId has to fall back with it: it was left holding
             // the missing id, and nothing corrected it, because the answer is
             // only updated by the change event and setting the index to 0 when
@@ -102,7 +102,7 @@ namespace ExplorerNative
             }
 
             // Applied here, so it fires for arrow keys, for the mouse, and for
-            // typing the first letter — every way a list is used.
+            // typing the first letter, every way a list is used.
             list.SelectedIndexChanged += (_, _) =>
             {
                 if (list.SelectedIndex < 0 || list.SelectedIndex >= _ids.Count) return;

@@ -11,8 +11,8 @@ namespace ExplorerNative
     /// Copying out of the Google Drive letter, and the terminal the installer
     /// used to hold.
     ///
-    /// Three faults reported as one — "I can't copy items from Google Drive, the
-    /// progress bar is breaking, and it just won't go to Downloads" — and each is
+    /// Three faults reported as one, "I can't copy items from Google Drive, the
+    /// progress bar is breaking, and it just won't go to Downloads", and each is
     /// checked here separately, because each had a different cause and a fix for
     /// one says nothing about the others.
     /// </summary>
@@ -100,7 +100,7 @@ namespace ExplorerNative
         /// the placeholder's Offline flag, which Explorer draws as unavailable.
         ///
         /// The fixture sets Offline on an ordinary file, which is exactly what a
-        /// placeholder presents to robocopy — so this runs the real engine and the
+        /// placeholder presents to robocopy, so this runs the real engine and the
         /// real robocopy and needs no Drive at all. The first half proves the
         /// premise: without the switch, the flag really is carried across. A test
         /// that only checked the fixed path would pass on a machine where robocopy
@@ -177,7 +177,7 @@ namespace ExplorerNative
             Check("and the speed is worked out from them rather than left at zero", early.BytesPerSecond > 0);
 
             var ahead = RoboCopyEngine.WithDownloads(Robocopy(6_000_000, "b.ogg"), 5_000_000, "c.ogg", 2_500_000);
-            Equal("robocopy's count wins when it is the larger — a file already downloaded is never fetched",
+            Equal("robocopy's count wins when it is the larger, a file already downloaded is never fetched",
                 "6000000", ahead.BytesDone.ToString());
 
             var late = RoboCopyEngine.WithDownloads(Robocopy(1_000_000), 900_000, "d.ogg", 6_000_000);
@@ -240,7 +240,7 @@ namespace ExplorerNative
         /// Copying from the drive to the drive, which used to be refused.
         ///
         /// "Copying inside Google Drive is not supported yet. Move works, or copy
-        /// out and back in." — on a comment claiming a copy "means downloading and
+        /// out and back in.", on a comment claiming a copy "means downloading and
         /// uploading the same bytes". It does not: Drive has `files.copy`, which
         /// duplicates server-side, so a four gigabyte video copies in one request
         /// and nothing crosses the link. The advice in the refusal was to send
@@ -290,7 +290,7 @@ namespace ExplorerNative
                     .Contains("SendWithRetry(", StringComparison.Ordinal));
 
             // Drive will not copy a folder, so a folder is a new folder and then
-            // the same question about everything in it — and the listing walked
+            // the same question about everything in it, and the listing walked
             // is Drive's own, so a folder nobody has opened here copies too.
             Check("a folder is copied by making one and copying what is in it",
                 drive.Contains("var folderId = await client.CreateFolder(name, intoId, token)",
@@ -432,7 +432,7 @@ namespace ExplorerNative
                 // at all: the guard then waits out its whole limit and
                 // disconnects anyway, while no longer being able to tell a real
                 // read from a number left behind. It shipped that way for an
-                // afternoon — the decrement had landed in the *helper* the
+                // afternoon, the decrement had landed in the *helper* the
                 // callback calls, which two of its exit paths never reach.
                 // Since 4.3.0 the count is a guard struct taken with `using`, so
                 // every way out of a request gives it back.
@@ -459,7 +459,7 @@ namespace ExplorerNative
             //
             // Copying a Drive file put a placeholder path on the clipboard and
             // started nothing, so the first byte the other application read was
-            // the first byte fetched from Google — and it reads on the thread
+            // the first byte fetched from Google, and it reads on the thread
             // that paints its own window. Measured on a 16.8MB track: 3.9 seconds
             // frozen, against 111ms once the pool already had it, and linear in
             // the file's size from there.
@@ -537,7 +537,7 @@ namespace ExplorerNative
 
                 // Releasing a cache cancels its downloads. A sweep landing inside
                 // a fetch callback would fail the read that callback is
-                // answering — the copy that stops dead for no visible reason that
+                // answering, the copy that stops dead for no visible reason that
                 // this file already carries scars about.
                 var sweep = Between(mount, "private void SweepIdle()", "private void Say(");
                 Check("and never out from under a reader",

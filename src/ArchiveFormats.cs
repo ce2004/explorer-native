@@ -23,12 +23,12 @@ namespace ExplorerNative
     /// deals with it.
     /// </summary>
     /// <param name="Extensions">
-    /// Every suffix that means this format, longest first — the order matters,
+    /// Every suffix that means this format, longest first, the order matters,
     /// because ".tar.gz" and ".gz" both end a name that is a gzipped tar and only
     /// the first is the right answer.
     /// </param>
     /// <param name="SingleFile">
-    /// True for the bare compressors — .gz, .xz, .bz2, .zst — which wrap exactly
+    /// True for the bare compressors.gz.xz.bz2.zst, which wrap exactly
     /// one file and have nowhere to put a name, a folder, or a second entry.
     /// These exist so that "compress this one file" and "open this .gz" both
     /// work; they are not offered for a selection of more than one thing,
@@ -52,7 +52,7 @@ namespace ExplorerNative
     /// bytes is turned into one.
     ///
     /// The split between the three engines is not arbitrary and it is not
-    /// aesthetic — it is where the codecs are.
+    /// aesthetic, it is where the codecs are.
     ///
     /// Zip, tar and gzip are ours, because .NET has deflate and because those
     /// three are the ones worth making fast: they are what a selection of files
@@ -61,13 +61,13 @@ namespace ExplorerNative
     /// reason this feature is quick.
     ///
     /// xz, bzip2, zstandard and 7z are Windows'. Not because they could not be
-    /// written — because they should not be, twice over. Each is thousands of
+    /// written, because they should not be, twice over. Each is thousands of
     /// lines of codec that has to be exactly right or it silently produces an
     /// archive no other tool can read, and every one of them is already installed
     /// on the machine: System32\tar.exe is bsdtar 3.8.4 over libarchive 3.8.4,
     /// built with zlib, liblzma, bz2lib and libzstd, and it has been in Windows
     /// since 1803. This codebase already drives robocopy.exe for the same reason
-    /// — the operating system ships a good implementation of the hard part, and
+    /// the operating system ships a good implementation of the hard part, and
     /// the alternative is a worse one of our own. See <see cref="BsdTar"/>.
     ///
     /// The formats that can only be read are read through bsdtar too: rar, cab,
@@ -174,7 +174,7 @@ namespace ExplorerNative
         /// Longest suffix wins, which is the whole reason the extension lists are
         /// ordered. "album.tar.gz" ends with ".gz" and matching that would send a
         /// gzipped tar to the single-file gzip path, where it would extract to one
-        /// file called "album.tar" and stop — technically true, and not what
+        /// file called "album.tar" and stop, technically true, and not what
         /// anybody pressing Extract meant.
         /// </summary>
         public static ArchiveFormat? FromName(string? path)
@@ -202,8 +202,8 @@ namespace ExplorerNative
         /// <summary>
         /// The format the first few bytes say it is, or null.
         ///
-        /// Used when the name does not know — a file called "download" that is
-        /// really a zip — and for the .tar case, where there is no compressed
+        /// Used when the name does not know, a file called "download" that is
+        /// really a zip, and for the .tar case, where there is no compressed
         /// signature to find because a tar is not compressed at all.
         ///
         /// The name is asked first, not this, because a ".tar.gz" and a ".gz"
@@ -224,7 +224,7 @@ namespace ExplorerNative
             if (Starts(head, 0x4D, 0x53, 0x43, 0x46)) return Cab;
             if (Starts(head, 0x21, 0x3C, 0x61, 0x72, 0x63, 0x68, 0x3E)) return Ar;
 
-            // A tar has no signature at the front — it opens with a file name. The
+            // A tar has no signature at the front, it opens with a file name. The
             // magic is 257 bytes in, which is why this wants a whole header block
             // rather than the handful of bytes every check above needs.
             if (head.Length >= 262)
@@ -268,7 +268,7 @@ namespace ExplorerNative
 
             try
             {
-                // Exact: inside "Backup." the ordinary path opened "Backup\..." —
+                // Exact: inside "Backup." the ordinary path opened "Backup\...",
                 // a file that is not there, so the archive went unrecognised.
                 using var file = new FileStream(NameRules.ExactPath(path), FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                 Span<byte> head = stackalloc byte[SniffBytes];
@@ -283,7 +283,7 @@ namespace ExplorerNative
                 var byBytes = FromBytes(head[..got]);
 
                 // "backup.tar" that is gzip inside is a gzipped tar with the
-                // wrong name, not a bare gzip — read as one, it came out as a
+                // wrong name, not a bare gzip, read as one, it came out as a
                 // single file holding the raw tar.
                 if (byName == TarGz) return byBytes == Tar ? Tar : TarGz;
                 if (byName == Tar && byBytes == Gz) return TarGz;
@@ -296,7 +296,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// The name without the archive suffix — "album.tar.gz" becomes "album" —
+        /// The name without the archive suffix, "album.tar.gz" becomes "album",
         /// which is what an extraction calls the folder it makes.
         /// </summary>
         public static string BaseName(string archivePath)
@@ -330,7 +330,7 @@ namespace ExplorerNative
         /// folder with forty others.
         /// </summary>
         /// <param name="isFolder">
-        /// Whether the one source is a folder, when the caller already knows —
+        /// Whether the one source is a folder, when the caller already knows,
         /// the dialog does, and asking the disk from its thread is a wait on a
         /// share that has gone to sleep.
         /// </param>
@@ -377,12 +377,12 @@ namespace ExplorerNative
         /// alone.
         ///
         /// Two rules, and each is here because of a name it got wrong. The caller
-        /// asks the filesystem first, so a real folder keeps its whole name — a
+        /// asks the filesystem first, so a real folder keeps its whole name, a
         /// folder called "Season 1.5" has no extension, and treating the ".5" as
         /// one offers "Season 1.zip" for a folder full of episodes. But the
         /// filesystem cannot always answer: the name may be one the caller
         /// invented, or the item may be on a share that has gone away. So the
-        /// second rule works from the text alone — an extension has a letter in
+        /// second rule works from the text alone, an extension has a letter in
         /// it. "mp3" and "7z" do; "5" does not, and neither does the "1" in
         /// "chapter 8.1".
         /// </summary>

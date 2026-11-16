@@ -22,9 +22,9 @@ namespace ExplorerNative
     /// same hand agree with each other about whatever they both get wrong. A
     /// round trip through our own code proves the two halves are consistent and
     /// proves nothing about whether the file is a zip. So every format written
-    /// here is also handed to the bsdtar Windows ships — a different
+    /// here is also handed to the bsdtar Windows ships, a different
     /// implementation, by different people, that has no idea this application
-    /// exists — and the zips are additionally opened with ZipArchive, which is
+    /// exists, and the zips are also opened with ZipArchive, which is
     /// the reader everybody else's .NET code would use on them.
     /// </summary>
     internal static class ArchiveTests
@@ -320,7 +320,7 @@ namespace ExplorerNative
         /// Every format that can be created: compress a real tree, list it,
         /// extract it, and compare what came out against what went in.
         ///
-        /// The corpus is chosen for the cases that have broken archivers before —
+        /// The corpus is chosen for the cases that have broken archivers before,
         /// an empty folder, a zero-byte file, a name that is not in English, a
         /// file whose extension says it is already compressed, and enough
         /// compressible text that the compression is doing something.
@@ -432,7 +432,7 @@ namespace ExplorerNative
             File.WriteAllBytes(Path.Combine(top, "data.bin"), random);
 
             // Says it is already compressed, so the zip writer stores it instead
-            // of deflating it — a different path through the writer.
+            // of deflating it, a different path through the writer.
             File.WriteAllBytes(Path.Combine(top, "photo.jpg"), random);
 
             File.WriteAllText(Path.Combine(top, "sub", "deep.txt"), "two levels down");
@@ -889,7 +889,7 @@ namespace ExplorerNative
         /// the two things it does on its own are right.
         ///
         /// This codebase has a rule about hand-built windows with no test that
-        /// they so much as open — SettingsForm went nine pages without one — and
+        /// they so much as open, SettingsForm went nine pages without one, and
         /// this one has arithmetic in it besides: it rewrites the extension when
         /// the format changes, and it decides which formats are even offered from
         /// how many things were selected. Both are the kind of thing that is
@@ -904,11 +904,11 @@ namespace ExplorerNative
         /// wrong. Every entry small enough to compress in memory was counted as
         /// the writer picked it up, so a 44MB zip reported three times: zero,
         /// zero, and finished. Reported as "the progress bar just sits there",
-        /// and nothing in this suite could see it — the round trips pass a null
+        /// and nothing in this suite could see it, the round trips pass a null
         /// progress sink, and the totals at the end were always correct.
         ///
         /// **One file, deliberately.** With several, the old code still reported
-        /// something partway — as each entry was written — so a folder of six
+        /// something partway, as each entry was written, so a folder of six
         /// measured "0%, 91%, 100%" and a check for any partway report passed
         /// against the bug. One file is the case that was reported and the case
         /// that cannot fake it: nothing at all until it is finished.
@@ -1032,8 +1032,8 @@ namespace ExplorerNative
         ///
         /// The engine check above proves the reports are made; this proves they
         /// arrive somewhere a person can see. Between them sits the piece that
-        /// cannot be reasoned about — a report is posted to the thread that owns
-        /// the window and drawn only when that thread pumps — and "the progress
+        /// cannot be reasoned about, a report is posted to the thread that owns
+        /// the window and drawn only when that thread pumps, and "the progress
         /// bar just sits there" is a sentence about the end of the chain, not
         /// about any one link in it.
         ///
@@ -1072,7 +1072,7 @@ namespace ExplorerNative
 
                     // What the application installs on its UI thread. Without it
                     // Progress<T> posts to the thread pool and the window is
-                    // updated from the wrong thread — which is the bug this is
+                    // updated from the wrong thread, which is the bug this is
                     // here to catch, so it must not be arranged away.
                     SynchronizationContext.SetSynchronizationContext(
                         new WindowsFormsSynchronizationContext());
@@ -1126,7 +1126,7 @@ namespace ExplorerNative
                     // The closing report is posted from the engine's thread and
                     // drawn when this one pumps, so a single DoEvents can run
                     // before it has even been queued. Pumped until it lands, with
-                    // a ceiling — the window is allowed to take a moment to draw
+                    // a ceiling, the window is allowed to take a moment to draw
                     // the last number, not allowed never to draw it.
                     // Ten seconds: a shared CI runner drew reports seconds late
                     // (7.1.0), and the loop leaves the moment 100 percent lands.
@@ -1324,9 +1324,9 @@ namespace ExplorerNative
         /// The option strings, checked against the tar on this machine rather
         /// than against what they were written to say.
         ///
-        /// bsdtar refuses an option it does not recognise and stops — "Undefined
-        /// option", exit code 1 — so a name that has drifted is not a setting
-        /// quietly ignored, it is a compress that fails outright in front of
+        /// bsdtar refuses an option it does not recognise and stops, "Undefined
+        /// option", exit code 1, so a name that has drifted is not a setting
+        /// silently ignored, it is a compress that fails outright in front of
         /// somebody. Every string this produces is therefore handed to the real
         /// thing on a real file.
         /// </summary>
@@ -1386,8 +1386,8 @@ namespace ExplorerNative
         /// Read out of MainForm.cs, because that file cannot be compiled into
         /// this suite.
         ///
-        /// It has an entry point of its own — MainForm reads three diagnostics
-        /// straight off Program — so the two command handlers behind Ctrl+Shift+C
+        /// It has an entry point of its own, MainForm reads three diagnostics
+        /// straight off Program, so the two command handlers behind Ctrl+Shift+C
         /// and Ctrl+Shift+E are the one part of this feature no test can call.
         /// Reading the source is what the pane-naming rule already does for the
         /// same reason: the rule lives somewhere the compiler cannot see it.
@@ -1444,7 +1444,7 @@ namespace ExplorerNative
                 !reserved.Contains("\"Extract\"", StringComparison.Ordinal));
 
             // Extract is hidden on a row it could not work on, and the decision
-            // is made from the name — deciding what goes on a menu must never
+            // is made from the name, deciding what goes on a menu must never
             // cost a read of a file that may be on a share.
             Check("the popup decides whether Extract belongs on it",
                 main.Contains("_extractItem.Visible = looksLikeArchive;", StringComparison.Ordinal) &&
@@ -1458,14 +1458,14 @@ namespace ExplorerNative
             // That is not a naming preference: the suite's own rule against a
             // modal transfer looks for "window.ShowDialog", so a handler that
             // called it "dialog" would be outside a check it is meant to be
-            // inside — and ShowDialog is exactly what a later edit reaches for
+            // inside, and ShowDialog is exactly what a later edit reaches for
             // out of habit.
             Check("both handlers name the progress window the way the modal check expects",
                 Occurrences(main, "using var window = new ProgressForm(") >= 4,
                 Occurrences(main, "using var window = new ProgressForm(").ToString());
 
             // Both are async void, which means an exception has no caller to
-            // catch it and goes to Application.ThreadException — the crash log
+            // catch it and goes to Application.ThreadException, the crash log
             // and a dialog, instead of a message.
             foreach (var handler in new[] { "CompressSelection", "ExtractFocused" })
             {
@@ -1509,8 +1509,8 @@ namespace ExplorerNative
             }
 
             // Every id the handlers raise has to be in the catalogue. The suite
-            // checks the reverse direction already — that everything marked
-            // Raised appears in the source — so this closes the loop.
+            // checks the reverse direction already, that everything marked
+            // Raised appears in the source, so this closes the loop.
             foreach (var id in new[]
                      {
                          "archive.start", "archive.done", "archive.partial", "archive.failed",
@@ -1601,7 +1601,7 @@ namespace ExplorerNative
         /// Where the chosen tar is the libarchive 3.8.8 that crashes on a
         /// non-ASCII name: the crash put "tar.exe - Application Error" over
         /// everything and the compress hung behind it until OK was clicked.
-        /// Now the tar dies quietly and the result says why in words.
+        /// Now the tar dies silently and the result says why in words.
         /// </summary>
         private static async Task CrashShowsNoBoxTests()
         {
@@ -2107,7 +2107,7 @@ namespace ExplorerNative
             var dir = NewDir("oem");
             try
             {
-                // "café.txt" as CP437 writes it, no UTF-8 flag — what bsdtar,
+                // "café.txt" as CP437 writes it, no UTF-8 flag, what bsdtar,
                 // Explorer and older 7-Zip produce. And one UTF-8 name that forgot
                 // the flag, and one that set it.
                 var zip = Path.Combine(dir, "oem.zip");
@@ -2288,7 +2288,7 @@ namespace ExplorerNative
                 Check("a name Windows cannot store does not take the rest of a .tar.xz with it",
                     names.Contains("ok.txt") && names.Contains("dir/inner.txt") && names.Contains("last.txt"),
                     string.Join(", ", names) + " | " + said);
-                Check("and nothing is moved in under the name bsdtar quietly changed it to",
+                Check("and nothing is moved in under the name bsdtar silently changed it to",
                     !names.Any(n => n is "q_" or "x_y" or "trail" or "name" or "CON" or "b"),
                     string.Join(", ", names));
                 Check("each is refused by the name it had",
@@ -2411,7 +2411,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// bsdtar prints a name its code page cannot hold as a best-fit lookalike,
-        /// and for "aāb.txt" that is the plain-ASCII "aab.txt" — which was taken
+        /// and for "aāb.txt" that is the plain-ASCII "aab.txt", which was taken
         /// as some other entry, so the file was said not to be in an archive that
         /// held it.
         /// </summary>
@@ -4281,7 +4281,7 @@ namespace ExplorerNative
                 var log = Path.Combine(dir, "transfer.log");
                 Environment.SetEnvironmentVariable("EXPLORERNATIVE_TRANSFERLOG", log);
 
-                // A wrong password is said plainly and asked again.
+                // A wrong password is said clearly and asked again.
                 var asked = FakeAsker("wrong one", secret);
                 var into = Path.Combine(dir, "out7z");
                 var result = await ArchiveEngine.ExtractAsync(hidden, into, PasteConflictPolicy.AutoRename, null, 2, null, CancellationToken.None);
@@ -4322,7 +4322,7 @@ namespace ExplorerNative
                 await ArchiveEngine.ExtractAsync(accented, intoAccent, PasteConflictPolicy.AutoRename, null, 2, null, CancellationToken.None);
                 Check("a password with accents works", File.Exists(Path.Combine(intoAccent, "a.txt")));
 
-                // Cancel stops quietly and leaves no folder.
+                // Cancel stops silently and leaves no folder.
                 ArchivePasswords.ForgetAll();
                 FakeAsker((string?)null);
                 var intoCancel = Path.Combine(dir, "outcancel");

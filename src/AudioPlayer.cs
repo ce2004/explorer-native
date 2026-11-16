@@ -11,19 +11,19 @@ namespace ExplorerNative
     /// How a percentage on the dial becomes a number the engine understands.
     ///
     /// Linear is what it says. Perceptual squares it, because loudness is not
-    /// heard on a straight line — halfway down a linear dial is barely quieter,
+    /// heard on a straight line, halfway down a linear dial is barely quieter,
     /// and all the useful adjustment is crowded into the bottom of the range.
     /// </summary>
     public enum VolumeCurve { Linear, Perceptual }
 
     /// <summary>
-    /// Plays one audio file. There is no window and never will be — the whole
+    /// Plays one audio file. There is no window and never will be, the whole
     /// player is the global hotkeys, the Audio menu, the Audio pages in
     /// Preferences, and what it says when you press a key.
     ///
     /// This decides what happens and says what to announce; the sound itself is
     /// three other files. <see cref="AudioDecoder"/> turns a file into float
-    /// through Media Foundation's source reader — which decodes whatever Windows
+    /// through Media Foundation's source reader, which decodes whatever Windows
     /// decodes, MP3, AAC, WMA, WAV and the ones that actually matter here, FLAC
     /// and ALAC. <see cref="TimeStretch"/> changes the speed without changing
     /// the pitch. <see cref="WasapiRenderer"/> puts the samples on the device.
@@ -40,7 +40,7 @@ namespace ExplorerNative
     ///
     /// Every method answers with the sentence that describes what it did rather
     /// than speaking itself. Whether that sentence is ever said is a preference,
-    /// and where it goes — the status bar or straight to NVDA — depends on
+    /// and where it goes, the status bar or straight to NVDA, depends on
     /// whether there is a window up. Only the caller knows either.
     /// </summary>
     public sealed class AudioPlayer : IDisposable
@@ -64,9 +64,9 @@ namespace ExplorerNative
         private bool _disposed;
 
         /// <summary>
-        /// The track, as the user knows it. Not what the engine is reading — a
+        /// The track, as the user knows it. Not what the engine is reading, a
         /// remote file is read through <see cref="StreamingSource"/>, which is
-        /// memory — but the name, the tags and what gets remembered as the last
+        /// memory, but the name, the tags and what gets remembered as the last
         /// track all mean this.
         /// </summary>
         private string _path = "";
@@ -107,7 +107,7 @@ namespace ExplorerNative
                 if (_radio != radio || _path.Length == 0) return;
                 _displayName = RadioDisplayName(radio);
             }
-            // A title taken away (adverts, talk) changes the name quietly.
+            // A title taken away (adverts, talk) changes the name silently.
             if (radio.Song is { Length: > 0 } song) Raise("audio.stream.song", song);
         }
 
@@ -162,7 +162,7 @@ namespace ExplorerNative
         ///
         /// Near normal a few percent is audible and worth stepping through; past
         /// double, nobody is choosing between 210 and 220. It ends at four times,
-        /// and every entry is a speed somebody would actually pick — which is why
+        /// and every entry is a speed somebody would actually pick, which is why
         /// this is a list to arrow through rather than a slider handing out 137.
         /// </summary>
         public static readonly int[] SpeedLadder =
@@ -277,7 +277,7 @@ namespace ExplorerNative
                 // pitch: the track was reopened, the position carried across and
                 // the play state restored, and every one of those steps was a
                 // way for a speed key to lose the music. The stretcher does it
-                // in place — see TimeStretch — so there is nothing to hand over
+                // in place, see TimeStretch, so there is nothing to hand over
                 // and nothing to go wrong.
                 var direct = _direct;
                 if (direct != null) direct.Rate = _ratePercent / 100.0;
@@ -306,7 +306,7 @@ namespace ExplorerNative
 
             // Pushed down to the pump, which is what makes repeat gapless.
             //
-            // It used to be honoured here, in OnDirectFinished — and by the time
+            // It used to be honoured here, in OnDirectFinished, and by the time
             // that runs the ring has already drained to nothing, because the
             // render thread is what noticed the silence and raised the event.
             // Answering it with a seek then emptied the ring again and refilled
@@ -330,7 +330,7 @@ namespace ExplorerNative
         ///
         /// This matters because the engine is a COM object created on the UI
         /// thread. A call to it from a timer's thread is a cross-apartment call,
-        /// which does not complete until the UI thread pumps — so work posted
+        /// which does not complete until the UI thread pumps, so work posted
         /// here runs where the engine actually lives instead of queueing behind
         /// whatever that thread happens to be doing.
         /// </summary>
@@ -347,15 +347,15 @@ namespace ExplorerNative
         /// What just happened, as a catalogue id and the sentence for it.
         ///
         /// The player has no Settings, no screen reader and no status bar, and it
-        /// is not getting any — every command answers with a sentence and lets the
+        /// is not getting any, every command answers with a sentence and lets the
         /// caller decide where it goes, because the same key press has to reach the
         /// status bar when the window is up and NVDA when it is not. This is that
         /// same bargain for the things nobody pressed a key for: a download
         /// finishing, a fade starting, a file that was not there.
         ///
         /// Where a command does return a sentence, the id raised here names the
-        /// same event more precisely — volume.max for the press that reached the
-        /// top — and carries the sentence that command returned. It is a finer name
+        /// same event more precisely, volume.max for the press that reached the
+        /// top, and carries the sentence that command returned. It is a finer name
         /// for what the caller is already saying, not a second thing to say.
         ///
         /// Null changes nothing. Raised on whichever thread the event happened on,
@@ -367,7 +367,7 @@ namespace ExplorerNative
         /// <summary>
         /// Never while holding <see cref="_gate"/>, and never fatal. This crosses
         /// into the tray, whose handler is free to turn round and ask the player
-        /// what it is doing — which takes the same lock.
+        /// what it is doing, which takes the same lock.
         /// </summary>
         private void Raise(string notificationId, string message)
         {
@@ -402,7 +402,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// What to call the track out loud. The file name until something better
-        /// arrives — the owner reads the title tag on a worker and sets it, if
+        /// arrives, the owner reads the title tag on a worker and sets it, if
         /// that is what the preferences ask for.
         /// </summary>
         public string DisplayName
@@ -489,7 +489,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// The limiter. Lifts what is quiet towards full scale and leaves what is
-        /// loud where the volume put it — clipping included, on purpose. Takes
+        /// loud where the volume put it, clipping included, on purpose. Takes
         /// effect on the track that is playing.
         /// </summary>
         public bool Limiter
@@ -521,8 +521,8 @@ namespace ExplorerNative
         /// whole milliseconds could not tell them apart.
         ///
         /// Held here as well as pushed down, because the renderer is rebuilt on
-        /// every track and on every device change — a value that lived only on
-        /// the renderer would quietly go back to its default at the start of the
+        /// every track and on every device change, a value that lived only on
+        /// the renderer would silently go back to its default at the start of the
         /// next song, which is the sort of thing somebody spends an evening
         /// blaming on their ears.
         /// </summary>
@@ -565,7 +565,7 @@ namespace ExplorerNative
         /// each one is.
         ///
         /// Held here as well as pushed down, for exactly the reason the limiter's
-        /// numbers are — the renderer is built afresh for every track and for
+        /// numbers are, the renderer is built afresh for every track and for
         /// every device change, so a curve that lived only on the renderer would
         /// silently flatten at the start of the next song.
         /// </summary>
@@ -580,7 +580,7 @@ namespace ExplorerNative
         /// <summary>
         /// Every band's setting, in decibels, lowest frequency first. Always
         /// <see cref="ExplorerNative.Equaliser.BandCount"/> long, clamped, and a
-        /// copy — so nothing outside can reach in and change one behind the
+        /// copy, so nothing outside can reach in and change one behind the
         /// player's back.
         /// </summary>
         public int[] EqualiserGains
@@ -623,7 +623,7 @@ namespace ExplorerNative
         /// that shape it.
         ///
         /// Held here as well as pushed down, for the reason the limiter's three
-        /// and the equaliser's twenty are — the whole decode chain is rebuilt for
+        /// and the equaliser's twenty are, the whole decode chain is rebuilt for
         /// every track and for every device change, and a value that lived only
         /// down there would go back to its default at the start of the next song.
         /// </summary>
@@ -707,7 +707,7 @@ namespace ExplorerNative
         /// instead.
         ///
         /// That is a deliberate exception to the rule <see cref="LimiterForm"/>
-        /// argues for next door — that a list cannot hold a value nobody offered,
+        /// argues for next door, that a list cannot hold a value nobody offered,
         /// which is a feature. It is a good rule for an attack time, where the
         /// rungs are decades apart and the space between two of them is not a
         /// decision anybody made. It is the wrong rule here: these are lengths of
@@ -716,9 +716,9 @@ namespace ExplorerNative
         /// hundred is one somebody can hear. A ladder that is the only way in is
         /// a ladder that decides for you.
         ///
-        /// The words still do the work on the way past — "minus forty-eight
+        /// The words still do the work on the way past, "minus forty-eight
         /// decibels" is not an answer to "what counts as silence" and "quiet room
-        /// tone" is — so the rungs carry them, and a number typed off the ladder
+        /// tone" is, so the rungs carry them, and a number typed off the ladder
         /// is read back with its unit rather than bare.
         ///
         /// The far ends of all five are deliberately past the useful range. A
@@ -793,8 +793,8 @@ namespace ExplorerNative
 
         /// <summary>
         /// The two fades read differently even though they offer the same rungs,
-        /// because they are two different events — the music going away and the
-        /// music coming back — and the word that makes a number mean something is
+        /// because they are two different events, the music going away and the
+        /// music coming back, and the word that makes a number mean something is
         /// not the same word in both directions.
         /// </summary>
         public static string DescribeSilenceFadeOut(int milliseconds) => milliseconds switch
@@ -848,7 +848,7 @@ namespace ExplorerNative
         /// How far the pitch will go, in semitones.
         ///
         /// Two octaves each way. Past that a recording is not transposed, it is
-        /// a sound effect — and the resampler is reading the source at four
+        /// a sound effect, and the resampler is reading the source at four
         /// times or a quarter, where what comes out is more interpolation than
         /// recording. Two octaves covers every musical use and the chipmunk.
         /// </summary>
@@ -896,7 +896,7 @@ namespace ExplorerNative
             return $"{limiter}, {over:0.#} percent of the audio clipping";
         }
 
-        /// <summary>Whatever is actually playing, said plainly.</summary>
+        /// <summary>Whatever is actually playing, said clearly.</summary>
         public string OutputDiagnostic
         {
             get
@@ -912,7 +912,7 @@ namespace ExplorerNative
                 // answer, and reporting only that is how a broken start gets
                 // described as a working one.
                 string problem = _lastProblem;
-                return problem.Length == 0 ? now : now + " — but " + problem;
+                return problem.Length == 0 ? now : now + ", but " + problem;
             }
         }
 
@@ -928,13 +928,13 @@ namespace ExplorerNative
         /// to sound and a warm one about 50ms. The difference is two one-off
         /// costs, neither of which has anything to do with the file being played:
         /// building the media engine (~50-100ms) and Media Foundation resolving a
-        /// source for the first time (~150ms) — loading the byte-stream handler,
+        /// source for the first time (~150ms), loading the byte-stream handler,
         /// the decoder and the audio renderer.
         ///
         /// Both are per-process, which is what makes this worth doing: a source
         /// resolved here makes every later track start fast, not just this one.
         /// <paramref name="preloadPath"/> is decoded a little way and thrown
-        /// away — nothing is ever sent to a device, so nothing is heard.
+        /// away, nothing is ever sent to a device, so nothing is heard.
         /// </summary>
         public void Warm(string? preloadPath = null)
         {
@@ -964,7 +964,7 @@ namespace ExplorerNative
             {
                 // A decoder, opened and closed. That resolves the byte-stream
                 // handler and the codec for the process, which is the part that
-                // is paid once — and unlike the engine's preload there is no
+                // is paid once, and unlike the engine's preload there is no
                 // renderer involved, so there is nothing that could make a sound
                 // even if it went wrong.
                 using var decoder = new AudioDecoder();
@@ -1000,7 +1000,7 @@ namespace ExplorerNative
         public void SeekTo(double seconds)
         {
             // Not a number is no jump at all, and changes nothing. It used to
-            // become the skip target — NaN, which reads as "no target" — so the
+            // become the skip target, NaN, which reads as "no target", so the
             // next skip counted from the clock instead of from the last press.
             if (double.IsNaN(seconds)) return;
 
@@ -1040,7 +1040,7 @@ namespace ExplorerNative
         /// Measured through the endpoint: the Windows shared-mode mixer carries
         /// float samples above full scale linearly and clips at the *endpoint*,
         /// after the master volume. So the real limit moves with the Windows
-        /// volume slider — at 10% there is eight times full scale of room before
+        /// volume slider, at 10% there is eight times full scale of room before
         /// anything clips, and at 100% there is none. A fixed 300 was this
         /// application deciding the answer for every one of those cases at once.
         ///
@@ -1057,7 +1057,7 @@ namespace ExplorerNative
         ///
         /// This used to have three states and a long argument attached, because
         /// the ceiling depended on whether a transform had been accepted into
-        /// somebody else's pipeline — and the state *before* anything had been
+        /// somebody else's pipeline, and the state *before* anything had been
         /// created to ask was the one that got it wrong, clamping a saved volume
         /// on the way in and writing it back to disk that way. Owning the
         /// samples removes the question: above full scale is a multiply, and it
@@ -1076,7 +1076,7 @@ namespace ExplorerNative
         /// <summary>
         /// The curve, for a position at or below full scale.
         ///
-        /// Pure, so it can be tested without an audio device — which is the only
+        /// Pure, so it can be tested without an audio device, which is the only
         /// way to test it at all, since the difference between the two curves is
         /// something you hear.
         /// </summary>
@@ -1129,8 +1129,8 @@ namespace ExplorerNative
         {
             abandoned = false;
 
-            // Which start this is. Stop while a track is still opening — a
-            // second and more on the NAS, up to fifteen on a cold Drive file —
+            // Which start this is. Stop while a track is still opening, a
+            // second and more on the NAS, up to fifteen on a cold Drive file,
             // said "Nothing is loaded", and the track started a moment later.
             int generation;
             StreamingSource? keep = null;
@@ -1167,7 +1167,7 @@ namespace ExplorerNative
         /// Calls off a track still opening, for a newer one: Enter on a cold
         /// Drive track and then on another waited out the whole of the first
         /// open, and then played the first until the second was ready. What is
-        /// already playing is left alone — the opening start stopped it.
+        /// already playing is left alone, the opening start stopped it.
         /// </summary>
         /// <param name="next">
         /// The track about to be started in its place, if there is one: it
@@ -1285,7 +1285,7 @@ namespace ExplorerNative
 
             // A remote track plays through a download held in memory, so a skip
             // into it costs about a millisecond rather than a network round
-            // trip. Null for a local file, and null if it could not be set up —
+            // trip. Null for a local file, and null if it could not be set up,
             // in which case the decoder simply opens the path, which is what
             // always happened before this existed.
             var streaming = radio != null ? null : keep ?? OpenStreaming(path, generation);
@@ -1320,7 +1320,7 @@ namespace ExplorerNative
             if (!started)
             {
                 // Stopped while it opened: Stop disposes the download, and the
-                // decoder reading through it then fails — which is not the file
+                // decoder reading through it then fails, which is not the file
                 // failing, and must not hand it to another application.
                 lock (_gate)
                 {
@@ -1355,7 +1355,7 @@ namespace ExplorerNative
 
             lock (_gate)
             {
-                // Disposed while the track was opening — quitting during a cold
+                // Disposed while the track was opening, quitting during a cold
                 // Drive open. Keeping it would leave a decoder reading the letter
                 // after the provider behind it has gone.
                 // Or stopped, or replaced by a newer start, while it opened.
@@ -1384,8 +1384,8 @@ namespace ExplorerNative
             }
 
             // Everything again, now that the setters can reach it. Every change
-            // made while the track was opening — mute, the volume, the speed,
-            // repeat — was kept in the fields and never got to this player: a
+            // made while the track was opening, mute, the volume, the speed,
+            // repeat, was kept in the fields and never got to this player: a
             // track started muted played aloud, and one with repeat switched on
             // ended and said nothing.
             direct.Limiter = _limiter;
@@ -1419,8 +1419,8 @@ namespace ExplorerNative
                 ArmRelease();
             }
 
-            // Kept past the end of the track, because the question it answers —
-            // did the device grant the effects bypass — is one somebody asks in
+            // Kept past the end of the track, because the question it answers,
+            // did the device grant the effects bypass, is one somebody asks in
             // Preferences, which is exactly where nothing is playing.
             _lastDirectDiagnostic = direct.Diagnostic;
 
@@ -1503,7 +1503,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Stops the player and lets its download go on the thread pool, in that
-        /// order — the decoder reads through the download until it has stopped.
+        /// order, the decoder reads through the download until it has stopped.
         /// Quit waits for it in <see cref="Dispose"/>.
         /// </summary>
         private void StopDirectInBackground()
@@ -1541,7 +1541,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Starts a file, from the beginning, always. Returns what it would say,
-        /// or null if there is no player on this machine — in which case the
+        /// or null if there is no player on this machine, in which case the
         /// caller should open the file the ordinary way rather than leaving the
         /// user with silence.
         ///
@@ -1589,13 +1589,13 @@ namespace ExplorerNative
             // there is. StartDirect returns false when the device will not open,
             // when the file has gone, when a share is not answering and when the
             // decoder times out, and all four came out as an accusation against
-            // the file format — which for somebody whose whole library is FLAC
+            // the file format, which for somebody whose whole library is FLAC
             // reads as "this player cannot play my music". It is also the least
             // likely of the four: Windows decodes FLAC and has since 10.
             //
-            // The extension list is deliberately generous — Ogg and Opus are on
+            // The extension list is deliberately generous, Ogg and Opus are on
             // it and Windows decodes those only with the Web Media Extensions
-            // installed — so a genuine "no decoder" is a normal answer rather
+            // installed, so a genuine "no decoder" is a normal answer rather
             // than an error, and it still hands the file to whichever
             // application owns it. That is what returning null means.
             lock (_gate) { _path = ""; _displayName = null; }
@@ -1623,14 +1623,14 @@ namespace ExplorerNative
                 //
                 // It used to read "Could not play <name>: no audio output",
                 // which puts the file in the subject and the cause after the
-                // colon — and that is exactly how it was read. A folder of
+                // colon, and that is exactly how it was read. A folder of
                 // perfectly good WAVs got taken apart looking for what was wrong
                 // with them, because a remembered output device had been
                 // unplugged and every track in the application was failing. The
                 // file is not named here at all now: naming it is what did the
                 // damage, and a device that will not open affects all of them.
                 Raise("audio.failed",
-                    "No audio output — nothing will play until an output device is available. " +
+                    "No audio output, nothing will play until an output device is available. " +
                     "Check the device in Preferences.");
             }
             else if (presence == Presence.NotAnswering)
@@ -1673,7 +1673,7 @@ namespace ExplorerNative
         /// already gone wrong.
         ///
         /// Never on the way in. This is a cloud or network path as often as not,
-        /// and an existence check on one costs a round trip — the whole
+        /// and an existence check on one costs a round trip, the whole
         /// application is built around not making that call on a path somebody
         /// is waiting on. Here the waiting is over and the question is what to
         /// tell them.
@@ -1772,8 +1772,8 @@ namespace ExplorerNative
                 double length = direct.Duration;
 
                 // Ended is the player's own word for it. A track that stopped
-                // short of its length — a truncated file, a download that gave
-                // up — was "resumed" into silence for ever otherwise.
+                // short of its length, a truncated file, a download that gave
+                // up, was "resumed" into silence for ever otherwise.
                 // Through this.SeekTo, not the device's: the jump is where the
                 // next skip counts from, or a skip right after resuming counted
                 // from a target left over from before the pause.
@@ -1818,7 +1818,7 @@ namespace ExplorerNative
                 if (fadeIn) StartFade(level, FadeInMilliseconds, false, from);
 
                 // Picking a track back up, which is not the same event as starting
-                // one — the same key does both and only this branch resumed.
+                // one, the same key does both and only this branch resumed.
                 var resumed = "Playing " + DisplayName;
                 Raise("audio.resume", resumed);
                 return resumed;
@@ -1867,7 +1867,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Moves the volume by a step and says where it landed. Works with no
-        /// track loaded — setting the level before starting one is reasonable,
+        /// track loaded, setting the level before starting one is reasonable,
         /// and there is no window to set it in.
         /// </summary>
         public string ChangeVolume(int deltaPercent)
@@ -1921,7 +1921,7 @@ namespace ExplorerNative
             _muted = !_muted;
 
             // A fade in flight would write the gain again a few milliseconds
-            // later, from numbers that know nothing about the mute — so muting
+            // later, from numbers that know nothing about the mute, so muting
             // during a fade went silent for one tick and then came back up,
             // while the player still said "Muted". The volume keys already
             // cancel for this reason; this one did not.
@@ -1946,7 +1946,7 @@ namespace ExplorerNative
         /// where the engine says it is. `GetCurrentTime` does not move until a
         /// seek has actually completed, so five quick presses all read the same
         /// position, all compute the same target, and all land in the same
-        /// place — the key appeared to do nothing at all after the first press.
+        /// place, the key appeared to do nothing at all after the first press.
         /// That much is still needed and always will be.
         ///
         /// What is gone is the throttling. Every press used to be gathered up and
@@ -1994,7 +1994,7 @@ namespace ExplorerNative
 
                     // **Forward past the end starts the track again.** It used to
                     // stop a quarter of a second from the end, so a held key ran
-                    // to that spot and stayed there — every further press landed
+                    // to that spot and stayed there, every further press landed
                     // in the same place, and getting back to the music meant
                     // pressing "back to the start" or rewinding by hand. Skipping
                     // forward is a wheel now: the far edge of the track is the
@@ -2057,7 +2057,7 @@ namespace ExplorerNative
                 ApplySeek();
 
                 // The two ends of the track are the two fractions anybody jumps to
-                // by name — "back to the start" is this method with a zero.
+                // by name, "back to the start" is this method with a zero.
                 if (target <= 0) Raise("seek.start", "At the start");
                 else if (fraction >= 1) Raise("seek.end", "At the end");
 
@@ -2071,7 +2071,7 @@ namespace ExplorerNative
         /// +1 or -1.
         ///
         /// It used to be a step in percent, out of a preference. That could only
-        /// ever land the speed between two of the values the chooser offers —
+        /// ever land the speed between two of the values the chooser offers,
         /// and the ladder is not evenly spaced on purpose: five percent is
         /// audible near normal and nobody is choosing between 210 and 220, so a
         /// single number cannot be right at both ends. Stepping the ladder is
@@ -2109,8 +2109,8 @@ namespace ExplorerNative
         /// is itself on the ladder.
         ///
         /// Pure, so the walking can be tested without an audio device. A value
-        /// off the ladder — hand-edited into settings.json, or left by an older
-        /// build — steps to the nearest rung in the direction asked for rather
+        /// off the ladder, hand-edited into settings.json, or left by an older
+        /// build, steps to the nearest rung in the direction asked for rather
         /// than refusing to move, which is the failure that reads as a dead key.
         /// </summary>
         public static int NextSpeed(int percent, int direction)
@@ -2244,7 +2244,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// After this long with no further press, the engine's own clock is the
-        /// truth again — it has had time to complete the seek and carry on.
+        /// truth again, it has had time to complete the seek and carry on.
         /// </summary>
         private const int SeekTargetLifetimeMs = 2000;
 
@@ -2262,14 +2262,14 @@ namespace ExplorerNative
 
         /// <summary>
         /// How long a track may sit paused before its memory is handed back.
-        /// Nothing is unloaded — it keeps playing from the share if resumed, and
+        /// Nothing is unloaded, it keeps playing from the share if resumed, and
         /// starts downloading again.
         /// </summary>
         public TimeSpan ReleaseAfter { get; set; } = TimeSpan.FromMinutes(10);
 
         /// <summary>
         /// Opens a download to play a remote track through, or null when that is
-        /// not wanted or not possible — in which case the caller reads the file
+        /// not wanted or not possible, in which case the caller reads the file
         /// where it sits, which is what always happened before this existed.
         ///
         /// The decoder takes the stream from here; Media Foundation wraps it as
@@ -2283,8 +2283,8 @@ namespace ExplorerNative
         /// The read-ahead used to pull two megabytes through the operating
         /// system's cache and throw them away, on the theory that the copy that
         /// matters is the one Windows now holds. On the Drive letter that theory
-        /// is only half true — the bytes land in the provider's own memory cache
-        /// rather than on disk — and either way the work is thrown away: pressing
+        /// is only half true, the bytes land in the provider's own memory cache
+        /// rather than on disk, and either way the work is thrown away: pressing
         /// Enter then builds a <see cref="StreamingSource"/> that starts its
         /// download again from zero.
         ///
@@ -2330,7 +2330,7 @@ namespace ExplorerNative
             StreamingSource? going;
             lock (_gate)
             {
-                // Disposed, or something started playing while this was opening —
+                // Disposed, or something started playing while this was opening,
                 // or the cursor has moved on and a later Prepare has been asked
                 // for. Opening runs on the pool, and a slow open for the row left
                 // behind used to finish last and replace the download for the row
@@ -2403,7 +2403,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Where a remote track can be read from other than its path — set to
+        /// Where a remote track can be read from other than its path, set to
         /// Google Drive's, so a track on the letter downloads straight from
         /// Google. Null, or null for a path, means the file itself.
         /// </summary>
@@ -2471,7 +2471,7 @@ namespace ExplorerNative
             try
             {
                 // The callback goes in through the constructor because the download
-                // starts inside it — a short track handed a callback afterwards
+                // starts inside it, a short track handed a callback afterwards
                 // could have finished before it was there to be called.
                 source = NewStreaming(path, (downloaded, total) =>
                     Raise("position.buffered",
@@ -2513,8 +2513,8 @@ namespace ExplorerNative
 
                 // The download opens the file before the decoder does, so it is
                 // the first to find out that the file has gone or that something
-                // else holds it. Playing carries on regardless — the decoder
-                // opens it itself and fails in its own way — but the reason is
+                // else holds it. Playing carries on regardless, the decoder
+                // opens it itself and fails in its own way, but the reason is
                 // only here.
                 var name = Path.GetFileName(path);
                 if (ex is FileNotFoundException or DirectoryNotFoundException)
@@ -2621,8 +2621,8 @@ namespace ExplorerNative
             if (double.IsNaN(target)) return;
 
             // One call, immediately, every press. Both backends jump within
-            // memory — the engine through the streaming source, the direct path
-            // through its own ring — so there is no reload and nothing worth
+            // memory, the engine through the streaming source, the direct path
+            // through its own ring, so there is no reload and nothing worth
             // deferring on either.
             SeekTo(target);
         }
@@ -2633,7 +2633,7 @@ namespace ExplorerNative
         // The idea was sound in isolation: the download walks the file from byte
         // zero, so a skip past what has arrived reads from the network. Moving
         // the download to the skip point fixes that one case. What it does to
-        // every other case is thrash — a skip forward moved the window, a skip
+        // every other case is thrash, a skip forward moved the window, a skip
         // back then fell *behind* it, and the download was torn down and started
         // again for each change of direction, throwing away the very bytes being
         // played. Holding the key alternates directions constantly.
@@ -2659,8 +2659,8 @@ namespace ExplorerNative
         /// The generation on its own is not enough, and the gap is small but
         /// real: a cancel advances the counter, and a tick that happened to
         /// sample it *after* that would match the number and carry on. Two
-        /// different questions are being asked — "is this the fade that is
-        /// running" and "is one running" — and only the first has a number.
+        /// different questions are being asked, "is this the fade that is
+        /// running" and "is one running", and only the first has a number.
         /// </summary>
         private bool _fading;
 
@@ -2675,7 +2675,7 @@ namespace ExplorerNative
         /// Puts the current level on the renderer.
         ///
         /// The whole dial is one multiply: the curve is applied here and the
-        /// result is allowed to exceed one, which is the point — nothing
+        /// result is allowed to exceed one, which is the point, nothing
         /// downstream clamps it, and the endpoint is what finally says no.
         /// </summary>
         private void ApplyVolume()
@@ -2711,7 +2711,7 @@ namespace ExplorerNative
         /// Pausing with a fade does not pause: it ramps the gain down and leaves
         /// the actual pause to the last tick. Cancelling used to drop that
         /// intent on the floor, and the volume keys cancel the fade on every
-        /// press — so pressing play/pause and then touching the volume inside
+        /// press, so pressing play/pause and then touching the volume inside
         /// the fade left the track playing, at the new volume, having already
         /// announced "Paused". Nothing took it back: the menu said Playing, the
         /// memory was never given back, and the only clue was the music.
@@ -2733,7 +2733,7 @@ namespace ExplorerNative
 
             if (pauseNow && direct != null)
             {
-                // Paused, and the level put back where the dial says — the same
+                // Paused, and the level put back where the dial says, the same
                 // two steps the last tick of the fade would have taken, so a
                 // track paused this way does not resume silent.
                 try { direct.Pause(); ApplyVolume(); } catch (Exception ex) { Diag.Note(ex); }
@@ -2797,7 +2797,7 @@ namespace ExplorerNative
         /// The number is what makes cancelling safe, and it has to be checked
         /// here or the counter is decoration. The timer is periodic and its work
         /// is posted to the thread that owns the engine, so by the time a tick
-        /// runs the fade it belongs to may already have been abandoned —
+        /// runs the fade it belongs to may already have been abandoned,
         /// CancelFade stops the timer but cannot recall what is already queued.
         /// A stale tick that carried on would write its own fade's level over
         /// whatever replaced it: pressing a volume key part way through a fade in
@@ -2852,7 +2852,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Says, once, that the audio has run out while the track is still
-        /// playing — and takes it back when it comes good.
+        /// playing, and takes it back when it comes good.
         ///
         /// The media engine raised this as an event; the direct path knows it
         /// more directly, because the ring buffer between the decoder and the
@@ -2879,7 +2879,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Proves the interop, which is the part of this that cannot be reasoned
-        /// about — a COM interface is a list of offsets, and a wrong offset calls
+        /// about, a COM interface is a list of offsets, and a wrong offset calls
         /// the wrong function with the right arguments.
         ///
         /// Returns null when everything lines up, or what went wrong. Silent: it
@@ -2904,7 +2904,7 @@ namespace ExplorerNative
                 if (!HasTrack) return "nothing was loaded";
 
                 // The decoder knows the length from the header, so unlike the
-                // engine there is no revision upwards as the file is indexed —
+                // engine there is no revision upwards as the file is indexed,
                 // but the pump opens it on its own thread, so it is worth
                 // waiting for rather than reading immediately.
                 double settled = double.NaN;
@@ -2917,7 +2917,7 @@ namespace ExplorerNative
 
                 if (double.IsNaN(settled) || settled <= 0) return "no duration was ever reported";
 
-                // Windows' FLAC parser reports whole seconds, rounded down —
+                // Windows' FLAC parser reports whole seconds, rounded down,
                 // 19.505 comes back as 19, and the shell's own property handler
                 // agrees, so it is the platform rather than this code. WAV is
                 // exact. Both are accepted.
@@ -2961,10 +2961,10 @@ namespace ExplorerNative
                     //
                     // The checks above have already spent most of the track: up to
                     // three seconds waiting for the clock to move, then a pause and
-                    // a resume — and the file the suite generates is under two
+                    // a resume, and the file the suite generates is under two
                     // seconds of audio. A track that has simply *finished* has a
                     // clock that does not move, which arrives here as "the clock
-                    // stopped at 150 percent speed" — and 150 is the one that gets
+                    // stopped at 150 percent speed", and 150 is the one that gets
                     // there first, because it is the one consuming the remainder
                     // half again as fast. Intermittent, blamed on the stretcher,
                     // and nothing at all to do with it.

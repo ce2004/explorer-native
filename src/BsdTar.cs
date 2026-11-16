@@ -13,11 +13,11 @@ using System.Threading.Tasks;
 namespace ExplorerNative
 {
     /// <summary>
-    /// 7z, xz, bzip2, zstandard, rar, cab and the rest — through the bsdtar
+    /// 7z, xz, bzip2, zstandard, rar, cab and the rest, through the bsdtar
     /// Windows already ships.
     ///
     /// <c>%SystemRoot%\System32\tar.exe</c> has been in Windows since 1803. It is
-    /// bsdtar over libarchive — 3.8.4 on this machine — built with zlib, liblzma,
+    /// bsdtar over libarchive, 3.8.4 on this machine, built with zlib, liblzma,
     /// bz2lib and libzstd, which between them are every compressor this
     /// application does not have and is not going to write. Driving it is the
     /// same bargain RoboCopyEngine makes with robocopy.exe: the operating system
@@ -28,7 +28,7 @@ namespace ExplorerNative
     /// by measurement rather than reasoned out. **libarchive on Windows loses
     /// non-ASCII names wherever it has to render one as text.** A file called
     /// "日本語 🎵.txt" survives some routes through it and not others, and the
-    /// difference is whether the name ever passes through the process locale —
+    /// difference is whether the name ever passes through the process locale,
     /// which on this machine, and on nearly every Windows machine, is not UTF-8.
     /// Measured, all six of these, each one either the whole name or "???":
     ///
@@ -48,7 +48,7 @@ namespace ExplorerNative
     /// - **To create**, the names are command-line arguments and bsdtar
     ///   enumerates the folders itself.
     /// - **To extract**, bsdtar writes the files to disk itself, into a staging
-    ///   folder inside the destination — and this application then moves them
+    ///   folder inside the destination, and this application then moves them
     ///   into place under its own conflict rules, which is a rename per file on
     ///   the same volume and costs nothing.
     ///
@@ -62,7 +62,7 @@ namespace ExplorerNative
     /// The one thing that is *not* attempted anywhere here is reading a name out
     /// of bsdtar's output as text. The listing below reads sizes and ignores the
     /// names in the same lines, deliberately, and says so: a listing that was
-    /// right for ASCII and quietly wrong for everybody else would have been wrong
+    /// right for ASCII and silently wrong for everybody else would have been wrong
     /// in the collision check, and so would have extracted over a file it had
     /// decided was not there.
     /// </summary>
@@ -82,7 +82,7 @@ namespace ExplorerNative
         /// Windows' update of 2026-09-27 moved System32\archiveint.dll to
         /// libarchive 3.8.8 (10.0.28000.3086), and that build crashes with an
         /// access violation, or reports "unreadable filename", on any name that is
-        /// not ASCII — create, list and extract alike, whatever the locale or
+        /// not ASCII, create, list and extract alike, whatever the locale or
         /// hdrcharset. The 3.8.4 build it replaced is still in WinSxS, and a copy
         /// of tar.exe with that DLL beside it (the application directory is
         /// searched before System32) handles every route this file uses.
@@ -99,7 +99,7 @@ namespace ExplorerNative
         /// <summary>
         /// Whether the tar chosen can take a non-ASCII name. False only where
         /// System32's libarchive is the broken build and WinSxS holds no older
-        /// one — a fresh install of that Windows build. The suite skips its tar
+        /// one, a fresh install of that Windows build. The suite skips its tar
         /// cases there rather than stopping at the first crash.
         /// </summary>
         internal static bool HandlesNames => _handlesNames.Value;
@@ -119,8 +119,8 @@ namespace ExplorerNative
                 if (!File.Exists(SystemExecutable)) return SystemExecutable;
                 var systemDll = Path.Combine(Path.GetDirectoryName(SystemExecutable)!, "archiveint.dll");
                 if (!File.Exists(systemDll)) return SystemExecutable;
-                // The version string alone carries no Windows build number —
-                // "3.8.8 (WinBuild.160101.0800)" for every build of 3.8.8 — so a
+                // The version string alone carries no Windows build number,
+                // "3.8.8 (WinBuild.160101.0800)" for every build of 3.8.8, so a
                 // serviced DLL under the same string would never be measured
                 // again. Its size and date change whenever its bytes do.
                 var dllInfo = new FileInfo(systemDll);
@@ -247,7 +247,7 @@ namespace ExplorerNative
         /// How long a command line may get before this refuses to build one.
         ///
         /// Windows stops at 32,767 characters. Only the *selected* names go on it
-        /// — bsdtar walks the folders itself — so this is thousands of items
+        /// bsdtar walks the folders itself, so this is thousands of items
         /// before it matters, and the formats that do not need a command line at
         /// all are the ones the chooser offers first.
         /// </summary>
@@ -285,7 +285,7 @@ namespace ExplorerNative
             if (tops.Count == 0) return 0;
 
             // bsdtar names entries after what is on disk, so two chosen items with
-            // one name — a selection across two folders — become two entries with
+            // one name, a selection across two folders, become two entries with
             // one name, and extracting keeps only one. Zip and .tar.gz rename the
             // second; this cannot, so it says so rather than making that archive.
             var twice = tops
@@ -338,8 +338,8 @@ namespace ExplorerNative
                 foreach (var group in tops.GroupBy(
                              p => Path.GetDirectoryName(p.Source) ?? "", StringComparer.OrdinalIgnoreCase))
                 {
-                    // A folder past MAX_PATH cannot be bsdtar's current directory —
-                    // "could not chdir" — and this volume has no 8.3 names to
+                    // A folder past MAX_PATH cannot be bsdtar's current directory,
+                    // "could not chdir", and this volume has no 8.3 names to
                     // shorten it with. A junction at a short path can be.
                     var folder = Reachable(group.Key, aliases);
                     budget -= folder.Length + 6;
@@ -348,8 +348,8 @@ namespace ExplorerNative
                     foreach (var item in group)
                     {
                         // The name **on disk**, not the plan's. Two sources that
-                        // share a leaf name — one selection spanning two folders,
-                        // which the second pane makes easy — are deduplicated by the
+                        // share a leaf name, one selection spanning two folders,
+                        // which the second pane makes easy, are deduplicated by the
                         // plan into "x (2).txt", and bsdtar walks the disk itself: it
                         // was handed a name no file has, said it could not stat it,
                         // exited non-zero, and the whole compress came back as an
@@ -360,7 +360,7 @@ namespace ExplorerNative
 
                         // A name bsdtar would read as something else: "@x" means
                         // "the entries of archive x", and "-x" an option. Given as
-                        // "./x" it is a file — Synology's "@eaDir" folders failed the
+                        // "./x" it is a file, Synology's "@eaDir" folders failed the
                         // whole compress before this.
                         if (onDisk[0] is '@' or '-') onDisk = "./" + onDisk;
 
@@ -379,7 +379,7 @@ namespace ExplorerNative
 
                 // Progress. A line's name identifies its entry only where it is
                 // ASCII, so an entry that matches nothing is charged a share of
-                // whatever is still unaccounted for — never more. Charging it the
+                // whatever is still unaccounted for, never more. Charging it the
                 // average of everything took the bar to 154 percent when the
                 // archive held entries the plan did not: a link bsdtar stored, a
                 // name it printed in another code page.
@@ -496,8 +496,8 @@ namespace ExplorerNative
                     // It gave up on the whole thing rather than on an entry.
                     if (!outcome.Delayed) throw new IOException(outcome.First);
 
-                    // An entry it could not open — a file locked by another
-                    // program — is reported, and bsdtar finishes with an error
+                    // An entry it could not open, a file locked by another
+                    // program, is reported, and bsdtar finishes with an error
                     // code. That used to throw the whole archive away. Worse,
                     // measured: bsdtar abandons the rest of that folder after it,
                     // so keeping the archive as it stands would silently lose
@@ -562,7 +562,7 @@ namespace ExplorerNative
         ///
         /// "-a" picks the format from the archive's name and matches the
         /// extension case-sensitively, so "BACKUP.7Z" and "x.Tar.Xz" got no
-        /// format at all — and then the compression options failed with
+        /// format at all, and then the compression options failed with
         /// "Unknown module name: 7zip".
         /// </summary>
         internal static string[] FormatFlags(ArchiveFormat format) => format.Id switch
@@ -678,7 +678,7 @@ namespace ExplorerNative
         /// was still opened, refused, and took the rest of its folder with it;
         /// the class is matched before, as an ASCII name is. It does not match
         /// "axb.txt". The cost is that another name of the same shape in the
-        /// same folder — "aéb.txt" — is left out too, and is then said.
+        /// same folder, "aéb.txt", is left out too, and is then said.
         /// </summary>
         internal static string Pattern(string name)
         {
@@ -694,8 +694,8 @@ namespace ExplorerNative
 
         /// <summary>
         /// Why a file cannot be read the way bsdtar reads it, when the reason is
-        /// another program holding it; null otherwise. Anything else — gone,
-        /// denied — is left for bsdtar to say, as before.
+        /// another program holding it; null otherwise. Anything else, gone,
+        /// denied, is left for bsdtar to say, as before.
         /// </summary>
         /// <summary>
         /// The files of the plan another program is holding, by plan name, in
@@ -754,7 +754,7 @@ namespace ExplorerNative
         ///
         /// Read from `tar -tvf`, whose lines look like a directory listing:
         /// permissions, links, owner, group, size, date, name. The size is taken
-        /// and **the name is thrown away**, which is the whole point — see the
+        /// and **the name is thrown away**, which is the whole point, see the
         /// table at the top of this file. Nothing that decides where a file goes
         /// may come from here.
         /// </summary>
@@ -793,7 +793,7 @@ namespace ExplorerNative
                     bytes += size;
             }
 
-            // A listing that stops part way — a truncated archive — still says
+            // A listing that stops part way, a truncated archive, still says
             // what it found. Thrown, it ended the extraction before a single good
             // file was kept, which is the case the staging exists for.
             try { Finish(process, token); }
@@ -865,7 +865,7 @@ namespace ExplorerNative
             {
                 // No listing first. It used to run `tar -tvf` for the totals,
                 // which for a .tar.xz is a whole decompression before the real
-                // one — about half the time of the extraction, measured. The
+                // one, about half the time of the extraction, measured. The
                 // progress is read from how much of the archive bsdtar has read,
                 // and the entries are counted from its own lines as it goes.
                 var start = NewStartInfo();
@@ -932,8 +932,8 @@ namespace ExplorerNative
 
                 // "x name" or "x name: what went wrong". A member's own name can
                 // hold ": " ("Notes: draft.txt", from Linux), and split at the
-                // first one it was taken for a failure of "Notes" — so the file
-                // bsdtar had quietly renamed was moved into place under that
+                // first one it was taken for a failure of "Notes", so the file
+                // bsdtar had silently renamed was moved into place under that
                 // new name, and anything really called "Notes" was held back.
                 // A clean exit has no failures at all; otherwise the name is
                 // the longest part of the line that is in the staging folder.
@@ -957,7 +957,7 @@ namespace ExplorerNative
                               outcome.Messages.Any(LooksDamaged);
 
                     // Each entry it complained about, named. One it could not
-                    // write — a link without the privilege to make one — used to
+                    // write, a link without the privilege to make one, used to
                     // throw the whole extraction away, good files included.
                     foreach (var (name, failure) in lines)
                         if (failure != null)
@@ -969,8 +969,8 @@ namespace ExplorerNative
                 }
 
                 // Every entry it complained about is not trusted. The one it named
-                // last is distrusted only when it did not get to the end — a
-                // stall, a crash — because only then can that one be half
+                // last is distrusted only when it did not get to the end, a
+                // stall, a crash, because only then can that one be half
                 // written. Distrusted always, one link in a .tar.xz withheld the
                 // archive's last file as "stopped while it was being written",
                 // and under Replace left every existing file as it was.
@@ -984,8 +984,8 @@ namespace ExplorerNative
                     distrusted.Count > 0 || unfinished ? distrusted : null, unfinished,
                     staged => Withheld(lines, staged, destination, stripped ? archiveArg : null, token), zone);
 
-                // Two entries with one name — or two that differ only in capitals,
-                // which are one name here — are one file in the staging folder.
+                // Two entries with one name, or two that differ only in capitals,
+                // which are one name here, are one file in the staging folder.
                 // The zip and tar readers say so; this said nothing and kept the
                 // last. Now the first is kept and the difference is said.
                 int arrived = lines.Count(l => l.Failure == null && !l.Name.EndsWith('/'));
@@ -1052,7 +1052,7 @@ namespace ExplorerNative
         /// had, as the zip and tar readers refuse it.
         ///
         /// The names come from bsdtar's own output, which is not trusted for
-        /// anything outside ASCII — see the table at the top of this file — and
+        /// anything outside ASCII, see the table at the top of this file, and
         /// they are used only to refuse, never to decide where a file goes. A
         /// printed name with a question mark in it may be a non-ASCII name the
         /// console could not show; if a staged name fits it that way, it is one.
@@ -1099,7 +1099,7 @@ namespace ExplorerNative
 
             // A drive letter or a network path has already been taken off the
             // printed name, so the only record of it is the archive's own
-            // listing — read only when bsdtar said it removed one.
+            // listing, read only when bsdtar said it removed one.
             if (listAgain != null)
             {
                 foreach (var original in ListNames(listAgain, token))
@@ -1254,7 +1254,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Deletes the staging folder, read-only files included — an archive
+        /// Deletes the staging folder, read-only files included, an archive
         /// made on Linux carries r--r--r-- as a read-only attribute, and a plain
         /// recursive delete refuses those and left ".extracting-…" in the
         /// person's folder.
@@ -1312,7 +1312,7 @@ namespace ExplorerNative
         ///
         /// <paramref name="stoppedAt"/> holds the entries bsdtar complained
         /// about, which may be half written and are not moved. When
-        /// <paramref name="unfinished"/> — bsdtar never got to the end — nothing
+        /// <paramref name="unfinished"/>, bsdtar never got to the end, nothing
         /// that is already in the destination is replaced either: a truncated
         /// archive under Replace otherwise put its broken last file over a good
         /// one.
@@ -1337,7 +1337,7 @@ namespace ExplorerNative
             var links = new List<string>();
 
             // One scan, carrying sizes and dates out of the call that found each
-            // entry. Asking again by path — new FileInfo(file).Length — failed
+            // entry. Asking again by path, new FileInfo(file).Length, failed
             // for a name Windows' path rules rewrite: a trailing dot or space is
             // dropped, the file "does not exist", and that one name took the
             // whole extraction with it, leaving an empty folder behind.
@@ -1413,7 +1413,7 @@ namespace ExplorerNative
             int done = 0;
 
             // Folders already made, so a file going into one does not ask for it
-            // again — a request to the disk per file, for a folder that is there.
+            // again, a request to the disk per file, for a folder that is there.
             var made = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             // Folders first and shallowest first, so a file never arrives before
@@ -1437,8 +1437,8 @@ namespace ExplorerNative
             // one it could not print: anything outside the process's code page
             // comes out on standard error as question marks. Such a name is
             // matched against the staged names with every non-ASCII character
-            // standing for one of those. A name that is simply absent — a link
-            // it had no privilege to make — matches nothing and holds back
+            // standing for one of those. A name that is simply absent, a link
+            // it had no privilege to make, matches nothing and holds back
             // nothing.
             if (stoppedAt != null)
             {
@@ -1452,7 +1452,7 @@ namespace ExplorerNative
 
                     // Decoded here as UTF-8 from a console code page, a character
                     // it could not show can also arrive as a replacement
-                    // character — and one of those can stand for several. So each
+                    // character, and one of those can stand for several. So each
                     // run of either stands for one or more non-ASCII characters.
                     // Windows names cannot hold a question mark, so none is real.
                     // And code-page bytes can decode as other, valid characters,
@@ -1575,15 +1575,15 @@ namespace ExplorerNative
         /// bsdtar changes into the folder given with -C, and a current directory
         /// is limited to MAX_PATH whatever else is long-path aware: a 7z or
         /// .tar.xz of anything past 260 characters failed in both directions
-        /// with "could not chdir". Its file access is not limited — libarchive
-        /// opens through "\\?\" names — so only the folder it starts in has to be
+        /// with "could not chdir". Its file access is not limited, libarchive
+        /// opens through "\\?\" names, so only the folder it starts in has to be
         /// short. This volume has 8.3 names switched off, so shortening is not
         /// available; a junction needs no privilege and works, measured on a
         /// 447-character folder both ways.
         ///
         /// Kept in %LOCALAPPDATA%\ExplorerNative\tarlinks rather than in Temp,
         /// where something cleaning up might follow it. It is removed as a link
-        /// — never recursively — and any left by a crash are swept.
+        /// never recursively, and any left by a crash are swept.
         /// </summary>
         private sealed class Alias : IDisposable
         {
@@ -1606,7 +1606,7 @@ namespace ExplorerNative
         /// The folder itself when it is short enough, otherwise a junction to it.
         /// A junction too when any part of it ends in a dot or a space: bsdtar
         /// opens nothing through the literal "\\?\" form, and through the
-        /// ordinary one "Backup." is "Backup" — written into, or "could not chdir".
+        /// ordinary one "Backup." is "Backup", written into, or "could not chdir".
         /// </summary>
         private static string Reachable(string folder, List<Alias> aliases)
         {
@@ -1754,7 +1754,7 @@ namespace ExplorerNative
         /// console's. Measured with bytes: "café" is E9, "x’y" is 92 and "œuvre"
         /// 9C, which is 1252 on this machine, and the hidden console's OEM page
         /// would have printed "x'y". Left unset, the decoding was whatever the
-        /// parent's console happened to be — UTF-8 in one process, 437 in another.
+        /// parent's console happened to be, UTF-8 in one process, 437 in another.
         /// </summary>
         internal static readonly Lazy<Encoding> ErrorEncoding = new(() =>
         {
@@ -1816,7 +1816,7 @@ namespace ExplorerNative
 
             // Read asynchronously, always. A child that fills the error pipe while
             // nobody is reading it blocks in write and never exits, and the parent
-            // waits for an exit that cannot happen — with an archive half written
+            // waits for an exit that cannot happen, with an archive half written
             // and a progress window that has stopped moving.
             process.ErrorDataReceived += (_, e) =>
             {
@@ -1828,8 +1828,8 @@ namespace ExplorerNative
                 {
                     // bsdtar finishes the line it started for an entry with that
                     // entry's error: "x dir/f.bin: Truncated input file". Taken
-                    // whole as a name, the error was lost — the message said only
-                    // "Error exit delayed from previous errors" — and the name
+                    // whole as a name, the error was lost, the message said only
+                    // "Error exit delayed from previous errors", and the name
                     // matched nothing, so a half-written file was kept.
                     int colon = e.Data.IndexOf(": ", 2, StringComparison.Ordinal);
                     bool failed = colon > 0;
@@ -1890,7 +1890,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// One job for every tar this process starts, closed only by Windows
-        /// when this process ends — however it ends.
+        /// when this process ends, however it ends.
         ///
         /// Kill on close is the point: a crash, Task Manager, or a log-off took
         /// the app away and left tar.exe compressing on its own for as long as
@@ -2010,7 +2010,7 @@ namespace ExplorerNative
         /// taken to be stuck.
         ///
         /// This replaces a flat thirty-second cap on the *whole run*, which is
-        /// not a stall detector at all — it is a promise that nothing large will
+        /// not a stall detector at all, it is a promise that nothing large will
         /// ever be compressed. A 2GB .tar.bz2 is minutes of perfectly healthy
         /// work (bzip2 has no parallel encoder), and at thirty seconds it was
         /// killed mid-write, the half-written archive deleted, and the user told
@@ -2019,7 +2019,7 @@ namespace ExplorerNative
         ///
         /// Processor time is the signal: a process that is compressing is
         /// spending it, and one that has wedged is not. The token is the other
-        /// way out, and it is the one a person uses — Cancel on the progress
+        /// way out, and it is the one a person uses, Cancel on the progress
         /// window reaches here.
         /// </summary>
         private static readonly TimeSpan StallLimit = TimeSpan.FromMinutes(5);
@@ -2111,9 +2111,9 @@ namespace ExplorerNative
         ///
         /// Every name here was checked against the tar on this machine rather than
         /// taken from documentation, because bsdtar refuses an option it does not
-        /// know — "Undefined option: `7zip:nonsense'", exit code 1 — so a name that
+        /// know, "Undefined option: `7zip:nonsense'", exit code 1, so a name that
         /// has drifted is a compress that fails outright rather than one that
-        /// quietly ignores what was asked for. That strictness is worth having and
+        /// silently ignores what was asked for. That strictness is worth having and
         /// it is why this list is short.
         /// </summary>
         internal static string? Options(ArchiveFormat format, ArchiveLevel level, int threads)
@@ -2187,7 +2187,7 @@ namespace ExplorerNative
         ///
         /// So the thread count is capped at a quarter of the physical memory. A
         /// quarter rather than a half because this is a background job on a
-        /// machine somebody is still using — the whole point of the progress
+        /// machine somebody is still using, the whole point of the progress
         /// window not being modal is that the file manager stays usable, and that
         /// is not true if the archive has taken the memory.
         /// </summary>
@@ -2233,7 +2233,7 @@ namespace ExplorerNative
         /// How much memory the machine has, cached.
         ///
         /// Not GC.GetGCMemoryInfo, which answers about this process's heap limit
-        /// rather than about the machine — and the memory being budgeted here is
+        /// rather than about the machine, and the memory being budgeted here is
         /// spent by another process entirely.
         /// </summary>
         internal static long PhysicalMemoryBytes()

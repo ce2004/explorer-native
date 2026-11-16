@@ -132,7 +132,7 @@ namespace ExplorerNative
         /// <summary>
         /// Builds the tree from an archive's entries.
         ///
-        /// Folders an archive never names — most zips only list files — are
+        /// Folders an archive never names, most zips only list files, are
         /// made from the paths of what is inside them. A name that could only be
         /// extracted by writing outside the folder, or that Windows cannot hold,
         /// is not shown at all: it could never be opened or copied out, and a row
@@ -153,7 +153,7 @@ namespace ExplorerNative
 
                 // Judged as extraction judges it: cleaned first, so the "./" that
                 // `tar -czf x.tgz .` puts on every name is not taken for a name
-                // pointing outside — every entry of such an archive was hidden
+                // pointing outside, every entry of such an archive was hidden
                 // and counted as unsafe, and it opened as an empty folder. A
                 // network path is refused by its raw form, which cleaning loses.
                 var name = ExtractionRules.Normalise(entry.Name);
@@ -405,7 +405,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// The bsdtar formats: extracted whole into the cache, once per archive
-        /// per session, and listed from the disk — the only place their names
+        /// per session, and listed from the disk, the only place their names
         /// are right. See the class summary.
         /// </summary>
         private static ArchiveListing OpenThroughTree(string archivePath, ArchiveFormat format, string key,

@@ -75,7 +75,7 @@ namespace ExplorerNative
         /// time (<see cref="SettingsJson"/>) instead of reflection, because
         /// reflection was the slowest thing in front of the window. The file has
         /// to come out exactly as reflection wrote it and read back exactly as
-        /// reflection read it, or an update would quietly change somebody's
+        /// reflection read it, or an update would silently change somebody's
         /// settings. Every persisted property is moved off its default first,
         /// because a comparison of two default objects proves nothing.
         /// </summary>

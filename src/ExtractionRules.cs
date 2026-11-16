@@ -17,14 +17,14 @@ namespace ExplorerNative
     /// it already on disk and no useful answer available: saying "skip" then does
     /// not undo what has landed, and saying "cancel" leaves a folder that is
     /// neither the old contents nor the new. The archive index is read first
-    /// anyway — the progress window needs the totals — so the names are all known
+    /// anyway, the progress window needs the totals, so the names are all known
     /// before a byte is written, and the one question can be asked at the one
     /// moment when every answer to it is still true.
     ///
     /// The question is asked about top-level names only, exactly as a paste asks
     /// it. An archive containing "photos/2019/a.jpg" being extracted where a
     /// "photos" folder exists is one collision called "photos", not four thousand
-    /// called "a.jpg" — and renaming makes "photos (2)" and puts the whole tree
+    /// called "a.jpg", and renaming makes "photos (2)" and puts the whole tree
     /// inside it, so the structure survives. The exception is Fill gaps, which
     /// exists precisely to go into what is already there and answer the question
     /// per file underneath.
@@ -57,7 +57,7 @@ namespace ExplorerNative
         /// Works out the rules, asking the one question if there is one to ask.
         ///
         /// Returns null when the answer was to not extract at all, which the
-        /// caller reports as a cancellation rather than as a failure — somebody
+        /// caller reports as a cancellation rather than as a failure, somebody
         /// pressing Cancel on a question they were asked has not had anything go
         /// wrong.
         /// </summary>
@@ -187,14 +187,14 @@ namespace ExplorerNative
             }
 
             // Every top-level name the archive itself brings, and every name
-            // handed out so far. A new name has to clear all three — what is on
-            // disk, what is arriving, and what has already been chosen — or two
+            // handed out so far. A new name has to clear all three, what is on
+            // disk, what is arriving, and what has already been chosen, or two
             // things end up at one path.
             //
             // Against the filesystem alone it did not. Extracting an archive
             // holding both "a" and "a (2)" into a folder that already has "a"
             // renamed the arriving "a" to "a (2)", because nothing called "a (2)"
-            // was on disk yet — and the archive's own "a (2)" was not renamed at
+            // was on disk yet, and the archive's own "a (2)" was not renamed at
             // all, since it did not clash with anything. The two trees were
             // written into one folder and same-named files inside them
             // overwrote each other, reported as a clean extraction.
@@ -245,7 +245,7 @@ namespace ExplorerNative
         /// An entry name with forward slashes, and without empty or "." segments.
         ///
         /// "./" is how `tar -czf x.tgz .` names every entry, and the "." segment
-        /// was refused as pointing outside the folder — so a tarball made that
+        /// was refused as pointing outside the folder, so a tarball made that
         /// way extracted nothing, and its top-level name was the destination
         /// itself, which always clashed. ".." is left for SafeTarget to refuse.
         /// </summary>
@@ -259,7 +259,7 @@ namespace ExplorerNative
         /// Where this entry goes, or null if it is not to be written.
         ///
         /// <paramref name="problem"/> is set only when the entry was refused
-        /// rather than merely skipped — a name that would land outside the
+        /// rather than merely skipped, a name that would land outside the
         /// destination, or one Windows cannot store. Those are reported; a skip
         /// is an answer somebody chose and is counted instead.
         ///
@@ -281,8 +281,8 @@ namespace ExplorerNative
             }
 
             // Before the name is cleaned up, which drops empty segments and so
-            // turns a network path — two slashes, a server, a share — into an
-            // ordinary relative one that extracted quietly into a folder named
+            // turns a network path, two slashes, a server, a share, into an
+            // ordinary relative one that extracted silently into a folder named
             // after the server, rather than being refused as the rule says.
             var raw = entryName.Replace('\\', '/');
             if (raw.StartsWith("//", StringComparison.Ordinal))
@@ -321,8 +321,8 @@ namespace ExplorerNative
                 return null;
             }
 
-            // One file for one name. An archive can hold the same name twice — a
-            // tar appended to, or a Linux tree with xt_TCPMSS.c and xt_tcpmss.c —
+            // One file for one name. An archive can hold the same name twice, a
+            // tar appended to, or a Linux tree with xt_TCPMSS.c and xt_tcpmss.c,
             // and the workers writing them in parallel each replaced the other,
             // with whichever finished last winning and both counted as done.
             if (!isDirectory)

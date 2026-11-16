@@ -10,19 +10,19 @@ namespace ExplorerNative
     /// **`.aif` and `.aiff` were in the default extension list and never
     /// played.** Windows registers no byte-stream handler for them and Media
     /// Foundation does not recognise the content either (0xC00D36C4), so every
-    /// AIFF was handed to another application — found while testing seeking.
+    /// AIFF was handed to another application, found while testing seeking.
     ///
     /// AIFF is uncompressed PCM in a different wrapper: big-endian samples
     /// under a "FORM" header instead of little-endian ones under "RIFF". So
     /// this is a stream that answers with a WAV header of its own making and
     /// then the file's samples, byte-swapped as they are read. Everything after
-    /// that — decoding, rate conversion, and seeking, which is exact for WAV —
+    /// that, decoding, rate conversion, and seeking, which is exact for WAV,
     /// is Windows' own, unchanged.
     ///
     /// Covered: AIFF, and AIFF-C with no compression ("NONE"/"twos"),
     /// little-endian PCM ("sowt"), 32- and 64-bit float ("fl32"/"fl64"), and
-    /// µ-law/A-law, which WAV carries as they are. Anything else — Apple's IMA
-    /// ADPCM, for one — is refused, and the file goes to whichever application
+    /// µ-law/A-law, which WAV carries as they are. Anything else, Apple's IMA
+    /// ADPCM, for one, is refused, and the file goes to whichever application
     /// owns it, as before.
     /// </summary>
     internal sealed class AiffStream : IStream, IDisposable

@@ -21,7 +21,7 @@ namespace ExplorerNative
     /// single-file executable per architecture. Updating downloads the one for
     /// this process's architecture into <see cref="DownloadsDirectory"/>, checks
     /// it against the hash GitHub publishes for it, and runs it with
-    /// <c>--update</c> — the same install the command line uses. That install
+    /// <c>--update</c>, the same install the command line uses. That install
     /// renames the running executable aside rather than overwriting it, which is
     /// what lets it happen while this copy is open, then asks this copy to stand
     /// down (it saves its state as it would for Exit) and starts the new build
@@ -431,7 +431,7 @@ namespace ExplorerNative
         /// <summary>
         /// Runs the downloaded build's installer. Through the shell, so it
         /// inherits nothing from this process. The returned process exits with 0
-        /// once the new build is installed and started, 1 if the install failed —
+        /// once the new build is installed and started, 1 if the install failed,
         /// in which case this copy was never asked to close.
         /// </summary>
         public static Process StartInstall(string exe, Release release)

@@ -9,7 +9,7 @@ namespace ExplorerNative
     /// a fade in out of it.
     ///
     /// It is a <em>pull stage</em>, like <see cref="TimeStretch"/> and
-    /// <see cref="Resampler"/> — it has a <see cref="Source"/>, it is read from,
+    /// <see cref="Resampler"/>, it has a <see cref="Source"/>, it is read from,
     /// and it hands back fewer frames than it consumed. That is the whole reason
     /// it cannot live where the equaliser and the limiter live: those are
     /// arithmetic on a buffer that goes in and comes out the same length, and
@@ -23,7 +23,7 @@ namespace ExplorerNative
     /// setting would mean a different length of music at every speed, which is a
     /// control that cannot be learned.
     ///
-    /// **Off is a bypass, bit for bit.** Not "a threshold nothing crosses" — the
+    /// **Off is a bypass, bit for bit.** Not "a threshold nothing crosses", the
     /// samples are handed straight from the source to the caller and never
     /// copied, which is what <see cref="TimeStretch"/> promises at rate 1 and
     /// what <see cref="Equaliser"/> promises when it is switched off. It is also
@@ -32,8 +32,8 @@ namespace ExplorerNative
     /// nothing.
     ///
     /// **The clock is not lied to.** Frames dropped here are frames the decoder
-    /// has genuinely read past, so the position runs on through a gap that was
-    /// removed — which is the truth about where in the file the music is. What
+    /// has really read past, so the position runs on through a gap that was
+    /// removed, which is the truth about where in the file the music is. What
     /// is held and not yet heard is reported by <see cref="HeldSourceFrames"/>,
     /// exactly as the two stages behind it report theirs, or the clock would run
     /// ahead by the length of the lookahead.
@@ -62,7 +62,7 @@ namespace ExplorerNative
         /// <see cref="DetectFrames"/> takes a quarter of whatever the minimum gap
         /// is set to, between these two. That matters because the minimum goes
         /// down to a single millisecond, and a decision taken in blocks of 2.7ms
-        /// cannot tell one millisecond from three — the control would stop
+        /// cannot tell one millisecond from three, the control would stop
         /// meaning anything below the block size while still offering the
         /// numbers, which is a dial with nothing on the end of it.
         ///
@@ -70,7 +70,7 @@ namespace ExplorerNative
         /// milliseconds is already past the cap, so everything from 20ms upwards
         /// decides in the same 128-frame blocks it always did. It only bites at
         /// the bottom of the range, which is where it is wanted, and it is noisy
-        /// there on purpose — asking for gaps of a millisecond is asking for a
+        /// there on purpose, asking for gaps of a millisecond is asking for a
         /// detector that reacts inside one cycle of a bass note.
         /// </summary>
         public const int SmallestDetect = 8;
@@ -82,7 +82,7 @@ namespace ExplorerNative
         /// floor of a good recording and is the setting for "take out the gaps
         /// between the tracks"; minus one is very nearly everything, and what it
         /// does is chop the recording into the handful of samples that touch full
-        /// scale. That is not a mistake in the range — it is a thing somebody
+        /// scale. That is not a mistake in the range, it is a thing somebody
         /// asked to be able to do, and the whole point of a control you can hear
         /// moving is that the far end of it is reachable.
         ///
@@ -100,7 +100,7 @@ namespace ExplorerNative
         ///
         /// Twenty milliseconds is shorter than the gap between two words and
         /// about as long as one closed consonant. Five seconds only touches the
-        /// silence between movements. One millisecond — the floor — is shorter
+        /// silence between movements. One millisecond, the floor, is shorter
         /// than a single cycle of anything below a kilohertz, so what it takes
         /// out is not gaps at all but the part of every waveform that passes near
         /// zero. That is a sound rather than a setting, and it is reachable for
@@ -123,14 +123,14 @@ namespace ExplorerNative
         ///
         /// **The fade out ends at the cut**, which is where the sound stops. It
         /// is laid across the tail of the gap that is kept, and back into the
-        /// music behind it when it is longer than that gap — so it is never
+        /// music behind it when it is longer than that gap, so it is never
         /// limited by how much of the gap is left.
         ///
         /// Reaching backwards into music that has already been decided about is
         /// what <see cref="_line"/> is for. An earlier version took the fade out
         /// of the front of the kept gap and had nowhere to put one when nothing
         /// was being kept: "shorten them to nothing" silently meant "and splice
-        /// it", however long the fade was set to. A control that is quietly
+        /// it", however long the fade was set to. A control that is silently
         /// overruled by another control is not a control.
         /// </summary>
         public const int LongestFadeMilliseconds = 500;
@@ -144,7 +144,7 @@ namespace ExplorerNative
         /// <summary>
         /// Asked every <see cref="YieldEveryBlocks"/> blocks while a gap is being
         /// read through without anything to hand back. True means stop and
-        /// return what there is — possibly nothing — so the caller can deal with
+        /// return what there is, possibly nothing, so the caller can deal with
         /// a skip, a stop or a device change. Nothing is lost: the stage carries
         /// on from where it was on the next read.
         ///
@@ -252,7 +252,7 @@ namespace ExplorerNative
         /// into it. At a fade out of nothing it is empty and every frame goes
         /// straight through, which is the ordinary case and costs one comparison.
         ///
-        /// It delays the stage's output by the length of the fade out — at most
+        /// It delays the stage's output by the length of the fade out, at most
         /// half a second, entirely hidden behind the four seconds the pump
         /// buffers before the device is released, and declared through
         /// <see cref="HeldSourceFrames"/> so the clock does not run ahead of it.
@@ -290,7 +290,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Source frames read but not yet heard — the lookahead, plus anything
+        /// Source frames read but not yet heard, the lookahead, plus anything
         /// decided and still queued. The position display subtracts these.
         ///
         /// Frames that were *dropped* are deliberately not in here. They have
@@ -316,7 +316,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// The source was turned round rather than finished with — see
+        /// The source was turned round rather than finished with, see
         /// <see cref="TimeStretch.SourceRestarted"/>, which latches for the same
         /// reason and is cleared here on the same terms.
         /// </summary>
@@ -324,10 +324,10 @@ namespace ExplorerNative
 
         /// <summary>
         /// Fills <paramref name="destination"/> with up to <paramref name="frames"/>
-        /// frames. Fewer means the source has run out — never "a gap is being
+        /// frames. Fewer means the source has run out, never "a gap is being
         /// removed", because an empty read is how the pump decides a track has
         /// ended. Dropping goes on inside this call until there is something to
-        /// hand back or there is nothing left to read — or until
+        /// hand back or there is nothing left to read, or until
         /// <see cref="ShouldYield"/> asks for a turn, which
         /// <see cref="TakeYielded"/> then reports.
         /// </summary>
@@ -341,8 +341,8 @@ namespace ExplorerNative
             if (!Enabled)
             {
                 // Off is a bypass. Anything already held was read and not yet
-                // heard, so it goes out rather than being lost — switching this
-                // off must not put a hole in the music — and after that the
+                // heard, so it goes out rather than being lost, switching this
+                // off must not put a hole in the music, and after that the
                 // samples are handed straight through, untouched.
                 if (_holdFrames > 0 || _lineFrames > 0 || _pendFrames > 0)
                 {
@@ -388,7 +388,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Reads and decides until there is something to hand over, or says the
-        /// source is finished — or that the caller asked for a turn, see
+        /// source is finished, or that the caller asked for a turn, see
         /// <see cref="ShouldYield"/>.
         /// </summary>
         private bool Produce(Func<float[], int, int> source)
@@ -398,8 +398,8 @@ namespace ExplorerNative
 
             while (_outFrames == 0)
             {
-                // Everything is kept where it is — the part-block, the gap being
-                // held, the phase — so the next read picks up exactly here.
+                // Everything is kept where it is, the part-block, the gap being
+                // held, the phase, so the next read picks up exactly here.
                 if (++blocks % YieldEveryBlocks == 0 && ShouldYield is { } yield && yield())
                 {
                     _yielded = true;
@@ -504,7 +504,7 @@ namespace ExplorerNative
 
             // The fade out ends at the cut, which is where the sound stops.
             // Whatever will not fit in the gap that is kept is applied backwards
-            // into the music the line is still holding — which is the whole
+            // into the music the line is still holding, which is the whole
             // reason the line exists.
             int fade = FramesOf(FadeOutMilliseconds);
             int inGap = Math.Min(fade, keep);
@@ -513,7 +513,7 @@ namespace ExplorerNative
             // The music behind the gap, faded first because it goes out first.
             // The ramp is read from its own start, so a fade that runs off the
             // front of what is still reachable starts part way down rather than
-            // being squashed into the frames there are — a squashed fade is a
+            // being squashed into the frames there are, a squashed fade is a
             // different length from the one that was asked for, which is the one
             // thing a control set by ear must not be.
             if (inLine > 0) FadeLine(inLine, fade, fade - inGap - inLine);
@@ -541,14 +541,14 @@ namespace ExplorerNative
             // Armed now and spent on whatever arrives, which may be several
             // blocks away. The cut lands wherever the threshold said it should,
             // and at the top of the threshold range that is the middle of the
-            // music rather than a quiet place — so the fade in is the only thing
+            // music rather than a quiet place, so the fade in is the only thing
             // between a setting somebody wanted to try and a click.
             _fadeInLeft = _fadeInTotal = FramesOf(FadeInMilliseconds);
         }
 
         /// <summary>
         /// A fade's gain at position <paramref name="at"/> of
-        /// <paramref name="total"/> — one at the start, nothing at the end.
+        /// <paramref name="total"/>, one at the start, nothing at the end.
         ///
         /// Raised cosine rather than a straight line, for the reason
         /// <see cref="TimeStretch"/> uses one: linear is the right gain law and
@@ -584,8 +584,8 @@ namespace ExplorerNative
         /// goes on to the queue.
         ///
         /// The block is faded in place. Both callers hand over a buffer they are
-        /// about to forget — the part-block being decided about, or the gap that
-        /// turned out to be too short — so there is nothing to copy first.
+        /// about to forget, the part-block being decided about, or the gap that
+        /// turned out to be too short, so there is nothing to copy first.
         /// </summary>
         private void Emit(float[] block, int frames)
         {
@@ -667,7 +667,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Grows the line, straightening it out on the way — the contents are put
+        /// Grows the line, straightening it out on the way, the contents are put
         /// back in order from the start of the new buffer, because a ring copied
         /// across verbatim is a ring whose wrap point has moved.
         /// </summary>
@@ -763,7 +763,7 @@ namespace ExplorerNative
         /// <see cref="LongestMinimumMilliseconds"/> plus a block: the gap is cut
         /// the moment it reaches the minimum, so what is held can only ever be
         /// one detection block past the longest minimum there is. No clamp here,
-        /// deliberately — a cap that disagreed with that bound would under-
+        /// deliberately, a cap that disagreed with that bound would under-
         /// allocate rather than protect anything.
         /// </summary>
         private void EnsureHold(int frames)

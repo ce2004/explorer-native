@@ -17,7 +17,7 @@ namespace ExplorerNative
     /// The writer is ours rather than <c>ZipArchive</c>'s, and the reason is the
     /// only reason that would justify it: <c>ZipArchive</c> cannot be made
     /// parallel from outside. It takes bytes and compresses them itself, on the
-    /// calling thread, one entry at a time — there is no way to hand it an entry
+    /// calling thread, one entry at a time, there is no way to hand it an entry
     /// that is already deflated, so a caller that wanted every core compressing
     /// could only ever get one. Measured on the 142MB corpus in CLAUDE.md: 10
     /// MB/s through ZipFile, 12 MB/s through the tar.exe Windows ships, 41 MB/s
@@ -28,7 +28,7 @@ namespace ExplorerNative
     /// threads at once: a burn loop of pure arithmetic on ten dedicated threads
     /// measures 3.8 cores of processor time per second, the same figure the
     /// compressor gets. The scaling inside the pipeline is clean up to that
-    /// point — one worker 1.0 cores, two 2.0, four 3.7 — and flat after it,
+    /// point, one worker 1.0 cores, two 2.0, four 3.7, and flat after it,
     /// which is what running out of machine looks like rather than running out
     /// of design.
     ///
@@ -38,7 +38,7 @@ namespace ExplorerNative
     /// each one starts. Nothing in an entry refers to any other entry. So entries
     /// can be deflated in any order by as many workers as there are cores, as
     /// long as one thread writes them out in the order the directory will claim
-    /// they are in — which is what the pipeline below does. This is the same
+    /// they are in, which is what the pipeline below does. This is the same
     /// reason the reader parallelises: the directory gives every entry's offset,
     /// so ten threads with ten handles on the file can each extract a different
     /// one without ever reading the same byte twice.
@@ -46,7 +46,7 @@ namespace ExplorerNative
     /// Three kinds of entry go through the writer, and which one an entry is
     /// decides where its bytes are compressed:
     ///
-    /// - Already-compressed files — jpeg, mp4, flac, another zip — are *stored*,
+    /// - Already-compressed files, jpeg, mp4, flac, another zip, are *stored*,
     ///   not deflated. Deflating a jpeg spends a core to make the file 0.1%
     ///   bigger. Stored entries are copied straight through by the writer thread,
     ///   because there is no processor work to spread and the copy is bound by
@@ -62,7 +62,7 @@ namespace ExplorerNative
     ///   instead would cost its size in memory.
     ///
     /// Each piece starts without the 32KB of history the one before would have
-    /// given it, which is the same small price a gzipped tar pays — see
+    /// given it, which is the same small price a gzipped tar pays, see
     /// <see cref="ParallelGZip"/>, which cuts its stream into members.
     /// </summary>
     public static class ZipEngine
@@ -109,7 +109,7 @@ namespace ExplorerNative
         ///
         /// This is a list of extensions and not an entropy test on purpose. A
         /// sample-and-guess costs a read of the file before the decision and gets
-        /// the answer wrong on the cases that matter — a WAV of silence looks
+        /// the answer wrong on the cases that matter, a WAV of silence looks
         /// incompressible in its first 64KB, an installer looks compressible in
         /// its header. The extension is what the file says it is, it costs
         /// nothing to consult, and being wrong about one merely means an entry is
@@ -227,7 +227,7 @@ namespace ExplorerNative
             // difference was a bug that hid for exactly as long as nobody
             // measured it. The worker count used to control only the queue's
             // capacity, and the compression itself went to the thread pool, which
-            // runs as many as it feels like — so asking for one worker and asking
+            // runs as many as it feels like, so asking for one worker and asking
             // for sixteen produced the same wall clock, and a machine could not be
             // told to leave itself some processor for anything else.
             //
@@ -245,7 +245,7 @@ namespace ExplorerNative
             Exception? producerFailure = null;
 
             // Opened before the producer starts. Opened after, a destination that
-            // could not be created — a full disk, a folder gone, no permission —
+            // could not be created, a full disk, a folder gone, no permission,
             // threw out of here while the producer was still running, the queue
             // and the lane were disposed underneath it, and its finally threw
             // ObjectDisposedException on a raw thread: the whole process went.
@@ -385,7 +385,7 @@ namespace ExplorerNative
 
                             // Not for a directory. A folder entry is a header and
                             // nothing else, and it is written the instant the
-                            // pipeline starts — over the top of the name of the
+                            // pipeline starts, over the top of the name of the
                             // file a worker has just begun compressing, which then
                             // stands for the whole job. Compressing one track
                             // showed the folder's name from beginning to end.
@@ -394,8 +394,8 @@ namespace ExplorerNative
                             long before = output.Position;
 
                             // One file that cannot be read costs that file, not
-                            // the archive. The streamed path — anything over
-                            // 64MB, and anything already compressed — threw, and
+                            // the archive. The streamed path, anything over
+                            // 64MB, and anything already compressed, threw, and
                             // nothing here caught it, so the exception escaped
                             // Create and the finished part of a multi-gigabyte
                             // job was deleted on the way out. A file locked
@@ -412,8 +412,8 @@ namespace ExplorerNative
                             {
                                 // Only a file that could not be *read*. WriteEntry
                                 // has already rewound over what the entry wrote.
-                                // A write to the archive that failed — the disk
-                                // filled — is not this: it used to be counted as
+                                // A write to the archive that failed, the disk
+                                // filled, is not this: it used to be counted as
                                 // one unreadable file, the job went on, and the
                                 // short archive was then moved over the good one
                                 // it was replacing. That now ends the archive,
@@ -505,7 +505,7 @@ namespace ExplorerNative
                 // Named as the work on it begins, not when the writer gets to it.
                 //
                 // The writer's own Starting is the only one there used to be, and
-                // it runs *after* the entry has been compressed — so for a single
+                // it runs *after* the entry has been compressed, so for a single
                 // file the window named the folder above it for the whole job and
                 // the file itself only as it was finishing. With several workers
                 // this names whichever files are in flight, which is what is
@@ -647,8 +647,8 @@ namespace ExplorerNative
 
             // Streamed. The header goes down with the sizes it cannot know yet and
             // is corrected once they are, which is why this path needs a seekable
-            // output. The alternative the format offers — a data descriptor after
-            // the data, flagged in the header — is read correctly by everything
+            // output. The alternative the format offers, a data descriptor after
+            // the data, flagged in the header, is read correctly by everything
             // modern and confuses enough older tools that patching is worth the
             // two seeks.
             bool wideNeeded = item.Size >= Zip64Threshold;
@@ -679,7 +679,7 @@ namespace ExplorerNative
             long compressedSize = output.Position - dataStart;
             long end = output.Position;
 
-            // Planned under four gigabytes and grew past them while it was read —
+            // Planned under four gigabytes and grew past them while it was read,
             // a recording or a virtual disk in use. The local header has no room
             // for the sizes, and a cut-down one disagrees with the directory.
             if (!wideNeeded && (read >= uint.MaxValue || compressedSize >= uint.MaxValue))
@@ -763,8 +763,8 @@ namespace ExplorerNative
         [ThreadStatic] private static byte[]? _scratchLarge;
 
         /// <summary>
-        /// A read buffer kept per thread. Each entry used to allocate its own —
-        /// a megabyte for every stored file, however small — which for a folder
+        /// A read buffer kept per thread. Each entry used to allocate its own,
+        /// a megabyte for every stored file, however small, which for a folder
         /// of photos was a megabyte of garbage per photo. Only ever used within
         /// one call on one thread, and never handed on.
         /// </summary>
@@ -1006,8 +1006,8 @@ namespace ExplorerNative
         /// time, counting from 1980 with two-second resolution.
         ///
         /// Clamped at both ends because the format cannot say anything else. A
-        /// file dated 1970 — which is what an extraction of something built on a
-        /// unix machine can leave behind — would otherwise wrap into a date in the
+        /// file dated 1970, which is what an extraction of something built on a
+        /// unix machine can leave behind, would otherwise wrap into a date in the
         /// 2090s rather than fail, and a wrong date that looks plausible is worse
         /// than an obviously clamped one.
         /// </summary>
@@ -1041,7 +1041,7 @@ namespace ExplorerNative
         /// How a name without the UTF-8 flag is read.
         ///
         /// A name with bit 11 set is UTF-8 and ZipArchive decodes it itself. One
-        /// without is in the code page of whoever made it — and the zips made by
+        /// without is in the code page of whoever made it, and the zips made by
         /// Windows' own tar, by Explorer's "Send to compressed folder" and by
         /// older 7-Zip are all in the OEM code page: bsdtar writes "café" as
         /// 63 61 66 82, which is CP437. Decoded as UTF-8, as it was, every such
@@ -1129,7 +1129,7 @@ namespace ExplorerNative
                 }
 
                 // A directory is an entry whose name ends in a slash and whose
-                // Name — the last segment — is therefore empty. Not every zip
+                // Name, the last segment, is therefore empty. Not every zip
                 // records its folders at all, which is why extraction creates
                 // parents from the file paths rather than trusting these to exist.
                 bool isDirectory = entry.FullName.EndsWith('/') || entry.FullName.EndsWith('\\');
@@ -1199,7 +1199,7 @@ namespace ExplorerNative
 
             // Folders first and on one thread. Creating them as a side effect of
             // writing the files inside works, but it loses every empty folder in
-            // the archive — the same hole the copy engine had, arriving from the
+            // the archive, the same hole the copy engine had, arriving from the
             // other direction.
             //
             // And counted in what was extracted, as the tar reader and the
@@ -1229,7 +1229,7 @@ namespace ExplorerNative
 
             // Every file's destination is settled here, in archive order and on
             // one thread, so that of two entries whose names differ only in
-            // capitals the first in the archive is the one kept — settled by the
+            // capitals the first in the archive is the one kept, settled by the
             // workers, it was whichever of them got there first.
             var targets = new string?[count];
             for (int i = 0; i < count; i++)
@@ -1271,7 +1271,7 @@ namespace ExplorerNative
             int lanes = Math.Clamp(threads, 1, Math.Max(1, runs.Count));
 
             // Each lane opens the archive for itself, and opening one reads its
-            // whole central directory into memory — a few hundred bytes an entry.
+            // whole central directory into memory, a few hundred bytes an entry.
             // For a zip of a million entries, sixty-four lanes was sixty-four
             // copies of that, gigabytes, for an extraction that is bound by the
             // disk long before the sixty-fourth lane. Capped so all the lanes
@@ -1280,7 +1280,7 @@ namespace ExplorerNative
 
             // Which entries got as far as being written or refused. Every
             // replacement is recorded when its destination is settled above, so a
-            // cancelled extraction reported every one it had planned — files
+            // cancelled extraction reported every one it had planned, files
             // never touched announced as replaced. The rest are taken back.
             var settled = new int[count];
 
@@ -1347,8 +1347,8 @@ namespace ExplorerNative
                         {
                             // Checked against the archive's own CRC and length
                             // before it is given its name. .NET's ZipArchive does
-                            // not check either — measured: an entry with a broken
-                            // CRC read back in full without complaint — so a
+                            // not check either, measured: an entry with a broken
+                            // CRC read back in full without complaint, so a
                             // damaged zip extracted "successfully".
                             ArchiveEngine.WriteCommitted(target, output =>
                             {

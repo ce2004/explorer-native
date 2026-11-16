@@ -13,7 +13,7 @@ namespace ExplorerNative
     /// video library passes on one machine.
     ///
     /// The AVI carries plain PCM. The MKV carries AAC, made by Windows' own
-    /// encoder as an ADTS stream and unwrapped into Matroska blocks — AAC is
+    /// encoder as an ADTS stream and unwrapped into Matroska blocks, AAC is
     /// what Matroska files actually hold. PCM in Matroska is the one pairing
     /// Windows refuses to turn into float (0xC00D36B4); it is rare, and such a
     /// file is handed to the application that owns it like any other that

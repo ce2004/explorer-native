@@ -8,7 +8,7 @@ namespace ExplorerNative
     /// Whether a message is spoken. Two states, because there are only two
     /// things a message can usefully do here.
     ///
-    /// There used to be three channels and eight combinations of them — status
+    /// There used to be three channels and eight combinations of them, status
     /// bar, speech and a tray balloon. The balloon is gone: this application is
     /// driven by ear, and a Windows notification is a thing you have to be
     /// looking at a screen to know happened, so every one of them was either
@@ -17,7 +17,7 @@ namespace ExplorerNative
     /// line into a bar nobody has to listen to costs nothing and interrupts
     /// nobody, so it happens for every message the application delivers.
     ///
-    /// What is left is the only question anybody was ever really answering —
+    /// What is left is the only question anybody was ever really answering,
     /// do I want to hear this.
     /// </summary>
     public enum NotificationChannel
@@ -34,8 +34,8 @@ namespace ExplorerNative
     ///
     /// <paramref name="Template"/> is a composite format string;
     /// <paramref name="Example"/> is a set of arguments that fits it, so every
-    /// notification can be rendered — and therefore tested, and previewed in
-    /// Preferences — without waiting for the thing to actually happen.
+    /// notification can be rendered, and therefore tested, and previewed in
+    /// Preferences, without waiting for the thing to actually happen.
     /// </summary>
     public sealed record NotificationInfo(
         string Id,
@@ -54,7 +54,7 @@ namespace ExplorerNative
         /// Whether the application actually raises this one yet.
         ///
         /// The catalogue was written first and wired afterwards, and for a while
-        /// none of it was wired at all — 167 configurable messages and no code
+        /// none of it was wired at all, 167 configurable messages and no code
         /// anywhere that consulted the setting before speaking. Marking what is
         /// live keeps that honest: Preferences says so, and a test compares this
         /// flag against the ids that really appear in the source, so it cannot
@@ -74,7 +74,7 @@ namespace ExplorerNative
     /// all of it.
     ///
     /// Gathered here, each one has an id, a category, a default, and an example
-    /// that renders — which makes them configurable one at a time, previewable
+    /// that renders, which makes them configurable one at a time, previewable
     /// before they happen, and testable all at once.
     ///
     /// The defaults follow the rule the audio player already lived by: say less,
@@ -98,12 +98,12 @@ namespace ExplorerNative
 
         // Five names collapse into two, because the three channels did.
         //
-        // Off and Bar were both "not spoken" — one of them wrote the status bar
+        // Off and Bar were both "not spoken", one of them wrote the status bar
         // and one did not, and the bar is now written either way. Pop was a tray
         // balloon, which for somebody listening rather than looking was a message
         // that never arrived at all; the only honest replacement for it is
-        // speech, so the handful of things that used it — the drive is ready, the
-        // install worked, folders open here now — are spoken. Loud was speech
+        // speech, so the handful of things that used it, the drive is ready, the
+        // install worked, folders open here now, are spoken. Loud was speech
         // and a balloon together, and is just speech.
         //
         // The names are kept so the table below still reads as a table.
@@ -167,7 +167,7 @@ namespace ExplorerNative
             Live("audio.speed.down", "Playback slower", AudioTransport, Bar, "Speed {0} percent", 75),
             Live("audio.speed.normal", "Playback back to normal", AudioTransport, Bar, "Speed normal"),
             Live("audio.speed.limit", "Speed cannot go further", AudioTransport, Say, "Already at {0}", "400 percent, four times"),
-            // "audio.speed.refused" was here — "FLAC will not play faster than
+            // "audio.speed.refused" was here, "FLAC will not play faster than
             // normal". True while the media engine owned the playback rate and
             // Windows' FLAC decoder refused everything above normal; the speed
             // is applied to decoded samples now and no format can refuse it.
@@ -280,7 +280,7 @@ namespace ExplorerNative
             Live("drive.upload.resumed", "Upload resumed", DriveOperations, Bar, "Resuming {0} from {1}", "album.flac", "512 MB"),
             // The status bar rather than speech. A retry is the application
             // handling something rather than something going wrong, and a folder
-            // of small files through a bad minute produces a good few of them —
+            // of small files through a bad minute produces a good few of them,
             // spoken, that is the screen reader talking over everything else to
             // report a problem that is being dealt with.
             Live("drive.upload.retrying", "Upload being retried", DriveOperations, Bar, "Retrying {0}: {1}", "album.flac", "Google Drive is temporarily unavailable"),
@@ -288,7 +288,7 @@ namespace ExplorerNative
             Live("drive.upload.dailylimit", "Daily upload limit reached", DriveOperations, Say, "{0}", "You've reached your daily upload limit for Google. Copying starts again by itself when it resets"),
             // Spoken, unlike the retries. A transfer that has stopped and is
             // waiting for the internet looks exactly like one that has hung, and
-            // this is the sentence that tells them apart — it is worth
+            // this is the sentence that tells them apart, it is worth
             // interrupting for, because the alternative is somebody watching a
             // progress window that has not moved for four minutes.
             Live("drive.offline.waiting", "Waiting for the internet", DriveOperations, Say, "Waiting for the internet to come back before {0}", "sending anything more to Google Drive"),
@@ -316,14 +316,14 @@ namespace ExplorerNative
 
             // Sharing. Two ids for the copy rather than one with a flag, because
             // the whole point of the second command is that it changed something
-            // — a spoken "Copied the Drive link" after granting the world read
+            // a spoken "Copied the Drive link" after granting the world read
             // access would be the one sentence that matters left unsaid.
             Live("drive.link.asking", "Asking for a link", DriveOperations, Bar, "Asking Google Drive for a link"),
             Live("drive.link.copied", "Drive link copied", DriveOperations, Say, "Copied the Drive link"),
             Live("drive.link.public", "Public link copied", DriveOperations, Say, "Copied a public link"),
             Live("drive.link.failed", "Could not get a link", DriveOperations, Loud, "Could not get a link: {0}", "permission denied"),
 
-            // "drive.folders.unsupported" was here — "Cannot copy folders to
+            // "drive.folders.unsupported" was here, "Cannot copy folders to
             // Google Drive yet; {0} skipped". Folders upload now, so the message
             // is gone rather than left saying something untrue. An id that no
             // longer exists is dropped out of SpeechOverrides on load, so nobody
@@ -418,8 +418,8 @@ namespace ExplorerNative
                 "320 kilobits per second, 44,100 hertz, 3 minutes 12 seconds"),
 
             // Searching. The count is spoken and the rest is not: a results list
-            // cannot be checked by ear — the rows were never read as they were
-            // gathered — so how many there are is the one fact nothing else can
+            // cannot be checked by ear, the rows were never read as they were
+            // gathered, so how many there are is the one fact nothing else can
             // tell you, exactly as it is for a selection. "Searching" is said
             // because the answer can be seconds away on Drive and a key that
             // appears to have done nothing is a key somebody presses again.
@@ -512,7 +512,7 @@ namespace ExplorerNative
         /// having: every announcement asks for an id and then asks again for its
         /// channels, and type-ahead raises one per letter typed. A walk of a
         /// hundred and sixty-eight entries with a case-insensitive compare each,
-        /// twice per keystroke, is not free — and it grows every time a message
+        /// twice per keystroke, is not free, and it grows every time a message
         /// is added, which is the wrong direction for a list that exists to be
         /// added to.
         ///
@@ -536,8 +536,8 @@ namespace ExplorerNative
         /// <summary>
         /// Categories in the order they should appear.
         ///
-        /// Built once. It was a LINQ chain on every read — a walk of the whole
-        /// catalogue, a hash set and a fresh list — and the dialog reads it
+        /// Built once. It was a LINQ chain on every read, a walk of the whole
+        /// catalogue, a hash set and a fresh list, and the dialog reads it
         /// inside a loop over itself and again on every arrow press to find out
         /// which page to show.
         /// </summary>
@@ -571,7 +571,7 @@ namespace ExplorerNative
         /// not often enough to pay for that on a keystroke.
         ///
         /// The result is shared, so it must not be handed to anyone who might
-        /// write to it — <see cref="ParseOverrides"/> stays public and keeps
+        /// write to it, <see cref="ParseOverrides"/> stays public and keeps
         /// returning a fresh one for the dialog, which does.
         /// </summary>
         private static Dictionary<string, NotificationChannel> CachedOverrides(string? text)
@@ -614,7 +614,7 @@ namespace ExplorerNative
 
                 // One bit, because there is one question. A file written by an
                 // older build stored three, and it is read under a different
-                // property name — see Settings.SpeechOverrides — so nothing here
+                // property name, see Settings.SpeechOverrides, so nothing here
                 // has to guess which numbering a value came from.
                 result[id] = (NotificationChannel)(value & 1);
             }
@@ -661,8 +661,8 @@ namespace ExplorerNative
         /// What the chooser offers: speak it, or do not.
         ///
         /// Eight combinations became two. Six of the eight named a tray balloon
-        /// that no longer exists, and the two that did not — "status bar" and
-        /// "off" — were the same thing to anybody listening, since the status
+        /// that no longer exists, and the two that did not, "status bar" and
+        /// "off", were the same thing to anybody listening, since the status
         /// bar is silent. A list of eight where six do nothing and two are
         /// identical is not a choice, it is a way of appearing to offer one.
         /// </summary>

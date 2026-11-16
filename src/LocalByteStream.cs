@@ -16,7 +16,7 @@ namespace ExplorerNative
     /// the resolver nothing to go on but the content, which is what it should
     /// have been going on all along for this case.
     ///
-    /// Read only, and deliberately so — nothing in this application writes
+    /// Read only, and deliberately so, nothing in this application writes
     /// audio, and an IStream that cannot write is one that cannot corrupt
     /// somebody's file through a mistake somewhere else.
     ///
@@ -43,7 +43,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Opens the file, or answers null. Null means the caller falls back to
-        /// the ordinary path, which will fail in its own way and report why —
+        /// the ordinary path, which will fail in its own way and report why,
         /// this is a better route to the same file, not the only one.
         /// </summary>
         public static LocalByteStream? TryOpen(string path)

@@ -153,7 +153,7 @@ namespace ExplorerNative
         /// <summary>
         /// A path as 7-Zip is given it: whole, and in the literal "\\?\" form
         /// when any part ends in a dot or a space ("Backup."), which an ordinary
-        /// path quietly drops, so 7-Zip read or wrote the sibling without it.
+        /// path silently drops, so 7-Zip read or wrote the sibling without it.
         /// </summary>
         internal static string SevenZipPath(string path) =>
             NameRules.ExactPath(Path.IsPathFullyQualified(path) ? path : Path.GetFullPath(path));

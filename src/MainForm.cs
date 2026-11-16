@@ -22,7 +22,7 @@ namespace ExplorerNative
             /// <summary>
             /// Backing data for the virtual list. The ListView holds no items of
             /// its own, so a folder with a hundred thousand files costs one
-            /// enumeration and nothing else — no per-row control construction.
+            /// enumeration and nothing else, no per-row control construction.
             /// </summary>
             public List<Entry> Entries = new();
             public ListViewItem?[] ItemCache = Array.Empty<ListViewItem?>();
@@ -99,28 +99,28 @@ namespace ExplorerNative
 
             /// <summary>
             /// A listing is on its way in. The folder watcher leaves its mark
-            /// standing rather than cancel it and start again — on a slow share with
+            /// standing rather than cancel it and start again, on a slow share with
             /// a download growing in it, that was a reload that never finished.
             /// </summary>
             public bool Loading;
 
             /// <summary>
             /// Which navigation of this pane is the latest. A navigation checks
-            /// it after every wait and gives way if a newer one has started — see
+            /// it after every wait and gives way if a newer one has started, see
             /// <see cref="NavigateAsync"/>.
             /// </summary>
             public int NavigationId;
 
             /// <summary>
             /// The navigation still checking that its folder is there, or 0.
-            /// Nothing marks the pane busy during that check — up to eight
-            /// seconds on a sleeping share — and a watcher reload in that gap
+            /// Nothing marks the pane busy during that check, up to eight
+            /// seconds on a sleeping share, and a watcher reload in that gap
             /// started a navigation of its own, which the first then gave way to.
             /// </summary>
             public int Probing;
 
             /// <summary>
-            /// The pending reload is ours — new preferences, a mount arriving —
+            /// The pending reload is ours, new preferences, a mount arriving,
             /// and nothing on disk changed, so "changed" is not said for it.
             /// </summary>
             public bool ReloadQuietly;
@@ -212,8 +212,8 @@ namespace ExplorerNative
 
             /// <summary>
             /// The archive this pane is inside, opened with Enter, or null.
-            /// <see cref="CurrentPath"/> is then a path through it —
-            /// "C:\Music\album.zip\Disc 1" — that exists nowhere on disk, so
+            /// <see cref="CurrentPath"/> is then a path through it,
+            /// "C:\Music\album.zip\Disc 1", that exists nowhere on disk, so
             /// nothing that reads or writes the folder may be pointed at it:
             /// there is no watcher, and every command that would change the
             /// archive refuses (<see cref="RefuseInArchive"/>).
@@ -236,8 +236,8 @@ namespace ExplorerNative
         ///   NVDAObjects\UIA\__init__.pyc, line 2310, in _get_value
         ///   _ctypes.COMError: (-2147418113, 'Catastrophic failure', ...)
         ///
-        /// The obvious answer is to decline the provider — answer WM_GETOBJECT
-        /// (0x003D) with zero for UiaRootObjectId (-25) — so the reader falls
+        /// The obvious answer is to decline the provider, answer WM_GETOBJECT
+        /// (0x003D) with zero for UiaRootObjectId (-25), so the reader falls
         /// back to the control's own MSAA implementation, which list views used
         /// for twenty years before UIA existed. **It was tried and it is worse.**
         /// There is no fallback: it takes the list away from the screen reader
@@ -263,8 +263,8 @@ namespace ExplorerNative
             /// Says that this row now has the focus, whether or not the control
             /// thinks anything changed.
             ///
-            /// In a virtual list an item's identity is its index — there is no
-            /// object behind row 0, only the number 0 — so replacing the whole
+            /// In a virtual list an item's identity is its index, there is no
+            /// object behind row 0, only the number 0, so replacing the whole
             /// folder and landing on row 0 while row 0 was already focused is not
             /// a focus change to anything watching from outside. The control
             /// raises nothing, and the screen reader has no reason to say
@@ -296,8 +296,8 @@ namespace ExplorerNative
 
         /// <summary>
         /// The Google Drive mount, when there is one. Navigation has to fill a
-        /// cloud folder in before listing it — Windows will not ask on our behalf
-        /// — so the pane loader needs to be able to reach it.
+        /// cloud folder in before listing it, Windows will not ask on our behalf
+        /// so the pane loader needs to be able to reach it.
         /// </summary>
         public GoogleDrive? Drive { get; set; }
 
@@ -308,7 +308,7 @@ namespace ExplorerNative
         /// </summary>
         private bool OnDriveFolder(string path) => Drive?.Owns(NameRules.PlainPath(path)) == true;
 
-        // TrayNotification was here — the hook that let this window ask the tray
+        // TrayNotification was here, the hook that let this window ask the tray
         // to put up a balloon. There are no balloons any more: a Windows
         // notification is something you have to be looking at a screen to know
         // about, and this application is driven by ear. Everything it used to
@@ -393,7 +393,7 @@ namespace ExplorerNative
             // Which folders to try, not which folder to open. Deciding that here
             // meant a synchronous Directory.Exists per candidate *inside the
             // constructor*, and one of those candidates is wherever you were last
-            // — routinely a share. A sleeping NAS blocks that call for as long as
+            // routinely a share. A sleeping NAS blocks that call for as long as
             // the SMB stack takes to give up, and this application is the shell's
             // handler for every folder on the machine, started afresh each time
             // one is opened. So the window did not merely take a moment to fill
@@ -436,7 +436,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// When the song or its paused state changes, panes showing the top of
-        /// Apple Music get the new Now playing row, quietly. Nothing while hidden.
+        /// Apple Music get the new Now playing row, silently. Nothing while hidden.
         /// </summary>
         private void RefreshNowPlayingRow()
         {
@@ -473,8 +473,8 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Loads both tabs and puts you back exactly where you were — same tab in
-        /// front, same item focused — so a restart is invisible if the folder and
+        /// Loads both tabs and puts you back exactly where you were, same tab in
+        /// front, same item focused, so a restart is invisible if the folder and
         /// file are still there, and a graceful fallback if they are not.
         /// </summary>
         private bool _initialising;
@@ -516,8 +516,8 @@ namespace ExplorerNative
                 if (IsDisposed) return;
                 NoteWaitingForDrive(front, waitFor);
 
-                // Used. A window built later in this session — closing to nothing
-                // rather than to the tray, then the window shortcut — reopened on
+                // Used. A window built later in this session, closing to nothing
+                // rather than to the tray, then the window shortcut, reopened on
                 // the folder that started the process, not where it was left.
                 _settings.InitialFolderOverride = null;
 
@@ -534,7 +534,7 @@ namespace ExplorerNative
                 ShowFolderFromOutside(later);
             }
 
-            // The tab behind, quietly, and only when there are two tabs.
+            // The tab behind, silently, and only when there are two tabs.
             if (_settings.TwoTabs && !IsDisposed) await LoadTabAsync(1 - front);
         }
 
@@ -980,7 +980,7 @@ namespace ExplorerNative
         /// <summary>
         /// The first candidate that answers, or the home folder.
         ///
-        /// Bounded and off the calling thread, which is the whole point — see the
+        /// Bounded and off the calling thread, which is the whole point, see the
         /// constructor. The synchronous version of this ran inside it.
         /// </summary>
         private async Task<(string Open, string? WaitFor)> FirstExistingFolderAsync(params string?[] candidates)
@@ -1083,7 +1083,7 @@ namespace ExplorerNative
 
             // Hidden files, sorting and folders-first change the other tab's
             // listing too, and only the front one is reloaded now.
-            // Quietly, as the watcher does. Refresh_ was the F5 path: it re-ran a
+            // Silently, as the watcher does. Refresh_ was the F5 path: it re-ran a
             // search on screen ("Searching for..."), re-read an archive or a
             // whole Drive listing, and read the first row aloud over
             // "Preferences saved".
@@ -1099,7 +1099,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Shows a folder that arrived from outside — the shell opening one in
+        /// Shows a folder that arrived from outside, the shell opening one in
         /// this app, or a second launch handing its argument over.
         ///
         /// This is the whole point of the single-instance handoff: once the app is
@@ -1202,7 +1202,7 @@ namespace ExplorerNative
                 list.SelectedIndexChanged += (_, _) => { if (_panes[index] == Active) OnSelectionChanged(); };
 
                 // A virtual list reports Shift+arrow as a range, and only as a
-                // range — without this the status bar kept the old "N selected"
+                // range, without this the status bar kept the old "N selected"
                 // while the selection grew.
                 list.VirtualItemsSelectionRangeChanged += (_, _) => { if (_panes[index] == Active) OnSelectionChanged(); };
 
@@ -1361,7 +1361,7 @@ namespace ExplorerNative
             // The same decision the popup makes, made here for the same reason.
             // A menu is read out one item at a time, and two entries about
             // Google Drive are two entries heard on the way past every other one
-            // — on a machine with no Drive mounted at all, twice for nothing.
+            // on a machine with no Drive mounted at all, twice for nothing.
             edit.DropDownOpening += (_, _) =>
             {
                 ShowDriveLinkItems();
@@ -1434,14 +1434,14 @@ namespace ExplorerNative
         /// <summary>
         /// The Audio menu.
         ///
-        /// The player has no window, which is the point of it — but "no window"
+        /// The player has no window, which is the point of it, but "no window"
         /// should not mean "no way to find out what it can do". A menu is how a
         /// keyboard user discovers a feature and reads its shortcut off the right
         /// hand side, and it is the only route to the player that cannot be taken
         /// away by another application claiming a hotkey.
         ///
         /// Every item is driven from <see cref="AudioActions.All"/>, so the
-        /// shortcut shown here is the shortcut that is actually registered — the
+        /// shortcut shown here is the shortcut that is actually registered, the
         /// two cannot drift apart.
         /// </summary>
         private ToolStripMenuItem BuildAudioMenu()
@@ -1492,7 +1492,7 @@ namespace ExplorerNative
             // It used to be hidden while the limiter was switched off, on the
             // reasoning that controls shaping an effect that is not running are
             // controls that do nothing. That was true while the switch was a
-            // tick box on the Audio preferences page — and it meant the way to
+            // tick box on the Audio preferences page, and it meant the way to
             // find the limiter's controls was to know that a page you were not
             // on decided whether this entry existed, which is worse than the
             // problem it solved. The switch is inside the dialog now, so the
@@ -1612,7 +1612,7 @@ namespace ExplorerNative
             _repeatItem.Checked = state is { Repeating: true };
 
             // Ticked when the limiter is running, read on every open rather than
-            // kept up to date — the dialog it opens can switch it on and off,
+            // kept up to date, the dialog it opens can switch it on and off,
             // and so can a global shortcut with this menu never touched. It says
             // whether the effect is on without having to open anything, which is
             // what the tick box on the preferences page was really for.
@@ -1621,7 +1621,7 @@ namespace ExplorerNative
             _silenceItem.Checked = _settings.AudioSilenceReduction;
 
             // Ticked when the pitch is anywhere but normal. There is no switch
-            // to report — zero semitones *is* off — so the tick answers "is
+            // to report, zero semitones *is* off, so the tick answers "is
             // something being done to the sound" without opening anything,
             // which is what it is for on the two entries above.
             _pitchItem.Checked = _settings.AudioPitchSemitones != 0;
@@ -1682,7 +1682,7 @@ namespace ExplorerNative
         /// rate. The Windows properties sheet (Alt+Enter) shows the same data in
         /// a tab that has to be found; this is one keystroke and reads as a list.
         ///
-        /// The focused row if there is one, otherwise whatever is playing — so
+        /// The focused row if there is one, otherwise whatever is playing, so
         /// this works from the Audio menu while the list is somewhere else
         /// entirely.
         /// </summary>
@@ -1827,8 +1827,8 @@ namespace ExplorerNative
 
             var fields = TagEditing.Merge(current);
             string title = local.Length == 1
-                ? "Edit tags — " + Path.GetFileName(local[0])
-                : $"Edit tags — {local.Length} files";
+                ? "Edit tags - " + Path.GetFileName(local[0])
+                : $"Edit tags - {local.Length} files";
 
             Dictionary<TagField, string> changes;
             bool numberInOrder;
@@ -1895,8 +1895,8 @@ namespace ExplorerNative
 
         /// <summary>
         /// Every menu entry that can only refuse while the pane is inside an
-        /// archive — the ones that would change it, and the ones that need the
-        /// item to be a real file on disk — on whichever menu it sits. Hidden as
+        /// archive, the ones that would change it, and the ones that need the
+        /// item to be a real file on disk, on whichever menu it sits. Hidden as
         /// a menu opens over an archive and shown again everywhere else; a hidden
         /// entry keeps its shortcut, which answers for itself.
         /// </summary>
@@ -1951,14 +1951,14 @@ namespace ExplorerNative
         ///
         /// They used to be on every menu over every row on the machine, so a
         /// folder of local files answered Shift+F10 with two entries that could
-        /// only ever say "that is not on Google Drive" — two more items to hear
+        /// only ever say "that is not on Google Drive", two more items to hear
         /// past on the way to Rename, every single time. Same reasoning as the
         /// Extract entries next to them, and the same cost: this menu is read
         /// aloud one item at a time.
         ///
         /// <see cref="GoogleDrive.Owns(string)"/> is a path comparison against the mount,
         /// not a question asked of Drive, so deciding this costs no network and no
-        /// read — which is the bar for anything that runs while a menu is being
+        /// read, which is the bar for anything that runs while a menu is being
         /// drawn.
         ///
         /// The keyboard shortcuts are unaffected. A hidden `ToolStripMenuItem`
@@ -2046,7 +2046,7 @@ namespace ExplorerNative
             _contextMenu.Items.Add(new ToolStripSeparator());
 
             // Where Explorer puts it, between the clipboard and the two commands
-            // that change the row itself — which is also where a hand that has
+            // that change the row itself, which is also where a hand that has
             // used Windows expects to find it.
             _shortcutItem = Item("Create &shortcut", Keys.None, CreateShortcut);
             _contextMenu.Items.Add(_shortcutItem);
@@ -2374,7 +2374,7 @@ namespace ExplorerNative
             _folderSizes.TimeoutSeconds = _settings.FolderSizeTimeoutSeconds;
 
             // FontSize was persisted, clamped and offered in the settings file,
-            // but never actually reached a control — changing it did nothing at
+            // but never actually reached a control, changing it did nothing at
             // all. The list is where it matters: that is what gets read.
             var wanted = Math.Clamp(_settings.FontSize, 7, 24);
             if (Math.Abs(Font.SizeInPoints - wanted) > 0.01f)
@@ -2412,7 +2412,7 @@ namespace ExplorerNative
         /// There was a preference for this and there is not any more: a window
         /// that comes back where you left it is not a taste, it is what a window
         /// does, and the switch only ever had one useful setting. A position
-        /// that is no longer on any screen — a monitor unplugged since — is
+        /// that is no longer on any screen, a monitor unplugged since, is
         /// ignored rather than restored, which is the case the switch was
         /// really there for.
         /// </summary>
@@ -2436,7 +2436,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Writes the window's size and position into the settings, if it has
-        /// either — a minimised or maximised window's Location is not where it
+        /// either, a minimised or maximised window's Location is not where it
         /// will be when it comes back.
         ///
         /// One method, because it was two copies of the same four lines in the
@@ -2503,7 +2503,7 @@ namespace ExplorerNative
                 // have: it keeps a ListViewItem and its sub-items alive for every
                 // row ever painted, so a thirty-thousand file folder held hundreds
                 // of megabytes for rows nobody was looking at. Bounded to far more
-                // than any viewport, and simply emptied when it fills — cheap, and
+                // than any viewport, and simply emptied when it fills, cheap, and
                 // rare enough not to matter.
                 if (pane.CachedCount >= MaxCachedItems) ClearItemCache(pane);
 
@@ -2588,7 +2588,7 @@ namespace ExplorerNative
             int target = -1;
 
             // Letters typed while the folder was still loading. They beat the
-            // remembered row, because they are the more recent instruction — you
+            // remembered row, because they are the more recent instruction, you
             // asked for this folder and then asked for a name inside it, and only
             // the network made those two things arrive in the wrong order.
             var pending = pane.TypeAhead.Current(Environment.TickCount64);
@@ -2618,7 +2618,7 @@ namespace ExplorerNative
         /// Gives both lists a window handle as soon as the form has one.
         ///
         /// A hidden control does not create its handle until it is shown, and a
-        /// virtual ListView with no handle cannot hold selection state — the
+        /// virtual ListView with no handle cannot hold selection state, the
         /// selection is a property of the native control, not of anything
         /// managed. So the second tab was loaded and its row chosen while it had
         /// nowhere to put that, and switching to it for the first time landed on
@@ -2644,7 +2644,7 @@ namespace ExplorerNative
 
                     // The same theme File Explorer puts on its own list. Besides
                     // looking right, it selects the lighter-weight drawing path in
-                    // the common control — full-row hot tracking and selection
+                    // the common control, full-row hot tracking and selection
                     // painted by the theme rather than by the classic code.
                     SetWindowTheme(handle, "Explorer", null);
                 }
@@ -2682,8 +2682,8 @@ namespace ExplorerNative
             try
             {
             // Showing one list and hiding the other is a layout change, and the
-            // form would otherwise re-lay-out every child — menu, status bar, both
-            // lists — twice per switch. Held down, Tab repeats about thirty times
+            // form would otherwise re-lay-out every child, menu, status bar, both
+            // lists, twice per switch. Held down, Tab repeats about thirty times
             // a second, and the relayouts were the lag.
             SuspendLayout();
             try
@@ -2720,7 +2720,7 @@ namespace ExplorerNative
 
             // A tab that was not watched while it was behind (the window coming
             // back from the tray watches only the front one) is watched now.
-            // Marked after arming, because arming clears the marks — and a folder
+            // Marked after arming, because arming clears the marks, and a folder
             // nobody watched may have changed in any way at all.
             if (Visible && NeedsWatcher(Active))
             {
@@ -2785,7 +2785,7 @@ namespace ExplorerNative
         ///
         /// The retired source is cancelled but never disposed. Enumerations and
         /// folder-size walks already running hold tokens taken from it, and
-        /// linking a token from a disposed source throws — so disposing here
+        /// linking a token from a disposed source throws, so disposing here
         /// turned a fast double navigation into an ObjectDisposedException on a
         /// background thread. It holds no unmanaged handle to reclaim.
         ///
@@ -2800,8 +2800,8 @@ namespace ExplorerNative
             pane.EnumCts = fresh;
 
             // Whatever was loading has been called off. A cancelled load clears
-            // the flag only if it is still the pane's work — see LoadEntriesAsync
-            // — so the replacement is where it goes down.
+            // the flag only if it is still the pane's work, see LoadEntriesAsync
+            // so the replacement is where it goes down.
             pane.Loading = false;
             return fresh.Token;
         }
@@ -2872,7 +2872,7 @@ namespace ExplorerNative
             pane.SearchTruncated = false;
 
             // Recorded before the list is replaced, while the focused row still
-            // belongs to the folder being left — but never *from* a set of
+            // belongs to the folder being left, but never *from* a set of
             // results, whose rows belong to folders all over the tree and would
             // overwrite the position the search was started from with one of them.
             if (!wasSearching) RememberPosition(pane);
@@ -2966,7 +2966,7 @@ namespace ExplorerNative
 
                 if (reachable != FolderProbe.Present)
                 {
-                    // The folder may simply be gone — an unplugged drive, a
+                    // The folder may simply be gone, an unplugged drive, a
                     // dropped share. Fall back to the nearest level that is
                     // still there rather than leaving a dead view on screen.
                     var fallback = await NearestExistingAncestorAsync(full);
@@ -3066,7 +3066,7 @@ namespace ExplorerNative
                     // The watcher went over to the folder that would not open;
                     // it goes back to the one still on screen. That folder went
                     // unwatched meanwhile, and its pending marks were cleared, so
-                    // it is read again quietly.
+                    // it is read again silently.
                     ArmWatcher(pane, restore);
                     if (!string.IsNullOrEmpty(restore) && restore != DrivesPath)
                     {
@@ -3108,7 +3108,7 @@ namespace ExplorerNative
         ///
         /// Directory.Exists on a share whose server has gone away blocks until
         /// the SMB stack gives up, which is many seconds. Called from the UI
-        /// thread that is exactly the freeze this app exists to avoid — and it
+        /// thread that is exactly the freeze this app exists to avoid, and it
         /// would happen during a disconnect, the one moment it matters most.
         /// </summary>
         private static async Task<bool> DirectoryExistsAsync(string path, int timeoutMs = 3000) =>
@@ -3118,7 +3118,7 @@ namespace ExplorerNative
         /// The three answers an existence check can really give.
         ///
         /// <see cref="DirectoryExistsAsync"/> collapses the last two into false,
-        /// which is right for a caller that only wants somewhere to go — but it
+        /// which is right for a caller that only wants somewhere to go, but it
         /// throws away the one distinction worth telling a person about. A folder
         /// that is <em>gone</em> and a server that is <em>not answering</em> are
         /// different situations with different remedies, and saying "not
@@ -3131,7 +3131,7 @@ namespace ExplorerNative
         {
             if (string.IsNullOrEmpty(path)) return FolderProbe.Missing;
 
-            // Exact: a folder called "Backup." asked about plainly is "Backup",
+            // Exact: a folder called "Backup." asked about clearly is "Backup",
             // so the idle poll called it gone and moved the pane out of it.
             var probe = Task.Run(() =>
             {
@@ -3143,7 +3143,7 @@ namespace ExplorerNative
 
             // A probe that has not answered in time is treated as unavailable;
             // the worker is left to finish and be collected on its own. It is
-            // never waited on again — reading probe.Result here would reintroduce
+            // never waited on again, reading probe.Result here would reintroduce
             // exactly the block the timeout exists to escape.
             if (finished != probe) return FolderProbe.NotResponding;
             return probe.Result ? FolderProbe.Present : FolderProbe.Missing;
@@ -3181,7 +3181,7 @@ namespace ExplorerNative
         /// Per folder, never the whole window. A window-wide counter was
         /// harmless while a transfer held the window modal; now that a copy runs
         /// for an hour while you carry on working, it would mean an hour of no
-        /// folder anywhere noticing that anything had changed — a file arriving
+        /// folder anywhere noticing that anything had changed, a file arriving
         /// from another program, a download finishing, a rename done in
         /// Explorer, none of it appearing until something forced a reload.
         ///
@@ -3237,7 +3237,7 @@ namespace ExplorerNative
         /// Drive roots whose watchers were let go because Windows asked whether
         /// the drive could be removed, and when. Nothing watches them again
         /// until the removal fails, completes, or long enough has passed that
-        /// the drive is plainly staying.
+        /// the drive is clearly staying.
         /// </summary>
         private readonly Dictionary<string, long> _releasedRoots = new(StringComparer.OrdinalIgnoreCase);
         private const int ReleasedRootMs = 30_000;
@@ -3303,7 +3303,7 @@ namespace ExplorerNative
 
             // Built on a worker: the constructor checks the folder exists, turning
             // it on opens a handle to it, and the removal registration opens
-            // another — each a wait of seconds on a sleeping share, and showing
+            // another, each a wait of seconds on a sleeping share, and showing
             // the window from the tray did all of it for both tabs on the UI
             // thread. Installed only if the pane is still on that folder.
             int generation = pane.WatchGeneration;
@@ -3323,8 +3323,8 @@ namespace ExplorerNative
             catch (Exception ex) { Diag.Note(ex); }
 
             // Back on the UI thread. Anything that let the pane's watcher go
-            // meanwhile — another folder, the window hidden, a drive being
-            // removed — bumped the generation, and this one is no longer wanted.
+            // meanwhile, another folder, the window hidden, a drive being
+            // removed, bumped the generation, and this one is no longer wanted.
             bool wanted = !IsDisposed && Visible && pane.WatchGeneration == generation &&
                           string.Equals(pane.CurrentPath, path, StringComparison.OrdinalIgnoreCase);
             if (pane.WatchGeneration == generation) pane.ArmingPath = null;
@@ -3631,7 +3631,7 @@ namespace ExplorerNative
 
             int due = Active.Debounce.DueIn(Environment.TickCount64);
 
-            // Marked for a reload with no burst in progress — a tab coming back,
+            // Marked for a reload with no burst in progress, a tab coming back,
             // the window being shown or brought to the front: at once.
             if (due < 0 && Active.NeedsRefresh) due = 50;
             if (retry) due = Math.Max(due, WatchRetryMs);
@@ -3664,8 +3664,8 @@ namespace ExplorerNative
         /// Puts new sizes and dates on the rows of files that were written to,
         /// without re-reading the folder: the cursor, the selection and the
         /// order stay exactly as they are and nothing is read aloud. Anything it
-        /// cannot do that way — a file it has no row for, one that has gone or
-        /// is now hidden — becomes an ordinary reload.
+        /// cannot do that way, a file it has no row for, one that has gone or
+        /// is now hidden, becomes an ordinary reload.
         /// </summary>
         private async void UpdateRowsInPlace(Pane pane, List<string> paths)
         {
@@ -3754,7 +3754,7 @@ namespace ExplorerNative
         /// go, and only applications that registered a handle are asked; the
         /// rest simply make it fail with "this device is currently in use". The
         /// folder watcher's directory handle was one of those, so a USB stick
-        /// whose folder was on screen — or merely left in a tab — could not be
+        /// whose folder was on screen, or merely left in a tab, could not be
         /// ejected. This opens a handle of its own on the same folder, purely to
         /// register it; WM_DEVICECHANGE then says DBT_DEVICEQUERYREMOVE, and the
         /// window lets go of both.
@@ -3946,7 +3946,7 @@ namespace ExplorerNative
         /// Hidden in the tray, the window does nothing: the availability poll
         /// (a Directory.Exists on a share every four seconds), the watch timer
         /// and both folder watchers all stop. Shown again, each folder is
-        /// watched again and the one in front is read quietly, for whatever
+        /// watched again and the one in front is read silently, for whatever
         /// changed while nobody was looking.
         /// </summary>
         protected override void OnVisibleChanged(EventArgs e)
@@ -3995,8 +3995,8 @@ namespace ExplorerNative
         private const long WatchDiedRetryMs = 5_000;
 
         /// <summary>
-        /// Minimised, the availability poll stops — a probe of a share every four
-        /// seconds for a window nobody is looking at — and starts again on restore.
+        /// Minimised, the availability poll stops, a probe of a share every four
+        /// seconds for a window nobody is looking at, and starts again on restore.
         /// </summary>
         protected override void OnResize(EventArgs e)
         {
@@ -4041,7 +4041,7 @@ namespace ExplorerNative
         ///
         /// Only the pane on screen is refreshed here. The other one is left
         /// marked and re-read when it is switched to, because rebuilding a list
-        /// nobody is looking at is work for its own sake — and because navigation
+        /// nobody is looking at is work for its own sake, and because navigation
         /// is written in terms of the active pane.
         /// </summary>
         private async void ApplyPendingRefresh()
@@ -4065,7 +4065,7 @@ namespace ExplorerNative
                 }
 
                 // What the watcher collected. Rows of files written to are updated
-                // where they stand — unless the list is ordered by size or date,
+                // where they stand, unless the list is ordered by size or date,
                 // where a new size or date can move a row, which is a reload.
                 var (reload, changed) = pane.Debounce.Take();
                 if (reload) pane.NeedsRefresh = true;
@@ -4091,13 +4091,13 @@ namespace ExplorerNative
                 if (IsTransferTarget(pane.CurrentPath)) return;
 
                 // A pane showing results is not showing this folder, and rebuilding
-                // it from the folder would throw the results away — silently, because
+                // it from the folder would throw the results away, silently, because
                 // something changed on disk that nobody in front of the screen did.
                 // The mark is left standing, so leaving the results re-reads then.
                 if (pane.SearchTerm != null) return;
 
                 // Nor while a search is still gathering: a reload is a navigation,
-                // and a navigation cancels it — silently, so the results never came.
+                // and a navigation cancels it, silently, so the results never came.
                 // Nor while the folder is still arriving, or a navigation is still
                 // finding out whether its folder is there; the mark stays for after,
                 // and is looked at again in a second.
@@ -4125,7 +4125,7 @@ namespace ExplorerNative
                 if (IsDisposed) return;
 
                 // Said after the reload rather than before it, so the list already
-                // agrees with the announcement — and so it is not immediately
+                // agrees with the announcement, and so it is not immediately
                 // overwritten in the status bar by the reload's own item count.
                 // Only when the reload landed on the folder: one that fell back, or
                 // gave way to somebody's navigation, has said something truer, and
@@ -4165,7 +4165,7 @@ namespace ExplorerNative
         ///
         /// One slow answer is not a missing share. A busy server can easily take
         /// longer than the probe allows, and acting on a single timeout meant a
-        /// share under load kicked the user up a level — repeatedly, every few
+        /// share under load kicked the user up a level, repeatedly, every few
         /// seconds, in exactly the situation this app exists to handle well.
         /// </summary>
         private const int FailedProbesBeforeGivingUp = 2;
@@ -4183,7 +4183,7 @@ namespace ExplorerNative
             if (IsDisposed || IsDrivesView || _availabilityCheckRunning) return;
 
             // The pane and its navigation, fixed now. A navigation somebody
-            // started meanwhile — still checking its own folder, or reading it —
+            // started meanwhile, still checking its own folder, or reading it,
             // wins: falling back on top of it cancelled where they were going.
             var pane = Active;
             var path = pane.CurrentPath;
@@ -4289,7 +4289,7 @@ namespace ExplorerNative
 
             // Read aloud, exactly as arriving in a folder is. Landing on row 0 of
             // the drive list from row 0 of a folder is not a focus change to
-            // anything watching from outside — the index has not moved — so
+            // anything watching from outside, the index has not moved, so
             // Backspace out of C:\ produced a keystroke and not one word.
             bool sameRow = previousRow != null &&
                            string.Equals(previousRow, FocusedPathOf(pane), StringComparison.OrdinalIgnoreCase);
@@ -4301,7 +4301,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// A drive's whole row, as Conner asked for it: the letter, its name if it
-        /// has one, and how full it is — "D, Google Drive, 1 terabyte of 5
+        /// has one, and how full it is, "D, Google Drive, 1 terabyte of 5
         /// terabytes used". All of it is in the name, and the size column is
         /// left empty, so nothing is said twice.
         /// </summary>
@@ -4323,7 +4323,7 @@ namespace ExplorerNative
             // Google Drive answers for itself, because Windows cannot answer for
             // it. The letter is `subst` onto a directory and a subst drive is not
             // a volume, so DriveInfo hands back the *host* disk's size, free
-            // space and label — a 5TB Drive on a 500GB machine listed as "431 GB
+            // space and label, a 5TB Drive on a 500GB machine listed as "431 GB
             // free of 475 GB, Local Disk", which is the C: drive wearing a
             // different letter. The real numbers came back in the same About
             // response that proved the token at mount.
@@ -4419,8 +4419,8 @@ namespace ExplorerNative
         {
             List<Entry> entries;
 
-            // A navigation started after this one — even one still checking that
-            // its folder is there, which has cancelled nothing yet — bumps this.
+            // A navigation started after this one, even one still checking that
+            // its folder is there, which has cancelled nothing yet, bumps this.
             int navigation = pane.NavigationId;
             bool Overtaken() => pane.NavigationId != navigation;
 
@@ -4431,8 +4431,8 @@ namespace ExplorerNative
             if (keepFocus && sameFolder) preferPath = previousRow ?? preferPath;
 
             // Rows go on screen as they arrive. The listing is produced on a
-            // worker a batch at a time — a page from Google, a few hundred
-            // entries from the disk — and the window shows what there is so far,
+            // worker a batch at a time, a page from Google, a few hundred
+            // entries from the disk, and the window shows what there is so far,
             // so a big folder or a slow share fills in rather than showing the
             // last folder until the whole answer is in. A folder that lists
             // quickly still appears in one go: nothing is shown until the first
@@ -4467,8 +4467,8 @@ namespace ExplorerNative
             try
             {
                 // A Google Drive folder has nothing in it until it is asked for,
-                // and asking is a network listing and a placeholder per entry —
-                // seconds for a big one — so it is always on a worker, and its
+                // and asking is a network listing and a placeholder per entry,
+                // seconds for a big one, so it is always on a worker, and its
                 // pages are what fills the list.
                 var drive = Drive;
                 var producing = Task.Run(() =>
@@ -4492,7 +4492,7 @@ namespace ExplorerNative
             catch (DirectoryNotFoundException)
             {
                 // Checked after the wait, which can be seconds a level on a dead
-                // share: a navigation somebody started meanwhile wins — including
+                // share: a navigation somebody started meanwhile wins, including
                 // one still checking its folder, which has cancelled nothing yet.
                 var fallback = await NearestExistingAncestorAsync(path);
                 if (IsDisposed || token.IsCancellationRequested || Overtaken()) return false;
@@ -4540,7 +4540,7 @@ namespace ExplorerNative
             // against "this folder was already empty and still is", and where the
             // cursor was, which decides whether the screen reader will say
             // anything at all about where it lands. A reload that keeps the
-            // cursor keeps it where it is *now* — taken before the reload, it was
+            // cursor keeps it where it is *now*, taken before the reload, it was
             // wherever the cursor had been when a slow listing began, and arrowing
             // on while it ran was undone when it finished.
             if (partial.Shown)
@@ -4560,7 +4560,7 @@ namespace ExplorerNative
             // selection with it. Read before the listing, this put the cursor
             // back where it had been when a slow listing began, and every quiet
             // reload cut a twelve-file selection down to the focused row with
-            // nothing said — the next Delete acting on one file.
+            // nothing said, the next Delete acting on one file.
             List<string>? selectedNow = null;
             if (keepFocus && sameFolder)
             {
@@ -4599,8 +4599,8 @@ namespace ExplorerNative
             // five of six nested folders silent, because in a virtual list an
             // item's identity is its index and landing on row 0 from row 0 is not
             // a change to anything watching. Predicting when it *would* fire was
-            // wrong twice — once from the landing row, once from whether the list
-            // grew — leaving folders silent one way and saying the name twice the
+            // wrong twice, once from the landing row, once from whether the list
+            // grew, leaving folders silent one way and saying the name twice the
             // other. Raising the event explicitly works in some trees and not
             // others, because the reader de-duplicates by that same unchanged
             // identity and drops it exactly when it is needed.
@@ -4613,8 +4613,8 @@ namespace ExplorerNative
             //
             // Except a quiet reload of the same folder that left the cursor on the
             // same item: that is the folder watcher, and saying the row again cut
-            // the screen reader off every time something in the folder changed —
-            // a download being written, a log growing — even from another window.
+            // the screen reader off every time something in the folder changed,
+            // a download being written, a log growing, even from another window.
             bool sameRow = sameFolder && previousRow != null &&
                            string.Equals(previousRow, FocusedPathOf(pane), StringComparison.OrdinalIgnoreCase);
             FocusListAndRow(pane, readRowAloud: !(quiet && sameRow));
@@ -4623,7 +4623,7 @@ namespace ExplorerNative
             // screen reader has nothing to read: arriving in one was complete
             // silence, indistinguishable from the key not having worked. Said
             // regardless of the navigation announcement setting, because this is
-            // not the folder's name being repeated — it is the only thing there
+            // not the folder's name being repeated, it is the only thing there
             // is to say.
             //
             // Not repeated when a folder that was already empty is merely
@@ -4675,7 +4675,7 @@ namespace ExplorerNative
         ///   down with them; it is never left on whatever slid into its place.
         /// - **Only one landing is chosen.** The row to come back to may not have
         ///   arrived yet; until it does, the cursor is not put anywhere, and it is
-        ///   put there the moment it does — unless somebody has already moved it,
+        ///   put there the moment it does, unless somebody has already moved it,
         ///   in which case their choice stands.
         /// </summary>
         private sealed class ProgressiveLoad
@@ -4753,7 +4753,7 @@ namespace ExplorerNative
             private void ShowArrived()
             {
                 // Everything that arrived since the last tick, merged among
-                // itself first — those are short — so the long list on screen is
+                // itself first, those are short, so the long list on screen is
                 // merged into once per tick, not once per batch.
                 List<Entry>? fresh = null;
                 while (_arrived.TryDequeue(out var batch))
@@ -4800,8 +4800,8 @@ namespace ExplorerNative
             {
                 Put(entries);
 
-                // Nothing ever arrived to land on — the remembered row is gone, and
-                // nobody has moved — so land where a finished load would have.
+                // Nothing ever arrived to land on, the remembered row is gone, and
+                // nobody has moved, so land where a finished load would have.
                 if (!_landed && CurrentIndex(_pane) < 0)
                 {
                     _landed = true;
@@ -5166,7 +5166,7 @@ namespace ExplorerNative
         private List<Entry> EnumerateSorted(string path, Action<List<Entry>>? offer, CancellationToken token)
         {
             // One directory scan, not two. GetDirectories followed by GetFiles
-            // walks the same folder twice — two full round trips on a share, and
+            // walks the same folder twice, two full round trips on a share, and
             // twice the work for the same answer on a folder of a hundred
             // thousand entries. Attributes, length and timestamp all come out of
             // the single scan that found the entry, so nothing is asked twice.
@@ -5181,7 +5181,7 @@ namespace ExplorerNative
             // without touching the filesystem at all.
             //
             // Enumerating cloud placeholders costs about fifteen milliseconds
-            // each and is never cached — a folder of 2118 tracks measured 33
+            // each and is never cached, a folder of 2118 tracks measured 33
             // seconds, every visit, against 310ms for a local folder of twice
             // the size. Every fact the loop below wants was already fetched from
             // Drive to create those placeholders and was being thrown away, so
@@ -5205,7 +5205,7 @@ namespace ExplorerNative
 
                 // The row is built straight from the directory scan's own record.
                 // Going through EnumerateFileSystemInfos made a FileInfo per entry
-                // — an object and two strings — only to copy four facts out of it
+                // an object and two strings, only to copy four facts out of it
                 // and drop it; at a hundred thousand files that was a third of
                 // the listing. The facts are the same ones, read from the same
                 // record, and so is every exception the scan can throw.
@@ -5241,8 +5241,8 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// What <c>DirectoryInfo.EnumerateFileSystemInfos()</c> asks for — every
-        /// entry, nothing skipped, an unreadable folder an exception — with a
+        /// What <c>DirectoryInfo.EnumerateFileSystemInfos()</c> asks for, every
+        /// entry, nothing skipped, an unreadable folder an exception, with a
         /// bigger buffer: each request to the filesystem brings back sixteen
         /// times as many names, so a big folder is far fewer round trips to a
         /// share. Measured through \\localhost\C$, 100,000 files listed in 105ms
@@ -5319,8 +5319,8 @@ namespace ExplorerNative
 
         /// <summary>
         /// A new order for the rows already on screen, without reading the
-        /// folder again. Reloading to re-sort cost a whole listing — on the
-        /// Drive letter a round trip to Google — for rows already in hand.
+        /// folder again. Reloading to re-sort cost a whole listing, on the
+        /// Drive letter a round trip to Google, for rows already in hand.
         /// Sorted on a worker, and the cursor stays on the same item. A folder
         /// still loading is reloaded instead, since half its rows are not here.
         /// </summary>
@@ -5579,7 +5579,7 @@ namespace ExplorerNative
                 }
                 catch (ArchivePasswords.Declined)
                 {
-                    // Cancelled at the password question: stops quietly.
+                    // Cancelled at the password question: stops silently.
                     return (false, default);
                 }
                 catch (OperationCanceledException)
@@ -6299,8 +6299,8 @@ namespace ExplorerNative
                 }
 
                 // Focus, on this way out too. A typed value that is not blank but
-                // normalises to nothing — a lone quote, an environment variable that
-                // expands to nothing — left the keyboard on the form, where no arrow
+                // normalises to nothing, a lone quote, an environment variable that
+                // expands to nothing, left the keyboard on the form, where no arrow
                 // moves and a screen reader has nothing to read. Every other exit from
                 // this method already puts it back.
                 if (typed.Length == 0) { RestoreListFocus(); return; }
@@ -6333,8 +6333,8 @@ namespace ExplorerNative
                 if (folderCheck == FolderProbe.Present)
                 {
                     // Focus on this way out too. NavigateAsync only restores it when
-                    // it lands: a folder that exists and cannot be read — "C:\System
-                    // Volume Information" is one keystroke away — announces "No
+                    // it lands: a folder that exists and cannot be read, "C:\System
+                    // Volume Information" is one keystroke away, announces "No
                     // permission to read" and returns, with the prompt already closed
                     // and the keyboard on the form, where no arrow moves and the
                     // screen reader has nothing to read.
@@ -6371,17 +6371,17 @@ namespace ExplorerNative
         ///
         /// The count is reported after the reload, not before it: the number of
         /// items is the one thing a refresh can change, so it is the only part
-        /// worth hearing. The operations that refresh as part of finishing —
-        /// delete, paste, rename — go straight to <see cref="RefreshAsync"/> and
+        /// worth hearing. The operations that refresh as part of finishing,
+        /// delete, paste, rename, go straight to <see cref="RefreshAsync"/> and
         /// keep their own announcement as the last word.
         /// </summary>
         private async void Refresh_()
         {
             try
             {
-                // In a set of results, refreshing means running the search again —
+                // In a set of results, refreshing means running the search again,
                 // not throwing them away and reloading the folder they came from,
-                // which is what "refresh" would otherwise quietly do to the list
+                // which is what "refresh" would otherwise silently do to the list
                 // somebody is looking at.
                 if (Active.SearchTerm is { } term)
                 {
@@ -6389,7 +6389,7 @@ namespace ExplorerNative
                     // minutes, and a folder made since could hide what is in it.
                     Drive?.ForgetFolderGraph();
 
-                    // async void, same as SearchHere — see the guard there.
+                    // async void, same as SearchHere, see the guard there.
                     try { await RunSearchAsync(term); }
                     catch (Exception ex)
                     {
@@ -6457,7 +6457,7 @@ namespace ExplorerNative
         /// Asks what to look for and then looks for it. F1.
         ///
         /// The dialog is <see cref="PromptForm"/>, which is already a labelled
-        /// field with OK and Cancel that opens with the caret in it — a second
+        /// field with OK and Cancel that opens with the caret in it, a second
         /// dialog class saying the same thing would be one more window to keep
         /// accessible and no better for it.
         /// </summary>
@@ -6499,7 +6499,7 @@ namespace ExplorerNative
             // This method is `async void`, so anything escaping it goes to
             // Application.ThreadException and puts the crash dialog up. The
             // search itself catches its own failures, but building the rows,
-            // naming the pane and announcing the count are all outside that —
+            // naming the pane and announcing the count are all outside that,
             // and PasteClipboard already carries this exact guard, for this exact
             // reason. A search that goes wrong should say so and leave the window
             // standing.
@@ -6526,7 +6526,7 @@ namespace ExplorerNative
         ///
         /// A search started while a folder was still arriving cancelled that
         /// load, and a search that then failed left the rows of the folder before
-        /// under the new folder's name — so a paste, Backspace or the remembered
+        /// under the new folder's name, so a paste, Backspace or the remembered
         /// row all acted on one folder while the list showed another.
         /// </summary>
         private void ReloadIfUnfinished(Pane pane)
@@ -6551,7 +6551,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// The search again after something changed in the results (a rename, a
-        /// new folder, a delete): quietly, landing on <paramref name="landOn"/>,
+        /// new folder, a delete): silently, landing on <paramref name="landOn"/>,
         /// and not awaited by the operation, which says what it did at once.
         /// </summary>
         private async Task RerunSearchAsync(string term, string? landOn)
@@ -6578,7 +6578,7 @@ namespace ExplorerNative
             int navigation = ++pane.NavigationId;
 
             // Whose search this is. A second F1 while the first is still walking
-            // cancels it and starts again — and the loser then runs its finally
+            // cancels it and starts again, and the loser then runs its finally
             // and would put the *winner's* flag down, leaving a search in flight
             // that Escape no longer stops. The same shape as the in-flight
             // counter the provider keeps: a flag given back by somebody who no
@@ -6603,7 +6603,7 @@ namespace ExplorerNative
                 // Null means this is not on the mounted letter, which is the
                 // signal to walk the filesystem instead. The Drive half cannot be
                 // used for a local folder and the walk must not be used for a
-                // cloud one — see GoogleDrive.SearchAsync.
+                // cloud one, see GoogleDrive.SearchAsync.
                 var onDrive = drive == null
                     ? null
                     : await drive.SearchAsync(root, term, FileSearch.MostResults, token);
@@ -6659,7 +6659,7 @@ namespace ExplorerNative
             if (IsDisposed) return;
             if (token.IsCancellationRequested)
             {
-                // Stopped, and finished anyway — a Drive search's listing stage
+                // Stopped, and finished anyway, a Drive search's listing stage
                 // does not stop mid-request. The folder it interrupted goes back.
                 if (ReferenceEquals(pane.EnumCts, mine)) ReloadIfUnfinished(pane);
                 return;
@@ -6697,7 +6697,7 @@ namespace ExplorerNative
 
                 // On the list, and the first result read: landing on row one
                 // from row one is silent otherwise, as arriving in a folder is.
-                // Only with the window in front — focusing activates it, and a
+                // Only with the window in front, focusing activates it, and a
                 // long search finishing would take the keyboard from a progress
                 // window and read a row over whatever was being done there.
                 // A quiet re-run after a rename leaves the operation to speak.
@@ -6720,7 +6720,7 @@ namespace ExplorerNative
         ///
         /// It is a function of the pane rather than a line written at each of the
         /// places that navigate, because two of those set it from CurrentPath
-        /// alone — and a pane showing results has a CurrentPath that is the
+        /// alone, and a pane showing results has a CurrentPath that is the
         /// folder they came from. Switching tabs away from a set of results and
         /// back relabelled it as an ordinary folder while the list still held the
         /// results and the pane was still *named* "Results for love", so the path
@@ -6786,7 +6786,7 @@ namespace ExplorerNative
             AnnounceOperation("search.left", $"Left the results for {term}");
 
             // NavigateAsync clears SearchTerm, so the folder it lands in is an
-            // ordinary folder again — including for the watcher, which is held
+            // ordinary folder again, including for the watcher, which is held
             // off for exactly as long as results are showing.
             _ = NavigateAsync(pane.CurrentPath,
                               preferPath: pane.Positions.Recall(pane.CurrentPath));
@@ -6800,7 +6800,7 @@ namespace ExplorerNative
         ///
         /// The row is chosen as the list is built rather than corrected
         /// afterwards. Selecting the first row and then moving is two focus
-        /// changes, and a screen reader reads both — so a refresh announced a row
+        /// changes, and a screen reader reads both, so a refresh announced a row
         /// nobody asked for before announcing the right one.
         /// </summary>
         /// <returns>
@@ -6810,8 +6810,8 @@ namespace ExplorerNative
         /// </returns>
         private async Task<bool> RefreshAsync(string? selectAfter = null, string? folder = null, bool quiet = false)
         {
-            // The folder the operation happened in — given, or the one the item
-            // to land on is in, or where the window is — and every pane showing
+            // The folder the operation happened in, given, or the one the item
+            // to land on is in, or where the window is, and every pane showing
             // it. An operation that finished after a tab switch used to reload
             // whichever tab was in front, looking for a row that was not there.
             folder ??= selectAfter != null ? SafeParent(selectAfter) ?? Active.CurrentPath : Active.CurrentPath;
@@ -6830,7 +6830,7 @@ namespace ExplorerNative
                 // Showing results rather than the folder: the results are what
                 // is on screen, and an operation on one of them re-runs the
                 // search rather than replacing them with a folder. Only one
-                // that happened under the folder searched — an operation
+                // that happened under the folder searched, an operation
                 // finishing in the other tab has nothing to do with them.
                 if (pane.SearchTerm == null || !IsUnder(folder, pane.CurrentPath)) return false;
             }
@@ -6868,7 +6868,7 @@ namespace ExplorerNative
             // folder was populated from is what the pane is built out of now, so
             // without this a refresh would rebuild the same rows from the same
             // remembered answer and look like a refresh that does nothing. The
-            // alternative — re-walking the placeholders — reads a picture that is
+            // alternative, re-walking the placeholders, reads a picture that is
             // exactly as stale, thirty seconds more slowly.
             // Not for the watcher's quiet reload: on the Drive letter that is a
             // full listing from Google on every tick, and it throws away the
@@ -6881,7 +6881,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// A yes-or-no question for the disk, off this thread and given up on
-        /// after the navigation probe's time — as no.
+        /// after the navigation probe's time, as no.
         /// </summary>
         private static async Task<bool> Bounded(Func<bool> question)
         {
@@ -6926,7 +6926,7 @@ namespace ExplorerNative
                     e.Handled = e.SuppressKeyPress = true;
                     break;
 
-                // The way out of a set of results — and, while one is still
+                // The way out of a set of results, and, while one is still
                 // being gathered, the way to stop. Nothing else in the list has
                 // ever used Escape, and it is what every other dialog and mode in
                 // this application means by "take me back".
@@ -6956,7 +6956,7 @@ namespace ExplorerNative
                 // Extending or toggling a selection says nothing by itself.
                 //
                 // Measured: a plain arrow moves the focus and the screen reader
-                // reads the new row, but Shift+arrow and Ctrl+Space are silent —
+                // reads the new row, but Shift+arrow and Ctrl+Space are silent,
                 // the control reports those as a change to a *range* rather than
                 // a change of focus, and a range change is not something a reader
                 // announces. The selection was correct throughout and there was
@@ -7071,7 +7071,7 @@ namespace ExplorerNative
         /// the control has no items of its own to search, so its built-in
         /// incremental search only ever managed one letter at a time. Typing "sy"
         /// jumped to something starting with "s", then to something starting with
-        /// "y" — which in a large folder is worse than not having it.
+        /// "y", which in a large folder is worse than not having it.
         /// </summary>
         private void List_KeyPress(object? sender, KeyPressEventArgs e)
         {
@@ -7082,11 +7082,11 @@ namespace ExplorerNative
             var pane = Active;
 
             // Space toggles selection unless a word is already being typed, in
-            // which case it is part of the name — "Program Files" has one.
+            // which case it is part of the name, "Program Files" has one.
             // Asked of the word as it stands *now*, not as it stood whenever the
             // last letter was typed. Space belongs to a name while one is being
             // typed and to the selection otherwise, and a buffer that never
-            // expires until the next keystroke answers "still typing" for ever —
+            // expires until the next keystroke answers "still typing" for ever,
             // so a pause after any letter left Space unable to select again.
             // A space typed with Ctrl held is Ctrl+Space, a selection key.
             if (e.KeyChar == ' ' && ((ModifierKeys & Keys.Control) != 0 ||
@@ -7098,7 +7098,7 @@ namespace ExplorerNative
 
             // Accepted before the list is checked, deliberately. A folder that is
             // still loading used to swallow every letter typed into it and throw
-            // them away — invisible on a local disk, where loading is instant,
+            // them away, invisible on a local disk, where loading is instant,
             // and a second of dead keyboard on a Google Drive folder that has to
             // be fetched. The letters go into the buffer regardless and
             // SetEntries applies them the moment there is something to search.
@@ -7130,7 +7130,7 @@ namespace ExplorerNative
 
             // No match leaves the cursor where it is, as the shell does. The row
             // the user is on stays the row the screen reader last read, which is
-            // less confusing than being moved somewhere arbitrary — but then
+            // less confusing than being moved somewhere arbitrary, but then
             // nothing at all has happened, and a dead key and a name that is not
             // there sound exactly alike. This is the only thing that separates
             // them, which is why it is the one message here that is not off.
@@ -7331,7 +7331,7 @@ namespace ExplorerNative
             ShowDriveOnlyItems(focused, inArchive);
 
             // A shortcut is a file, and a file written into the Drive letter by
-            // hand is invisible and then gone — the sync root is built from the
+            // hand is invisible and then gone, the sync root is built from the
             // account's listing and cleared by the next mount, which is the fault
             // New file and New folder each had and each had fixed. There is no
             // way to put a `.lnk` into Drive short of uploading one, so in a
@@ -7652,7 +7652,7 @@ namespace ExplorerNative
             catch (Exception ex) { AnnounceAfterMenu("applemusic.failed", "Apple Music couldn't start the station: " + ex.Message); }
         }
 
-        /// <summary>Favorite or Unfavorite on the focused Apple Music song: changed at Apple, then said, and the row renamed quietly.</summary>
+        /// <summary>Favorite or Unfavorite on the focused Apple Music song: changed at Apple, then said, and the row renamed silently.</summary>
         private async void ToggleFocusedAppleFavorite()
         {
             string? busy = null;
@@ -7895,7 +7895,7 @@ namespace ExplorerNative
         ///
         /// Halved, from 350. The number was set against the cost of getting it
         /// wrong on a *local* file, where a wasted warm-up is a few milliseconds
-        /// of disk nobody notices — but the case it exists for is the opposite
+        /// of disk nobody notices, but the case it exists for is the opposite
         /// one: a track on a share or on the Drive letter, where the first read
         /// is most of a second of round trips and every one of those started
         /// earlier is a second off the wait before the music begins. On a slow
@@ -8014,7 +8014,7 @@ namespace ExplorerNative
         /// <summary>
         /// Says what a selection gesture just did, once the control has done it.
         ///
-        /// Only for the keys that are otherwise silent — Shift with an arrow, and
+        /// Only for the keys that are otherwise silent, Shift with an arrow, and
         /// Ctrl+Space. A plain arrow is left alone, because the reader announces
         /// that row itself and saying it again would be the echo this application
         /// spends most of its design avoiding.
@@ -8112,7 +8112,7 @@ namespace ExplorerNative
         /// ListView.FocusedItem looks like the obvious way to ask, and it is the
         /// single most expensive thing on the arrow-key path: in virtual mode its
         /// getter finds the index and then goes and *builds a ListViewItem* for it
-        /// — raising RetrieveVirtualItem, formatting every column — purely so the
+        /// raising RetrieveVirtualItem, formatting every column, purely so the
         /// caller can read .Index off the result and throw the rest away. Holding
         /// an arrow key did that on every repeat. This is the same question asked
         /// as one message that returns an integer.
@@ -8276,7 +8276,7 @@ namespace ExplorerNative
         /// Names the pane after the folder it is showing.
         ///
         /// Switching tabs moves focus between two separate list controls, and a
-        /// screen reader always names the control it lands on — there is no
+        /// screen reader always names the control it lands on, there is no
         /// setting anywhere that suppresses that, because it is not an
         /// announcement the application makes. So these were called "Tab 1 files
         /// and folders" and "Tab 2 files and folders", which is why turning the
@@ -8292,15 +8292,15 @@ namespace ExplorerNative
         /// control a screen reader is sitting on is an announcement, because the
         /// name of the focused object changed and that is an event NVDA reads.
         /// Navigation calls this on the way into every folder, and the list is
-        /// already focused every time — so opening a folder spoke its name over
+        /// already focused every time, so opening a folder spoke its name over
         /// the row that had just been focused, which is the exact thing
         /// SpeakNavigation is off by default to prevent. The setting was working
         /// and something else was talking, again.
         ///
         /// The name still has to end up right, or coming back to this pane names
         /// the folder it was showing two navigations ago. So it is held and
-        /// applied when the keyboard leaves — see <see cref="ApplyPendingName"/>,
-        /// which runs on the list's Leave — and a tab switch, which names the
+        /// applied when the keyboard leaves, see <see cref="ApplyPendingName"/>,
+        /// which runs on the list's Leave, and a tab switch, which names the
         /// pane *before* moving focus to it, still finds it correct on arrival.
         /// </summary>
         private static void UpdatePaneName(Pane pane)
@@ -8404,7 +8404,7 @@ namespace ExplorerNative
         /// The order is the point. SetEntries picks the row while the list may not
         /// have focus yet, and a row focused in an unfocused control announces
         /// nothing; the control is then focused, and all a screen reader has to
-        /// report at that moment is the list itself — which is where "Conner,
+        /// report at that moment is the list itself, which is where "Conner,
         /// 7 items" came from instead of the name of the first file. Re-applying
         /// the row *after* the control has focus produces the event that names it.
         /// </summary>
@@ -8436,8 +8436,8 @@ namespace ExplorerNative
             // Tell the accessibility layer where the focus is, every time.
             //
             // Whether the control raises this itself turns out not to be
-            // predictable: the same shape of move — same landing row, list
-            // growing — produced an announcement on one folder and silence on
+            // predictable: the same shape of move, same landing row, list
+            // growing, produced an announcement on one folder and silence on
             // another. Guessing was tried twice and was wrong both times, once
             // leaving folders silent and once saying the name twice. Sending it
             // unconditionally removes the guess: the focus really is on this row,
@@ -8449,7 +8449,7 @@ namespace ExplorerNative
             // This is measured, not guessed. With NVDA's own speech logging on,
             // going *into* a folder produces a focus event and NVDA announces the
             // row; arrow keys likewise. Going *up* produces no focus event at all
-            // — NVDA's log records the keystroke and nothing else — so whatever
+            // NVDA's log records the keystroke and nothing else, so whatever
             // the cursor lands on is never spoken. That one case is ours to fill,
             // and only that one: saying it anywhere else talks over NVDA.
             if (readRowAloud) SpeakRow(pane, index);
@@ -8503,7 +8503,7 @@ namespace ExplorerNative
         ///
         /// Two things make this fast. The directory/file question is answered
         /// from the entry we already enumerated instead of by calling
-        /// Directory.Exists then File.Exists — on a remote share those are two
+        /// Directory.Exists then File.Exists, on a remote share those are two
         /// round trips, roughly 200ms of dead time before anything starts. And
         /// ShellExecute runs on a worker, because resolving a file association
         /// can block for a noticeable moment and there is no reason for the
@@ -8531,7 +8531,7 @@ namespace ExplorerNative
 
             // In a set of results, Enter goes to where the thing lives and lands
             // on it, rather than opening it. A result is an answer to "where did
-            // I put that", and the folder it is in is the rest of that answer —
+            // I put that", and the folder it is in is the rest of that answer,
             // the tracks either side of it, and somewhere to press Enter a second
             // time if opening it was what was wanted after all. Shift+Enter
             // still opens the result itself in its own app.
@@ -8574,7 +8574,7 @@ namespace ExplorerNative
             // and the music starting says the rest.
             //
             // True means the player has taken responsibility for the file, not
-            // that it has started playing it — the opening happens on a worker,
+            // that it has started playing it, the opening happens on a worker,
             // because on a cloud or network track it is seconds of waiting on a
             // header and this is the keystroke handler. If it turns out nothing
             // can decode the file, the player hands it on to whatever owns the
@@ -8596,7 +8596,7 @@ namespace ExplorerNative
             }
 
             // The preference is on by default, so before any AI is set up Enter
-            // says what to do instead of quietly opening the picture.
+            // says what to do instead of silently opening the picture.
             if (!openExternally && _settings.AiDescribeOnEnter && AiDescriber.IsPicture(path))
             {
                 AnnounceOperation("ai.failed", AiNotSetUp);
@@ -8727,7 +8727,7 @@ namespace ExplorerNative
             // paints its own window. Start the download here instead, in the
             // seconds it takes to find that window: measured on a 16.8MB track,
             // 3.9 seconds of frozen application against 111ms. Nothing is waited
-            // for and nothing can fail the copy — see GoogleDrive.Warm.
+            // for and nothing can fail the copy, see GoogleDrive.Warm.
             //
             // Only on a copy, never on a cut. A cut whose paste lands back inside
             // Drive is a move, which the application does as one metadata request
@@ -8737,7 +8737,7 @@ namespace ExplorerNative
 
             // One item is just "Copied". It used to be "Copied file" or "Copied
             // folder", which said what the row that had *just been read out* had
-            // already said, and cost a round trip to a share to work out — the
+            // already said, and cost a round trip to a share to work out, the
             // type was looked up in the pane rather than asked of the filesystem
             // precisely because asking was too expensive to be worth it, which is
             // a good sign the word was not worth having.
@@ -8780,7 +8780,7 @@ namespace ExplorerNative
                 // This method is `async void`, so anything escaping it goes to
                 // Application.ThreadException and puts the crash dialog up. Most
                 // of RunTransfer is already inside a try, but the setup before it
-                // is not — and "a dialog that throws on its way up" is a case
+                // is not, and "a dialog that throws on its way up" is a case
                 // this file already has a rule about, one paragraph down, for the
                 // suppression counter. A paste that cannot start should say so
                 // and leave the window standing.
@@ -8805,12 +8805,12 @@ namespace ExplorerNative
         /// Copies into a Drive folder by uploading, with the same dialog the
         /// local path uses.
         ///
-        /// Robocopy cannot do this. There is nothing to copy *to* — a placeholder
-        /// is not a file with room in it — so the bytes go to Google and the
+        /// Robocopy cannot do this. There is nothing to copy *to*, a placeholder
+        /// is not a file with room in it, so the bytes go to Google and the
         /// placeholder is made afterwards, from the id that comes back.
         ///
         /// Folders used to be refused here rather than half-copied, and the
-        /// missing half was never the API — it was knowing which Drive id each
+        /// missing half was never the API, it was knowing which Drive id each
         /// created directory got, so the files below it had somewhere to be
         /// addressed to. <see cref="DriveUpload"/> is that, and this method is now
         /// the window around it: survey, dialog, refresh, sentence.
@@ -8820,7 +8820,7 @@ namespace ExplorerNative
         {
             // On a worker, and the whole walk in one go. These paths can be on a
             // share that has gone away, where a single Directory.Exists blocks for
-            // seconds — and the sources of a paste into Drive are exactly the
+            // seconds, and the sources of a paste into Drive are exactly the
             // paths most likely to be somewhere slow. Everything the dialog needs
             // to open with real numbers in it comes out of this one pass.
             var work = await Task.Run(() => DriveUpload.Survey(paths));
@@ -8859,7 +8859,7 @@ namespace ExplorerNative
                 // at once and this is the thread they all queue on.
                 //
                 // Before there is a handle there is nothing to invoke on, and the
-                // report that arrives then is the one carrying the totals — the
+                // report that arrives then is the one carrying the totals, the
                 // survey is finished and the window has not opened yet. Handed
                 // straight over, it is held and drawn on Shown.
                 try
@@ -8870,7 +8870,7 @@ namespace ExplorerNative
                 catch { }
             });
 
-            // The destination only, not the whole watcher — see _transferTargets.
+            // The destination only, not the whole watcher, see _transferTargets.
             // An upload to Drive is the longest thing this application does, and
             // it is the one that used to take the entire file manager with it.
             //
@@ -8884,7 +8884,7 @@ namespace ExplorerNative
 
             // What ended the upload, when something other than cancelling did.
             //
-            // This used to be `catch { }` — every failure that reached the top
+            // This used to be `catch { }`, every failure that reached the top
             // was swallowed, and the sentence afterwards was assembled from the
             // per-file error list. Which is fine for a per-file failure and
             // silent for the one that stops the whole run: an upload that died
@@ -8893,7 +8893,7 @@ namespace ExplorerNative
             string? failure = null;
 
             // The window's handle made here, on the UI thread, before any report
-            // can arrive. Otherwise the first one — from a worker — could find no
+            // can arrive. Otherwise the first one, from a worker, could find no
             // handle, and call Update on the window from that worker while Show
             // was creating it here, or be stored just after Shown had looked.
             _ = window.Handle;
@@ -8925,7 +8925,7 @@ namespace ExplorerNative
             finally
             {
                 // In a finally, not after the await. A raise left standing used
-                // to mean the folder watcher never refreshed anything again — a
+                // to mean the folder watcher never refreshed anything again, a
                 // window that silently stops noticing changes, with nothing to
                 // connect it back to a failed upload. That is still true of the
                 // destination it is now scoped to.
@@ -8956,7 +8956,7 @@ namespace ExplorerNative
             }
 
             // Something stopped the whole run rather than one file. Said first,
-            // because it is the reason the count is what it is — and because
+            // because it is the reason the count is what it is, and because
             // without it an upload that fell over on its first folder reported
             // "Uploaded 0 files to Google Drive", which reads as success.
             if (failure != null)
@@ -9001,8 +9001,8 @@ namespace ExplorerNative
         /// Moves items from one Drive folder to another, through Drive.
         ///
         /// It takes the conflict setting like every other paste. It used to be
-        /// handed nothing — not even the answer somebody had just given in the
-        /// Ask dialog — and moved regardless, so "Skip" left Drive holding two
+        /// handed nothing, not even the answer somebody had just given in the
+        /// Ask dialog, and moved regardless, so "Skip" left Drive holding two
         /// files of one name.
         /// </summary>
         private Task<bool> MoveWithinDrive(string[] paths, string destination, PasteConflictPolicy conflicts) =>
@@ -9013,7 +9013,7 @@ namespace ExplorerNative
         ///
         /// What this adds to a move is the name, because a copy is the one
         /// operation whose destination nearly always already holds the name it is
-        /// bringing — duplicating a file in place is the ordinary case. Drive is
+        /// bringing, duplicating a file in place is the ordinary case. Drive is
         /// perfectly happy with two files of one name in one folder; a drive
         /// letter is not. So a clash is always resolved before the request, and
         /// what it is resolved *to* is the paste conflict setting.
@@ -9023,7 +9023,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// A copy or move inside Drive, as a transfer: no bytes cross this
-        /// machine, but a tree is a request per item — minutes for a big one — so
+        /// machine, but a tree is a request per item, minutes for a big one, so
         /// it has a window with Cancel, is counted among the running transfers so
         /// quitting asks, and stands down only the watchers of the folders it is
         /// changing rather than every folder in the window.
@@ -9048,7 +9048,7 @@ namespace ExplorerNative
             // Reported as Google answers. A move is one request per item picked,
             // so it counts those. A copy is one request per file inside them,
             // counted and sized from Drive's listings first, then ticked off as
-            // each file is made — the window used to say "0 of 1" for the whole
+            // each file is made, the window used to say "0 of 1" for the whole
             // of a folder copy, because only the folder picked was ever reported.
             var ui = new Progress<TransferProgress>(window.Update);
             IProgress<TransferProgress> shown = ui;
@@ -9166,14 +9166,14 @@ namespace ExplorerNative
         /// - a name nothing holds goes across under its own name;
         /// - Skip leaves a clash alone, and so does Fill gaps unless both are
         ///   folders, which it merges;
-        /// - Overwrite replaces a file with a file — the copy made under a free
+        /// - Overwrite replaces a file with a file, the copy made under a free
         ///   name first and the old one trashed after, so a failure takes nothing
-        ///   away — and merges a folder into a folder;
+        ///   away, and merges a folder into a folder;
         /// - a file and a folder of one name are never swapped for each other;
         /// - keep both uses a free name.
         ///
         /// A destination Drive would not list is a failure for every item. Taken
-        /// as empty, everything went across under its own name — duplicates in
+        /// as empty, everything went across under its own name, duplicates in
         /// Drive under exactly the settings meant to prevent them.
         /// </summary>
         private async Task<int> OnDrive(string[] paths, string destination, PasteConflictPolicy conflicts,
@@ -9233,7 +9233,7 @@ namespace ExplorerNative
                     bool sameFolder = TransferRules.ParentIs(path, destination);
                     bool folder = await Task.Run(() => Directory.Exists(path));
 
-                    // Its folder listed recently enough to name it from — once per
+                    // Its folder listed recently enough to name it from, once per
                     // folder in this paste, when the first item from it comes up.
                     var source = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(path));
                     if (!string.IsNullOrEmpty(source) && relisted.Add(source))
@@ -9241,7 +9241,7 @@ namespace ExplorerNative
                     token.ThrowIfCancellationRequested();
 
                     // The name it arrives under is its name in Drive, which the
-                    // letter may show differently — cleaned up, or numbered as
+                    // letter may show differently, cleaned up, or numbered as
                     // the second of two. Asked, and passed explicitly, so what is
                     // checked for a clash is what lands.
                     var driveName = await drive.DriveNameOf(path, token)
@@ -9261,7 +9261,7 @@ namespace ExplorerNative
                     {
                         // The item itself. Moving it where it is does nothing, and
                         // replacing it with a copy of itself trashed the original
-                        // — its id, its sharing and its history with it.
+                        // its id, its sharing and its history with it.
                         if (move) continue;
                         if (conflicts != PasteConflictPolicy.AutoRename)
                         {
@@ -9307,14 +9307,14 @@ namespace ExplorerNative
                                 selection: selection, relisted: relisted, report: report);
 
                             // Everything inside went, so the emptied folder follows
-                            // it — to the Drive bin. Anything left behind keeps it.
+                            // it, to the Drive bin. Anything left behind keeps it.
                             // Asked of Drive, not of the listing: the listing leaves
                             // out Google documents, which were trashed with the
                             // "empty" folder.
                             if (move && errors.Count == failedBefore && log.SkippedCount == skippedBefore)
                             {
                                 if (!await drive.IsEmptyOnDrive(path, token))
-                                    errors.Add($"{wanted}: what is not a file here — Google documents, shortcuts — " +
+                                    errors.Add($"{wanted}: what is not a file here, Google documents, shortcuts, " +
                                                "was left in it, so it stays");
                                 else if (!await drive.TrashPath(path, token))
                                     errors.Add($"{wanted}: everything in it moved, and the empty folder could not be removed");
@@ -9329,7 +9329,7 @@ namespace ExplorerNative
                     }
 
                     // Numbered from Drive's own name, checked as the letter would
-                    // show it — and short enough that the letter keeps the number.
+                    // show it, and short enough that the letter keeps the number.
                     bool numbered = clash || ownClash;
                     var name = numbered
                         ? NameRules.UniqueAmong(DriveMount.RoomForNumber(driveName), n =>
@@ -9350,8 +9350,8 @@ namespace ExplorerNative
                             continue;
                         }
                         // Drive's own name unless a clash chose another: the name
-                        // here may be the letter's cleaned-up one — "Q1: x" shows
-                        // as "Q1_ x" — and passing that renamed the file.
+                        // here may be the letter's cleaned-up one, "Q1: x" shows
+                        // as "Q1_ x", and passing that renamed the file.
                         if (!await drive.MoveOnDrive(path, destination, name, token))
                         {
                             errors.Add($"{wanted}: Drive would not move it");
@@ -9414,7 +9414,7 @@ namespace ExplorerNative
         ///
         /// In that order and not the other, so there is no moment where neither
         /// exists. Trashed rather than deleted, because the whole application
-        /// treats "replace" as something somebody may want back — the Drive bin
+        /// treats "replace" as something somebody may want back, the Drive bin
         /// is the recycle bin here.
         ///
         /// Each step is checked. A trash that did not happen, followed by the
@@ -9447,9 +9447,9 @@ namespace ExplorerNative
         ///
         /// `Ask` was never resolved anywhere. `RoboCopyEngine` carried a comment
         /// saying "Ask, which the caller resolves before us" and this is the
-        /// caller — it passed the setting straight through, the engine's own
+        /// caller, it passed the setting straight through, the engine's own
         /// branch treated anything that was not Overwrite or Skip as auto-rename,
-        /// and so the option quietly meant "keep both". Somebody choosing it to be
+        /// and so the option silently meant "keep both". Somebody choosing it to be
         /// warned before a file was replaced was never warned and never told why.
         ///
         /// Null means the whole transfer is off.
@@ -9470,7 +9470,7 @@ namespace ExplorerNative
             // But "nothing clashed" and "nothing could be looked up" are not the
             // same answer, and treating them as one is what made this setting
             // look broken on Google Drive. A destination that would not list
-            // resolved to "keep both" without a word — and "keep both" on Drive
+            // resolved to "keep both" without a word, and "keep both" on Drive
             // then checked nothing either, because a folder there may hold two
             // files with the same name. Two silent assumptions in a row, and
             // what came out the far end was a duplicate.
@@ -9501,7 +9501,7 @@ namespace ExplorerNative
             // Whether the question could be answered at all. On Drive a
             // destination that will not list leaves us knowing nothing, and the
             // caller has to be able to tell that apart from "looked, found
-            // nothing" — see ResolveConflictPolicy.
+            // nothing", see ResolveConflictPolicy.
             bool checkedIt = !onDrive || there != null;
 
             foreach (var path in paths)
@@ -9570,8 +9570,8 @@ namespace ExplorerNative
             }
 
             // Out of Drive, a move ends with the originals trashed. Something the
-            // account may not remove — a file shared by somebody else, a shared
-            // drive where it is not a manager — was copied and then reported
+            // account may not remove, a file shared by somebody else, a shared
+            // drive where it is not a manager, was copied and then reported
             // as failed. Refused before anything is copied.
             if (move && Drive is { } source && !source.Owns(destination) && paths.All(p => source.Owns(p)))
             {
@@ -9625,8 +9625,8 @@ namespace ExplorerNative
                 bool allFromDrive = paths.All(p => Drive.Owns(p));
 
                 // Both ends on the drive. This fell through to robocopy, which
-                // cannot write into a placeholder tree — so moving a track from
-                // one Drive folder to another quietly did nothing useful. Drive
+                // cannot write into a placeholder tree, so moving a track from
+                // one Drive folder to another silently did nothing useful. Drive
                 // has no move of its own either: a file's parents are a property,
                 // so it is one PATCH that adds one and removes the other.
                 if (allFromDrive && move) return await MoveWithinDrive(paths, destination, conflicts);
@@ -9634,7 +9634,7 @@ namespace ExplorerNative
                 // And copying, which used to be refused outright on the grounds
                 // that it "means downloading and uploading the same bytes". It
                 // does not: Drive copies server-side, so nothing crosses the link
-                // at all — see DriveClient.Copy. The refusal was telling somebody
+                // at all, see DriveClient.Copy. The refusal was telling somebody
                 // to copy several gigabytes out of Drive and back in to avoid a
                 // request that moves none.
                 if (allFromDrive) return await CopyWithinDrive(paths, destination, conflicts);
@@ -9644,14 +9644,14 @@ namespace ExplorerNative
 
             var cts = new CancellationTokenSource();   // cancelled, never disposed: a worker may still hold its token
             var verb = move ? "Moving" : "Copying";
-            // A window, not a dialog — see UploadToDrive above for why the name
+            // A window, not a dialog, see UploadToDrive above for why the name
             // is worth the two extra characters.
             using var window = new ProgressForm(
                 TransferTitle(verb, destination), _settings, cts);
 
             // Out of the Drive letter, the window is told what Drive has actually
             // handed over rather than waiting for robocopy's late, whole-file
-            // lines — see RoboCopyEngine.WithDownloads for why both are needed.
+            // lines, see RoboCopyEngine.WithDownloads for why both are needed.
             // The watch costs nothing when it is null, and nothing on the fetch
             // path unless one exists.
             bool fromDrive = Drive != null && paths.Any(p => Drive.Owns(p));
@@ -9679,7 +9679,7 @@ namespace ExplorerNative
             // then rather than rebuilding the list all the way through.
             //
             // Raised and lowered around a try, for the reason written out in
-            // UploadToDrive below — which had this bug, had it fixed, and left
+            // UploadToDrive below, which had this bug, had it fixed, and left
             // the same shape here untouched. Two ordinary decrements on two
             // ordinary paths cover neither ShowDialog throwing on its way up nor
             // an announcement failing in between, and a counter left raised means
@@ -9700,18 +9700,18 @@ namespace ExplorerNative
             try
             {
                 // Out of the Drive letter. The engine strips the placeholder's
-                // Offline flag from what it writes — see RoboCopyEngine — and a
+                // Offline flag from what it writes, see RoboCopyEngine, and a
                 // move is never handed to robocopy, because deleting a placeholder
                 // is not deleting the file: nothing here answers the delete
                 // callback, so the file stays in Drive and comes straight back on
                 // the next mount. The move is finished below, through Drive.
 
                 // Under Fill gaps a folder already at the destination is merged
-                // into, and robocopy leaves out whatever is there already — so
+                // into, and robocopy leaves out whatever is there already, so
                 // the Drive original is not all copied and must not be trashed.
                 //
                 // And under keep both, what already held a name means the copy
-                // went elsewhere — "X (2)" — so "X" is not where to look for it.
+                // went elsewhere, "X (2)", so "X" is not where to look for it.
                 // Both asked on the worker: the destination can be a share, and
                 // the folder check used to run per name on the UI thread.
                 HashSet<string>? alreadyThere = null, merged = null;
@@ -9760,7 +9760,7 @@ namespace ExplorerNative
                     pause: window.Pause = new TransferPause());
 
                 // Show, not ShowDialog. The window is its own top-level window
-                // now and the file manager stays live behind it — which is the
+                // now and the file manager stays live behind it, which is the
                 // whole change: a copy is something you start and then get on
                 // with, and there is no reason the application should be gone
                 // while one runs. Awaiting on the UI thread returns to the
@@ -9812,7 +9812,7 @@ namespace ExplorerNative
                 {
                     // Copied counts files; Failed counts the items that could not
                     // be processed. Said separately because they are different
-                    // units — a single failed folder can be thousands of files.
+                    // units, a single failed folder can be thousands of files.
                     // One id for both verbs: a move that half succeeded is the
                     // same event as a copy that half succeeded, and the sentence
                     // already says which it was.
@@ -9859,13 +9859,13 @@ namespace ExplorerNative
         /// The second half of moving something out of Google Drive: sending the
         /// originals to the Drive trash, now that the copies are on disk.
         ///
-        /// Only after every file has copied — the caller checks — and never for a
+        /// Only after every file has copied, the caller checks, and never for a
         /// source the conflict policy skipped, because a skipped source was not
         /// copied and trashing it would lose it. If more were skipped than the
         /// outcome remembers by name, nothing is trashed at all: it cannot be told
         /// which ones are safe, and leaving a file in Drive is recoverable where
         /// trashing the only copy is not. The trash rather than a delete for the
-        /// same reason the Delete key uses it — it can be undone from
+        /// same reason the Delete key uses it, it can be undone from
         /// drive.google.com.
         /// </summary>
         /// <returns>How many originals were left in Drive.</returns>
@@ -9891,7 +9891,7 @@ namespace ExplorerNative
                 var name = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar));
 
                 // Stopped: what has been trashed stays trashed, and everything
-                // not yet looked at is still in Drive — said as that, not as
+                // not yet looked at is still in Drive, said as that, not as
                 // "the originals are still there" for all of them.
                 if (token.IsCancellationRequested) { stopped = true; break; }
                 looked++;
@@ -9899,7 +9899,7 @@ namespace ExplorerNative
                 if (merged != null && merged.Contains(name)) { mergedKept++; continue; }
                 if (renamedAway != null && renamedAway.Contains(name)) { renamedKept++; continue; }
 
-                // Left because the setting said so — not a failure to report.
+                // Left because the setting said so, not a failure to report.
                 if (skipped.Contains(name)) { skippedKept++; continue; }
                 if (!Drive.Owns(path)) { kept++; continue; }
 
@@ -9981,7 +9981,7 @@ namespace ExplorerNative
         /// "Copying" was enough when there could only ever be one of these and it
         /// was in front of everything. With several open at once, three windows
         /// all called "Copying" is a list you have to click through to read, so
-        /// the destination goes in the title — it is the one thing that
+        /// the destination goes in the title, it is the one thing that
         /// distinguishes two copies started a minute apart.
         /// </summary>
         private string TransferTitle(string verb, string destination)
@@ -9995,7 +9995,7 @@ namespace ExplorerNative
         ///
         /// Not simply <see cref="RefreshAsync"/> any more, which reloads
         /// whatever is on screen. That was right while the window was held modal
-        /// — what was on screen could only be the folder the paste happened in —
+        /// what was on screen could only be the folder the paste happened in,
         /// and it is wrong now: a copy that takes twenty minutes finishes with
         /// somebody three folders away, and reloading *their* folder underneath
         /// them is a list rebuilding itself for no reason they can see, with the
@@ -10355,7 +10355,7 @@ namespace ExplorerNative
         /// the other.
         ///
         /// async void, and safe because everything between here and the end is
-        /// inside a try — see the rule about an async void that throws taking the
+        /// inside a try, see the rule about an async void that throws taking the
         /// window with it. The setup before the try is a settings save and a
         /// dialog, and both are inside it.
         /// </summary>
@@ -10496,8 +10496,8 @@ namespace ExplorerNative
         /// <paramref name="intoNewFolder"/> is the difference between the two
         /// menu entries and it is the difference between a command that can
         /// collide and one that cannot. Extract makes a folder named after the
-        /// archive — uniquely, so a second attempt does not merge into the first
-        /// — and puts everything inside it, which is what unpacking a download
+        /// archive, uniquely, so a second attempt does not merge into the first
+        /// and puts everything inside it, which is what unpacking a download
         /// almost always means and which no conflict question applies to.
         /// Extract here puts the contents straight into the folder on screen, and
         /// that is where the paste conflict setting comes in, asked once about
@@ -10646,7 +10646,7 @@ namespace ExplorerNative
 
             // On a worker, like the sniff above. UniqueName is a loop of
             // existence checks, and the folder this is running in may be a share
-            // whose server has gone away — which is exactly the moment the window
+            // whose server has gone away, which is exactly the moment the window
             // must not freeze.
             // Archives extracted together share claimed: none of them has made
             // its folder yet, so the disk alone would hand them all the same one.
@@ -10773,8 +10773,8 @@ namespace ExplorerNative
         ///
         /// These were in the catalogue and raised by nothing: the policy is
         /// applied inside RoboCopyEngine and FileOperations, and neither used to
-        /// carry back what it had decided — so a paste that quietly renamed or
-        /// quietly replaced a file said only "Copy complete". Replacing is the
+        /// carry back what it had decided, so a paste that silently renamed or
+        /// silently replaced a file said only "Copy complete". Replacing is the
         /// one that destroys something and renaming is the one that moves the
         /// file out from under the name you were expecting; both are worth a
         /// sentence.
@@ -10830,7 +10830,7 @@ namespace ExplorerNative
 
                 // On the Drive letter a folder has to be made *in Drive*.
                 // Directory.CreateDirectory here made a real local directory
-                // inside the sync root that the account knew nothing about — so it
+                // inside the sync root that the account knew nothing about, so it
                 // never appeared, because the pane is built from the Drive
                 // listing, and it was deleted by the next mount, which clears the
                 // sync root. "Created folder" was announced every time.
@@ -10852,8 +10852,8 @@ namespace ExplorerNative
                 else
                 {
                     // On a worker, like the rename beside it. Both calls are
-                    // filesystem work — a loop of existence checks and then the
-                    // create — and on a share that has gone to sleep they freeze
+                    // filesystem work, a loop of existence checks and then the
+                    // create, and on a share that has gone to sleep they freeze
                     // the window for the SMB timeout with the prompt already
                     // dismissed and nothing on screen to say why.
                     var folder = Active.CurrentPath;
@@ -10872,7 +10872,7 @@ namespace ExplorerNative
             catch (Exception ex)
             {
                 // Focus, on every way out. A PromptForm has been up, so the
-                // keyboard is on the form — where no arrow works and a screen
+                // keyboard is on the form, where no arrow works and a screen
                 // reader has nothing to read.
                 Announce($"Could not create folder: {ex.Message}", isError: true);
                 RestoreListFocus();
@@ -10899,7 +10899,7 @@ namespace ExplorerNative
         /// Creates an empty file and puts the cursor on it.
         ///
         /// The name is offered with its extension selected off the end, so typing
-        /// replaces "New file" and leaves ".txt" — the same bargain renaming makes.
+        /// replaces "New file" and leaves ".txt", the same bargain renaming makes.
         /// </summary>
         private async void CreateNewFile()
         {
@@ -10922,7 +10922,7 @@ namespace ExplorerNative
 
                 // The same fault as New folder, one step worse: the local file
                 // really was created, was invisible from the moment it appeared,
-                // and was deleted by the next mount clearing the sync root — so
+                // and was deleted by the next mount clearing the sync root, so
                 // anything typed into it in between went with it.
                 if (Drive != null && Drive.Owns(Active.CurrentPath))
                 {
@@ -10975,15 +10975,15 @@ namespace ExplorerNative
         /// Makes a Windows shortcut to the focused row, in the folder that row is
         /// in, and lands on it.
         ///
-        /// It asks nothing. There is one sensible name — the target's, with
-        /// " - Shortcut" on the end, made unique if that is taken — and one
+        /// It asks nothing. There is one sensible name, the target's, with
+        /// " - Shortcut" on the end, made unique if that is taken, and one
         /// sensible place, which is next to the thing it points at. A dialog here
         /// would be a question with a right answer already in it, and this file
         /// has a rule about those.
         ///
         /// Everything that touches the filesystem is on a worker: the unique-name
         /// search is a loop of existence checks, and writing the `.lnk` is the
-        /// shell opening a file — both of them on a path that may be a share whose
+        /// shell opening a file, both of them on a path that may be a share whose
         /// server has gone to sleep, which is the case this rule exists for.
         ///
         /// Async void, like every other command a menu item invokes, so the try
@@ -11041,12 +11041,12 @@ namespace ExplorerNative
             var oldName = Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar));
 
             // The extension is left out of the selection, so typing replaces the
-            // name and keeps the type — folders have no extension to spare.
+            // name and keeps the type, folders have no extension to spare.
             bool isFolder = IsDirectoryInView(path);
             var newName = PromptForm.Ask(this, "Rename", "New name:", oldName, selectStem: !isFolder);
 
             // The prompt trims what comes back, so an untouched " notes.txt" comes
-            // back as "notes.txt" — which is not a rename anybody asked for.
+            // back as "notes.txt", which is not a rename anybody asked for.
             if (newName == null || newName == oldName || newName == oldName.Trim()) { RestoreListFocus(); return; }
 
             if (DescribeBadName(newName) is { } complaint)
@@ -11065,7 +11065,7 @@ namespace ExplorerNative
                 // A rename that changes only capitalisation is a rename, and it
                 // was impossible: the guard above compares ordinally so "A.txt"
                 // to "a.txt" gets this far, and then NTFS says the destination
-                // exists — because it is the same file. Windows renames it
+                // exists, because it is the same file. Windows renames it
                 // perfectly well when simply asked.
                 bool sameFileDifferentCase =
                     string.Equals(Path.GetFileName(path), newName, StringComparison.OrdinalIgnoreCase);
@@ -11077,7 +11077,7 @@ namespace ExplorerNative
                 // gone to sleep blocks until the SMB stack gives up, and so does
                 // Directory.Exists, and both of them are asked here about a path
                 // the user has just typed. Two probes, one after the other, on
-                // the thread that has to redraw — so renaming a file on a NAS
+                // the thread that has to redraw, so renaming a file on a NAS
                 // that had gone quiet froze the whole window for as long as it
                 // took, with the rename dialog already gone and nothing on
                 // screen to say why.
@@ -11099,7 +11099,7 @@ namespace ExplorerNative
 
                 // On the Drive letter the name lives in the account, not on this
                 // machine. File.Move renamed the placeholder and told Google
-                // nothing — so the next listing put the old name straight back,
+                // nothing, so the next listing put the old name straight back,
                 // and the renamed placeholder was left on disk under a name no
                 // listing mentions, invisible and in the way. "Renamed to X" was
                 // announced every time and nothing had been.
@@ -11119,7 +11119,7 @@ namespace ExplorerNative
                 //
                 // The exception is carried back out rather than caught in here,
                 // so the message on screen is still the one the filesystem gave
-                // — "access denied", "the file is in use by another process" —
+                // "access denied", "the file is in use by another process",
                 // and not a sentence this method made up about it.
                 await Task.Run(() =>
                 {
@@ -11178,7 +11178,7 @@ namespace ExplorerNative
             // many were taken out of it, and the placeholders are gone from
             // disk. Dropped here rather than left for the refresh to notice,
             // because a pane rebuilt from a remembered listing would show every
-            // deleted file still sitting there — which reads as a delete that
+            // deleted file still sitting there, which reads as a delete that
             // did nothing, whatever the count said.
             // Every folder something was taken from: results from several
             // folders left the others' listings still showing the trashed files.
@@ -11237,7 +11237,7 @@ namespace ExplorerNative
                 {
                     try
                     {
-                        // Exact: a PC folder "Backup." asked about plainly is
+                        // Exact: a PC folder "Backup." asked about clearly is
                         // "Backup", so one the Recycle Bin had refused read as
                         // gone and its Drive folder was trashed anyway.
                         var local = NameRules.ExactPath(pair.LocalFolder);
@@ -11305,8 +11305,8 @@ namespace ExplorerNative
         /// which items it did, so what is still there afterwards is the answer.
         /// The permanent-delete warning still comes up for anything the bin cannot
         /// take, and an item still there after somebody answered No or Cancel is
-        /// kept. Anything else still there — the shell stops at the first item it
-        /// cannot do — goes again on its own, which is also what gives each
+        /// kept. Anything else still there, the shell stops at the first item it
+        /// cannot do, goes again on its own, which is also what gives each
         /// failure its own reason.
         /// </summary>
         private static int RecycleAll(List<string> paths, IntPtr owner, List<string> errors)
@@ -11371,13 +11371,13 @@ namespace ExplorerNative
                 var landOn = RowAfterRemoving(paths);
 
                 // Anything on the Drive letter goes to the Drive trash instead. The
-                // Recycle Bin cannot hold it — there is no local file to move, only a
-                // placeholder — and deleting the placeholder would leave the file
+                // Recycle Bin cannot hold it, there is no local file to move, only a
+                // placeholder, and deleting the placeholder would leave the file
                 // sitting in Drive with nothing on this machine to show for it.
                 bool onDrive = Drive != null && paths.All(p => Drive.Owns(p));
 
                 // Half and half went the local way for all of it, which deletes the
-                // Drive placeholders and leaves the files in Drive — back on the next
+                // Drive placeholders and leaves the files in Drive, back on the next
                 // mount, after being counted as deleted.
                 if (!onDrive && Drive != null && paths.Any(p => Drive.Owns(p)))
                 {
@@ -11420,7 +11420,7 @@ namespace ExplorerNative
 
                     // The name goes in the middle, not on the end. Built as
                     // "Really {verb} {what}?" this read "Really send to the Recycle
-                    // Bin "song.flac"?" — the object after its own destination,
+                    // Bin "song.flac"?", the object after its own destination,
                     // which is not a sentence, and this one is read out loud.
                     var question = onDrive
                         ? $"Really move {what} to the Google Drive trash?"
@@ -11439,12 +11439,12 @@ namespace ExplorerNative
 
                 // Off the UI thread. Recycling a large tree walks every file in it to
                 // build the undo record, and permanent deletion walks it to unlink
-                // each one — either can take tens of seconds, and doing it inline froze
+                // each one, either can take tens of seconds, and doing it inline froze
                 // the window solid with no way to tell whether it had crashed.
                 (int Done, List<string> Errors) outcome;
 
                 // The folders being deleted from are held off the watcher, one refresh
-                // at the end rather than one per file removed — those folders only.
+                // at the end rather than one per file removed, those folders only.
                 // It was the whole window, and the Drive trash takes most of a second
                 // an item, so a big delete there froze every other folder's updates.
                 // Counted as a running transfer, so closing asks first.
@@ -11482,7 +11482,7 @@ namespace ExplorerNative
                             try
                             {
                                 // A name ending in a dot or a space, anywhere in the
-                                // path, is one the shell and every ordinary call trim —
+                                // path, is one the shell and every ordinary call trim,
                                 // "report." would delete "report". Only the exact
                                 // \\?\ form reaches it.
                                 var exact = NameRules.ExactPath(path);
@@ -11529,7 +11529,7 @@ namespace ExplorerNative
                 if (IsDisposed) return;
 
                 // Delete anyway, with deletes on: the other end of each pair goes
-                // too — to the Recycle Bin or the Drive trash, never for good.
+                // too, to the Recycle Bin or the Drive trash, never for good.
                 // What happened there is said below, after the refresh, so the
                 // "Deleted" that follows it no longer cuts it off.
                 List<string>? otherSide = null;
@@ -11566,7 +11566,7 @@ namespace ExplorerNative
 
                     // Where they went is the only difference between these, and this
                     // is the one place that knows it: the Drive trash, gone for good,
-                    // or the Recycle Bin. The sentence is the same either way — the id
+                    // or the Recycle Bin. The sentence is the same either way, the id
                     // is what says which, and what decides whether anybody hears it.
                     //
                     // The Drive case has its own pair, and only the batch belongs
@@ -11594,7 +11594,7 @@ namespace ExplorerNative
         /// <summary>
         /// Returns the keyboard to the list.
         ///
-        /// Anything modal — a properties sheet, an input box, an error — leaves
+        /// Anything modal, a properties sheet, an input box, an error, leaves
         /// focus on the form rather than on the list when it closes, and the form
         /// is a place where no key does anything at all. The paths that end in a
         /// refresh get this for free; the ones that do not have to ask.
@@ -11604,8 +11604,8 @@ namespace ExplorerNative
         ///
         /// Asks the control for the row's rectangle by index rather than through
         /// FocusedItem. In virtual mode that property's getter *constructs* the
-        /// item — raising RetrieveVirtualItem and formatting every column so the
-        /// caller can read one rectangle — and worse, it hands back our own
+        /// item, raising RetrieveVirtualItem and formatting every column so the
+        /// caller can read one rectangle, and worse, it hands back our own
         /// cached object, whose Bounds belong to wherever it last happened to be
         /// drawn.
         /// </summary>
@@ -11713,7 +11713,7 @@ namespace ExplorerNative
             {
                 // On a worker. ShowProperties is ShellExecuteEx with
                 // SEE_MASK_INVOKEIDLIST, which resolves the shell's id list for
-                // the path before it returns — and on a share that is not
+                // the path before it returns, and on a share that is not
                 // answering, that resolution is the window not repainting and
                 // not taking keys, with nothing said. Every other per-item shell
                 // touch on this keystroke path is already off the UI thread.
@@ -11789,7 +11789,7 @@ namespace ExplorerNative
             switch (outcome)
             {
                 // A command was chosen. Whatever it does finishes after the shell
-                // hands back, so a refresh here was always a moment too early —
+                // hands back, so a refresh here was always a moment too early,
                 // and in search results it ran the whole search again. The
                 // folder watcher picks up what the command changes.
                 case ShellContextMenu.MenuOutcome.Shown:
@@ -11798,10 +11798,10 @@ namespace ExplorerNative
                     break;
 
                 // Building it is two shell calls per selected item, measured at
-                // 8ms each on this machine — so the whole window used to stop
+                // 8ms each on this machine, so the whole window used to stop
                 // for twenty-four seconds on three thousand files and much
                 // longer on a real folder. Refused rather than half-built: a
-                // Windows menu that quietly applied to the first few hundred of
+                // Windows menu that silently applied to the first few hundred of
                 // a selection would be the worse bug by a distance.
                 case ShellContextMenu.MenuOutcome.TooSlow:
                     AnnounceOperation("shell.menu.slow",
@@ -11858,7 +11858,7 @@ namespace ExplorerNative
 
             // Off the UI thread, because the path came from the list and the list
             // can be showing a share whose server has gone away. Directory.Exists
-            // blocks for seconds on one of those, and this runs from a keystroke —
+            // blocks for seconds on one of those, and this runs from a keystroke,
             // the exact freeze DirectoryExistsAsync exists to prevent, reached by
             // calling the synchronous one two lines above where the rule is
             // written down.
@@ -11920,8 +11920,8 @@ namespace ExplorerNative
         ///
         /// Bound to the token the pane was loaded with, so navigating away stops
         /// it. Without that it kept walking the folders of a view the user had
-        /// already left — the single worst offender for the app feeling busy
-        /// long after it should have gone quiet — and wrote its answers into a
+        /// already left, the single worst offender for the app feeling busy
+        /// long after it should have gone quiet, and wrote its answers into a
         /// pane showing something else entirely.
         ///
         /// Never by walking the Drive letter: enumerating a cloud directory that
@@ -11961,7 +11961,7 @@ namespace ExplorerNative
                 // which is a syscall, and this loop runs on the UI thread once per
                 // subfolder on screen. A folder of five hundred already-measured
                 // subfolders on a share that has gone to sleep is five hundred
-                // blocking round trips on the thread that paints the window —
+                // blocking round trips on the thread that paints the window,
                 // arrived at through a *cache hit*, which is the path that is
                 // supposed to be the fast one.
                 //
@@ -12003,7 +12003,7 @@ namespace ExplorerNative
         /// <summary>
         /// Set by the tray while one of the audio dialogs is up. Opened with the
         /// window hidden, such a dialog has no owner, and a window shown
-        /// afterwards is not disabled by it — so Ctrl+P could open Preferences
+        /// afterwards is not disabled by it, so Ctrl+P could open Preferences
         /// on top of it.
         /// </summary>
         public static bool AudioDialogOpen { get; set; }
@@ -12079,7 +12079,7 @@ namespace ExplorerNative
 
             // Announced from what the write actually did. It said "saved"
             // unconditionally, because Save swallowed its own failure and
-            // returned void — so a preferences file that could not be written
+            // returned void, so a preferences file that could not be written
             // reported success and then lost the change on the next launch.
             if (Program.ApplySettings(Settings.WithChanges(_settings, before, dialog.Result)))
                 AnnounceOperation("settings.saved", "Preferences saved");
@@ -12282,7 +12282,7 @@ namespace ExplorerNative
             if (IsDisposed) return;
 
             // Once. It was counted twice, so every figure the perf log reported
-            // for status updates was double — and that log is how this codebase
+            // for status updates was double, and that log is how this codebase
             // decides what is actually slow.
             PerfCounters.StatusUpdate();
             _statusTimer?.Stop();   // a pending tick would only repeat this
@@ -12290,13 +12290,13 @@ namespace ExplorerNative
             var pane = Active;
             int total = pane.Entries.Count;
             int selected = pane.List.SelectedIndices.Count;
-            var prefix = TabSaid(" — ");
+            var prefix = TabSaid(" - ");
 
             // A list that stopped at the search cap says so, every time it is
             // read rather than once when the search finished. The announcement is
             // gone the moment anything else speaks, and "10000 items" is a
             // straight untruth to somebody who cannot see that the list runs off
-            // the end — which is the whole reason the cap is reported at all.
+            // the end, which is the whole reason the cap is reported at all.
             var more = pane.SearchTruncated ? ", and there are more" : "";
 
             var listed = $"{prefix}{CountSaid(pane, total)}{more}";
@@ -12321,8 +12321,8 @@ namespace ExplorerNative
         ///
         /// Cancelling the pending status update is the point. Status updates are
         /// coalesced onto a short timer, so a selection change that happened just
-        /// before an announcement would fire a moment afterwards and quietly
-        /// replace "Deleted 3 items" with the item count — the message would
+        /// before an announcement would fire a moment afterwards and silently
+        /// replace "Deleted 3 items" with the item count, the message would
         /// appear and vanish before it could be read.
         /// </summary>
         /// <summary>Unchanged text is not set again: each set lays the status strip out, once per arrow press.</summary>
@@ -12352,13 +12352,13 @@ namespace ExplorerNative
         /// <summary>
         /// An operation's result, routed by its catalogue id.
         ///
-        /// The id decides whether it is spoken and the sentence is what is said —
+        /// The id decides whether it is spoken and the sentence is what is said,
         /// the caller knows how many items and which one failed, and the
         /// catalogue's own template exists for previewing rather than for saying.
         /// An unknown id is spoken, so nothing goes quiet merely for not being
         /// catalogued yet.
         ///
-        /// The status bar gets it either way. That is not a channel any more —
+        /// The status bar gets it either way. That is not a channel any more,
         /// writing a silent line costs nothing and interrupts nobody, and a
         /// message routed nowhere used to leave the bar showing whatever it was
         /// showing before, which is a stale answer to a question somebody has
@@ -12379,8 +12379,8 @@ namespace ExplorerNative
         /// of.
         ///
         /// Each line is capped, and that is not tidiness. Google answers a 502
-        /// with a full HTML page — doctype, stylesheet, a link to a picture of a
-        /// robot — and one upload failure carrying that pushed the other
+        /// with a full HTML page, doctype, stylesheet, a link to a picture of a
+        /// robot, and one upload failure carrying that pushed the other
         /// nineteen off the screen and, read aloud, was a minute of markup
         /// before the sentence saying which file it was. The Drive layer cuts
         /// these down at the source now; this is the second line of defence, for
@@ -12496,7 +12496,7 @@ namespace ExplorerNative
             base.OnFormClosing(e);
         }
 
-        // ---- Carrying on after an update or a restart (5.6.1) ----
+        // ---- Continuing after an update or a restart (5.6.1) ----
 
         /// <summary>Running jobs an update or a restart can carry on afterwards, by a number of their own.</summary>
         private readonly Dictionary<int, CarryOnTransfers.Job> _carryable = new();
@@ -12780,8 +12780,8 @@ namespace ExplorerNative
         /// Asks before something ends the process out from under a transfer.
         /// True when there is nothing running, or when it was agreed to.
         ///
-        /// <paramref name="verb"/> is the word for what is about to happen —
-        /// "Close", "Quit", "Restart" — because "abandon it?" needs to say what
+        /// <paramref name="verb"/> is the word for what is about to happen,
+        /// "Close", "Quit", "Restart", because "abandon it?" needs to say what
         /// would be doing the abandoning, and all three reach here.
         /// </summary>
         public bool ConfirmAbandonTransfers(string verb)

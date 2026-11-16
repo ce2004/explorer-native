@@ -12,14 +12,14 @@ using System.Threading.Tasks;
 namespace ExplorerNative
 {
     /// <summary>
-    /// Tar, gzipped tar, the bare .gz — and, through <see cref="BsdTar"/>, the
+    /// Tar, gzipped tar, the bare .gz, and, through <see cref="BsdTar"/>, the
     /// reading and writing half of every other format as well.
     ///
     /// A tar is a container with no compression in it at all: entry header, entry
     /// bytes, entry header, entry bytes, to the end. That is why it is paired
     /// with a compressor, and why the pairing is the interesting part. The whole
     /// tar goes through one compressed stream, so unlike a zip there is no
-    /// per-entry boundary to hand to a different worker — but there does not need
+    /// per-entry boundary to hand to a different worker, but there does not need
     /// to be, because <see cref="ParallelGZip"/> cuts the *stream* into members
     /// instead. Every core is busy whether the archive is a hundred thousand
     /// small files or one virtual disk image, which is the case a zip cannot
@@ -28,11 +28,11 @@ namespace ExplorerNative
     /// The tar itself is <c>System.Formats.Tar</c>, in the framework since .NET 7.
     /// Written in the PAX format, which is the one that stores a name of any
     /// length, a size above eight gigabytes and a timestamp with more than
-    /// seconds in it — the older ustar header has fixed-width octal fields for
+    /// seconds in it, the older ustar header has fixed-width octal fields for
     /// all three and silently truncates.
     ///
-    /// The three methods at the bottom — <see cref="WriteTar"/>,
-    /// <see cref="ReadIndex"/> and <see cref="ReadInto"/> — take a bare stream
+    /// The three methods at the bottom, <see cref="WriteTar"/>,
+    /// <see cref="ReadIndex"/> and <see cref="ReadInto"/>, take a bare stream
     /// rather than a path, and that is what makes them the whole file layer for
     /// 7z, xz, bzip2 and zstandard too. bsdtar is driven as a codec on the other
     /// end of a pipe: it turns an archive into a tar for us to read, or takes a
@@ -47,9 +47,9 @@ namespace ExplorerNative
         /// The largest entry the reader will buffer to hand to a writer thread.
         ///
         /// Bigger than this is written by the reading thread itself, straight out
-        /// of the decompressor. There is nothing to gain by buffering it — one
+        /// of the decompressor. There is nothing to gain by buffering it, one
         /// large file is one sequential write, which a single thread already does
-        /// at the speed of the disk — and a great deal to lose, because the buffer
+        /// at the speed of the disk, and a great deal to lose, because the buffer
         /// would be the size of the file.
         /// </summary>
         private const long InlineWriteBytes = 8L * 1024 * 1024;
@@ -123,13 +123,13 @@ namespace ExplorerNative
             if (format.SingleFile || format.Id == "tar.gz")
             {
                 // Members inflated on every core where they are ParallelGZip's
-                // own, and read straight through GZipStream otherwise — which
+                // own, and read straight through GZipStream otherwise, which
                 // reads every member of a multi-member file and joins them, so
                 // anything pigz writes, and two .gz files concatenated, read too.
                 using var gzip = new ParallelGZip.Reader(file, threads, token);
 
-                // A bare .gz has no listing worth the name — one entry, and no
-                // size without decompressing it — so it is always measured this way.
+                // A bare .gz has no listing worth the name, one entry, and no
+                // size without decompressing it, so it is always measured this way.
                 if (estimate || format.SingleFile)
                     reporter.Estimate(file.Length, () => gzip.Consumed);
 
@@ -261,8 +261,8 @@ namespace ExplorerNative
 
                     if (!TrailerAgrees(archivePath, output, crc, length, token))
                     {
-                        // Something after the end — padding a transfer added, a
-                        // signature tacked on — which gzip warns about and
+                        // Something after the end, padding a transfer added, a
+                        // signature tacked on, which gzip warns about and
                         // ignores. The file is whole when its checksum and
                         // length sit just before the extra bytes.
                         long extra = TrailingJunk(archivePath, output, crc, length, token);
@@ -300,12 +300,12 @@ namespace ExplorerNative
         /// returns the end of the stream, and a truncated download extracted as
         /// half a file with nothing said. Every gzip member ends with the CRC-32
         /// and length of what it holds, so the last eight bytes of the file are
-        /// the last member's checksum — and in a truncated file they are
+        /// the last member's checksum, and in a truncated file they are
         /// compressed data that matches nothing.
         ///
         /// A file of one member is checked against the running figures with no
-        /// further reading. One of several — anything ParallelGZip or pigz
-        /// wrote, or two files joined — has its last member's output read back
+        /// further reading. One of several, anything ParallelGZip or pigz
+        /// wrote, or two files joined, has its last member's output read back
         /// from the end of what was written.
         /// </summary>
         internal static bool TrailerAgrees(string archivePath, Stream output, uint crc, long length,
@@ -382,7 +382,7 @@ namespace ExplorerNative
         /// GZipStream cannot tell "something after the end" from "cut short":
         /// it returns what it decoded either way. A truncated file's last bytes
         /// are compressed data, and a file with extra bytes after it has, just
-        /// before them, the CRC-32 and length of what came out — eight bytes no
+        /// before them, the CRC-32 and length of what came out, eight bytes no
         /// truncation produces except by a one-in-2^64 accident. Only the last
         /// 64KB are searched, and only four candidates are checked against a
         /// last member shorter than the whole, because that check rereads it.
@@ -498,7 +498,7 @@ namespace ExplorerNative
                     }
 
                     // Not caught. Anything thrown from here on is a write into the
-                    // archive that failed — a full disk, a pipe that closed —
+                    // archive that failed, a full disk, a pipe that closed,
                     // and the header may already be down. Counted as one file
                     // that could not be read, the job went on writing after half
                     // an entry and the result replaced the archive it was meant
@@ -511,7 +511,7 @@ namespace ExplorerNative
                 reporter.Finished(0);
 
                 // The entry is exactly as long as its header says whatever the
-                // file did meanwhile — see CountingStream — so the archive
+                // file did meanwhile, see CountingStream, so the archive
                 // stays readable. What it holds is still not the file, and
                 // that is said. It is still an entry written: left out of the
                 // count, a .tar of one file that grew while it was read was
@@ -598,8 +598,8 @@ namespace ExplorerNative
         /// <summary>
         /// A file stored sparse: its real name and size, and where its data goes.
         ///
-        /// Windows' own tar stores a sparse file this way — a virtual disk, a
-        /// database, anything mostly holes — as PAX "GNU.sparse" 1.0: the
+        /// Windows' own tar stores a sparse file this way, a virtual disk, a
+        /// database, anything mostly holes, as PAX "GNU.sparse" 1.0: the
         /// header is named "GNUSparseFile.0/holes.bin", the real name and size
         /// are in extended attributes, and the data begins with a map of where
         /// each stored piece belongs. Read as an ordinary file, a 64MB file
@@ -739,8 +739,8 @@ namespace ExplorerNative
         /// Reads a tar and writes what is in it to disk.
         ///
         /// Sequential where it has to be and parallel where it does not. A
-        /// compressed tar has no index — the only way to reach the last entry is
-        /// to decompress everything in front of it — so one thread reads. What
+        /// compressed tar has no index, the only way to reach the last entry is
+        /// to decompress everything in front of it, so one thread reads. What
         /// that thread does with each entry is another matter: the file writes go
         /// to a pool, which is where the time actually goes for an archive of many
         /// small files, and it means the thread doing the decompression is never
@@ -757,8 +757,8 @@ namespace ExplorerNative
             // Runs of files from one folder, not single files: writers each
             // taking the next file were all creating files in one folder at once,
             // which Windows does one at a time. A run closes where the folder
-            // changes, at 64 files or at a megabyte — the rule
-            // FileOperations.RunsByFolder explains — so the memory held is about
+            // changes, at 64 files or at a megabyte, the rule
+            // FileOperations.RunsByFolder explains, so the memory held is about
             // what it was: a few runs per writer instead of a few files.
             using var queue = new BlockingCollection<List<Pending>>(lanes * 2);
             var run = new List<Pending>();
@@ -786,8 +786,8 @@ namespace ExplorerNative
 
             int done = 0;
 
-            // Set when the archive itself stops making sense — truncated, or a
-            // compressed stream that will not decompress — as opposed to one
+            // Set when the archive itself stops making sense, truncated, or a
+            // compressed stream that will not decompress, as opposed to one
             // entry that could not be written. Said once at the end, with how
             // much was saved.
             bool damaged = false;
@@ -919,7 +919,7 @@ namespace ExplorerNative
                     }
 
                     // A hard link is a second name for a file already in the
-                    // archive, with no data of its own — GNU tar stores every
+                    // archive, with no data of its own, GNU tar stores every
                     // extra name that way. Windows needs no privilege for the
                     // equivalent, so it is made: a copy of that file, once the
                     // file is on disk. Reported as not extracted, the file was
@@ -1050,14 +1050,14 @@ namespace ExplorerNative
                     }
                 }
 
-                // The last run, however short — after the end of the archive or
+                // The last run, however short, after the end of the archive or
                 // at the damage, where what was read whole is still written.
                 Hand();
             }
             finally
             {
-                // A run never handed over — the extraction was cancelled while it
-                // was being gathered — is files that will not be written, so a
+                // A run never handed over, the extraction was cancelled while it
+                // was being gathered, is files that will not be written, so a
                 // replacement recorded for any of them is taken back.
                 foreach (var unwritten in run) rules.Withdraw(unwritten.Target);
                 run.Clear();
@@ -1323,7 +1323,7 @@ namespace ExplorerNative
         ///
         /// It exists because TarWriter takes a stream and reads it itself, which
         /// is the right shape for everything except knowing how it is going. The
-        /// alternative — reading the file here and handing over a MemoryStream —
+        /// alternative, reading the file here and handing over a MemoryStream,
         /// would mean the whole file in memory to draw a number.
         /// </summary>
         private sealed class CountingStream : Stream
@@ -1336,7 +1336,7 @@ namespace ExplorerNative
             /// tar header records. Everything read is held to it.
             ///
             /// TarWriter writes the size from Length and then copies to the end of
-            /// the stream. A file still being written — a log, a recording — gave
+            /// the stream. A file still being written, a log, a recording, gave
             /// it more bytes than the header said, and every entry after it in the
             /// archive was unreadable ("Unable to parse number"), while the result
             /// said the archive had been made.

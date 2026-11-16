@@ -10,7 +10,7 @@ namespace ExplorerNative
     /// Windows will do this itself for a hotkey registered without MOD_NOREPEAT,
     /// but only at the keyboard's own repeat rate, which is set for typing and is
     /// both slow to start and slow to run. Every audio hotkey is therefore
-    /// registered with MOD_NOREPEAT — one press, one message — and the repeating
+    /// registered with MOD_NOREPEAT, one press, one message, and the repeating
     /// is done here, at whatever rate the preferences ask for.
     ///
     /// The key is asked about directly rather than tracked, because these are
@@ -23,8 +23,8 @@ namespace ExplorerNative
         private const int VK_LWIN = 0x5B, VK_RWIN = 0x5C;
 
         /// <summary>
-        /// A key that never appears to come up — because the release was
-        /// swallowed somewhere, or the machine was locked mid-press — must not
+        /// A key that never appears to come up, because the release was
+        /// swallowed somewhere, or the machine was locked mid-press, must not
         /// leave this running for ever.
         /// </summary>
         private const int SafetyStopMilliseconds = 30_000;
@@ -38,7 +38,7 @@ namespace ExplorerNative
         /// The engine lives on the UI thread, so a repeated action runs there
         /// too. Play and pause on a network source can take a hundred
         /// milliseconds or more, and asking for one every sixty leaves the thread
-        /// with nothing left over — the window stops painting and Windows calls
+        /// with nothing left over, the window stops painting and Windows calls
         /// it not responding. Which is exactly what holding play/pause did.
         ///
         /// So the next repeat is scheduled from how long the last one actually
@@ -52,7 +52,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// The floor. Windows will not schedule a timer below about ten
-        /// milliseconds — USER_TIMER_MINIMUM — so asking for less buys nothing.
+        /// milliseconds, USER_TIMER_MINIMUM, so asking for less buys nothing.
         /// A hundred a second is as fast as a held key can be made to go here,
         /// and every action the player has costs a fraction of a millisecond, so
         /// that is not the limit anyway: the step size is.
@@ -81,7 +81,7 @@ namespace ExplorerNative
         /// How often a held key fires. Ten is the floor Windows will schedule a
         /// timer at, so twenty is fifty times a second and about as fast as this
         /// can be driven. Every action the player has costs a fraction of a
-        /// millisecond, so the rate was never what made a hold feel slow — the
+        /// millisecond, so the rate was never what made a hold feel slow, the
         /// step size was, which is what <see cref="AudioActions.Accelerated"/>
         /// is for.
         /// </summary>
@@ -104,7 +104,7 @@ namespace ExplorerNative
         /// <summary>
         /// Begins repeating <paramref name="action"/> while
         /// <paramref name="shortcut"/> stays down. The caller has already run it
-        /// once — this is only the repeat.
+        /// once, this is only the repeat.
         ///
         /// The action is told which repeat it is, counting from one, so that
         /// something like the volume can accelerate the longer it is held rather
@@ -117,14 +117,14 @@ namespace ExplorerNative
         /// there is no such thing as a press: a finger is on a key for something
         /// like a tenth of a second, which at fifty repeats a second is five more
         /// of whatever it does. Pressing play once played, paused, played, paused
-        /// and stopped wherever it happened to land — "it plays for a second and
+        /// and stopped wherever it happened to land, "it plays for a second and
         /// then pauses it". Every keyboard in the world waits before repeating;
         /// so does this.
         /// </param>
         /// <summary>
         /// Moved on by every Start and Stop, so a tick whose action was running
         /// when another key took over does not re-arm the new key's timer with
-        /// its own repeat interval — which cut the new key's press delay to
+        /// its own repeat interval, which cut the new key's press delay to
         /// nothing and made a tap repeat.
         /// </summary>
         private int _generation;
@@ -157,7 +157,7 @@ namespace ExplorerNative
         /// <summary>
         /// How long to wait before repeating again, given how long the last one
         /// took. Pure, because the thing worth testing about the pacing is the
-        /// arithmetic — that a slow action cannot saturate the thread.
+        /// arithmetic, that a slow action cannot saturate the thread.
         /// </summary>
         public static int NextInterval(int configured, long tookMilliseconds)
         {
@@ -176,7 +176,7 @@ namespace ExplorerNative
             if (action == null) return;
 
             // A tick that arrives while the previous action is still running has
-            // nothing to add and would only deepen the hole — but skipping one
+            // nothing to add and would only deepen the hole, but skipping one
             // repeat must not end the repeating.
             //
             // The timer is stopped at the top of every tick and started again at
@@ -188,7 +188,7 @@ namespace ExplorerNative
             //
             // Re-entrancy is not hypothetical. The action runs on the thread that
             // owns the media engine, and a COM call that blocks pumps messages
-            // while it waits — which is exactly where a WM_TIMER gets dispatched
+            // while it waits, which is exactly where a WM_TIMER gets dispatched
             // into the middle of an action that has not returned.
             if (_inAction) { _timer.Start(); return; }
 
@@ -202,7 +202,7 @@ namespace ExplorerNative
             catch (Exception ex) { Diag.Note(ex); }
             finally { _inAction = false; }
 
-            // Stopped from inside the action, or while it ran — or stopped and
+            // Stopped from inside the action, or while it ran, or stopped and
             // started again for another key, which has its own timing.
             if (_action == null || generation != _generation) return;
 
@@ -211,11 +211,11 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Whether the whole combination is still down — the key and every
+        /// Whether the whole combination is still down, the key and every
         /// modifier it needs.
         ///
         /// The modifiers matter: letting go of Control while keeping the letter
-        /// down has ended the shortcut, and carrying on would be a bare letter
+        /// down has ended the shortcut, and continuing would be a bare letter
         /// repeating into whatever application the user just went back to.
         /// </summary>
         public static bool StillHeld(Shortcut shortcut, Func<int, bool> isDown)

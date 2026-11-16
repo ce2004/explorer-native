@@ -84,7 +84,7 @@ namespace ExplorerNative
     /// Prioritise(position) superseded the running download and restarted it at
     /// a skip target, from a single buffer that was a prefix. A skip forward
     /// moved it, a skip back fell behind it, and the download was torn down and
-    /// restarted on each change of direction — throwing away the bytes being
+    /// restarted on each change of direction, throwing away the bytes being
     /// played. This one does not do that: the pieces are independent, nothing
     /// is thrown away because of a skip, a download in progress always
     /// finishes, and the next one simply starts from the first missing piece at
@@ -106,8 +106,8 @@ namespace ExplorerNative
 
         /// <summary>
         /// The head of the file, fetched first and alone. Everything a decoder
-        /// reads while opening a music file is in its first megabyte — a FLAC is
-        /// opened by sixteen bytes and then 64KB reads — and one request for it,
+        /// reads while opening a music file is in its first megabyte, a FLAC is
+        /// opened by sixteen bytes and then 64KB reads, and one request for it,
         /// with nothing else on the link, measured faster than a small head
         /// followed by a second request fighting four piece downloads: those
         /// took three to four seconds each, and a track five to six to start.
@@ -123,7 +123,7 @@ namespace ExplorerNative
         /// <summary>
         /// How long a read waits for a piece that is already on its way before
         /// fetching its own bytes. Two fetches of the same bytes on one
-        /// connection are slower than one fetch and a wait — but a download that
+        /// connection are slower than one fetch and a wait, but a download that
         /// has stalled must not hold up playback.
         /// </summary>
         private const int PatienceMilliseconds = 400;
@@ -141,7 +141,7 @@ namespace ExplorerNative
         private readonly int _pieceCount;
 
         /// <summary>
-        /// Told once the window is full — the whole file for anything within the
+        /// Told once the window is full, the whole file for anything within the
         /// budget, the budget's worth otherwise. Called on a download worker.
         /// </summary>
         private readonly Action<long, long>? _filled;
@@ -280,7 +280,7 @@ namespace ExplorerNative
         /// A worker of a run that was released goes on until its read comes back,
         /// and its tidying up used to land on the run that replaced it: a release
         /// and a resume, and the old worker's finally took a piece out of the new
-        /// run's "being fetched" list while a new worker was still fetching it —
+        /// run's "being fetched" list while a new worker was still fetching it,
         /// so a second worker fetched the same four megabytes again. Each run's
         /// tidying touches only its own run now. Under the lock.
         /// </summary>
@@ -333,8 +333,8 @@ namespace ExplorerNative
                     index = NextPiece();
                     if (index >= 0) _fetching.Add(index);
 
-                    // The whole file is held and nothing can be let go of — it
-                    // fits the budget — so there is nothing left for a worker to
+                    // The whole file is held and nothing can be let go of, it
+                    // fits the budget, so there is nothing left for a worker to
                     // do. A release empties the window and Resume starts new ones.
                     else if (Length <= _cacheBytes && _pieces.Count >= _pieceCount) return;
                 }
@@ -379,7 +379,7 @@ namespace ExplorerNative
                 }
                 finally
                 {
-                    // Only from this run's list — see _generation.
+                    // Only from this run's list, see _generation.
                     lock (_gate) if (run == _generation) _fetching.Remove(index);
                     if (stored) Pulse();
                 }
@@ -650,7 +650,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Copies <paramref name="into"/>'s length from whatever holds all of it —
+        /// Copies <paramref name="into"/>'s length from whatever holds all of it,
         /// the pieces, the head, or the last direct read. Under the lock.
         /// </summary>
         private bool CopyHeld(long position, Span<byte> into)
@@ -754,7 +754,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Copies held bytes without touching the read position or the window,
-        /// for something other than the decoder looking inside the track — see
+        /// for something other than the decoder looking inside the track, see
         /// <see cref="ExactSeek"/>. Never goes to the file. Returns how many bytes
         /// it copied: the held run from <paramref name="position"/>.
         /// </summary>
@@ -832,7 +832,7 @@ namespace ExplorerNative
         {
             // Without waiting for anything: changing track disposes the last one
             // from the thread the player is driven from. Downloads and reads still
-            // out are called off — a read of a Drive placeholder left pending
+            // out are called off, a read of a Drive placeholder left pending
             // when the process ends leaves it unable to finish exiting.
             long held;
             lock (_gate)

@@ -1550,7 +1550,7 @@ namespace ExplorerNative
                     else Console.WriteLine("  (junctions could not be made: the link checks were not run)");
 
                     Check("700 smb: a device name is not opened", ReadText(share, "NUL") == null && ReadText(share, @"Sub folder\CON.txt") == null);
-                    Check("700 smb: nor a name Windows would quietly respell", ReadText(share, "hello.txt.") == null && ReadText(share, "hello.txt ") == null);
+                    Check("700 smb: nor a name Windows would silently respell", ReadText(share, "hello.txt.") == null && ReadText(share, "hello.txt ") == null);
                     Check("700 smb: a file's own stream is still allowed (Windows writes one on downloaded files)",
                         WriteText(share, "new.txt:Zone.Identifier", "[ZoneTransfer]") == NTStatus.STATUS_SUCCESS);
 
@@ -2190,7 +2190,7 @@ namespace ExplorerNative
                 client.Passive();
                 client.Say("REST 5");
                 var refused = client.Say("STOR brandnew.bin");
-                Check("701 ftp: carrying on a file that is not there is refused without making it",
+                Check("701 ftp: continuing a file that is not there is refused without making it",
                     refused.StartsWith("5") && !File.Exists(Path.Combine(folder, "brandnew.bin")), refused);
                 using var fresh = new Client(server.Port);
                 fresh.SignIn();

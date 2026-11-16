@@ -427,8 +427,8 @@ namespace ExplorerNative
 
         /// <summary>
         /// Stepping up out of "Backup." resolved it through GetFullPath, which
-        /// drops the dot, so the cursor looked for "Backup" — the sibling, or
-        /// nothing — instead of the folder just left.
+        /// drops the dot, so the cursor looked for "Backup", the sibling, or
+        /// nothing, instead of the folder just left.
         /// </summary>
         private static void SteppingUpOutOfAFolderEndingInADot()
         {
@@ -733,7 +733,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Information labels show data — a device name, an account, a link — so
+        /// Information labels show data, a device name, an account, a link, so
         /// an ampersand in one is a character, not an access key.
         /// </summary>
         private static void InfoLabelTests()
@@ -1081,7 +1081,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Only a link is a link. A plain file and folder are not, and a
-        /// junction is — the walks that skip links must not skip anything else.
+        /// junction is, the walks that skip links must not skip anything else.
         /// </summary>
         private static void LinkTests()
         {

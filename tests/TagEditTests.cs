@@ -61,14 +61,14 @@ namespace ExplorerNative
             var fields = TagFields.All.ToDictionary(f => f,
                 f => f == TagField.Title ? new TagFieldState("", true) : new TagFieldState("x", false));
 
-            using (var many = new TagEditorForm("Edit tags — 3 files", fields, 3))
+            using (var many = new TagEditorForm("Edit tags - 3 files", fields, 3))
             {
                 var controls = Walk(many).ToList();
                 var boxes = controls.OfType<System.Windows.Forms.TextBox>().ToList();
                 check("one box per field", boxes.Count == TagFields.All.Length, boxes.Count.ToString());
                 check("a differing field is named as left unchanged",
                     boxes.Any(b => b.AccessibleName == "Title (" + TagEditing.DiffersText + ")" && b.Text == ""), null);
-                check("an agreeing field is named plainly",
+                check("an agreeing field is named clearly",
                     boxes.Any(b => b.AccessibleName == "Album" && b.Text == "x"), null);
                 check("several files offer numbering in list order",
                     controls.OfType<System.Windows.Forms.CheckBox>().Any(c => c.Text.Contains("list order")), null);
@@ -80,7 +80,7 @@ namespace ExplorerNative
                     string.Join("", keys));
             }
 
-            using (var one = new TagEditorForm("Edit tags — a.mp3", fields, 1))
+            using (var one = new TagEditorForm("Edit tags - a.mp3", fields, 1))
                 check("one file has no numbering box",
                     !Walk(one).OfType<System.Windows.Forms.CheckBox>().Any(), null);
         }
@@ -165,11 +165,11 @@ namespace ExplorerNative
 
                 var mp3 = Path.Combine(dir, "tone.mp3");
                 if (ExactSeekTests.MfEncoder.Write(mp3, pcm, 44100, ExactSeekTests.MfEncoder.Mp3, out var why)) made.Add(("MP3", mp3));
-                else Console.WriteLine($"  (MP3 could not be encoded here — {why})");
+                else Console.WriteLine($"  (MP3 could not be encoded here, {why})");
 
                 var m4a = Path.Combine(dir, "tone.m4a");
                 if (ExactSeekTests.MfEncoder.Write(m4a, pcm, 44100, ExactSeekTests.MfEncoder.Aac, out why)) made.Add(("M4A", m4a));
-                else Console.WriteLine($"  (M4A could not be encoded here — {why})");
+                else Console.WriteLine($"  (M4A could not be encoded here, {why})");
 
                 var flac = Path.Combine(dir, "tone.flac");
                 ExactSeekTests.WriteFlac(flac, pcm, 44100);
@@ -181,7 +181,7 @@ namespace ExplorerNative
                     var error = AudioTags.WriteFields(path, Everything);
                     if (error != null)
                     {
-                        Console.WriteLine($"  ({name}: Windows would not write tags here — {error})");
+                        Console.WriteLine($"  ({name}: Windows would not write tags here, {error})");
                         continue;
                     }
                     writable.Add(name);

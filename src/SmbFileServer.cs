@@ -173,7 +173,7 @@ namespace ExplorerNative
         /// goes through <see cref="ServedFolder.Resolve"/>, the same rule the
         /// FTP and SFTP servers use, so a junction or symbolic link inside the
         /// share that points somewhere else on the PC is not followed, and
-        /// device names and names Windows would quietly respell are refused.
+        /// device names and names Windows would silently respell are refused.
         /// Control codes are refused whole (one of them makes a link), and so
         /// are changing who may open a file and making hard links: none of
         /// them is file sharing, and each is a way to reach or expose

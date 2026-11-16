@@ -20,8 +20,8 @@ namespace ExplorerNative
     ///
     /// Folders are listed separately from the files in them, and deliberately:
     /// an empty folder is part of the shape too. `RoboCopyEngine` learned this the
-    /// hard way for the local path — a folder whose whole subtree was empty
-    /// vanished with no error and no failed count — and an upload has exactly the
+    /// hard way for the local path, a folder whose whole subtree was empty
+    /// vanished with no error and no failed count, and an upload has exactly the
     /// same hole if it only walks files.
     /// </summary>
     public sealed record UploadWork(
@@ -54,14 +54,14 @@ namespace ExplorerNative
         long BytesDone, long BytesTotal, int FilesDone, int FilesTotal, string CurrentItem);
 
     /// <summary>
-    /// Sending a set of local paths — files, folders, or both — to a folder on the
+    /// Sending a set of local paths, files, folders, or both, to a folder on the
     /// mounted Drive.
     ///
     /// Folders used to be refused rather than half-copied, and the reasoning was
     /// sound as far as it went: uploading a tree means creating every folder in it
     /// and tracking which id each one got, and a tree that fails halfway leaves
     /// something nobody asked for. What was missing was the id tracking, which is
-    /// this class — <see cref="EnsureFolder"/> is the whole of it.
+    /// this class, <see cref="EnsureFolder"/> is the whole of it.
     ///
     /// Three things decide how long an upload takes, and none of them is the
     /// connection:
@@ -83,15 +83,15 @@ namespace ExplorerNative
         /// The limit being worked around is latency, not bandwidth: a request
         /// costs about 700ms before it carries anything, so one file at a time
         /// spends most of a small-file upload waiting. Four is the same answer
-        /// `DriveFileCache` reached from the other direction — it fetches with two
-        /// streams because more bought nothing once the link was saturated — and
+        /// `DriveFileCache` reached from the other direction, it fetches with two
+        /// streams because more bought nothing once the link was saturated, and
         /// uploads are the case where the link is *not* saturated, because the
         /// files are small and the waiting is the cost.
         ///
         /// Eight, raised from four, and the headroom was measured rather than
         /// guessed at. Google's quota model since May 2026 is weighted units: an
         /// upload is an edit at 50 units, and the tightest ceiling is 325,000
-        /// units per minute per user — about 6,500 uploads a minute, or a
+        /// units per minute per user, about 6,500 uploads a minute, or a
         /// hundred a second. Four streams against a 700ms round trip is roughly
         /// six a second. Eight is twelve, which is still an order of magnitude
         /// inside the limit, so the thing that stops it going faster is the
@@ -118,7 +118,7 @@ namespace ExplorerNative
         private readonly SemaphoreSlim _bigLanes = new(BigStreams);
 
         /// <summary>
-        /// How many folders are created at once. These carry no bytes at all — a
+        /// How many folders are created at once. These carry no bytes at all, a
         /// folder is one small metadata request, and the only thing being
         /// overlapped is the wait.
         /// </summary>
@@ -131,7 +131,7 @@ namespace ExplorerNative
         /// however many upload streams are running, each reporting every quarter
         /// megabyte it reads. Unthrottled that is thousands of cross-thread posts
         /// a second, all of them to draw a number that changes ten times faster
-        /// than anybody can read it — and the thread they queue on is the one that
+        /// than anybody can read it, and the thread they queue on is the one that
         /// has to draw the result.
         /// </summary>
         public const long ReportMilliseconds = 100;
@@ -160,7 +160,7 @@ namespace ExplorerNative
         /// What each destination folder already holds, fetched once each.
         ///
         /// Only consulted when the policy is one that needs it. Under "keep both"
-        /// — the default, and what happens when there is nothing to decide — no
+        /// the default, and what happens when there is nothing to decide, no
         /// folder is ever asked about, so the common upload costs exactly what it
         /// did before this existed.
         ///
@@ -177,7 +177,7 @@ namespace ExplorerNative
         // Relative folder path -> the local path of its placeholder, or null when
         // it could not be created. A Lazy rather than a bare Task because
         // ConcurrentDictionary's factory overload may run the factory more than
-        // once for one key and keep a single result — which here would be a second
+        // once for one key and keep a single result, which here would be a second
         // folder created in Drive and then abandoned, exactly the mistake
         // DriveFileCache made with downloads. The value overload with a Lazy runs
         // the loser's factory never.
@@ -224,7 +224,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// What the conflict policy actually did, in the same shape the local
-        /// engines report it — so a paste into Drive and a paste into a folder say
+        /// engines report it, so a paste into Drive and a paste into a folder say
         /// the same sentences about the same events.
         /// </summary>
         public ConflictOutcomes Collisions { get { lock (_log) return _log.Snapshot(); } }
@@ -236,7 +236,7 @@ namespace ExplorerNative
         ///
         /// Run this on a worker. These paths can be on a share that has gone away,
         /// and the sources of a paste into Drive are exactly the paths most likely
-        /// to be somewhere slow — which is also why the walk uses
+        /// to be somewhere slow, which is also why the walk uses
         /// <c>EnumerateFileSystemInfos</c>: it carries the attributes and the
         /// length out of the scan that found the entry, rather than asking three
         /// times for what one call already returned.
@@ -250,7 +250,7 @@ namespace ExplorerNative
             var unreadable = new List<string>();
             long total = 0;
 
-            // Two source folders of one name — Music from two drives — were one
+            // Two source folders of one name, Music from two drives, were one
             // relative path, so they went up as one folder with both trees mixed
             // inside it. The second gets a free name, as a paste gives it.
             var topNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -298,7 +298,7 @@ namespace ExplorerNative
         /// <summary>
         /// The tree under one source folder, breadth first and without recursion.
         ///
-        /// Not recursive because the depth is somebody else's — a path can nest as
+        /// Not recursive because the depth is somebody else's, a path can nest as
         /// far as the filesystem allows, and a stack overflow is the one failure
         /// this application cannot catch or report.
         /// </summary>
@@ -384,7 +384,7 @@ namespace ExplorerNative
 
             // The folders first, and all of them, whether or not anything goes in
             // them. A file waiting on a folder that is being created at the same
-            // moment is fine — EnsureFolder hands out the same task — but an empty
+            // moment is fine, EnsureFolder hands out the same task, but an empty
             // folder has nothing to ask for it, and would otherwise be the one
             // part of the tree that silently did not arrive.
             //
@@ -429,7 +429,7 @@ namespace ExplorerNative
         /// everything above it if need be.
         ///
         /// The chain is what makes a tree work: `a\b\c` waits on `a\b`, which waits
-        /// on `a`, which waits on the destination — and each one is created once
+        /// on `a`, which waits on the destination, and each one is created once
         /// however many files are queued behind it.
         /// </summary>
         private Task<string?> EnsureFolder(string relative, CancellationToken token)
@@ -443,7 +443,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// The folders being sent, against what the destination already holds,
-        /// under the conflict setting — decided before anything is sent, as a
+        /// under the conflict setting, decided before anything is sent, as a
         /// paste does. Every folder used to be merged into one of the same name
         /// whatever the setting said: Skip filled it in, and "keep both" put
         /// "(2)" files inside it instead of making "Folder (2)".
@@ -640,7 +640,7 @@ namespace ExplorerNative
                 return;
             }
 
-            // The folder failed, and CreateChain has already said so — once, for
+            // The folder failed, and CreateChain has already said so, once, for
             // the folder. Recording it again per file would bury the one line that
             // explains it under five hundred copies of its consequence, and the
             // count of what did land already says how much did not.
@@ -657,11 +657,11 @@ namespace ExplorerNative
 
             // Whether something of this name is already in the folder, and what
             // the person asked should happen about that. Only asked under a policy
-            // that needs an answer — under "keep both" no folder is ever listed,
+            // that needs an answer, under "keep both" no folder is ever listed,
             // so the ordinary upload costs exactly what it did before.
             //
             // Checked and reserved in one step. Two files of one name in one
-            // upload — two covers from two albums — both saw the name free before
+            // upload, two covers from two albums, both saw the name free before
             // either landed, and both went up under it.
             var (state, reserved) = Reserve(folder, name);
 
@@ -680,7 +680,7 @@ namespace ExplorerNative
 
             bool clashes = state is NameState.Present or NameState.ThisUpload;
 
-            // FillGaps and Skip do the same thing to a *file* — leave the one
+            // FillGaps and Skip do the same thing to a *file*, leave the one
             // that is there and do not send this one. The difference between
             // them is above this line: Skip drops a colliding folder before the
             // upload starts, and FillGaps walks into it, so this is the point
@@ -707,7 +707,7 @@ namespace ExplorerNative
 
             // Bytes read off the disk for this file, which is what the progress
             // callback counts. Touched only by the one task uploading this file,
-            // so it needs no interlock of its own — the shared total does.
+            // so it needs no interlock of its own, the shared total does.
             long counted = 0;
 
             void Chunk(UploadProgress p)
@@ -757,7 +757,7 @@ namespace ExplorerNative
                 // The rename records the name it *landed* under, not the one it
                 // was given, because "Saved as song (2).flac" is the whole point
                 // of the message and the old name says nothing new.
-                // A replace that could not replace — a folder has the name —
+                // A replace that could not replace, a folder has the name,
                 // keeps both, and is said as that.
                 if (clashes)
                     lock (_log)
@@ -819,7 +819,7 @@ namespace ExplorerNative
             catch (Exception ex)
             {
                 // The guard on the clause above is the point of it. Without it
-                // this caught *any* OperationCanceledException and rethrew —
+                // this caught *any* OperationCanceledException and rethrew,
                 // including the TaskCanceledException HttpClient throws for its
                 // own timeout, with nobody's token cancelled. That escaped
                 // Parallel.ForEachAsync, which then abandoned every other file,
@@ -924,7 +924,7 @@ namespace ExplorerNative
         /// there, an id is.
         ///
         /// So "keep both" on Drive did not keep both under different names the
-        /// way it does locally — it made a second file called exactly what the
+        /// way it does locally, it made a second file called exactly what the
         /// first one is called, with nothing on screen or in the listing to tell
         /// them apart, and reported it as an ordinary upload. Uploading a folder
         /// twice produced two of everything, silently.
@@ -964,7 +964,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Whether <paramref name="name"/> is free in <paramref name="folder"/>,
-        /// and reserves it when it is — in one step, under the folder's lock.
+        /// and reserves it when it is, in one step, under the folder's lock.
         /// </summary>
         private (NameState State, bool Reserved) Reserve(string folder, string name)
         {
@@ -1022,7 +1022,7 @@ namespace ExplorerNative
         /// Takes back the bytes of a file that did not arrive.
         ///
         /// They were counted as they were read off the disk, which is the only
-        /// moment anything knows about them — and for a file that then failed,
+        /// moment anything knows about them, and for a file that then failed,
         /// they are bytes the destination does not have. Leaving them in makes the
         /// percentage a claim about work that was undone.
         /// </summary>
@@ -1094,7 +1094,7 @@ namespace ExplorerNative
         /// <summary>
         /// Hands the caller the running total, at most ten times a second.
         ///
-        /// Forced at the start, at the end, and as each file lands — the moments
+        /// Forced at the start, at the end, and as each file lands, the moments
         /// where the number changing is the whole message and a hundred
         /// milliseconds of staleness would show the wrong file's name against a
         /// finished count.

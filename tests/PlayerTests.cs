@@ -93,7 +93,7 @@ namespace ExplorerNative
                     int floor = WasapiPlayback.ReleaseFloor(wanted, target);
 
                     // From an empty ring (a new track), and from every level a
-                    // device switch can hold the device at — anywhere up to the
+                    // device switch can hold the device at, anywhere up to the
                     // level, since the old device may barely have drained it.
                     int step = Math.Max(1, target / 3000);
                     for (int start = 0; start <= target; start += step)
@@ -138,7 +138,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// A tone played at gain zero: the clock has to move, and it has to keep
-        /// moving after a switch to a named device — the switch holds the device
+        /// moving after a switch to a named device, the switch holds the device
         /// again with the ring near its level, which is the mid-track half of the
         /// release bug. On a 44.1kHz device the first check is the start half.
         /// </summary>
@@ -314,7 +314,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// A source whose piece reads wait until the test lets each one go,
-        /// and which pays no attention to being called off — the way a read
+        /// and which pays no attention to being called off, the way a read
         /// already on the wire comes back after a release whether or not
         /// anybody still wants it. The head is answered at once.
         /// </summary>
@@ -439,7 +439,7 @@ namespace ExplorerNative
         {
             // Every wrapper is let go of as the list is built. The list has to
             // come back the same every time, with the default in it, and the
-            // default-change watcher — which holds an enumerator of its own —
+            // default-change watcher, which holds an enumerator of its own,
             // must go on working after them.
             void Ignore(string _) { }
             WasapiRenderer.DefaultDeviceChanged += Ignore;
@@ -510,7 +510,7 @@ namespace ExplorerNative
                 suspendedAtEnd = Suspended(playback);
 
                 // Play pressed on a finished track, without the seek the player
-                // puts in front of it — and the same as a resume that lands just
+                // puts in front of it, and the same as a resume that lands just
                 // as the render thread decides the end.
                 playback.Resume();
                 Thread.Sleep(200);
@@ -1995,7 +1995,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// One damaged copy: two bytes changed with a fixed seed, decoded and
-        /// skipped with no device, then — given a player — played, skipped and
+        /// skipped with no device, then, given a player, played, skipped and
         /// stopped. Null when all was well, or what went wrong.
         /// </summary>
         private static string? DamageOne(byte[] original, string path, int seed, AudioPlayer? player, out bool played)

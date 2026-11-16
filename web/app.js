@@ -608,7 +608,7 @@ async function undoDelete() {
 // Returns whether it took care of where focus goes.
 async function remove(paths) {
   const what = paths.length === 1 ? shownName(leaf(paths[0]), false) : plural(paths.length, 'item', 'items');
-  // In Drive's trash a delete is for good, which the web app never does: said plainly, as the PC asks.
+  // In Drive's trash a delete is for good, which the web app never does: said clearly, as the PC asks.
   if (paths.some(underDriveTrash)) {
     await dialog({ title: 'Delete forever', body: 'Deleting from the Google Drive trash deletes it forever, and that ' +
       'can\'t be undone, so the web app doesn\'t do it. Restore it from here, or delete it forever on the PC.',

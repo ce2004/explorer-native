@@ -104,7 +104,7 @@
          which runs in a browser. WebView2 is the way a .NET app hosts that
          player; there is no in-box API for it. The browser engine itself ships
          with Windows 11 (the Edge WebView2 runtime, already present here), so
-         nobody installs anything — this package is only the managed loader.
+         nobody installs anything, this package is only the managed loader.
          The player is hidden and created only when a song is first played; if
          Apple Music is never used, none of it loads. See AppleMusicPlayer.cs. -->
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4258.31" />

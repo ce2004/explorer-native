@@ -769,9 +769,9 @@ namespace ExplorerNative
         /// <summary>
         /// Every file under the PC folder that takes part, by relative path.
         ///
-        /// What is there and left out — hidden or system files, everything in
+        /// What is there and left out, hidden or system files, everything in
         /// a hidden, system or unreadable folder, a file whose details
-        /// could not be read — goes in <paramref name="skipped"/>. Simply not
+        /// could not be read, goes in <paramref name="skipped"/>. Simply not
         /// listed, it looked deleted: with deletes on, marking a file Hidden
         /// sent its Drive copy to the trash.
         /// </summary>
@@ -1280,7 +1280,7 @@ namespace ExplorerNative
         ///
         /// A Drive name is anything at all: "a:b", "x\y", "AC/DC", "trail.",
         /// "..", "CON". On Windows those either land somewhere else (a backslash
-        /// or a slash makes a folder, ".." climbs out) or are quietly changed (a
+        /// or a slash makes a folder, ".." climbs out) or are silently changed (a
         /// trailing dot or space is dropped), and then the PC's file never
         /// matches Drive's under one name: it fails on every pass, or worse, the
         /// PC's copy reads as Drive's having been deleted and the original is
@@ -1288,9 +1288,9 @@ namespace ExplorerNative
         /// a folder, and listed in <paramref name="unusable"/> to be said.
         /// </summary>
         /// <summary>
-        /// A name Windows cannot hold beside another in one folder — a file and
+        /// A name Windows cannot hold beside another in one folder, a file and
         /// a folder called "x" and "X", or two names that differ only in
-        /// capitals or in how an accent is written — is left out with all its
+        /// capitals or in how an accent is written, is left out with all its
         /// spellings, listed in <paramref name="clashing"/> and added to
         /// <paramref name="skipped"/>. The file beside a folder of its name
         /// failed on every pass and left its ".partial" behind; the second

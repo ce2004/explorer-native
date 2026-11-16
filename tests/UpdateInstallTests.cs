@@ -149,7 +149,7 @@ namespace ExplorerNative
                 // An answer that is not the shape of a release at all.
                 fake.Answer = _ => Json("{\"unexpected\":true}");
                 var shapeless = await Fails(() => Updater.CheckAsync());
-                Check("an answer of the wrong shape is reported plainly",
+                Check("an answer of the wrong shape is reported clearly",
                     shapeless is Updater.UpdateException { Problem: Updater.Problem.BadAnswer } &&
                     !shapeless.Message.Contains("given key", StringComparison.Ordinal), shapeless?.Message);
 
@@ -464,9 +464,9 @@ namespace ExplorerNative
     /// This is the one part of installing that cannot be reasoned about from the
     /// code: Windows refuses to overwrite a mapped executable and allows the same
     /// file to be renamed, and nothing in the type system says so. It is also the
-    /// part that failed in the field — an install that depended on the
+    /// part that failed in the field, an install that depended on the
     /// application closing first, against four instances that would not answer
-    /// the pipe asking them to — so it is exercised here against a real running
+    /// the pipe asking them to, so it is exercised here against a real running
     /// process rather than against a file with a handle open on it.
     ///
     /// The difference matters and is the reason this test starts a process at
@@ -616,7 +616,7 @@ namespace ExplorerNative
                     !Directory.GetFiles(dir).Any(f =>
                         Path.GetFileName(f).Contains(".installing-", StringComparison.Ordinal)));
 
-                // While it is still running, its own file cannot go — which is
+                // While it is still running, its own file cannot go, which is
                 // why the sweep is best-effort and runs again at startup.
                 Equal("the retired binary cannot be swept while it is still mapped",
                     "0", AppInstall.SweepRetired(dir).ToString());
@@ -685,7 +685,7 @@ namespace ExplorerNative
         /// <summary>
         /// The rules the install path lives by, read out of the source.
         ///
-        /// Program.cs cannot be compiled into this suite — it owns Main — so the
+        /// Program.cs cannot be compiled into this suite, it owns Main, so the
         /// things that must stay true about it are checked as text, the same way
         /// the pane-naming rule is.
         /// </summary>
@@ -745,7 +745,7 @@ namespace ExplorerNative
                 install.Contains("var wanted = HashOf(", StringComparison.Ordinal) &&
                 install.Contains("var landed = HashOf(ExePath);", StringComparison.Ordinal));
 
-            Check("a mismatch is a failure rather than a success with a caveat",
+            Check("a mismatch is a failure rather than a success with a warning",
                 install.Contains("does not match the one that was installed", StringComparison.Ordinal));
 
             // The rollback. Losing the executable is worse than a failed install:

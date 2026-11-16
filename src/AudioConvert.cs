@@ -612,7 +612,7 @@ namespace ExplorerNative
                     // ConvertOnDrive has already had Google confirm the new file.
                     if (drive!.Known(written) is not { Folder: false, Size: > 0 })
                         return "the converted file could not be seen on Google Drive";
-                    // Quietly: one sentence a file would talk over the whole
+                    // Silently: one sentence a file would talk over the whole
                     // batch, and the summary says how many went.
                     string? said = null;
                     bool went;

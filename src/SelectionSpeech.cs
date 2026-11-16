@@ -75,7 +75,7 @@ namespace ExplorerNative
             : "This folder is empty";
 
         /// <summary>
-        /// "Music is 14.2 GB, 3,120 files in 12 folders" — counts that agree
+        /// "Music is 14.2 GB, 3,120 files in 12 folders", counts that agree
         /// with their nouns, and no "in 0 folders". A walk that ran out of time
         /// says it is a lower bound.
         /// </summary>

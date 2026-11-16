@@ -10,7 +10,7 @@ namespace ExplorerNative
     ///
     /// This matters far more without sight than with it. Landing on row one of a
     /// folder you have already worked through means listening your way down to
-    /// where you were every single time — going up one level and back should not
+    /// where you were every single time, going up one level and back should not
     /// cost that.
     /// </summary>
     public sealed class FolderPositionMemory
@@ -87,7 +87,7 @@ namespace ExplorerNative
         ///
         /// This is what makes going up land on the folder you just came out of.
         /// From C:\Users\Conner\Documents, stepping up to C:\Users\Conner should
-        /// put the cursor on "Documents" — the thing you were just in — not on
+        /// put the cursor on "Documents", the thing you were just in, not on
         /// whatever happens to sort first.
         /// </summary>
         public static string? ChildOnPathTo(string? ancestor, string? descendant)
@@ -109,7 +109,7 @@ namespace ExplorerNative
             d = d.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
             // A drive root trims to "C:", which is not a prefix anyone should be
-            // matching against — put its separator back.
+            // matching against, put its separator back.
             if (a.EndsWith(':')) a += Path.DirectorySeparatorChar;
 
             var withSeparator = a.EndsWith(Path.DirectorySeparatorChar)

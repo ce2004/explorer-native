@@ -868,7 +868,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Apple's IMA4: per channel, 34 bytes for 64 samples — a two-byte
+        /// Apple's IMA4: per channel, 34 bytes for 64 samples, a two-byte
         /// header (the predictor in the top nine bits, the step index in the
         /// bottom seven), then 32 bytes of nibbles, low nibble first.
         /// </summary>

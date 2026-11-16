@@ -13,7 +13,7 @@ namespace ExplorerNative
     /// Drive models a parent as a list because a file could once be in several
     /// folders at once. That has not been creatable since 2020 and the API
     /// returns a single entry for everything made since, so only the first is
-    /// used — a file genuinely in two places is found under whichever one Drive
+    /// used, a file really in two places is found under whichever one Drive
     /// names first, which is one honest answer rather than the same file listed
     /// twice under two paths.
     /// </summary>
@@ -33,15 +33,15 @@ namespace ExplorerNative
     /// say "in this folder" and cannot say "in this folder or anything below it",
     /// so scoping a search to a subtree is work that has to happen here.
     ///
-    /// The route that suggests itself — resolve each hit's parents upwards with a
-    /// <c>files.get</c> per folder — costs one request per folder in the answer,
+    /// The route that suggests itself, resolve each hit's parents upwards with a
+    /// <c>files.get</c> per folder, costs one request per folder in the answer,
     /// at about 700ms each. Instead the whole folder graph is fetched **in one
     /// query**: every folder in the account is a single `mimeType = folder`
     /// listing, a few hundred rows for a library of thousands of tracks, and once
     /// it is in memory every chain resolves for nothing.
     ///
     /// So a search is two requests whatever the shape of the account, and this
-    /// class is the arithmetic between them — pure, and therefore tested against
+    /// class is the arithmetic between them, pure, and therefore tested against
     /// a graph built by hand rather than against somebody's Drive.
     /// </summary>
     internal static class DriveSearch
@@ -154,7 +154,7 @@ namespace ExplorerNative
         ///
         /// <paramref name="populate"/> and <paramref name="childPathForId"/> are
         /// the mount's two operations, taken as delegates so the ordering between
-        /// them can be tested — **and it is the ordering that was wrong.** The
+        /// them can be tested, **and it is the ordering that was wrong.** The
         /// first version populated each folder before looking the *next* one up
         /// inside it, which walks down correctly and leaves the folder at the
         /// bottom, the one the hit actually lives in, never populated. Looking
@@ -164,7 +164,7 @@ namespace ExplorerNative
         /// of its hits and returned almost none of them.
         ///
         /// <paramref name="resolved"/> carries what is already known between
-        /// calls, so a second hit in the same folder costs nothing — including
+        /// calls, so a second hit in the same folder costs nothing, including
         /// when the answer was "not there", which is remembered too.
         /// </summary>
         public static string? PathForChain(
@@ -233,7 +233,7 @@ namespace ExplorerNative
         /// <summary>
         /// Lists every folder the hits' chains pass through, a level at a time
         /// and <paramref name="parallelism"/> folders at once, filling
-        /// <paramref name="resolved"/> as <see cref="PathForChain"/> would — so
+        /// <paramref name="resolved"/> as <see cref="PathForChain"/> would, so
         /// that walking each hit afterwards finds every folder already listed.
         ///
         /// One folder at a time, a search whose hits sat in forty folders paid

@@ -16,7 +16,7 @@ namespace ExplorerNative
         private const string VerbName = "OpenInExplorerNative";
         private const string VerbLabel = "Open in Explorer Native";
 
-        // The name only. The label went with the feature — nothing writes this
+        // The name only. The label went with the feature, nothing writes this
         // verb any more, and the name is kept solely so an old one can be swept
         // off a machine that has it (see UnregisterSendToIPhone).
         private const string SendVerbName = "SendToIPhoneViaExplorerNative";
@@ -42,7 +42,7 @@ namespace ExplorerNative
         /// <summary>
         /// The path the shell entries name.
         ///
-        /// The installed copy whenever there is one — never a build output. A
+        /// The installed copy whenever there is one, never a build output. A
         /// registry entry pointing into bin\ stops working the moment the project
         /// is rebuilt, and every folder on the machine goes with it.
         /// </summary>
@@ -57,7 +57,7 @@ namespace ExplorerNative
         /// context-menu verb whenever the executable has moved, repairs a
         /// folder-open registration that already named us, and calls SetStartup
         /// on every single launch whether or not the Run value was already
-        /// there — so a caller comparing its own settings would announce a
+        /// there, so a caller comparing its own settings would announce a
         /// takeover that has been in place for months, on every start.
         ///
         /// Nothing subscribes in a --register-default or --uninstall run, which
@@ -71,7 +71,7 @@ namespace ExplorerNative
         /// Matched on the executable's file name rather than the literal text
         /// "ExplorerNative". The app is portable, so the folder in the command
         /// changes whenever it is moved and a full-path comparison would report
-        /// its own entries as somebody else's — which is how a disabled setting
+        /// its own entries as somebody else's, which is how a disabled setting
         /// failed to clean up after a move, leaving a dead verb behind.
         /// </summary>
         private static bool PointsAtUs(string? command)
@@ -243,7 +243,7 @@ namespace ExplorerNative
                 // never rewrites the registration.
                 //
                 // Without it, running the debug build once pointed "Open in
-                // Explorer Native" at bin\Debug — and the next rebuild, or a
+                // Explorer Native" at bin\Debug, and the next rebuild, or a
                 // dotnet clean, left a context-menu entry aimed at a file that no
                 // longer exists. ReconcileFolderOpen guards exactly this; the
                 // context menu was writing whatever executable happened to be
@@ -300,7 +300,7 @@ namespace ExplorerNative
         /// The rule is that the registration belongs to the *installed* copy.
         /// Every launch used to rewrite the entries whenever the executable had
         /// moved, which meant running the project's own debug build silently
-        /// re-pointed every folder on the machine at bin\Debug — and the next
+        /// re-pointed every folder on the machine at bin\Debug, and the next
         /// rebuild then broke them. A copy running from anywhere else now leaves
         /// the registration alone, with one exception: if it points at an
         /// executable that no longer exists, folders open nothing at all, and
@@ -396,14 +396,14 @@ namespace ExplorerNative
                 // Read from the key that is already open rather than through
                 // IsStartupRegistered. This is called unconditionally on every
                 // launch, and every launch is a folder somebody is waiting to
-                // see — a second OpenSubKey to learn something the open handle
+                // see, a second OpenSubKey to learn something the open handle
                 // already knows is not worth a notification.
                 bool was = key.GetValue(StartupValue) != null;
 
                 // The same rule the folder registration lives by: never write a
                 // path inside bin\. ExePath falls back to this process when
                 // nothing is installed, so running a build once wrote a logon
-                // entry naming that build — and a clean, or deleting bin\, left
+                // entry naming that build, and a clean, or deleting bin\, left
                 // Windows starting a file that is not there, silently, with
                 // nothing to repair it. Startup is on by default, so it did not
                 // even take a decision to get into that state.
@@ -413,7 +413,7 @@ namespace ExplorerNative
                 if (enabled && !namesABuild) key.SetValue(StartupValue, $"\"{ExePath}\"");
                 else if (!enabled) key.DeleteValue(StartupValue, throwOnMissingValue: false);
 
-                // What the key holds now, not what was asked for — a request
+                // What the key holds now, not what was asked for, a request
                 // that was declined is not a change to announce. Read back
                 // rather than inferred: a declined request with a value already
                 // there left it there, and "was on, asked on but declined"
@@ -424,7 +424,7 @@ namespace ExplorerNative
             catch (Exception ex) { Diag.Note(ex); }
 
             // Outside the catch, so a subscriber that throws is not mistaken for
-            // a registry failure and quietly swallowed.
+            // a registry failure and silently swallowed.
             if (!changed) return;
 
             Changed?.Invoke(isOn ? "startup.on" : "startup.off",
@@ -445,8 +445,8 @@ namespace ExplorerNative
         /// the two things this application can actually show.
         ///
         /// The base class "Folder" is deliberately NOT here, and must not be added
-        /// back. Every shell folder inherits from it — Control Panel, Settings,
-        /// This PC, Recycle Bin, Network, and every applet inside them — so
+        /// back. Every shell folder inherits from it, Control Panel, Settings,
+        /// This PC, Recycle Bin, Network, and every applet inside them, so
         /// claiming its open verb does not mean "all folders", it means "all of
         /// Windows". Opening a Control Panel item launched this application with a
         /// path that is not a path at all. Directory and Drive define their own
@@ -468,7 +468,7 @@ namespace ExplorerNative
         /// Claimed once, and it must not be claimed again. Windows implements this
         /// verb *in process*: it has no command line at all, only a DelegateExecute
         /// pointing at a COM object inside the shell. Taking it over therefore
-        /// means blanking that DelegateExecute — and the shell uses this verb for
+        /// means blanking that DelegateExecute, and the shell uses this verb for
         /// far more than the Win+E shortcut. With it blanked, ordinary navigation
         /// that expected to be handled in process instead launched this
         /// application: opening Settings and moving to the Power page closed
@@ -502,7 +502,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Makes this app — or stops it being — what Windows opens folders with.
+        /// Makes this app, or stops it being, what Windows opens folders with.
         ///
         /// Everything is written under HKCU\Software\Classes, which the shell
         /// merges *over* the machine-wide definitions in HKLM. Windows' own
@@ -652,7 +652,7 @@ namespace ExplorerNative
         ///
         /// Run unconditionally on every launch, because the damage is not
         /// proportionate to the setting: while this was claimed, opening anything
-        /// the shell calls a folder — a Control Panel applet, a Settings page —
+        /// the shell calls a folder, a Control Panel applet, a Settings page,
         /// started this application instead. Only removed if it is ours; another
         /// application's registration is left alone, same as everywhere else.
         /// </summary>
@@ -663,7 +663,7 @@ namespace ExplorerNative
 
             if (!CommandIsOurs(commandKey))
             {
-                // Not ours to remove — but our notes about what used to be there
+                // Not ours to remove, but our notes about what used to be there
                 // are stale and would only mislead a later restore.
                 ForgetBackup(commandKey, null);
                 ForgetBackup(commandKey, "DelegateExecute");
@@ -698,7 +698,7 @@ namespace ExplorerNative
             {
                 var commandKey = $@"Software\Classes\{cls}\shell\open\command";
 
-                // Decided before anything is written, and from the command — the
+                // Decided before anything is written, and from the command, the
                 // only value here that names an executable. The verb name under
                 // \shell is just the word "open", which says nothing about who
                 // put it there.
@@ -747,7 +747,7 @@ namespace ExplorerNative
         /// That distinction matters most when repairing. A registration left
         /// pointing at a copy that has since been deleted still names this
         /// application, so recording it as the previous state would make a later
-        /// deregistration faithfully restore a dead path — putting the machine
+        /// deregistration faithfully restore a dead path, putting the machine
         /// straight back to opening no folders at all.
         /// </summary>
         private static void Backup(string keyPath, string? valueName, bool alreadyOurs, string ourValue)
@@ -761,8 +761,8 @@ namespace ExplorerNative
                 // Once ours, the note already says what was there before us and
                 // writing again would record ourselves. But when the key belongs
                 // to somebody else *now*, whatever the note says is older than
-                // them — our first claim, before another application took folders
-                // over — and keeping it meant turning this off later restored
+                // them, our first claim, before another application took folders
+                // over, and keeping it meant turning this off later restored
                 // "nothing was here", deleting that application's registration
                 // instead of handing folders back to it.
                 using var source = Registry.CurrentUser.OpenSubKey(keyPath);
@@ -772,8 +772,8 @@ namespace ExplorerNative
                 {
                     if (alreadyOurs) return;
 
-                    // A value that is still the one we write is our own leftover —
-                    // the verb name, the blanked DelegateExecute — not something
+                    // A value that is still the one we write is our own leftover,
+                    // the verb name, the blanked DelegateExecute, not something
                     // the other application put there, and recording it would make
                     // standing down leave it behind.
                     if (current == ourValue) return;
@@ -790,7 +790,7 @@ namespace ExplorerNative
         {
             // A key opening nothing is our leftover: nobody else blanks
             // DelegateExecute. Counted as ours so standing down clears it, and so
-            // a claim does not back it up as "what was there before" — a release
+            // a claim does not back it up as "what was there before", a release
             // would then faithfully put the broken state back.
             if (OpensNothing(commandKeyPath)) return true;
             try
@@ -835,11 +835,11 @@ namespace ExplorerNative
         ///
         /// <paramref name="ours"/> is the guard against vandalising somebody
         /// else's registration. Deregistering used to delete the value whenever no
-        /// backup was recorded — which is exactly the state after an earlier
-        /// deregistration — so a second --unregister-default, or one run from a
+        /// backup was recorded, which is exactly the state after an earlier
+        /// deregistration, so a second --unregister-default, or one run from a
         /// copy of this app that never registered anything, wiped whatever handler
         /// was actually installed. Now a value that is not ours is left alone,
-        /// which also makes deregistering twice genuinely harmless.
+        /// which also makes deregistering twice really harmless.
         /// </summary>
         private static void RestoreOrRemove(string keyPath, string? valueName, bool ours)
         {
@@ -852,7 +852,7 @@ namespace ExplorerNative
                 if (!ours)
                 {
                     // Someone else owns this now. Drop our stale note about what
-                    // used to be here — it describes a world two handlers ago —
+                    // used to be here, it describes a world two handlers ago,
                     // and leave their registration untouched.
                     store?.DeleteValue(slot, throwOnMissingValue: false);
                     return;

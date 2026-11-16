@@ -14,7 +14,7 @@ namespace ExplorerNative
     /// against the fake Drive over a scratch sync root: one file Drive refuses
     /// does not stop a folder copy, moves and renames ride out "not now", a
     /// move to Drive says when it could not remove the original, unreadable
-    /// folders and locked files are said plainly, the progress speed does not
+    /// folders and locked files are said clearly, the progress speed does not
     /// fall to "unknown" between Drive's four-megabyte pieces, and a slow
     /// listing gets a longer second try. Run alone with
     /// EXPLORERNATIVE_SELFTEST_ONLY=drivecopy.
@@ -332,7 +332,7 @@ namespace ExplorerNative
             using (new FileStream(locked, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
             {
                 up = await Send(false, locked);
-                Check("a file open in another program is said plainly",
+                Check("a file open in another program is said clearly",
                     up.Errors.Count == 1 && up.Errors[0].Contains("another program has it open") &&
                     !up.Errors[0].Contains("being used by another process"),
                     string.Join(" | ", up.Errors));

@@ -10,7 +10,7 @@ namespace ExplorerNative
     /// What a song says about itself.
     ///
     /// A list rather than a grid of labelled boxes, because a list is one thing
-    /// to arrow through and each row reads as a sentence — "Artist, 10cc" — which
+    /// to arrow through and each row reads as a sentence, "Artist, 10cc", which
     /// is the same rule the file list is built on. The Windows properties sheet
     /// shows the same numbers, on a tab that has to be found first.
     ///
@@ -33,7 +33,7 @@ namespace ExplorerNative
         {
             _path = path;
 
-            Text = "Song properties — " + Path.GetFileName(path);
+            Text = "Song properties - " + Path.GetFileName(path);
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.SizableToolWindow;
             MinimizeBox = false;

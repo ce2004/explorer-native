@@ -109,7 +109,7 @@ namespace ExplorerNative
         /// core count is a good proxy for how much a machine can usefully have in
         /// flight, and the floor and ceiling are what stop it being silly: fewer
         /// than four leaves a high-latency share idle between round trips, and
-        /// more than sixteen only adds contention — on a spinning disk it makes
+        /// more than sixteen only adds contention, on a spinning disk it makes
         /// things actively worse by turning one sequential read into a seek
         /// storm. Robocopy's own default of eight sits inside this range.
         /// </summary>
@@ -144,9 +144,9 @@ namespace ExplorerNative
         /// Folders the plan must create even though no file lands in them.
         ///
         /// The plan is a list of files, and directories were only ever created as
-        /// a side effect of writing one. A folder that is empty — or whose whole
-        /// subtree is empty — therefore vanished from the copy without a word: no
-        /// error, no failed count, just a structure that quietly came out
+        /// a side effect of writing one. A folder that is empty, or whose whole
+        /// subtree is empty, therefore vanished from the copy without a word: no
+        /// error, no failed count, just a structure that silently came out
         /// different from the one that went in. Robocopy keeps them (that is what
         /// /E means), so a paste that happened to hit a name collision, and was
         /// routed through here to be renamed, silently lost folders that the very
@@ -194,7 +194,7 @@ namespace ExplorerNative
                     return (Files: built, Directories: dirs);
 
                 // Not back to the caller's thread: what follows creates every
-                // planned folder and, for a move, walks and deletes the sources —
+                // planned folder and, for a move, walks and deletes the sources,
                 // filesystem work that froze the window on a slow share. Nothing
                 // below touches the UI; progress marshals itself.
                 }, token).ConfigureAwait(false);
@@ -204,7 +204,7 @@ namespace ExplorerNative
 
                 // A folder inside the tree that could not be listed. It was
                 // created empty at the destination and the copy reported
-                // success, and a move then quietly left the source behind.
+                // success, and a move then silently left the source behind.
                 foreach (var dir in unreadable)
                 {
                     failed++;
@@ -348,7 +348,7 @@ namespace ExplorerNative
                 {
                     // Counted, not only recorded. A folder that files land in
                     // fails those files as well, so the count came out right by
-                    // accident — but an empty one, which is the whole reason
+                    // accident, but an empty one, which is the whole reason
                     // directories are planned separately, failed silently: an
                     // error string nobody reads, because the caller only shows
                     // them when Failed is non-zero, and a copy reporting complete
@@ -608,8 +608,8 @@ namespace ExplorerNative
             var plan = new List<PlannedCopy>();
 
             // Every top-level destination this paste has already given out, and
-            // any the caller is about to use. Two sources with one name — two
-            // "photos" picked out of search results — were each checked against
+            // any the caller is about to use. Two sources with one name, two
+            // "photos" picked out of search results, were each checked against
             // the disk alone, found the same free name, and were copied on top
             // of each other; on a move, the first was then deleted.
             var claimed = new HashSet<string>(reserved ?? Array.Empty<string>(), StringComparer.OrdinalIgnoreCase);
@@ -656,7 +656,7 @@ namespace ExplorerNative
                     // duplicate one, and it is an entirely ordinary thing to do. But
                     // the desired destination is then the source itself, so checking
                     // for recursion first saw a folder being copied into itself and
-                    // refused — the paste reported a failure and produced nothing.
+                    // refused, the paste reported a failure and produced nothing.
                     // Auto-rename turns the destination into "name (2)" first, which
                     // is not inside the source at all, and the copy is fine.
                     destRoot = ResolveConflict(destRoot, policy, askConflict, conflicts, claimed, true,
@@ -693,8 +693,8 @@ namespace ExplorerNative
 
                     // Links inside a folder being moved go with it, as links.
                     // Skipped by the walk and by nothing after it, a move to
-                    // another disk left them in the source folder — which then
-                    // was not empty, so stayed — and said "Move complete".
+                    // another disk left them in the source folder, which then
+                    // was not empty, so stayed, and said "Move complete".
                     if (move && extras != null)
                         foreach (var link in foundLinks)
                             extras.NestedLinks.Add((link, Path.Combine(destRoot, Path.GetRelativePath(source, link))));
@@ -713,7 +713,7 @@ namespace ExplorerNative
                     // stays behind). File by file, a move of ten thousand files
                     // within one disk took fifty seconds; whole, a few
                     // milliseconds. Tried first when the move runs, and the plan
-                    // below is the fallback if Windows refuses it — a file in
+                    // below is the fallback if Windows refuses it, a file in
                     // the tree held open by another program, say.
                     if (rename && extras != null && (unreadable?.Count ?? 0) == unreadableBefore)
                     {
@@ -794,7 +794,7 @@ namespace ExplorerNative
         ///
         /// A rename when both ends are on one volume. Otherwise the link is made
         /// again at the destination, pointing at the same place, and only then
-        /// is the original link removed — removing a link does not touch its
+        /// is the original link removed, removing a link does not touch its
         /// target, which is the whole point.
         /// </summary>
         public static void MoveLink(string link, string destination)
@@ -935,8 +935,8 @@ namespace ExplorerNative
                     conflicts.Skipped(desired);
                     return desired;
                 default:
-                    // The *new* name is what is worth saying — "Saved as
-                    // song (2).flac" — not the one that was already taken.
+                    // The *new* name is what is worth saying, "Saved as
+                    // song (2).flac", not the one that was already taken.
                     var unique = UniqueName(desired, claimed, folder);
                     conflicts.Renamed(unique);
                     return unique;
@@ -947,8 +947,8 @@ namespace ExplorerNative
         /// A path nothing is using, by numbering the name.
         ///
         /// The numbering itself lives in <c>NameRules.UniqueAmong</c>, because the
-        /// Drive letter needs exactly the same rule against a different question —
-        /// there "already taken" is the folder's listing, not the filesystem — and
+        /// Drive letter needs exactly the same rule against a different question,
+        /// there "already taken" is the folder's listing, not the filesystem, and
         /// two copies of "a folder has no extension whatever its dots say" is two
         /// copies to get wrong.
         /// </summary>
@@ -1025,7 +1025,7 @@ namespace ExplorerNative
             // destroyed the very file the overwrite was meant to replace, and the
             // cleanup below then deleted what was left of it. The new copy is
             // written beside it under a temporary name and moved over it only
-            // once it is whole. A new name — nearly every file — costs nothing:
+            // once it is whole. A new name, nearly every file, costs nothing:
             // CreateNew answers whether something is there in the same request.
             //
             // Swapping over what is there happens only when the plan chose
@@ -1107,8 +1107,8 @@ namespace ExplorerNative
                 await dst.FlushAsync(token);
                 await dst.DisposeAsync();
 
-                // The rest of what robocopy keeps, which this engine — the one
-                // that makes every " (2)" copy — used to drop: the alternate
+                // The rest of what robocopy keeps, which this engine, the one
+                // that makes every " (2)" copy, used to drop: the alternate
                 // streams, both dates and the attributes. The streams are part of
                 // the file, so a copy without them is incomplete and goes the way
                 // of any other incomplete copy.
@@ -1124,9 +1124,9 @@ namespace ExplorerNative
                 // A cancelled copy takes its own half-written file with it.
                 //
                 // The destination is opened FileMode.Create, so it exists and is
-                // being filled from the first chunk. Cancelling left it there —
+                // being filled from the first chunk. Cancelling left it there,
                 // under a name nothing flags, usually "song (2).flac", since this
-                // engine is the one that handles collisions by renaming — with
+                // engine is the one that handles collisions by renaming, with
                 // the copy reported as cancelled and no cleanup anywhere. The
                 // robocopy path has removed its half-written files since the
                 // 20GB incident; this one never did.
@@ -1239,14 +1239,14 @@ namespace ExplorerNative
         private static extern bool FindClose(IntPtr find);
 
         /// <summary>
-        /// Copies every named data stream — a download's Zone.Identifier, a tag
-        /// some program keeps beside the file — onto the copy. A filesystem with
+        /// Copies every named data stream, a download's Zone.Identifier, a tag
+        /// some program keeps beside the file, onto the copy. A filesystem with
         /// no streams to list has nothing to copy.
         ///
         /// Best effort, every step of it. FAT, exFAT and plenty of NAS shares have
         /// no streams at all, and refuse one being written; a stream another
         /// program holds cannot be read. Either used to throw out of here and
-        /// fail — and delete — a keep-both copy whose file had arrived whole.
+        /// fail, and delete, a keep-both copy whose file had arrived whole.
         /// The file is the copy; a stream that cannot come with it is left behind.
         /// </summary>
         internal static void CopyStreams(string from, string to)
@@ -1289,7 +1289,7 @@ namespace ExplorerNative
         /// Every folder and file beneath the root, junctions not followed, in
         /// the order the separate folder and file walks produced them, with each
         /// file's size. One listing per folder answers all of it: whether an
-        /// entry is a folder, its size, and whether it is a reparse point — the
+        /// entry is a folder, its size, and whether it is a reparse point, the
         /// only kind of folder that can be a link, so the only one asked. A
         /// folder that cannot be listed is said in <paramref name="unreadable"/>.
         /// Paths are listed through the exact form and handed back in the

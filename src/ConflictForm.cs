@@ -11,7 +11,7 @@ namespace ExplorerNative
     ///
     /// This is what `PasteConflictPolicy.Ask` was always supposed to reach and
     /// never did. `RoboCopyEngine` carried a comment saying "Ask, which the
-    /// caller resolves before us" — describing a contract nothing implemented —
+    /// caller resolves before us", describing a contract nothing implemented,
     /// so the option sat in Preferences behaving exactly like "keep both".
     /// A setting that cannot change what happens is worse than no setting,
     /// because somebody will pick it to protect a file and be told nothing when
@@ -19,7 +19,7 @@ namespace ExplorerNative
     ///
     /// **Asked once for the whole paste, never once per file.** Two hundred
     /// collisions is two hundred modal dialogs, each one read out in full, on a
-    /// window driven by keyboard — and the second opens inside the first one's
+    /// window driven by keyboard, and the second opens inside the first one's
     /// modal loop, which this codebase has already measured going wrong with
     /// two. The list of what clashes goes in the label instead.
     ///
@@ -41,20 +41,20 @@ namespace ExplorerNative
         private static readonly (string Text, FileOperations.ConflictChoice Choice)[] Options =
         {
             // First, and so the default, because it is what somebody pasting the
-            // same folder a second time almost always means — and because it is
+            // same folder a second time almost always means, and because it is
             // the only one of the four that neither destroys anything nor leaves
             // anything behind. A transfer that stopped part way is finished by
             // choosing this and nothing else.
-            ("Fill in what is missing — go into folders that are already there",
+            ("Fill in what is missing, go into folders that are already there",
                 FileOperations.ConflictChoice.FillGaps),
-            ("Keep both — the new one gets a number", FileOperations.ConflictChoice.Rename),
+            ("Keep both, the new one gets a number", FileOperations.ConflictChoice.Rename),
             ("Replace what is already there", FileOperations.ConflictChoice.Overwrite),
             ("Skip these entirely and keep what is there", FileOperations.ConflictChoice.Skip),
         };
 
         /// <summary>
         /// The options without "fill in what is missing", for things that are
-        /// files rather than folders being merged — converted audio, say. Keep
+        /// files rather than folders being merged, converted audio, say. Keep
         /// both stays first for the same reason it is first above.
         /// </summary>
         private static readonly (string Text, FileOperations.ConflictChoice Choice)[] FileOptions =
@@ -138,7 +138,7 @@ namespace ExplorerNative
         ///
         /// The same lesson `ProgressForm` learned: a fixed height fits at 100%
         /// scaling and clips at 150%, and a clipped control is still built, still
-        /// reachable with Tab and still read out perfectly — which is the one kind
+        /// reachable with Tab and still read out perfectly, which is the one kind
         /// of missing control that is hard to notice from either direction.
         /// </summary>
         protected override void OnLoad(EventArgs e)
@@ -155,7 +155,7 @@ namespace ExplorerNative
         /// One name is the whole message and is worth saying; a handful are worth
         /// listing; past that the count is the story, because a screen reader
         /// reading forty file names before the question is a dialog nobody can
-        /// answer. The destination is named too — a paste can land in the pane
+        /// answer. The destination is named too, a paste can land in the pane
         /// you were not looking at.
         /// </summary>
         internal static string Describe(IReadOnlyList<string> clashing, string destinationName)
@@ -166,7 +166,7 @@ namespace ExplorerNative
             // and this is the sentence that makes that honest: a Google Drive
             // folder that will not list is a folder we cannot rule a collision
             // out of, and the old answer was to assume there was none and
-            // quietly keep both — which on Drive means a second file with the
+            // silently keep both, which on Drive means a second file with the
             // same name as the first, because Drive lets a folder hold two.
             if (clashing.Count == 0)
                 return $"Google Drive would not say what is already in {where}. " +

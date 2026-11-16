@@ -748,8 +748,8 @@ namespace ExplorerNative
         /// <summary>
         /// A save, busy from the first question to the last word. Busy used to
         /// end with the render, so while the original went to the Recycle Bin
-        /// and the new file was moved into its place — up to two minutes of
-        /// waiting on the shell — Space played the file being replaced, a second
+        /// and the new file was moved into its place, up to two minutes of
+        /// waiting on the shell, Space played the file being replaced, a second
         /// Control+Shift+S rendered from an original already in the bin, and the
         /// window closed under the move.
         /// </summary>

@@ -1160,7 +1160,7 @@ namespace ExplorerNative
             Check("the start-up mount may not open Google's sign-in page",
                 tray.Contains("if (_settings.GoogleDriveEnabled) MountGoogleDrive(mayConsent: false);", StringComparison.Ordinal));
             Check("nor may a retry after a network failure",
-                System.Text.RegularExpressions.Regex.IsMatch(tray, @"_drive\.Mount\(_settings, quietly: true, mayConsent: false\)"));
+                System.Text.RegularExpressions.Regex.IsMatch(tray, @"_drive\.Mount\(_settings, silently: true, mayConsent: false\)"));
             var form = SourceText("SettingsForm.cs");
             var signOut = MethodText(form, "// Switched off and saved now too, so Cancel or Escape cannot undo", 600);
             Check("Sign out switches Drive off and saves it at once, so Cancel cannot leave it on",

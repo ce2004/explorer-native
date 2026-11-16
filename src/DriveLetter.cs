@@ -56,7 +56,7 @@ namespace ExplorerNative
         ///
         /// Asking whether the root exists answered "free" for a card reader with
         /// no card in it, a DVD drive with no disc, and a mapped network drive
-        /// that had not reconnected yet — and a drive put over one of those
+        /// that had not reconnected yet, and a drive put over one of those
         /// hides the real device for the rest of the session. A letter is free
         /// only when Windows lists no drive for it, the object manager has no
         /// name for it, and no network mapping is remembered against it.

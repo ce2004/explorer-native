@@ -10,7 +10,7 @@ namespace ExplorerNative
     /// dialog with no association between its prompt and its field: a screen
     /// reader landing in the box has nothing to say about what the box is for.
     /// Here the label is the field's accessible name, so arriving in it says
-    /// "Folder name, edit" and the caret is already there — no tabbing to find
+    /// "Folder name, edit" and the caret is already there, no tabbing to find
     /// where to type.
     /// </summary>
     public sealed class PromptForm : Form
@@ -21,7 +21,7 @@ namespace ExplorerNative
 
         /// <param name="selectStem">
         /// Select only the part before the extension, the way renaming works
-        /// everywhere else — typing replaces the name and keeps ".flac".
+        /// everywhere else, typing replaces the name and keeps ".flac".
         /// </param>
         public PromptForm(string title, string label, string initial, bool selectStem = false)
         {

@@ -63,9 +63,9 @@ namespace ExplorerNative
             // and it was a real filter: playback rate belonged to the media
             // engine, Windows' FLAC decoder refused everything above normal, and
             // a whole library of FLAC showed a list where half the entries
-            // silently did nothing. The speed is ours now — TimeStretch works on
+            // silently did nothing. The speed is ours now, TimeStretch works on
             // decoded samples and does not care what container they came out of
-            // — so there is nothing left to refuse and nothing to explain.
+            // so there is nothing left to refuse and nothing to explain.
             int nearest = 0;
             foreach (int percent in AudioPlayer.SpeedLadder)
             {
@@ -77,7 +77,7 @@ namespace ExplorerNative
             speeds.SelectedIndex = Math.Min(nearest, speeds.Items.Count - 1);
 
             // Applied here, so it fires for arrow keys, for the mouse, and for
-            // typing the first letter of an entry — every way a list is used.
+            // typing the first letter of an entry, every way a list is used.
             speeds.SelectedIndexChanged += (_, _) =>
             {
                 SelectedPercent = Value(speeds, speeds.SelectedIndex);

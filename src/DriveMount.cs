@@ -16,7 +16,7 @@ namespace ExplorerNative
     /// The distinction is the whole reason this is a separate type from
     /// <c>DriveEntry</c>. Drive allows two files in one folder to share a name
     /// and allows characters NTFS will not take, so the name on the drive letter
-    /// is frequently not the name in the account — and a listing that handed
+    /// is frequently not the name in the account, and a listing that handed
     /// back Drive's version would produce paths that do not open.
     ///
     /// <c>Size</c> is -1 for a folder, matching what the pane means by "not
@@ -33,7 +33,7 @@ namespace ExplorerNative
     /// Google Drive as a real drive, through WinFsp (4.3.0): a network-type
     /// volume on a letter, answered from here. Every program reads, writes,
     /// renames and deletes on it as on any drive, and every change goes to
-    /// Google — reads through the chunk cache, writes through
+    /// Google, reads through the chunk cache, writes through
     /// <see cref="DriveMount"/>'s write-back (DriveMount.Writes.cs).
     ///
     /// It replaced a Cloud Files sync root on a subst letter, which looked like
@@ -134,7 +134,7 @@ namespace ExplorerNative
         /// returned, kept, so a folder opened again costs nothing.
         ///
         /// The names here are the names on the letter, after Sanitise and Unique
-        /// have had them — not the names Drive returned. A listing that disagreed
+        /// have had them, not the names Drive returned. A listing that disagreed
         /// with the letter about what a file is called would hand back paths that
         /// do not open.
         /// </summary>
@@ -154,7 +154,7 @@ namespace ExplorerNative
         /// A path as this mount's key for it, or null when it is not one.
         ///
         /// Path.GetFullPath throws on an empty string, and every lookup here used
-        /// to call it unguarded — so asking about the parent of a root-level item,
+        /// to call it unguarded, so asking about the parent of a root-level item,
         /// which is how a move works out where something came from, threw
         /// ArgumentException rather than answering "I do not know".
         /// </summary>
@@ -189,7 +189,7 @@ namespace ExplorerNative
         /// <c>AC:DC.flac</c> is <c>AC_DC.flac</c> on the letter, and the second
         /// <c>song.flac</c> in a folder is <c>song (2).flac</c>. Building a path
         /// out of the name Drive returned would produce results that do not open
-        /// — which is the same trap <c>DrivePlaced</c> exists to keep the pane
+        /// which is the same trap <c>DrivePlaced</c> exists to keep the pane
         /// out of.
         ///
         /// Matching on the id instead is exact. Answered from
@@ -264,7 +264,7 @@ namespace ExplorerNative
         /// The name matters to the caller. Drive lets two files in one folder
         /// share a name and Windows does not, so uploading a second "song.flac"
         /// into a folder that already has one is a perfectly ordinary thing to do
-        /// — and it has to be called something else here. Whoever asked for the
+        /// and it has to be called something else here. Whoever asked for the
         /// upload then needs to be told what it ended up as, and a tree upload
         /// needs it to know where to put the next level down.
         ///
@@ -314,8 +314,8 @@ namespace ExplorerNative
                     {
                         // Seeded with what is already there, which is the difference
                         // between a duplicate name being numbered and a duplicate
-                        // name quietly stealing the map entry of the file it
-                        // collided with — the next delete on that path would trash
+                        // name silently stealing the map entry of the file it
+                        // collided with, the next delete on that path would trash
                         // the wrong one.
                         var used = NamesShownIn(relative);
                         name = Unique(Sanitise(entry.Name), used, entry.IsFolder);
@@ -418,7 +418,7 @@ namespace ExplorerNative
         ///
         /// What makes it worth having is that uploading a folder into a folder
         /// that already contains one of that name should *merge*, the way pasting
-        /// does everywhere else — not make a second folder with the same name,
+        /// does everywhere else, not make a second folder with the same name,
         /// which Drive would happily allow and which NTFS could then only show as
         /// "album (2)".
         ///
@@ -462,7 +462,7 @@ namespace ExplorerNative
                 //
                 // Trashing a folder takes everything in it, and leaving
                 // the children in the map leaves live Drive ids addressed by paths
-                // that no longer exist — so a later lookup could hand one to Trash
+                // that no longer exist, so a later lookup could hand one to Trash
                 // or MoveOrRename. CLAUDE.md is explicit that the path-to-id half
                 // is where a mistake deletes the wrong thing, and this was that
                 // mistake waiting for a folder to be deleted.
@@ -523,7 +523,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Follows a move or rename Drive has already agreed to, and returns the
-        /// name it was given on the letter — or null when it was not followed,
+        /// name it was given on the letter, or null when it was not followed,
         /// and RemoveOne then PlaceOne is the way.
         ///
         /// RemoveOne then PlaceOne throws away the listing of everything under a
@@ -560,7 +560,7 @@ namespace ExplorerNative
                     return null;
 
                 // Named the way PlaceOne names it, against what the destination
-                // already shows — less the thing itself, so a rename that only
+                // already shows, less the thing itself, so a rename that only
                 // changes case is not numbered against its own old name.
                 var used = NamesShownIn(toParent);
                 if (toParent == fromParent) used.Remove(fromLeaf);
@@ -910,8 +910,8 @@ namespace ExplorerNative
         /// <summary>
         /// How far into a selection <see cref="Warm"/> will look. Enough that a
         /// file too big to hold does not cost a place, small enough that the cost
-        /// on the copying thread is a handful of metadata reads — measured at
-        /// 0.15 to 0.42ms each — rather than one per selected file.
+        /// on the copying thread is a handful of metadata reads, measured at
+        /// 0.15 to 0.42ms each, rather than one per selected file.
         /// </summary>
         private const int MostWarmCandidates = MaxOpenFiles * 4;
 
@@ -919,22 +919,22 @@ namespace ExplorerNative
         /// Starts pulling whole files down before anybody asks for them.
         ///
         /// This exists for one measured gap. Copying a Drive file to the
-        /// clipboard and pasting it into another application — a DAW importing a
-        /// track — puts a path on the letter in that application's hands and
+        /// clipboard and pasting it into another application, a DAW importing a
+        /// track, puts a path on the letter in that application's hands and
         /// nothing else, so the *first byte it reads* is the first byte fetched
         /// from Google. It reads synchronously on the thread that pumps its
         /// window, so the whole download happens with that window frozen: 3.9
-        /// seconds for a 16.8MB track, and linear from there — a minute for the
+        /// seconds for a 16.8MB track, and linear from there, a minute for the
         /// 232MB one. Windows paints "(Not Responding)" over the lot.
         ///
         /// The same file once this has had it: 111ms. The bytes are not slow, the
-        /// timing is — so the fix is to spend the seconds somebody takes to
+        /// timing is, so the fix is to spend the seconds somebody takes to
         /// switch windows on the download instead of spending them inside the
         /// reader. A cache leased here and let go without a read is how the
         /// cache knows it was warmed, and that starts its four-stream download.
         ///
         /// Returns how many files were taken on, which is not always how many
-        /// were asked for — see the two bounds below.
+        /// were asked for, see the two bounds below.
         /// </summary>
         public int Warm(IEnumerable<string> paths)
         {
@@ -944,9 +944,9 @@ namespace ExplorerNative
             foreach (var path in paths)
             {
                 // Bounded before anything is measured, because this runs on the
-                // thread that took the copy. A selection is not small — this
+                // thread that took the copy. A selection is not small, this
                 // application has already had a thirteen-second window freeze out
-                // of doing a per-file lookup for three thousand of them — and
+                // of doing a per-file lookup for three thousand of them, and
                 // only the first few can be warmed anyway. A few more than that
                 // are looked at so that one file too big for the pool does not
                 // use up a place; see WarmPlan.
@@ -1000,12 +1000,12 @@ namespace ExplorerNative
         /// **The count bound.** Never take on more files than may be open at
         /// once. Warming a fourth calls <see cref="KeepRecent"/> and disposes the
         /// first, so warming ten would start ten downloads, cancel seven and
-        /// discard what they had fetched — the link spent to no purpose, and the
+        /// discard what they had fetched, the link spent to no purpose, and the
         /// three survivors being the ones asked for *last* rather than the ones
         /// anybody is about to read.
         ///
         /// **The budget bound.** A file bigger than the whole pool streams
-        /// perfectly well — that is what the chunking is for — but it cannot be
+        /// perfectly well, that is what the chunking is for, but it cannot be
         /// *held*, so warming it would evict everything else warmed alongside it
         /// and still arrive at the reader cold. It is skipped rather than allowed
         /// to end the plan, because a 4GB video first in a selection should not
@@ -1034,7 +1034,7 @@ namespace ExplorerNative
         /// The pool has a byte budget already, but a budget only gives memory
         /// back when something else wants it: warm a file, walk away, and its
         /// chunks sit there for as long as the mount is up. This is the other
-        /// half — time rather than size — and it is what makes warming on copy
+        /// half, time rather than size, and it is what makes warming on copy
         /// safe to leave switched on.
         /// </summary>
         private void SweepIdle()
@@ -1044,7 +1044,7 @@ namespace ExplorerNative
 
             // Never underneath a reader. Releasing a cache cancels its downloads,
             // so a sweep landing in the middle of a fetch callback would fail the
-            // read that callback is answering — a copy that stops dead for no
+            // read that callback is answering, a copy that stops dead for no
             // reason anybody can see. A file being read has a fresh LastUsed and
             // would survive the cut below anyway; this is the belt to that
             // braces, and it costs one volatile read.
@@ -1096,9 +1096,9 @@ namespace ExplorerNative
         ///
         /// A copy out of the Drive letter is robocopy reading the volume, and
         /// every byte it gets comes through <see cref="ReadFromDrive"/> in this
-        /// process first. Robocopy itself cannot say how far along a file is — it
+        /// process first. Robocopy itself cannot say how far along a file is, it
         /// writes nothing until Drive has delivered, and its "New File" line comes
-        /// through a block-buffered pipe after the file is done — so the progress
+        /// through a block-buffered pipe after the file is done, so the progress
         /// window sat at zero, named nothing, and then jumped a whole file at a
         /// time, one name behind. Measured on six tracks: four and a half seconds
         /// at 0% before the first number moved. This is the honest source.
@@ -1153,7 +1153,7 @@ namespace ExplorerNative
             }
 
             /// <summary>
-            /// Distinct bytes handed to readers, summed over every file — each byte
+            /// Distinct bytes handed to readers, summed over every file, each byte
             /// counted once however often it was asked for, and nothing counted
             /// that was not actually served.
             /// </summary>
@@ -1168,7 +1168,7 @@ namespace ExplorerNative
             ///
             /// The union of ranges, not the furthest byte, and the difference is
             /// the progress window lying. It kept the furthest byte reached, on the
-            /// reasoning that a file is read front to back — and it is not: Windows
+            /// reasoning that a file is read front to back, and it is not: Windows
             /// reads ahead, a virus scanner looks at the end of a new file, a WAV
             /// reader wants the trailing chunks. One read of the last four
             /// megabytes and a 65MB file counted as finished, so the window said
@@ -1317,8 +1317,8 @@ namespace ExplorerNative
         private readonly ConcurrentDictionary<string, bool> _populated = new();
 
         /// <summary>
-        /// How long a listing somebody is waiting on — a folder opened through
-        /// the letter, or navigated to in the file manager — may wait on Google
+        /// How long a listing somebody is waiting on, a folder opened through
+        /// the letter, or navigated to in the file manager, may wait on Google
         /// before it gives up and fails.
         ///
         /// A request that never returns is worse than one that fails: a failed
@@ -1369,7 +1369,7 @@ namespace ExplorerNative
             Interlocked.Increment(ref Listings);
 
             // The shared drives, as a folder beside My Drive's own, the way
-            // drive.google.com shows them — in every listing of the account root,
+            // drive.google.com shows them, in every listing of the account root,
             // not only the first: a refresh of the letter that left it out took
             // the folder away, and gave its name to a real folder of the same
             // name, which Delete then sent to the Drive trash. First, so it keeps
@@ -1419,7 +1419,7 @@ namespace ExplorerNative
             // long enough for the patient client to wait out a blip.
             var allowed = interactive ? ListingDeadline : PatientDeadline;
             // Claimed first, so two navigations into one folder do not both pay
-            // for the listing — and **given back on every way out that did not
+            // for the listing, and **given back on every way out that did not
             // actually populate it**, which it was not. A folder whose listing
             // threw (a blip, an expired sign-in, the deadline) stayed marked, so
             // this path never looked at it again for the rest of the session: the
@@ -1433,9 +1433,9 @@ namespace ExplorerNative
             // second in a parent whose listing had not arrived, did not find it,
             // and made another in Drive.
             //
-            // A patient caller whose wait ends with the folder still unlisted —
+            // A patient caller whose wait ends with the folder still unlisted,
             // the listing it waited on was an interactive one that gave up on a
-            // blip — takes the claim and lists it itself, in the time it has
+            // blip, takes the claim and lists it itself, in the time it has
             // left, rather than giving up on a listing it was meant to wait for.
             var mine = new ManualResetEventSlim(false);
             var claimClock = System.Diagnostics.Stopwatch.StartNew();
@@ -1473,11 +1473,11 @@ namespace ExplorerNative
             }
 
             // Offline, with this folder listed before: the listing held is the
-            // answer. Asking waited out the whole deadline — three quarters of a
-            // minute on every folder opened — to fail and show nothing, when
+            // answer. Asking waited out the whole deadline, three quarters of a
+            // minute on every folder opened, to fail and show nothing, when
             // the last listing is still held. Not
             // stamped as listed, so anything wanting a fresh listing still asks
-            // once Drive is back — and remembered, so that coming back online
+            // once Drive is back, and remembered, so that coming back online
             // drops it (DropOfflineAnswers). Not marked fully populated either:
             // that kept a folder opened during a blip stale for the session.
             //
@@ -1502,7 +1502,7 @@ namespace ExplorerNative
             var clock = System.Diagnostics.Stopwatch.StartNew();
 
             // A deadline of its own. Without one this waited out an offline spell
-            // for as long as it lasted — holding a navigation, a paste's conflict
+            // for as long as it lasted, holding a navigation, a paste's conflict
             // check or a search, with nothing able to call it off.
             // Linked to the unmount, so Quit and Disconnect do not wait out a listing.
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(_closing.Token);
@@ -1553,7 +1553,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Listings in progress — the file manager's and the volume's alike —
+        /// Listings in progress, the file manager's and the volume's alike,
         /// for anyone who arrives while one is running, and for MoveLocal, which
         /// must not re-key a folder a listing is still writing under.
         /// </summary>
@@ -1715,7 +1715,7 @@ namespace ExplorerNative
             /// <summary>
             /// The rows the folder's listing held when this started, by instance:
             /// a row that is not one of these when the listing is committed was
-            /// added meanwhile — an upload's PlaceOne — and is not this listing's
+            /// added meanwhile, an upload's PlaceOne, and is not this listing's
             /// to drop.
             /// </summary>
             public readonly HashSet<DrivePlaced> Before = new(ReferenceEqualityComparer.Instance);
@@ -1791,15 +1791,15 @@ namespace ExplorerNative
             {
                 session.Seen.Add(entry.Id);
 
-                // A Google-native document has no bytes anywhere — not here and
+                // A Google-native document has no bytes anywhere, not here and
                 // not in Drive for desktop. Skipped rather than shown as a file
                 // that cannot be opened.
                 //
                 // Skipped *before* a name is claimed for it, which is the order
                 // that matters. Claiming first put the name of something that was
                 // then never placed into the set of names already taken, so a real
-                // file sharing it — which Drive allows, and which is the only
-                // reason this set exists — was renamed to "name (2)" to avoid a
+                // file sharing it, which Drive allows, and which is the only
+                // reason this set exists, was renamed to "name (2)" to avoid a
                 // collision with an entry that does not exist.
                 if (entry.IsGoogleDocument) continue;
 
@@ -1830,7 +1830,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// What a Drive directory contains, from the listing already fetched for
-        /// it — no filesystem, no network.
+        /// it, no filesystem, no network.
         ///
         /// False for a directory nobody has populated yet, which is the caller's
         /// signal to go the ordinary way.
@@ -1864,7 +1864,7 @@ namespace ExplorerNative
         internal void ForgetKey(string key)
         {
             // Only marked unlisted. The old listing stays, unserved by TryListing
-            // — it answers for populated folders alone — because the next listing
+            // it answers for populated folders alone, because the next listing
             // needs it to keep each name bound to the file it named.
             _populated.TryRemove(key, out _);
             _answeredOffline.TryRemove(key, out _);
@@ -1874,7 +1874,7 @@ namespace ExplorerNative
         /// After a whole listing: what the map still says about files the
         /// listing no longer holds. Their ids kept answering for their paths, so
         /// a folder trashed on the web and then uploaded again by name was
-        /// "merged into" — the upload went into the trashed folder.
+        /// "merged into", the upload went into the trashed folder.
         ///
         /// Two kinds are kept: a file saved here that is not on Drive yet, and
         /// one this mount uploaded a moment ago, which Google's listing can lag
@@ -1911,7 +1911,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// A whole listing, now that it is whole, as the folder's listing — plus
+        /// A whole listing, now that it is whole, as the folder's listing, plus
         /// any row added while it was being fetched, and every file saved here
         /// that Drive does not have yet. An upload landing in a folder
         /// mid-listing placed its row with PlaceOne, and the listing, started
@@ -2072,7 +2072,7 @@ namespace ExplorerNative
         /// Whether <paramref name="fullPath"/> is at or below
         /// <paramref name="root"/>. Shared with <see cref="GoogleDrive"/>, which
         /// asks the same question about the same two roots and answered it with a
-        /// bare StartsWith — so it said yes for GoogleDrive-2 as well, and a
+        /// bare StartsWith, so it said yes for GoogleDrive-2 as well, and a
         /// leftover directory could not be deleted through the application
         /// because every delete was routed to Drive and refused there.
         /// </summary>
@@ -2096,7 +2096,7 @@ namespace ExplorerNative
 
             // Trimming can take the whole name. Drive allows a file called "..",
             // or "...", or three spaces; NTFS allows none of them, so trimming
-            // correctly leaves nothing at all — and an empty name is a file
+            // correctly leaves nothing at all, and an empty name is a file
             // that silently never appears, which is the
             // one outcome this function exists to prevent. Substituted rather
             // than trimmed, which is the answer the forbidden characters above
@@ -2110,8 +2110,8 @@ namespace ExplorerNative
             // legitimate file name there and an unwritable one here.
             //
             // The underscore goes on the *stem*, not the end. A device name is
-            // reserved with any extension at all — "CON.flac" is as unwritable as
-            // "CON" — and the rule splits at the first dot, so "CON.flac_" is
+            // reserved with any extension at all, "CON.flac" is as unwritable as
+            // "CON", and the rule splits at the first dot, so "CON.flac_" is
             // still called CON and still cannot be created. "CON_.flac" can.
             if (!NameRules.IsUsableName(cleaned))
             {
@@ -2143,8 +2143,8 @@ namespace ExplorerNative
         {
             if (name.Length <= most) return name;
 
-            // The extension is worth keeping — it is what decides whether the
-            // file opens — but only if it looks like one rather than a dot that
+            // The extension is worth keeping, it is what decides whether the
+            // file opens, but only if it looks like one rather than a dot that
             // happens to be near the end of a very long name.
             var extension = Path.GetExtension(name);
             if (extension.Length > 32) extension = "";
@@ -2178,7 +2178,7 @@ namespace ExplorerNative
         /// The download for a file, made if this is the first anyone has asked.
         ///
         /// Two things the obvious <c>GetOrAdd(id, factory)</c> got wrong, and both
-        /// only under the concurrency this is guaranteed to see — reads arrive
+        /// only under the concurrency this is guaranteed to see, reads arrive
         /// on the volume's dispatcher threads, several at once.
         ///
         /// The factory overload may run the factory more than once for one key
@@ -2191,7 +2191,7 @@ namespace ExplorerNative
         ///
         /// And nothing released the winners either. "One track at a time" is what
         /// <see cref="ReleaseAllBut"/> is for and nothing called it, so reading a
-        /// byte of a file — a tag, a thumbnail, a folder listing touching it —
+        /// byte of a file, a tag, a thumbnail, a folder listing touching it,
         /// started a download of the whole thing that ran to completion, and
         /// every file ever touched kept one. Memory stayed inside the pool's
         /// budget, which is what made it invisible; the network did not.
@@ -2266,7 +2266,7 @@ namespace ExplorerNative
         /// How many files may have a download open at once.
         ///
         /// The rule used to be exactly one, and starting a second stopped the
-        /// first. For a player that is right — there is one track, and the file
+        /// first. For a player that is right, there is one track, and the file
         /// somebody has just skipped to is the only one worth spending the link
         /// on. For a *copy* it is a disaster, and the copy is what this drive is
         /// mostly used for.
@@ -2274,8 +2274,8 @@ namespace ExplorerNative
         /// Robocopy runs eight to sixteen files at a time. Under "one at a time"
         /// every file it opened tore down the download of the file it had opened
         /// a moment earlier, so fifteen of sixteen readers were being served with
-        /// no cache at all — one Drive request per 256KB callback, at a measured
-        /// 0.21MB/s each — while their downloads were started, cancelled and
+        /// no cache at all, one Drive request per 256KB callback, at a measured
+        /// 0.21MB/s each, while their downloads were started, cancelled and
         /// started again. Long enough at that rate and Windows gives up on the
         /// callback: "the cloud operation was not completed before the time-out
         /// period expired", which is a file that fails to copy for no reason
@@ -2284,7 +2284,7 @@ namespace ExplorerNative
         /// Three, rather than one or sixteen. It is enough that a copy and a
         /// track playing alongside it do not evict each other, and small enough
         /// that the link is not split so many ways that every single file is slow
-        /// — which is the same failure by a different route, since a callback
+        /// which is the same failure by a different route, since a callback
         /// that waits too long fails whatever it is waiting for.
         /// </summary>
         private const int MaxOpenFiles = 3;
@@ -2371,7 +2371,7 @@ namespace ExplorerNative
                 cache.Dispose();
 
                 // Dropped with the cache, so a track that is opened again after
-                // its memory went back says it is being fetched again — which it
+                // its memory went back says it is being fetched again, which it
                 // is, from the beginning.
                 _fetchStarted.TryRemove(id, out _);
                 _fetchFinished.TryRemove(id, out _);
@@ -2416,7 +2416,7 @@ namespace ExplorerNative
         public void Dispose()
         {
             // The letter first, so nothing new arrives; then every closed file
-            // still in memory goes up — there is no disk to keep it on.
+            // still in memory goes up, there is no disk to keep it on.
             _stopping = true;
             bool gone = AccountGone;
             if (!gone) ChooseWhatDrains();

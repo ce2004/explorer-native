@@ -19,16 +19,16 @@ namespace ExplorerNative
     /// reading the file gives you those 44 bytes and nothing else.
     ///
     /// The audio is read off the disc itself with `IOCTL_CDROM_RAW_READ`, which
-    /// returns 2352-byte sectors of 16-bit little-endian stereo at 44.1kHz —
+    /// returns 2352-byte sectors of 16-bit little-endian stereo at 44.1kHz,
     /// exactly the body of a WAV file. So this is the same trick as
     /// <see cref="AiffStream"/>: a header of our own making, then the samples,
-    /// and everything after that — rate conversion to the device, seeking,
-    /// which is exact for WAV, the duration — is Windows' own, unchanged.
+    /// and everything after that, rate conversion to the device, seeking,
+    /// which is exact for WAV, the duration, is Windows' own, unchanged.
     ///
     /// Sectors are read twenty at a time and the last block is kept, because
     /// Media Foundation reads in pieces smaller than a block and a drive asked
     /// for the same sectors twice spins for them twice. A block the drive will
-    /// not read — a scratch — is retried a sector at a time and what still will
+    /// not read, a scratch, is retried a sector at a time and what still will
     /// not read plays as silence, which is what a CD player does with it too.
     /// </summary>
     internal sealed class CdTrackStream : IStream, IDisposable
@@ -102,7 +102,7 @@ namespace ExplorerNative
         /// What a <c>.cda</c> stub says: RIFF, CDDA, a <c>fmt </c> chunk of 24
         /// bytes holding the track number at 22, the first sector at 28 and the
         /// length in sectors at 32. The sector is a logical block address, the
-        /// same numbering the raw read takes — MSF copies of both follow, with
+        /// same numbering the raw read takes, MSF copies of both follow, with
         /// the two-second lead-in added, and are not needed.
         /// </summary>
         public static CdaTrack? ParseCda(ReadOnlySpan<byte> data)
@@ -343,7 +343,7 @@ namespace ExplorerNative
     /// <summary>One track, as its <c>.cda</c> stub describes it.</summary>
     internal readonly record struct CdaTrack(int Number, long FirstSector, long SectorCount);
 
-    /// <summary>Raw audio sectors from somewhere — a drive, or a test.</summary>
+    /// <summary>Raw audio sectors from somewhere, a drive, or a test.</summary>
     internal interface ICdSectors : IDisposable
     {
         /// <summary>

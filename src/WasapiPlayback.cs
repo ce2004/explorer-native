@@ -13,7 +13,7 @@ namespace ExplorerNative
     /// second of silence, so the reading happens on its own thread into a ring
     /// the renderer drains, and the renderer only ever touches memory.
     ///
-    /// The old path had the same problem and solved it in the same shape —
+    /// The old path had the same problem and solved it in the same shape,
     /// <see cref="StreamingSource"/> pulls a network file into memory so the
     /// decoder never waits on the share. This is that argument one layer up,
     /// where it now also covers a local disk that has gone to sleep.
@@ -25,14 +25,14 @@ namespace ExplorerNative
         ///
         /// It was one, and one is not enough for a track coming off Google
         /// Drive. The pump reads through a download that is itself racing
-        /// playback, and a single request to Google costs most of a second — so
+        /// playback, and a single request to Google costs most of a second, so
         /// one slow chunk emptied the ring and the renderer got silence. That is
         /// heard as a stutter, and it is the whole of "it should never gap".
         ///
         /// The old note here worried that a long ring puts stale audio in front
         /// of a seek. It does not: a seek empties the ring, deliberately, so the
-        /// depth costs nothing there. What it does cost is memory — four seconds
-        /// of stereo float is about 1.5MB, against a 160MB executable — and that
+        /// depth costs nothing there. What it does cost is memory, four seconds
+        /// of stereo float is about 1.5MB, against a 160MB executable, and that
         /// is not a trade worth thinking about twice.
         /// </summary>
         private const int RingFrames = 48000 * 4;
@@ -43,7 +43,7 @@ namespace ExplorerNative
         /// **The depth above is latency.** Everything in the ring has already
         /// been decoded, stretched, resampled and had its silences taken out, so
         /// a change to any of those stages is not heard until the four seconds in
-        /// front of it have played — which is what "adjusting the pitch is not
+        /// front of it have played, which is what "adjusting the pitch is not
         /// instant" was. The limiter, the equaliser and the volume are instant
         /// because they run on the render thread, *behind* the ring; the pitch,
         /// the speed and silence reduction cannot be, because they change how
@@ -54,8 +54,8 @@ namespace ExplorerNative
         /// a track coming off Google Drive through a download that is itself
         /// racing playback, where a single request costs most of a second. That
         /// case is exactly the one <see cref="StreamingSource.Complete"/> answers.
-        /// Once the file is in memory — and for a local file, from the first
-        /// frame — there is nothing to absorb, and a fifth of a second is ten
+        /// Once the file is in memory, and for a local file, from the first
+        /// frame, there is nothing to absorb, and a fifth of a second is ten
         /// renderer buffers of head start against a decode that runs hundreds of
         /// times faster than playback.
         ///
@@ -71,7 +71,7 @@ namespace ExplorerNative
         ///
         /// Starting the device against an empty ring means the first buffers it
         /// asks for are silence, which is a click and a gap at the front of
-        /// every track — most audible on exactly the tracks that are slowest to
+        /// every track, most audible on exactly the tracks that are slowest to
         /// arrive. Half a second is enough to cover the first decode and short
         /// enough not to be a wait.
         ///
@@ -83,7 +83,7 @@ namespace ExplorerNative
         /// <summary>
         /// The least room the pump will write into. With less than this free
         /// below the level it waits for the device to take some, so the ring
-        /// settles anywhere up to this much short of its level — which is what
+        /// settles anywhere up to this much short of its level, which is what
         /// the floor in <see cref="ReleaseWhenBuffered"/> has to allow for.
         /// </summary>
         internal const int SmallestWriteFrames = 1024;
@@ -97,7 +97,7 @@ namespace ExplorerNative
         /// <summary>
         /// The download this track is being played through, if it is one.
         ///
-        /// Held only to be asked whether it has finished arriving — see
+        /// Held only to be asked whether it has finished arriving, see
         /// <see cref="ShallowFrames"/>. The decoder gets it as a plain IStream
         /// and neither knows nor cares what is behind it.
         /// </summary>
@@ -113,7 +113,7 @@ namespace ExplorerNative
         /// Raised when the pump has consumed frames, so it does not have to poll.
         ///
         /// The battery rule for this thread. It used to sleep five milliseconds
-        /// whenever the ring was full — two hundred wakeups a second, for as long
+        /// whenever the ring was full, two hundred wakeups a second, for as long
         /// as a track was loaded, whether or not anything was playing. Paused, the
         /// ring never drains, so every one of those was a wakeup to discover that
         /// there was still nothing to do.
@@ -136,10 +136,10 @@ namespace ExplorerNative
         ///
         /// <see cref="AudioDecoder"/> asks for the device's rate and channel
         /// count in three goes, most specific first, and the last of them lets
-        /// the decoder choose both — because a source reader refuses an
+        /// the decoder choose both, because a source reader refuses an
         /// over-specified type outright, and half the WAVs in the world only
         /// open on the third try. It reads back what it settled on and says so
-        /// honestly.
+        /// truly.
         ///
         /// Nothing used to *do* anything with that. The samples went to a device
         /// expecting 48kHz stereo whatever they were, so a 44.1kHz file played
@@ -161,7 +161,7 @@ namespace ExplorerNative
                 : 1.0;
 
         /// <summary>
-        /// How fast to play, where 1 is normal. The pitch does not follow it —
+        /// How fast to play, where 1 is normal. The pitch does not follow it,
         /// see <see cref="TimeStretch"/>, which is the whole reason the media
         /// engine is no longer here.
         /// </summary>
@@ -184,7 +184,7 @@ namespace ExplorerNative
         /// <summary>
         /// Whether shifting the pitch drags the tempo with it.
         ///
-        /// Off — the default — the two are independent: the track plays at the
+        /// Off, the default, the two are independent: the track plays at the
         /// speed it was set to and only the pitch moves. On, they move together,
         /// which is what a tape machine or a turntable does, and is the sound
         /// people mean by "slowed and reverbed" or "chipmunked".
@@ -226,7 +226,7 @@ namespace ExplorerNative
             // sample in the decoder's output; the stretcher preserves that; the
             // resampler stepping by F puts it at F·f/sourceRate per output
             // sample, which played at the device rate is f·F/c where
-            // c = sourceRate/deviceRate. Wanting pitch P gives F = P·c — and the
+            // c = sourceRate/deviceRate. Wanting pitch P gives F = P·c, and the
             // stretch rate falls out as S/P exactly as before, so a file at the
             // wrong rate costs nothing anywhere else.
             var p = _pitch;
@@ -255,7 +255,7 @@ namespace ExplorerNative
         /// Empty reads in a row. Reset by any read that produced audio.
         ///
         /// The end of a track and a track waiting for bytes look identical from
-        /// here — both are a read that returned nothing — and the difference
+        /// here, both are a read that returned nothing, and the difference
         /// matters because one of them, with repeat on, restarts the song.
         /// </summary>
         private int _emptyReads;
@@ -285,7 +285,7 @@ namespace ExplorerNative
         /// counted down as the renderer plays them. Guarded by
         /// <see cref="_ringGate"/>, like everything else about the ring.
         ///
-        /// This is what lets <see cref="Position"/> stay honest across a repeat —
+        /// This is what lets <see cref="Position"/> stay honest across a repeat,
         /// see the comment there. Zero at every other moment, which is every
         /// moment for a track that is not repeating.
         /// </summary>
@@ -325,8 +325,8 @@ namespace ExplorerNative
         ///
         /// The media engine reported this as an event and it is why the ids
         /// exist; the ring is the thing that actually knows, because it is the
-        /// thing that empties. A track whose decode cannot keep up — a share
-        /// that has gone slow — is otherwise silence with nothing said about it.
+        /// thing that empties. A track whose decode cannot keep up, a share
+        /// that has gone slow, is otherwise silence with nothing said about it.
         /// </summary>
         public event Action<bool>? Starved;
 
@@ -368,7 +368,7 @@ namespace ExplorerNative
         /// <summary>
         /// Where playback has actually reached, rather than where the decoder has
         /// read to. Those differ by whatever is sitting in the ring, which is
-        /// about a second — enough to make a position display visibly wrong.
+        /// about a second, enough to make a position display visibly wrong.
         /// </summary>
         public double Position
         {
@@ -394,20 +394,20 @@ namespace ExplorerNative
                 // position run ahead by the speed, so at four times the clock
                 // reached the end of the track a second before the music did.
                 // Each frame in the ring is an *output* frame and stands for
-                // `_rate` frames of the file, whatever the pitch is doing —
+                // `_rate` frames of the file, whatever the pitch is doing,
                 // because ApplyRates divides the stretch by the pitch precisely
                 // so that the two cancel and the speed on the dial is the speed
                 // through the source. When the pitch is linked to the tempo they
                 // do not cancel, and a ring frame stands for rate * pitch.
                 //
-                // Both stages hold source frames of their own on top of that —
+                // Both stages hold source frames of their own on top of that,
                 // counted on the pump thread, see SourceAtRingEnd.
 
                 // In decoder frames, which is what decoder.Position is counted
                 // in, so everything has to be converted into them.
                 //
                 // A ring frame is one device frame. It stands for `speed` source
-                // seconds per output second, times the rate conversion — a
+                // seconds per output second, times the rate conversion, a
                 // 44.1kHz file on a 48kHz device advances through itself slower
                 // than one frame per frame, and a clock that ignored that ran
                 // ahead of the music by eight percent and made every skip land
@@ -427,8 +427,8 @@ namespace ExplorerNative
                 // point the two are no longer measuring the same pass: the
                 // decoder has gone back to zero and the ring is still four
                 // seconds of the end of the track. The subtraction then goes
-                // negative and the clock reads zero — for the whole ring, which
-                // is a fifth of a twenty-second track — while the last four
+                // negative and the clock reads zero, for the whole ring, which
+                // is a fifth of a twenty-second track, while the last four
                 // seconds of every pass are never reported at all. On the file
                 // this was found with, the clock ran 0 to 16 on a track that is
                 // 20 seconds long, then sat at 0 for four seconds, over and over.
@@ -441,7 +441,7 @@ namespace ExplorerNative
 
                     // A track shorter than the ring has several passes in it at
                     // once, and the play head is that far back from the end of
-                    // the latest one — whole passes and all. Without the
+                    // the latest one, whole passes and all. Without the
                     // remainder a one-second sound on repeat sat at 0 for good.
                     double duration = decoder.Duration;
                     if (duration > 0 && behind > duration) behind %= duration;
@@ -453,7 +453,7 @@ namespace ExplorerNative
                 // Measured back from where the end of the ring is in the source,
                 // which the pump writes down with every block it puts in the
                 // ring. It used to be worked out here, from the decoder and the
-                // stages as they stood — while the pump was part way through
+                // stages as they stood, while the pump was part way through
                 // moving a block from one to the other. A block read and not yet
                 // in the ring was counted nowhere, so the clock ran a block
                 // ahead and then stepped back by it: twenty milliseconds and
@@ -473,14 +473,14 @@ namespace ExplorerNative
         /// <summary>
         /// Where the source has reached at the end of the ring, worked out on the
         /// pump thread, which is the only thread that moves the decoder and the
-        /// stages — so they are never caught half way through a block.
+        /// stages, so they are never caught half way through a block.
         ///
         /// The decoder has read further than the ring holds by whatever the
         /// stages are holding. The stretcher's are decoder frames already. The
         /// resampler's are counted in *its* input, the stretcher's output, so
         /// each is worth one stretch rate of decoder frames. Silence reduction's
         /// are decoder frames, like the stretcher's, because it sits in front of
-        /// it — the gap it is still deciding about has been read and has not been
+        /// it, the gap it is still deciding about has been read and has not been
         /// heard. What it has *dropped* is deliberately not counted anywhere:
         /// those frames were read and will never be heard, which is what makes
         /// the position jump across a gap that was removed.
@@ -506,8 +506,8 @@ namespace ExplorerNative
         /// anything under the four seconds the ring holds is decoded to the end
         /// almost at once, so `_sourceDone` goes true while every note of it is
         /// still queued and audible. Pausing and resuming such a track answered
-        /// "not playing" to a player that was plainly playing — intermittently,
-        /// because it depended on whether the decode had finished by then — and
+        /// "not playing" to a player that was clearly playing, intermittently,
+        /// because it depended on whether the decode had finished by then, and
         /// the same answer reaches the menu labels and "say what is playing".
         /// </summary>
         public bool IsPlaying
@@ -540,7 +540,7 @@ namespace ExplorerNative
         /// The limiter's three shapes, in the units the renderer works in.
         ///
         /// Forwarded rather than held, so a change lands on the sound within one
-        /// buffer — about ten milliseconds. That is what makes them adjustable
+        /// buffer, about ten milliseconds. That is what makes them adjustable
         /// while a track is playing, which is the only way any of them can be
         /// judged: they are all ways of describing something you have to hear.
         /// </summary>
@@ -660,7 +660,7 @@ namespace ExplorerNative
             // Last, so a switch coming on finds the numbers already where they
             // were asked to be rather than working for one block on the previous
             // set. Every one of these is written while the pump thread is reading
-            // them — they are volatile on the stage for exactly that reason — and
+            // them, they are volatile on the stage for exactly that reason, and
             // the order is the only thing this end can decide.
             s.Enabled = _silenceOn;
         }
@@ -677,7 +677,7 @@ namespace ExplorerNative
             Stop();
 
             // Stop marks the player as stopped so a device switch in flight does
-            // not install a renderer into it — and this is a new start. Left set,
+            // not install a renderer into it, and this is a new start. Left set,
             // every switch for the life of the track opened the new device, saw
             // "stopped", and closed it again: the device never changed.
             lock (_swapGate) _stopped = false;
@@ -716,7 +716,7 @@ namespace ExplorerNative
             // suspending the renderer. Suspending stops the audio client and
             // releasing it starts the client again, so gating the device that
             // way put an extra Stop/Start on the endpoint at the front of every
-            // single track — free on some drivers and emphatically not on
+            // single track, free on some drivers and emphatically not on
             // others, which is a slow start bought to fix a short one. The
             // device keeps running and is simply handed nothing until there is
             // something worth handing it, which is what it would have got
@@ -737,7 +737,7 @@ namespace ExplorerNative
             {
                 // Whichever decoder can take the file. Media Foundation for
                 // everything Windows decodes, and the managed one for Ogg
-                // Vorbis and Opus, which it does not — see TrackDecoder.
+                // Vorbis and Opus, which it does not, see TrackDecoder.
                 //
                 // Or whatever the owner builds instead: the audio editor plays
                 // the file through its edit list (EditedDecoder), made here on
@@ -781,7 +781,7 @@ namespace ExplorerNative
 
                 // Behind the stretcher, not in front of it. The stretcher's job
                 // is to fix the length, and it has to be fixing the length of
-                // whatever the resampler is actually going to be handed —
+                // whatever the resampler is actually going to be handed,
                 // putting the resampler first would have it changing the length
                 // again after the correction had been worked out.
                 _pitch = new Resampler(_sourceChannels)
@@ -791,7 +791,7 @@ namespace ExplorerNative
                 };
 
                 // Both rates from the one place that knows how they combine, and
-                // after both objects exist — see ApplyRates.
+                // after both objects exist, see ApplyRates.
                 ApplyRates();
 
                 lock (_ringGate) _writtenThrough = SourceAtRingEnd(decoder);
@@ -818,7 +818,7 @@ namespace ExplorerNative
             // Longer for a download. A decoder opening an 8GB Matroska file
             // reads its start and its index at the end, and on a busy link each
             // of those is seconds: fifteen failed a file that plays perfectly.
-            // Nothing waits behind it — a newer Enter or Stop calls the open
+            // Nothing waits behind it, a newer Enter or Stop calls the open
             // off and its reads with it.
             if (!opened.Wait(TimeSpan.FromSeconds(_download != null || _live ? 45 : 15)))
             {
@@ -840,8 +840,8 @@ namespace ExplorerNative
             // when the device it was goes away.
             WasapiRenderer.DefaultDeviceChanged += OnDefaultDeviceChanged;
 
-            // And a change made while the track was opening — which on a share
-            // can be seconds — was announced to nobody. Checked once now; the
+            // And a change made while the track was opening, which on a share
+            // can be seconds, was announced to nobody. Checked once now; the
             // pump drops it when there is nothing to do.
             if (Interlocked.CompareExchange(ref _switchTo, DefaultMoved, null) == null)
                 try { _drained.Set(); } catch { }
@@ -859,7 +859,7 @@ namespace ExplorerNative
             // Everything in the ring right now is the end of the pass
             // that has just finished, and it has not been heard yet.
             // Noted before the decoder moves, because after that the
-            // two are measuring different passes — see Position.
+            // two are measuring different passes, see Position.
             lock (_ringGate)
                 _lastPassFrames = _channels > 0 ? _stored / _channels : 0;
 
@@ -877,7 +877,7 @@ namespace ExplorerNative
             // breaks it" was.
             //
             // Each latches a "the source has run out" flag the first
-            // time a read comes back empty — correctly, because a
+            // time a read comes back empty, correctly, because a
             // finished source returns nothing for ever and asking
             // again per sample would be a call to prove it. At the
             // loop point that latch is wrong: the decoder has just
@@ -891,7 +891,7 @@ namespace ExplorerNative
             //
             // SourceRestarted, not Reset: what they hold is the tail
             // of the last hop, and letting it cross into the first
-            // hop of the new pass is the join being seamless.
+            // hop of the new pass is the join being gapless.
             _silence?.SourceRestarted();
             _stretch?.SourceRestarted();
             _pitch?.SourceRestarted();
@@ -906,7 +906,7 @@ namespace ExplorerNative
         /// Runs <see cref="PumpCore"/>, and survives it throwing.
         ///
         /// This is a background thread, and an exception left to escape one
-        /// takes the whole process with it — a decoder that throws on a damaged
+        /// takes the whole process with it, a decoder that throws on a damaged
         /// frame closed the file manager, not just the track. Caught, the reason
         /// is kept for the audio page and the track ends the ordinary way: what
         /// is in the ring plays out and Finished is raised. A skip asks the
@@ -1007,7 +1007,7 @@ namespace ExplorerNative
             // Sized for the decoder's channel count, which is what the chain
             // above produces, and separately for the device's, which is what the
             // ring holds. They are usually the same number and occasionally are
-            // not — see _sourceChannels.
+            // not, see _sourceChannels.
             const int BlockFrames = PumpBlockFrames;
             var block = new float[BlockFrames * Math.Max(1, _sourceChannels)];
             var forRing = new float[BlockFrames * Math.Max(1, _channels)];
@@ -1015,7 +1015,7 @@ namespace ExplorerNative
             while (_pumping)
             {
                 // The device change happens here, on the thread that owns the
-                // decoder — reopening it anywhere else is the cross-apartment
+                // decoder, reopening it anywhere else is the cross-apartment
                 // mistake this file already carries a paragraph about.
                 //
                 // And *before* the buffers are sized, which is the other half of
@@ -1038,7 +1038,7 @@ namespace ExplorerNative
                 if (switchTo != null) SwitchNow(switchTo);
 
                 // Both are sized from channel counts a device switch can change
-                // underneath this loop — and the loop keeps the arrays it was
+                // underneath this loop, and the loop keeps the arrays it was
                 // started with. Moving a playing track from stereo speakers to a
                 // 5.1 endpoint asked the decoder for six channels into a buffer
                 // holding two, which throws on a background thread with nobody to
@@ -1061,8 +1061,8 @@ namespace ExplorerNative
                     // Fill runs on the render thread and treats "nothing in the
                     // ring and the source is finished" as the end of the track.
                     // Emptying the ring first opened a window where both were
-                    // true at once — the ring already zeroed, _sourceDone not
-                    // yet cleared — so a seek made near the end of a track
+                    // true at once, the ring already zeroed, _sourceDone not
+                    // yet cleared, so a seek made near the end of a track
                     // raised Finished. With repeat switched on, Finished seeks
                     // back to zero, and what you hear after skipping is the
                     // beginning of the song again. Reported as "skipping repeats
@@ -1088,12 +1088,12 @@ namespace ExplorerNative
                     // plays a fifth of a second of the old position after the
                     // jump and joins it to the new one.
                     //
-                    // The resampler holds the same kind of thing — up to a
+                    // The resampler holds the same kind of thing, up to a
                     // thousand input frames of the old position, plus a
-                    // fractional read cursor into them — so it is emptied on the
+                    // fractional read cursor into them, so it is emptied on the
                     // same terms and for the same reason.
                     // And the reduction stage in front of them, holding a gap
-                    // it has not decided about yet — audio from where the track
+                    // it has not decided about yet, audio from where the track
                     // used to be, on exactly the terms the two stages below it
                     // are emptied for.
                     _silence?.Reset();
@@ -1112,7 +1112,7 @@ namespace ExplorerNative
                 // something. A file shorter than the prebuffer floor reaches
                 // _sourceDone without ever filling it, and a release that only
                 // happened on a successful write left the device suspended for
-                // ever — measured as a track that plays in total silence, which
+                // ever, measured as a track that plays in total silence, which
                 // is a far worse gap than the one the floor exists to close.
                 ReleaseWhenBuffered();
 
@@ -1125,7 +1125,7 @@ namespace ExplorerNative
 
                 // Only up to the level this track needs, not up to the brim. The
                 // difference between those two is how long it takes a change to
-                // the pitch, the speed or silence reduction to be heard — see
+                // the pitch, the speed or silence reduction to be heard, see
                 // ShallowFrames.
                 room = Math.Min(room, TargetFrames() - stored);
 
@@ -1166,7 +1166,7 @@ namespace ExplorerNative
                           ?? _silence?.Read(block, want) ?? 0;
 
                 // Silence reduction handed back early because a skip, a stop or
-                // a device change is waiting — not because the track ran out.
+                // a device change is waiting, not because the track ran out.
                 // Not an empty read, so it does not count towards the end; the
                 // stages behind it latched "finished" on the short read and are
                 // told otherwise; and the loop goes round to deal with whatever
@@ -1183,7 +1183,7 @@ namespace ExplorerNative
                     // One empty read is not the end of the track, and treating
                     // it as one is expensive: the end of the track raises
                     // Finished, and Finished with repeat switched on seeks back
-                    // to zero — so a momentary gap plays the song again from the
+                    // to zero, so a momentary gap plays the song again from the
                     // beginning, which is a very loud way to report a hiccup.
                     //
                     // A decoder reading through a download can come up empty
@@ -1196,7 +1196,7 @@ namespace ExplorerNative
                     //
                     // The stages in front of the decoder each latch "the source
                     // has run out" on their first empty read, so each retry tells
-                    // them otherwise — without that, a retry only ever asked
+                    // them otherwise, without that, a retry only ever asked
                     // stages that had stopped asking, and a pause in a download
                     // ended the track whenever silence reduction, speed or pitch
                     // was in use.
@@ -1215,7 +1215,7 @@ namespace ExplorerNative
                     // decoder ran out, the pump gave up, the ring drained to
                     // nothing, the *render* thread noticed the silence and raised
                     // Finished, and AudioPlayer answered by asking for a seek to
-                    // zero — which the pump then applied by emptying the ring
+                    // zero, which the pump then applied by emptying the ring
                     // again and refilling it from cold. Every one of those steps
                     // is a real delay and the ring is empty for all of them, so
                     // a repeat was most of a second of silence between the last
@@ -1232,7 +1232,7 @@ namespace ExplorerNative
                     // sound and says nothing: turn the decoder round, read
                     // nothing, turn it round again, for as long as the
                     // application is open. That is exactly what an Opus file did
-                    // before the reader could be turned round at all — the clock
+                    // before the reader could be turned round at all, the clock
                     // stopped at zero and the track appeared to be playing. A
                     // decoder that cannot restart is a rare thing and a silent
                     // hang is the worst possible way to report it.
@@ -1255,14 +1255,14 @@ namespace ExplorerNative
                 //
                 // That read is not always quick. On the Drive letter a skip
                 // forward lands past whatever has been downloaded, so the decode
-                // behind it goes to the network — hundreds of milliseconds. A
+                // behind it goes to the network, hundreds of milliseconds. A
                 // held key fires eight times a second. So by the time a block
                 // comes back, two or three further skips have been asked for and
                 // this audio belongs to a position nobody is at any more.
                 //
                 // It used to be written to the ring regardless. The ring is
-                // empty at that instant — the seek that started this read
-                // emptied it — and the renderer is starving, so those stale
+                // empty at that instant, the seek that started this read
+                // emptied it, and the renderer is starving, so those stale
                 // frames went straight out of the speakers before the next seek
                 // could clear them. Held down, that is a burst of eighty
                 // millisecond fragments from every position the key passed
@@ -1273,20 +1273,20 @@ namespace ExplorerNative
                 if (!double.IsNaN(Volatile.Read(ref _seekTo))) continue;
 
                 // Into the device's channel layout. A no-op when they match,
-                // which is nearly always — and the difference between music and
+                // which is nearly always, and the difference between music and
                 // a fast, torn mess when they do not.
                 var writing = ToDeviceChannels(block, forRing, got);
 
                 // Where the source is at the end of this block, taken now, while
-                // nothing is moving — see Position.
+                // nothing is moving, see Position.
                 double through = _decoder is { } reading ? SourceAtRingEnd(reading) : 0;
 
                 lock (_ringGate)
                 {
                     _writtenThrough = through;
 
-                    // Two copies at most — up to the end of the ring, then from its
-                    // start — rather than a modulo per sample under the lock the
+                    // Two copies at most, up to the end of the ring, then from its
+                    // start, rather than a modulo per sample under the lock the
                     // render thread waits on.
                     int values = got * _channels;
                     int first = Math.Min(values, _ring.Length - _writeAt);
@@ -1302,7 +1302,7 @@ namespace ExplorerNative
         /// Lays the decoder's channels out the way the device wants them.
         ///
         /// The decoder is asked for the device's channel count and does not
-        /// always agree — see <see cref="_sourceChannels"/>. Writing its frames
+        /// always agree, see <see cref="_sourceChannels"/>. Writing its frames
         /// into a ring interleaved for a different count was reading past the
         /// end of its own buffer and playing the result at the wrong speed,
         /// which is one of the two things "some files play fast" turned out to
@@ -1313,7 +1313,7 @@ namespace ExplorerNative
         /// and calling it the mix silently loses whatever was only on the right.
         /// Anything else copies what lines up and leaves the rest silent: a
         /// five-channel film mix folded properly is a job for a matrix nobody
-        /// here has asked for, and inventing one quietly would be worse than
+        /// here has asked for, and inventing one silently would be worse than
         /// playing the channels that exist.
         /// </summary>
         private float[] ToDeviceChannels(float[] source, float[] destination, int frames)
@@ -1360,7 +1360,7 @@ namespace ExplorerNative
         ///
         /// The renderer is opened suspended and stays that way until half a
         /// second has been decoded, because a device started against an empty
-        /// ring asks for buffers that are not there and gets silence — a gap and
+        /// ring asks for buffers that are not there and gets silence, a gap and
         /// a click at the front of every track, worst on exactly the tracks that
         /// are slowest to arrive.
         ///
@@ -1410,7 +1410,7 @@ namespace ExplorerNative
         ///
         /// Deep only while a download is still racing playback. A local file has
         /// never needed it, and a remote one stops needing it the moment the last
-        /// byte lands — everything after that is a read from memory. See
+        /// byte lands, everything after that is a read from memory. See
         /// <see cref="ShallowFrames"/> for why the difference is worth having.
         /// </summary>
         private int TargetFrames()
@@ -1419,7 +1419,7 @@ namespace ExplorerNative
 
             // Every byte in memory, not <see cref="StreamingSource.Complete"/>.
             // Complete means the *cache budget* is full, and the budget is capped
-            // — so a track bigger than it is "complete" with most of itself still
+            // so a track bigger than it is "complete" with most of itself still
             // on the network. That is not hypothetical: the folder this was found
             // in holds a 1.3GB Ogg, against a budget of one gigabyte. Asking the
             // plainer question costs nothing and cannot be wrong in the direction
@@ -1450,7 +1450,7 @@ namespace ExplorerNative
         private volatile bool _switching;
 
         /// <summary>
-        /// The renderer's callback. Memory only — no locks held for long, no I/O,
+        /// The renderer's callback. Memory only, no locks held for long, no I/O,
         /// nothing that can block. Everything expensive already happened on the
         /// pump thread.
         /// </summary>
@@ -1463,8 +1463,8 @@ namespace ExplorerNative
             // this. They do not agree about the format: the frames in the ring
             // are laid out for whichever channel count is current, and the
             // buffer being written belongs to whichever renderer called. With
-            // the counts different that is either an overrun — swallowed by the
-            // render loop, taking the frames it had already consumed with it —
+            // the counts different that is either an overrun, swallowed by the
+            // render loop, taking the frames it had already consumed with it,
             // or the new device playing the tail of somebody else's buffer as
             // though it were music. A few milliseconds of silence is the honest
             // answer while the two overlap.
@@ -1491,7 +1491,7 @@ namespace ExplorerNative
 
                 // The tail of the previous pass is at the front of the ring, so
                 // whatever was just played comes off it first. Two integer
-                // operations, which is all this thread can afford — see Position
+                // operations, which is all this thread can afford, see Position
                 // for what they are for.
                 if (_lastPassFrames > 0 && _channels > 0)
                     _lastPassFrames -= Math.Min(taken / _channels, _lastPassFrames);
@@ -1585,7 +1585,7 @@ namespace ExplorerNative
 
                 // A track that has played to its end stays let go of. Resume is
                 // not a seek: it changes nothing about the end having been
-                // reached, and nothing would ever suspend the device again — the
+                // reached, and nothing would ever suspend the device again, the
                 // end is announced once. Resumed on its own, or racing the render
                 // thread deciding the end, the device ran on feeding silence for
                 // as long as the track stayed loaded. A seek or the loop point
@@ -1593,7 +1593,7 @@ namespace ExplorerNative
                 //
                 // Under the ring's lock, which is where the end is decided. Resting
                 // without the end still standing is a track that has more to play
-                // — a device switch to another format took it back from the end —
+                // a device switch to another format took it back from the end,
                 // and that one is woken as before.
                 if (!(_resting && _announcedEnd))
                 {
@@ -1611,7 +1611,7 @@ namespace ExplorerNative
         /// Moves to another playback device without stopping the music.
         ///
         /// Empty means the system default. Picked up by the pump, which owns the
-        /// decoder — see <see cref="SwitchNow"/> for what it costs.
+        /// decoder, see <see cref="SwitchNow"/> for what it costs.
         /// </summary>
         public void SwitchDevice(string deviceId)
         {
@@ -1625,7 +1625,7 @@ namespace ExplorerNative
         /// The ring is kept when the new device wants the same format, which is
         /// the usual case and the reason this is quick: the decoder is untouched,
         /// the audio already read stays read, and the only gap is the time it
-        /// takes to open the device — tens of milliseconds. Nothing is reloaded
+        /// takes to open the device, tens of milliseconds. Nothing is reloaded
         /// and nothing is re-decoded.
         ///
         /// A device that mixes at a different rate is the exception. The decoder
@@ -1683,8 +1683,8 @@ namespace ExplorerNative
         private long _reopenedAt;
 
         /// <param name="automatic">
-        /// Queued by the player itself — a default that moved, a device that
-        /// went — rather than picked. Only those are kept quiet on a retry.
+        /// Queued by the player itself, a default that moved, a device that
+        /// went, rather than picked. Only those are kept quiet on a retry.
         /// </param>
         /// <param name="reopenSame">
         /// Opening a lost device again by name. On failure nothing is queued
@@ -1717,7 +1717,7 @@ namespace ExplorerNative
 
             // Carried across by value rather than by sharing the object. Both
             // renderers are running for the moment between here and old.Stop(),
-            // and a filter's state belongs to one render thread — handing the
+            // and a filter's state belongs to one render thread, handing the
             // same one to two of them is a race over a few hundred samples of
             // somebody's music.
             fresh.Equaliser.Enabled = old.Equaliser.Enabled;
@@ -1746,13 +1746,13 @@ namespace ExplorerNative
 
                 // Staying put means staying on the default the old renderer
                 // followed, which may have moved while the other device was
-                // opening — or on a device that has gone. Asked again rather
+                // opening, or on a device that has gone. Asked again rather
                 // than remembered: a default move is skipped when there is
                 // nothing to do. A switch already waiting has its turn first.
                 //
                 // Only after a named device failed. A failed move to the default
                 // queued again is the same failure, retried as fast as a device
-                // can refuse — silence and a spoken error each time. A default
+                // can refuse, silence and a spoken error each time. A default
                 // that moves meanwhile is queued by the notification anyway.
                 if (deviceId.Length != 0 && (old.DeviceId.Length == 0 || old.Lost) &&
                     Interlocked.CompareExchange(ref _switchTo, DefaultMoved, null) == null)
@@ -1770,7 +1770,7 @@ namespace ExplorerNative
             bool sameFormat = fresh.SampleRate == old.SampleRate && fresh.Channels == old.Channels;
 
             // Stop can give up waiting for this thread while a device takes its
-            // time to open — ten seconds for some Bluetooth endpoints — and stop
+            // time to open, ten seconds for some Bluetooth endpoints, and stop
             // the renderer it can see. Swapping in a new one after that left a
             // Highest-priority thread holding an endpoint for the life of the
             // process. The swap and Stop agree under one lock instead.
@@ -1784,8 +1784,8 @@ namespace ExplorerNative
                 }
 
                 // Again, from the old renderer, because a Bluetooth device can
-                // take seconds to open and every change made meanwhile — mute,
-                // the volume, the equaliser — went to the renderer about to be
+                // take seconds to open and every change made meanwhile, mute,
+                // the volume, the equaliser, went to the renderer about to be
                 // thrown away.
                 fresh.Gain = old.Gain;
                 fresh.Limiter = old.Limiter;
@@ -1813,7 +1813,7 @@ namespace ExplorerNative
 
             // Where to carry on from, taken now: the old device went on playing
             // the ring while the new one opened, and a position read before that
-            // replayed up to the whole ring — seconds, for a remote track.
+            // replayed up to the whole ring, seconds, for a remote track.
             double at = Position;
 
             // Whatever happens below, the new device is never left suspended: an
@@ -1861,8 +1861,8 @@ namespace ExplorerNative
                     _stretch = new TimeStretch(_sourceChannels) { Source = _silence.Read };
 
                     // And the resampler, which this rebuild used to forget. Without
-                    // it the pump went on reading through the *old* one — pointed at
-                    // a stretcher that had been replaced — so moving to a device
+                    // it the pump went on reading through the *old* one, pointed at
+                    // a stretcher that had been replaced, so moving to a device
                     // with a different format silently dropped the pitch shift and
                     // left a dead object in the chain.
                     _pitch = new Resampler(_sourceChannels)
@@ -1872,7 +1872,7 @@ namespace ExplorerNative
                     };
 
                     // Both rates together, from the one place that knows how they
-                    // combine — see ApplyRates.
+                    // combine, see ApplyRates.
                     ApplyRates();
 
                     lock (_ringGate) _writtenThrough = SourceAtRingEnd(decoder);
@@ -1928,7 +1928,7 @@ namespace ExplorerNative
         public void SeekTo(double seconds)
         {
             // Not a number is not a place, and it is ignored outright. It used to
-            // be stored — Math.Max(0, NaN) is NaN — which is how "no seek
+            // be stored, Math.Max(0, NaN) is NaN, which is how "no seek
             // waiting" is written, so it silently threw away a real skip that
             // was still waiting for the pump.
             if (double.IsNaN(seconds)) return;
@@ -1952,7 +1952,7 @@ namespace ExplorerNative
         /// <summary>
         /// The track has played to its end and said so. Asked rather than
         /// worked out from the position against the length, which a track that
-        /// ended early — a truncated file, a download that gave up — never
+        /// ended early, a truncated file, a download that gave up, never
         /// reaches.
         /// </summary>
         public bool Ended => _announcedEnd;
@@ -1984,7 +1984,7 @@ namespace ExplorerNative
             }
 
             // The pump owns the decoder and disposes it as it leaves, so there is
-            // nothing to dispose here — and disposing it from this thread would
+            // nothing to dispose here, and disposing it from this thread would
             // be the same cross-apartment mistake in the other direction.
             WasapiRenderer renderer;
             lock (_swapGate)
@@ -2032,7 +2032,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Moves to the default device when the one playing disappears — the
+        /// Moves to the default device when the one playing disappears, the
         /// same move a person would make from the device list, and the one that
         /// keeps a track playing when headphones are pulled out.
         /// </summary>
@@ -2063,7 +2063,7 @@ namespace ExplorerNative
             // playing by then, skipped if the default is already what plays.
             // Deciding here, from switches caught half way, lost a move or
             // undid a pick depending on which instruction the race landed on.
-            // Behind anything already waiting nothing is queued — a named pick
+            // Behind anything already waiting nothing is queued, a named pick
             // goes first, and if it fails it queues this again.
             if (Interlocked.CompareExchange(ref _switchTo, DefaultMoved, null) == null)
                 try { _drained.Set(); } catch { }

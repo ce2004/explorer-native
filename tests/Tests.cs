@@ -28,8 +28,8 @@ namespace ExplorerNative
         /// is treated as wedged rather than slow.
         ///
         /// Generous on purpose. The longest legitimate gap between two checks is
-        /// an audio one waiting on metadata or on a fade — SelfCheck alone allows
-        /// itself thirteen seconds — so this is several times the worst honest
+        /// an audio one waiting on metadata or on a fade, SelfCheck alone allows
+        /// itself thirteen seconds, so this is several times the worst honest
         /// case and still a small fraction of the time a hang otherwise costs.
         /// </summary>
         private const int StallSeconds = 90;
@@ -38,15 +38,15 @@ namespace ExplorerNative
         private static string _lastProgress = "before the first check";
 
         /// <summary>
-        /// The watchdog CLAUDE.md says every audio harness has, which this — the
-        /// harness that drives a real media engine through five sections — did
+        /// The watchdog CLAUDE.md says every audio harness has, which this, the
+        /// harness that drives a real media engine through five sections, did
         /// not.
         ///
         /// It matters here for exactly the reason it matters there: these tests
         /// wait on a decoder and a clock that may never move, so a wrong
         /// assumption does not fail, it sits. A run wedged in the media engine's
         /// teardown after the last seek test sat for over ten minutes and said
-        /// nothing at all about where it was — and the whole point of printing
+        /// nothing at all about where it was, and the whole point of printing
         /// each check as it happens is that a run which dies still says how far
         /// it got. Without something to end it, nobody ever reads that.
         ///
@@ -983,7 +983,7 @@ namespace ExplorerNative
             //
             // This is the test that matters. A template with {2} in it and two
             // example arguments throws FormatException, and it throws at the
-            // moment the notification is finally needed — which for most of these
+            // moment the notification is finally needed, which for most of these
             // is the moment something has already gone wrong.
             int broken = 0, emptyRender = 0;
             string firstBroken = "";
@@ -1072,8 +1072,8 @@ namespace ExplorerNative
 
             // Values from the three-bit era are read as one bit, so nothing in
             // the file can name a setting that no longer exists. It is only
-            // reachable by hand-editing — the property was renamed so an old
-            // file's overrides are not found at all — but a text file people are
+            // reachable by hand-editing, the property was renamed so an old
+            // file's overrides are not found at all, but a text file people are
             // invited to edit must not be able to produce an invalid enum.
             var wide = Notifications.ParseOverrides("audio.play=7;audio.stop=6");
             Check("an old three-bit value narrows to speak",
@@ -1083,7 +1083,7 @@ namespace ExplorerNative
                 wide.TryGetValue("audio.stop", out var alsoNarrowed) &&
                 alsoNarrowed == NotificationChannel.None);
 
-            // Rubbish in the file must not throw — it is a text file people edit.
+            // Rubbish in the file must not throw, it is a text file people edit.
             foreach (var rubbish in new[] { null, "", "   ", ";;;", "=", "a=", "=1", "a=b", "a=99999999999999999999" })
                 try { Notifications.ParseOverrides(rubbish); }
                 catch (Exception ex) { Check($"malformed overrides survive \"{rubbish}\"", false, ex.Message); }
@@ -1092,8 +1092,8 @@ namespace ExplorerNative
             // ---- the chooser offers exactly what can be stored ----
             //
             // Two, and there is no arithmetic left to get wrong. It offered
-            // eight — every combination of status bar, speech and a tray
-            // balloon — of which six named a balloon that does not exist any
+            // eight, every combination of status bar, speech and a tray
+            // balloon, of which six named a balloon that does not exist any
             // more and two were indistinguishable by ear.
             Equal("the chooser offers speak or off", "2", Notifications.Choices.Count.ToString());
             Check("and those are the two",
@@ -1164,7 +1164,7 @@ namespace ExplorerNative
         /// The notifications window actually builds, with every row in it.
         ///
         /// A hundred and sixty-seven rows is exactly the sort of thing that
-        /// compiles, opens, and is quietly missing a category — and the count is
+        /// compiles, opens, and is silently missing a category, and the count is
         /// the only thing that would say so. It also times the build, because a
         /// dialog that takes five seconds to appear is a defect whatever else it
         /// gets right.
@@ -1603,7 +1603,7 @@ namespace ExplorerNative
             Check("the monitor window shows live progress",
                 DriveMonitorForm.Describe(pair, new DriveMonitor.PairStatus(null, null, true, 40 * gb, 214 * gb), t0)
                     .Contains("syncing, 40 gigabytes of 214 gigabytes"));
-            Check("and says plainly when it is paused for space",
+            Check("and says clearly when it is paused for space",
                 DriveMonitorForm.Describe(pair, new DriveMonitor.PairStatus(null, "paused: C: is out of space, needs 30 gigabytes more", false), t0)
                     .Contains("paused: C: is out of space, needs 30 gigabytes more"));
             pair.CheckMinutes = 0;
@@ -2152,7 +2152,7 @@ namespace ExplorerNative
         /// How far a held key travels, which is not the same question as how
         /// much a repeat costs.
         ///
-        /// Skipping ran at the general rate — fifty a second — because a seek
+        /// Skipping ran at the general rate, fifty a second, because a seek
         /// had become cheap once tracks played out of memory. Cost was never the
         /// problem with holding the key, though: distance was. Fifty ten-second
         /// skips a second is five hundred seconds of track per second held, so a
@@ -2184,8 +2184,8 @@ namespace ExplorerNative
                 return pressesPerSecond * perPress;
             }
 
-            // A one-second step is a real setting — it is what somebody who
-            // wants to find their place in a podcast chooses — and it is the one
+            // A one-second step is a real setting, it is what somebody who
+            // wants to find their place in a podcast chooses, and it is the one
             // that made holding the key useless: eight seconds of track per
             // second, so twenty-two seconds of holding to cross a three minute
             // song.
@@ -2217,7 +2217,7 @@ namespace ExplorerNative
             }
 
             // The long skip starts at a minute a press, so it needs far less
-            // growth — four is already thirty-two minutes per second held.
+            // growth, four is already thirty-two minutes per second held.
             foreach (var action in new[] { AudioAction.SeekForwardLong, AudioAction.SeekBackwardLong })
             {
                 var info = AudioActions.For(action);
@@ -2242,7 +2242,7 @@ namespace ExplorerNative
         /// .flac". StartDirect returns false when the device will not open, when
         /// the file has gone, when a share is not answering and when the decoder
         /// times out, and all four came out as an accusation against the file
-        /// format — which for somebody whose whole library is FLAC reads as
+        /// format, which for somebody whose whole library is FLAC reads as
         /// "this player cannot play my music", and is also the least likely of
         /// the four, since Windows has decoded FLAC since 10.
         /// </summary>
@@ -2260,7 +2260,7 @@ namespace ExplorerNative
                 AudioFiles.AdviceFor(".flac"));
 
             // Ogg and Opus are decoded here rather than by Windows, so nothing
-            // is added about them either — a failure on one of those is about
+            // is added about them either, a failure on one of those is about
             // the file, and "Windows has no decoder" would be true and entirely
             // beside the point.
             foreach (var extension in new[] { ".opus", ".ogg", ".oga" })
@@ -2271,7 +2271,7 @@ namespace ExplorerNative
                     AudioFiles.AdviceFor(extension));
             }
 
-            // Something genuinely unsupported still gets the advice, or the
+            // Something really unsupported still gets the advice, or the
             // message would have lost the one case it was written for.
             Check("an unsupported format still points at the way that does work",
                 AudioFiles.AdviceFor(".wv").Contains("Shift+Enter", StringComparison.Ordinal),
@@ -2309,13 +2309,13 @@ namespace ExplorerNative
         ///
         /// The first is the decoder: the loop point seeks to zero, and
         /// `OpusOggReadStream.SeekTo(TimeSpan.Zero)` latches end of stream for
-        /// good — so the track went silent the first time it reached its own end
+        /// good, so the track went silent the first time it reached its own end
         /// and the clock stopped at zero for as long as the application was
         /// open. The reader that did it is gone; see <c>OggOpusReader</c>.
         ///
         /// The second is the clock itself. Position is the decoder's position
         /// less whatever is still queued, and at a loop point those two are
-        /// measuring different passes — the decoder has gone back to zero while
+        /// measuring different passes, the decoder has gone back to zero while
         /// the ring still holds four seconds of the end of the track. The
         /// subtraction went negative, so the clock read zero for the whole ring
         /// and the last four seconds of every pass were never reported: on a
@@ -2366,7 +2366,7 @@ namespace ExplorerNative
 
                 if (player.Play(path) == null)
                 {
-                    Console.WriteLine("  (no output device — skipped)");
+                    Console.WriteLine("  (no output device, skipped)");
                     Console.WriteLine();
                     return;
                 }
@@ -2431,7 +2431,7 @@ namespace ExplorerNative
         /// well is refused outright when the name matches nothing registered.
         /// `.m4b` is the case that matters: an audiobook is an ordinary MP4 full
         /// of AAC, `.mp4`, `.m4a` and `.aac` all have handlers on this machine,
-        /// and `.m4b` has none — so the one extension audiobooks actually use is
+        /// and `.m4b` has none, so the one extension audiobooks actually use is
         /// the one that would not open, while sharing every byte of its format
         /// with three that do.
         ///
@@ -2447,7 +2447,7 @@ namespace ExplorerNative
             try
             {
                 // Something the registry really has nothing for, so the test is
-                // not quietly passing through the ordinary path.
+                // not silently passing through the ordinary path.
                 Check("Windows has no handler for .m4b", !AudioFiles.WindowsHasHandlerFor(".m4b"));
                 Check("nor for a made-up extension", !AudioFiles.WindowsHasHandlerFor(".zznotreal"));
                 Check("but it does for .flac", AudioFiles.WindowsHasHandlerFor(".flac"));
@@ -2500,7 +2500,7 @@ namespace ExplorerNative
         /// Opus, decoded for real, from a file the suite makes itself.
         ///
         /// Generated rather than borrowed. A test that needs somebody's music
-        /// library is a test that passes on one machine — and this one has to be
+        /// library is a test that passes on one machine, and this one has to be
         /// able to fail on a build server that has never seen a .opus file.
         /// Encoding one is the honest way to get a valid Ogg Opus stream, and it
         /// exercises the container in both directions.
@@ -2515,8 +2515,8 @@ namespace ExplorerNative
         ///
         /// Reported as ".ogg files don't play", and the cause was a sniff that
         /// had never been tested. `OggDecoder` tries Opus first and decides with
-        /// `OpusOggReadStream.HasNextPacket`, on the reasoning — written down in
-        /// the code — that it "is false when the container was not Opus at all,
+        /// `OpusOggReadStream.HasNextPacket`, on the reasoning, written down in
+        /// the code, that it "is false when the container was not Opus at all,
         /// which is how this doubles as the sniff". It is not. Measured against
         /// Concentus 2.2.2 with a hand-built Ogg page carrying a *Vorbis*
         /// identification header:
@@ -2527,13 +2527,13 @@ namespace ExplorerNative
         ///
         /// So every Ogg Vorbis file was claimed by the Opus reader, opened
         /// successfully, reported itself as 48kHz stereo, and then decoded
-        /// nothing — which the pump reads as a track that finished the moment it
+        /// nothing, which the pump reads as a track that finished the moment it
         /// started. Not an error anywhere: a file that plays for no time at all.
         /// NVorbis was never reached, and no test in this suite had ever decoded
         /// Vorbis, only Opus.
         ///
-        /// The page below is a real Ogg page — capture pattern, lacing table and
-        /// CRC — carrying the 30-byte Vorbis identification header. It is not a
+        /// The page below is a real Ogg page, capture pattern, lacing table and
+        /// CRC, carrying the 30-byte Vorbis identification header. It is not a
         /// playable file and is not meant to be: what is being asked is only
         /// whether the *Opus* path claims it, and a claim is a decoder handed
         /// back for a file it cannot decode.
@@ -2577,7 +2577,7 @@ namespace ExplorerNative
 
 
         /// <summary>
-        /// The audio track of an MPEG-4 file — `.mp4` and `.mov`.
+        /// The audio track of an MPEG-4 file, `.mp4` and `.mov`.
         ///
         /// They are video containers and they are in the audio list on purpose: a
         /// recording of a conversation is one whether the camera was running or
@@ -2588,12 +2588,12 @@ namespace ExplorerNative
         /// **The fixture is written by Media Foundation itself**, the way
         /// `OpusDecodeTests` has Concentus write its Opus: there is no `.mp4` in
         /// this repository and a test that needs somebody to put one there is a
-        /// test that quietly stops running. The sink writer encodes AAC into an
+        /// test that silently stops running. The sink writer encodes AAC into an
         /// MP4 container, which is the same encoder any phone or recorder used to
         /// make the files this is about.
         ///
-        /// What it cannot fabricate is a *video* track — that would want an H.264
-        /// encoder as well — so the one thing here that is argued rather than
+        /// What it cannot fabricate is a *video* track, that would want an H.264
+        /// encoder as well, so the one thing here that is argued rather than
         /// measured is that a file with pictures in it decodes to its sound.
         /// `AudioDecoder` deselects every stream and then selects only
         /// `MF_SOURCE_READER_FIRST_AUDIO_STREAM`, and reads only from that index,
@@ -2613,7 +2613,7 @@ namespace ExplorerNative
                 AudioFiles.IsAudio("clip.mov", AudioFiles.DefaultExtensions));
 
             // And Windows really does have a handler for them, asked of the
-            // registry rather than assumed — the same question the player asks
+            // registry rather than assumed, the same question the player asks
             // before it explains why something will not play.
             Check("Windows has an MPEG-4 byte-stream handler",
                 AudioFiles.WindowsHasHandlerFor(".mp4") && AudioFiles.WindowsHasHandlerFor(".mov"));
@@ -2698,7 +2698,7 @@ namespace ExplorerNative
         /// into an MP4 needs.
         ///
         /// The vtable positions are the declaration and are counted out rather
-        /// than trusted — see the same warning on `AudioDecoder.IMFMediaType`,
+        /// than trusted, see the same warning on `AudioDecoder.IMFMediaType`,
         /// where a `SetUINT32` one slot late lands on `SetUINT64` and produces an
         /// error about codecs for a mistake about arithmetic.
         /// </summary>
@@ -2787,7 +2787,7 @@ namespace ExplorerNative
 
             /// <summary>
             /// A 440Hz tone as one AAC track in an MP4. False, with a reason, if
-            /// this machine will not encode one — which is a reason to say so
+            /// this machine will not encode one, which is a reason to say so
             /// rather than to fail a test about decoding.
             /// </summary>
             public static bool WriteTone(string path, int rate, int channels, int seconds,
@@ -2889,7 +2889,7 @@ namespace ExplorerNative
         /// fix read the head with `ReadExactly` and treated a failure as a
         /// verdict. On the Drive letter the stream is a download, and
         /// `StreamingSource.Read` reports *no bytes* for an offset it has not
-        /// reached yet rather than blocking — so `ReadExactly` threw, a genuine
+        /// reached yet rather than blocking, so `ReadExactly` threw, a genuine
         /// Opus file was declared Vorbis, and NVorbis walked a large remote
         /// container looking for a Vorbis stream that was not there until the
         /// fifteen-second open budget ran out. "Could not play … it did not open
@@ -2911,7 +2911,7 @@ namespace ExplorerNative
 
                 // Three refusals: more than the one it takes to throw, few enough
                 // that the sniff's own waiting covers it. A cold Drive read is
-                // this shape — nothing, nothing, then the whole head at once.
+                // this shape, nothing, nothing, then the whole head at once.
                 var slow = new SlowStartStream(File.ReadAllBytes(path), refusals: 3);
 
                 var decoder = TrackDecoder.Open(path, slow, 48000, 2, out string why);
@@ -2975,7 +2975,7 @@ namespace ExplorerNative
 
             if (!File.Exists(path))
             {
-                Console.WriteLine("  (Recording_30.opus is not here — skipped)");
+                Console.WriteLine("  (Recording_30.opus is not here, skipped)");
                 Console.WriteLine();
                 return;
             }
@@ -3095,7 +3095,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Bytes behind an IStream that answers the first few reads with nothing
-        /// at all — which is what a download does for an offset it has not
+        /// at all, which is what a download does for an offset it has not
         /// reached, and is not the same thing as the end of the file.
         /// </summary>
         private sealed class SlowStartStream : System.Runtime.InteropServices.ComTypes.IStream
@@ -3219,7 +3219,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Ogg's own CRC-32: polynomial 0x04c11db7, no reflection and no final
-        /// inversion — which is not the CRC in <see cref="Crc32"/>, the one zip
+        /// inversion, which is not the CRC in <see cref="Crc32"/>, the one zip
         /// and gzip are defined in terms of. Two different checksums with the
         /// same name is exactly the sort of thing that makes a hand-built page
         /// fail for a reason that looks like the code under test.
@@ -3341,7 +3341,7 @@ namespace ExplorerNative
                     //
                     // OpusOggReadStream.SeekTo(TimeSpan.Zero) looks for the last
                     // packet at or before granule zero, finds none, and latches
-                    // end of stream for good — HasNextPacket never comes back,
+                    // end of stream for good, HasNextPacket never comes back,
                     // however far away the next seek goes. Everything downstream
                     // then reads nothing for ever, which is not silence with an
                     // error in it: the track goes on "playing" with the clock
@@ -3349,9 +3349,9 @@ namespace ExplorerNative
                     //
                     // Reached three ways, all of which were this: holding skip
                     // backward until it arrives at the beginning, "back to the
-                    // start", and the loop point that makes repeat gapless — so
+                    // start", and the loop point that makes repeat gapless, so
                     // an Opus track with repeat on went quiet the first time it
-                    // reached its own end. That reader is gone — see OggOpusReader —
+                    // reached its own end. That reader is gone, see OggOpusReader,
                     // and this stays, because zero is still the target to ask about.
                     Check("it can be seeked back to the very start", decoder.SeekTo(0),
                         decoder.Position.ToString("0.##"));
@@ -3389,15 +3389,15 @@ namespace ExplorerNative
         /// <summary>
         /// The Preferences window builds, with every page on it.
         ///
-        /// It is the largest hand-built window in the application — nine pages
-        /// of controls, every one constructed in code — and until now it had no
+        /// It is the largest hand-built window in the application, nine pages
+        /// of controls, every one constructed in code, and until now it had no
         /// test that it so much as opens, while the two small dialogs beside it
         /// did. The reason was one line: it read three diagnostics off
         /// <c>Program</c>, which owns Main, so a test project could not compile
         /// it. See <see cref="AudioReport"/>.
         ///
         /// This is the check that a page removed, a control removed, or a
-        /// setting renamed has not left the dialog throwing on the way up —
+        /// setting renamed has not left the dialog throwing on the way up,
         /// which for a window opened with Ctrl+P means a crash dialog instead of
         /// preferences, and no way to change anything at all.
         /// </summary>
@@ -3489,7 +3489,7 @@ namespace ExplorerNative
             }
 
             // Every diagnostic the page prints has to survive there being no
-            // player at all, which is exactly the state a test process is in —
+            // player at all, which is exactly the state a test process is in,
             // and the state the real one is in before the first track.
             Check("the output diagnostic answers with no player",
                 AudioReport.OutputText.Length > 0, AudioReport.OutputText);
@@ -3508,7 +3508,7 @@ namespace ExplorerNative
         /// The numbers a settings drop-down offers.
         ///
         /// This is the arithmetic behind every number in Preferences, and it was
-        /// wrong in every one of them at once — a flat step worked out from the
+        /// wrong in every one of them at once, a flat step worked out from the
         /// width of the range, so a field running to 1440 offered 0, 100, 200 and
         /// nothing in between. It lived as a private helper inside a form that
         /// needs a message loop, which is exactly why nothing caught it.
@@ -3575,8 +3575,8 @@ namespace ExplorerNative
         /// The limiter dialog builds, offers all three ladders, and every rung
         /// says something.
         ///
-        /// Three lists whose entries are sentences rather than numbers — "half a
-        /// millisecond, an edge on transients" — because the whole dialog is
+        /// Three lists whose entries are sentences rather than numbers, "half a
+        /// millisecond, an edge on transients", because the whole dialog is
         /// meant to be used with your attention on what you are hearing rather
         /// than on the screen. An entry reading "500" would be no help at all.
         /// </summary>
@@ -3595,7 +3595,7 @@ namespace ExplorerNative
                     AudioPlayer.DescribeCeiling(value).Length > 6, AudioPlayer.DescribeCeiling(value));
 
             // Every default has to be a rung, or the dialog opens on the nearest
-            // one and applies it — silently moving a setting by opening a window.
+            // one and applies it, silently moving a setting by opening a window.
             var defaults = new Settings();
             Check("the default attack is on its ladder",
                 AudioPlayer.LimiterAttackLadder.Contains(defaults.AudioLimiterAttackMicroseconds));
@@ -3645,8 +3645,8 @@ namespace ExplorerNative
 
                     // Two switches now. "Same lift at any volume" lives here
                     // rather than in Preferences with the three lists, because it
-                    // is judged the same way — by ear, against music that is
-                    // playing — and the limiter's own on/off joined it, because
+                    // is judged the same way, by ear, against music that is
+                    // playing, and the limiter's own on/off joined it, because
                     // one effect with a switch on a preferences page and its
                     // controls on a menu is one effect with two homes.
                     checks = FindAll<CheckBox>(window).Count;
@@ -3671,7 +3671,7 @@ namespace ExplorerNative
             // Building it must not change the sound. Selecting the opening value
             // in each list fires SelectedIndexChanged, and a handler wired before
             // the initial selection would apply three times before the dialog is
-            // even on screen — which for a limiter is an audible jump caused by
+            // even on screen, which for a limiter is an audible jump caused by
             // opening a window.
             Equal("and opening it applies nothing", "0", applied.ToString());
         }
@@ -3681,8 +3681,8 @@ namespace ExplorerNative
         ///
         /// The height was a fixed 340 pixels, which fits seven rows and a button
         /// at 100% scaling and clips the last one at 150%. So "Time remaining"
-        /// was built, updated on every tick and reachable with Tab — a screen
-        /// reader read it out perfectly — while nobody looking at the window
+        /// was built, updated on every tick and reachable with Tab, a screen
+        /// reader read it out perfectly, while nobody looking at the window
         /// could see it. That is the one combination that is hard to notice from
         /// either direction: checking the announcements finds nothing wrong, and
         /// so does reading the code.
@@ -3708,7 +3708,7 @@ namespace ExplorerNative
 
                     // Bigger text, which is the whole point. This suite runs at
                     // 100% scaling, where the old fixed height of 340 pixels was
-                    // just enough — so a test that only opened the window here
+                    // just enough, so a test that only opened the window here
                     // would have passed on the very build that clipped the last
                     // field at 150%. Scaling the font reproduces the condition
                     // rather than hoping the machine happens to have it.
@@ -3783,14 +3783,14 @@ namespace ExplorerNative
         ///
         /// Both are hand-built, every control constructed in code, and both are
         /// reached by a global shortcut that fires whether or not this window
-        /// has the keyboard — so a constructor that throws is a crash dialog
+        /// has the keyboard, so a constructor that throws is a crash dialog
         /// instead of the controls, from a key press, with the music playing.
         /// This is the same check `SettingsForm` gained after being the largest
         /// hand-built window in the application with no test that it so much as
         /// opens.
         ///
         /// Shown at 150% of the font, because a row of twenty sliders is half as
-        /// wide again there and the suite runs at 100% — which is exactly how
+        /// wide again there and the suite runs at 100%, which is exactly how
         /// `ProgressForm` passed on the build that clipped its last field.
         /// </summary>
         private static void AudioDialogShapeTests()
@@ -3882,7 +3882,7 @@ namespace ExplorerNative
                 Equaliser.BandCount.ToString(), sliders.ToString());
             Check("and a switch of its own", checks >= 1, checks.ToString());
 
-            // Every slider names its own frequency, and none of them is blank —
+            // Every slider names its own frequency, and none of them is blank,
             // the name is the only thing a screen reader has to say which band
             // the number belongs to.
             Check("every slider is named after its frequency",
@@ -3907,7 +3907,7 @@ namespace ExplorerNative
         ///
         /// Crude on purpose. The alternative is a registry every call site has to
         /// remember to update, which is the same class of thing that let the
-        /// catalogue sit disconnected in the first place — and reading the source
+        /// catalogue sit disconnected in the first place, and reading the source
         /// cannot be fooled by a registry entry nobody acts on.
         /// </summary>
         private static List<string> WiredNotificationIds()
@@ -3938,7 +3938,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// The shallow ring depth, read out of the source — WasapiPlayback is
+        /// The shallow ring depth, read out of the source, WasapiPlayback is
         /// internal to the application and its constants are private, and this is
         /// a number worth asserting rather than a spelling.
         /// </summary>
@@ -3985,8 +3985,8 @@ namespace ExplorerNative
         ///
         /// Counting is a crude check and it catches the exact shape of the bug
         /// worth catching. A counter released on each ordinary exit path instead
-        /// of in a finally has *more* decrements than increments in the source —
-        /// which is what one method had, four raises against five lowers — and
+        /// of in a finally has *more* decrements than increments in the source,
+        /// which is what one method had, four raises against five lowers, and
         /// the path with no decrement at all is the one nobody thought about:
         /// a dialog throwing on its way up. `_suppressWatch` left raised means
         /// the folder watcher never refreshes anything again for the life of the
@@ -4025,7 +4025,7 @@ namespace ExplorerNative
             //
             // A transfer no longer stops the watcher for the whole window; it
             // marks the one folder it is writing into. Same counter, same rule,
-            // and the same consequence for getting it wrong — a destination left
+            // and the same consequence for getting it wrong, a destination left
             // registered is a folder that never notices a change again, for the
             // life of the process, with nothing to connect it back to the copy
             // that failed.
@@ -4039,7 +4039,7 @@ namespace ExplorerNative
 
             // ---- a transfer must never hold the window modal again ----
             //
-            // This is the change, and it is one line in each of two methods —
+            // This is the change, and it is one line in each of two methods,
             // exactly the kind of thing a later edit puts back without noticing,
             // because ShowDialog is what every other dialog in this application
             // correctly uses. A progress window is the one that must not: it is
@@ -4049,7 +4049,7 @@ namespace ExplorerNative
             if (progress == null) { Check("ProgressForm.cs can be read", false); return; }
 
             // The ProgressForm variable is called `window` in both places, and
-            // every genuinely modal dialog in that file calls its own `dialog` —
+            // every really modal dialog in that file calls its own `dialog`,
             // which is what makes this readable as a check rather than a
             // guess. A ShowDialog on the progress window would be the file
             // manager gone for the length of the copy, all over again.
@@ -4062,7 +4062,7 @@ namespace ExplorerNative
 
             // And that it is reachable once it is behind something. An unowned
             // top-level window that is not in the taskbar is a window you can
-            // leave and never get back to — which for the only place the Cancel
+            // leave and never get back to, which for the only place the Cancel
             // button lives is worse than a modal one.
             Check("the progress window is in the taskbar, so Alt+Tab reaches it",
                 progress.Contains("ShowInTaskbar = true", StringComparison.Ordinal));
@@ -4078,7 +4078,7 @@ namespace ExplorerNative
             //
             // Closing, quitting and restarting were all unreachable while a
             // transfer held the window modal. All three are reachable now, and
-            // all three kill a copy where it stands — which for a move means
+            // all three kill a copy where it stands, which for a move means
             // files deleted from one end and not written to the other.
             Check("closing, quitting and restarting all ask about a running transfer",
                 Occurrences(main, "ConfirmAbandonTransfers(") >= 3,
@@ -4091,7 +4091,7 @@ namespace ExplorerNative
             // But not on the path a new launch uses to ask this instance to
             // stand down. That is how --install-only replaces the running copy,
             // and a modal question there is an installer waiting out its timeout
-            // against a dialog nobody is looking at — then reporting that the
+            // against a dialog nobody is looking at, then reporting that the
             // file is in use and telling somebody to close an application that
             // is already trying to close.
             Check("the exit command from another launch is never held up by it",
@@ -4103,7 +4103,7 @@ namespace ExplorerNative
             // The same lesson as the notification catalogue, which sat inert for
             // a while: a mechanism nothing calls is not a policy, it is a comment.
             // ReleaseAllBut is what keeps "starting another disposes the last"
-            // true, and for a long time nothing called it — so every Drive file
+            // true, and for a long time nothing called it, so every Drive file
             // anything ever read kept a live download of the whole file.
             var mount = SourceFile("DriveMount.cs");
             if (mount == null) { Check("DriveMount.cs can be read", false); return; }
@@ -4123,7 +4123,7 @@ namespace ExplorerNative
             //
             // The constructor used to pick a starting folder with a synchronous
             // Directory.Exists per candidate, and one of those candidates is
-            // wherever you were last — routinely a share. This application is the
+            // wherever you were last, routinely a share. This application is the
             // shell's handler for every folder on the machine and is started
             // afresh each time one is opened, so a sleeping NAS did not make the
             // window slow to fill in, it stopped the window appearing.
@@ -4141,7 +4141,7 @@ namespace ExplorerNative
         ///
         /// The round trip is the part worth having. "A file appeared in the
         /// folder" is a much weaker claim than "it goes where it was asked to
-        /// go", and a `.lnk` is opaque — a shortcut written to the wrong target,
+        /// go", and a `.lnk` is opaque, a shortcut written to the wrong target,
         /// or written as nothing at all, looks exactly like a correct one from
         /// the outside and is only found by somebody opening it.
         /// </summary>
@@ -4159,7 +4159,7 @@ namespace ExplorerNative
             Equal("a trailing separator is not part of the name",
                 "Music - Shortcut.lnk", ShellLink.NameFor(@"C:\Users\x\Music\"));
 
-            // A drive root has no file name at all — GetFileName says nothing —
+            // A drive root has no file name at all, GetFileName says nothing,
             // and the colon it does have cannot go into one.
             Equal("a drive root still gets a name", "C - Shortcut.lnk", ShellLink.NameFor(@"C:\"));
 
@@ -4202,7 +4202,7 @@ namespace ExplorerNative
             // ---- and how the window offers all of this ----
             //
             // MainForm is not compiled into this suite, so the wiring is read out
-            // of the source — the same reason the pane-naming rule below is.
+            // of the source, the same reason the pane-naming rule below is.
             var main = SourceFile("MainForm.cs");
             if (main == null) { Check("MainForm.cs can be read", false); Console.WriteLine(); return; }
 
@@ -4227,7 +4227,7 @@ namespace ExplorerNative
                 main.Contains("Drive != null && Drive.Owns(path)", StringComparison.Ordinal));
 
             // A .lnk written into the sync root by hand is invisible and then
-            // swept by the next mount — the fault New file and New folder each
+            // swept by the next mount, the fault New file and New folder each
             // had. The command refuses, and the menu does not offer it.
             Check("a shortcut is refused in a Drive folder",
                 main.Contains("Cannot create a shortcut in Google Drive", StringComparison.Ordinal));
@@ -4238,7 +4238,7 @@ namespace ExplorerNative
         /// <summary>
         /// The list must never be renamed while it has the keyboard.
         ///
-        /// Renaming a control a screen reader is sitting on is an announcement —
+        /// Renaming a control a screen reader is sitting on is an announcement,
         /// the name of the focused object changed, and that is an event NVDA
         /// reads out. Navigation names the pane after the folder it is showing,
         /// and it does that on the way into every folder while the list is
@@ -4249,9 +4249,9 @@ namespace ExplorerNative
         /// application has had that bug.
         ///
         /// Read out of the source rather than driven, because MainForm needs a
-        /// message loop and is deliberately not compiled into this suite — the
+        /// message loop and is deliberately not compiled into this suite, the
         /// same reason the notification wiring is checked this way. A rule that
-        /// lives only in a comment is a rule the next change quietly undoes.
+        /// lives only in a comment is a rule the next change silently undoes.
         /// </summary>
         private static void PaneNamingTests()
         {
@@ -4297,8 +4297,8 @@ namespace ExplorerNative
         /// <summary>
         /// The Windows menu is not allowed to freeze the window for a minute.
         ///
-        /// Building it costs two shell calls per selected item — SHParseDisplayName
-        /// and SHBindToParent — and they are not cheap: measured at **8ms each**
+        /// Building it costs two shell calls per selected item, SHParseDisplayName
+        /// and SHBindToParent, and they are not cheap: measured at **8ms each**
         /// on the machine this was found on. There was no limit, so Ctrl+A
         /// followed by Shift+F10 in a folder of three thousand files stopped the
         /// application for twenty-four seconds, and a real folder for very much
@@ -4314,7 +4314,7 @@ namespace ExplorerNative
         {
             // Through a local, so the compiler cannot fold the comparison away.
             // Against the constant directly it can prove the answer and says so
-            // — "the given expression always matches the provided pattern" —
+            // "the given expression always matches the provided pattern",
             // which reads like a test that cannot fail. It can: the guard is
             // against somebody changing the budget to something silly, and that
             // change is exactly when the comparison stops being provable.
@@ -4333,9 +4333,9 @@ namespace ExplorerNative
             Check("and it is checked for every item, not once at the start",
                 loopAt >= 0 && checkAt > loopAt);
 
-            // Abandoned whole, never half-built. A Windows menu that quietly
+            // Abandoned whole, never half-built. A Windows menu that silently
             // applied to the first few hundred of a selection would be a far
-            // worse bug than the freeze it replaced — Delete on "some of what
+            // worse bug than the freeze it replaced, Delete on "some of what
             // you selected" is not something to offer.
             Check("and it gives up on the whole menu rather than part of it",
                 shell.Contains("return MenuOutcome.TooSlow", StringComparison.Ordinal) &&
@@ -4359,7 +4359,7 @@ namespace ExplorerNative
         ///
         /// The budget is passed in as zero so the answer does not depend on how
         /// fast this machine's shell is. With the real two seconds, a fast
-        /// machine builds the menu instead — and building it means
+        /// machine builds the menu instead, and building it means
         /// TrackPopupMenuEx, which does not return until somebody dismisses a
         /// context menu that nobody is looking at. This is the difference
         /// between a test that proves something and a test that hangs the suite
@@ -4410,7 +4410,7 @@ namespace ExplorerNative
         /// Filesystem calls that must not be made from the thread that paints.
         ///
         /// Both of these were on the UI thread, and both were reached by a loop
-        /// with one iteration per file — which is the shape that turns a syscall
+        /// with one iteration per file, which is the shape that turns a syscall
         /// worth a fraction of a millisecond locally into a window that has
         /// stopped responding as soon as the files are on a share that has gone
         /// to sleep. Neither is visible reading the line: one is spelled
@@ -4426,14 +4426,14 @@ namespace ExplorerNative
             // The automatic folder-size sweep runs on the UI thread between
             // awaits. TryGetCached asks the filesystem for a last-write time, so
             // calling it there is one blocking round trip per subfolder on
-            // screen — arrived at through a cache *hit*, the path that is
+            // screen, arrived at through a cache *hit*, the path that is
             // supposed to be the cheap one. CalculateAsync checks the same cache
             // on the worker and answers identically.
             Check("the folder-size sweep never probes the cache on the UI thread",
                 !main.Contains("_folderSizes.TryGetCached", StringComparison.Ordinal));
 
             // Totalling an upload measured every file with FileInfo.Length, in a
-            // plain foreach, on the UI thread — and the sources of a paste into
+            // plain foreach, on the UI thread, and the sources of a paste into
             // Drive are the paths most likely to be somewhere slow, which the
             // comment six lines above it already said.
             //
@@ -4453,7 +4453,7 @@ namespace ExplorerNative
             // Neither engine can ask anybody anything: RoboCopyEngine has no UI
             // and FileOperations is handed a null callback from inside it. The
             // resolution has to happen in the window, once, before either is
-            // called — and for a long time it did not happen at all, because
+            // called, and for a long time it did not happen at all, because
             // MainForm passed `_settings.PasteConflict` straight through and the
             // engine's own branch read anything that was not Overwrite or Skip as
             // auto-rename. Read out of the source because MainForm needs a message
@@ -4474,7 +4474,7 @@ namespace ExplorerNative
             // Delete and paste both branch on Drive.Owns; New folder, New file and
             // Rename did not, and all three wrote to the local sync root instead.
             // Nothing failed: the folder was created, the file was created, the
-            // placeholder was renamed — and none of it reached the account, so the
+            // placeholder was renamed, and none of it reached the account, so the
             // pane (which is built from the Drive listing) never showed any of it,
             // and the next mount cleared the sync root and took it away. Three
             // commands announcing success and doing nothing, one of them losing
@@ -4489,10 +4489,10 @@ namespace ExplorerNative
                     main.Contains(call, StringComparison.Ordinal), call + " is not called");
 
             // And the local calls that used to be the whole of those commands are
-            // still there, behind the branch — the Drive case is an addition, not
+            // still there, behind the branch, the Drive case is an addition, not
             // a replacement, and a local folder still has to be creatable.
-            // The local calls are on a worker now — the same treatment Rename
-            // already had — so what is asserted is that they are still made, not
+            // The local calls are on a worker now, the same treatment Rename
+            // already had, so what is asserted is that they are still made, not
             // where from.
             foreach (var local in new[] { "Directory.CreateDirectory(NameRules.ExactPath(unique))", "File.Move(from, to)" })
                 Check($"the local path still uses {local}",
@@ -4505,7 +4505,7 @@ namespace ExplorerNative
             // The repeat that a held key runs on stops the timer at the top of
             // every tick and starts it again at the bottom. A guard that returns
             // in between without re-arming does not skip one repeat, it ends the
-            // hold — and the guard that does exactly that is the re-entrancy one,
+            // hold, and the guard that does exactly that is the re-entrancy one,
             // which only fires when a COM call inside the action pumped messages.
             // So it fires rarely, and when it does the key simply stops working.
             var hold = SourceFile("HoldRepeat.cs");
@@ -4514,8 +4514,8 @@ namespace ExplorerNative
             Check("a skipped repeat re-arms the timer rather than ending the hold",
                 hold.Contains("if (_inAction) { _timer.Start(); return; }", StringComparison.Ordinal));
 
-            // Every other early return in Tick is a deliberate ending — the key
-            // came up, or the safety stop expired — and each of those calls Stop
+            // Every other early return in Tick is a deliberate ending, the key
+            // came up, or the safety stop expired, and each of those calls Stop
             // so _action is cleared too. A bare `return` that is neither is the
             // bug coming back under a different name.
             int endings = Occurrences(hold, "{ Stop(); return; }");
@@ -4529,8 +4529,8 @@ namespace ExplorerNative
         /// Written by reflection rather than as a list, for the same reason
         /// <c>SettingsRoundTripTests</c> is: a setting added next year is covered
         /// without anybody remembering this exists. A hand-edited settings.json is
-        /// the source of every value here — it is a text file people are invited
-        /// to edit — so "nobody would set that" is not a defence.
+        /// the source of every value here, it is a text file people are invited
+        /// to edit, so "nobody would set that" is not a defence.
         /// </summary>
         private static void ConfigIntegrityTests()
         {
@@ -4631,9 +4631,9 @@ namespace ExplorerNative
                 {
                     if (property.PropertyType != typeof(string)) continue;
 
-                    // A property genuinely declared string? is *meant* to be null
-                    // — InitialFolderOverride is null whenever no folder was
-                    // passed on the command line — so requiring it to come back
+                    // A property really declared string? is *meant* to be null
+                    // InitialFolderOverride is null whenever no folder was
+                    // passed on the command line, so requiring it to come back
                     // non-null would be asserting the opposite of the design.
                     // Settings.NoNullStrings draws the line in the same place.
                     if (nullability.Create(property).WriteState ==
@@ -4698,7 +4698,7 @@ namespace ExplorerNative
                     $"shortcut={Describe(survived.AudioPlayPauseShortcut)}");
 
                 // A null shortcut is simply not set, which is a shortcut that does
-                // nothing — never a shortcut nobody asked for.
+                // nothing, never a shortcut nobody asked for.
                 Check("a null shortcut parses to nothing rather than to something",
                     !Shortcut.Parse(survived.AudioPlayPauseShortcut).IsAssigned);
 
@@ -4763,7 +4763,7 @@ namespace ExplorerNative
                 Equal("no two shipped shortcuts want the same keys", "", string.Join("; ", clashes));
 
                 // A file that clashes is reachable, which is what the dialog is
-                // for — so prove the clash is detectable rather than assuming it.
+                // for, so prove the clash is detectable rather than assuming it.
                 var doubled = new Settings { AudioStopShortcut = fresh.AudioPlayPauseShortcut };
                 Check("two settings pointing at one combination is detectable",
                     Shortcut.Parse(doubled.AudioStopShortcut)
@@ -4783,7 +4783,7 @@ namespace ExplorerNative
         ///
         /// **Instance is the word that matters.** `GetProperties()` with no flags
         /// also returns the statics, and `SetValue` on a static ignores the
-        /// instance it was handed and sets the static — so a sweep written the
+        /// instance it was handed and sets the static, so a sweep written the
         /// obvious way assigns to <c>Settings.OverrideAppDataDir</c>, which is the
         /// hook redirecting the whole suite away from the real settings file. It
         /// pointed the tests back at the user's own configuration and then wrote
@@ -4818,7 +4818,7 @@ namespace ExplorerNative
         /// <summary>
         /// Hostile inputs to everything added recently.
         ///
-        /// Not a demonstration that the happy path works — that is what the rest
+        /// Not a demonstration that the happy path works, that is what the rest
         /// of the suite is for. This is the empty string, the null, the negative
         /// number and the value that is one past the end, fed to code that was
         /// written while thinking about the case that happens.
@@ -4842,7 +4842,7 @@ namespace ExplorerNative
                 {
                     double level = AudioPlayer.EngineVolume(percent, curve);
 
-                    // The engine throws above 1.0 — measured — so this must never
+                    // The engine throws above 1.0, measured, so this must never
                     // produce one, whatever it is handed.
                     if (double.IsNaN(level) || level < 0 || level > 1) curveProblems++;
                 }
@@ -4873,7 +4873,7 @@ namespace ExplorerNative
             Equal("a held key never produces a step outside its own bounds", "0", accelProblems.ToString());
             // A growth interval of zero is nonsense nobody sets, and the point is
             // only that it does not divide by zero. Treated as one, which
-            // accelerates on every repeat — aggressive, but bounded by the cap
+            // accelerates on every repeat, aggressive, but bounded by the cap
             // and not a crash.
             int zeroInterval = AudioActions.Accelerated(5, 10, true, 20, 0);
             Check("a zero growth interval does not divide by zero",
@@ -4915,7 +4915,7 @@ namespace ExplorerNative
             Equal("rendering never crashes in an unexpected way", "0", renderCrashes.ToString());
 
             // ---- the settings clamp holds against nonsense ----
-            // Through disk, because that is the only path validation runs on —
+            // Through disk, because that is the only path validation runs on,
             // and a settings.json somebody has edited by hand is exactly where
             // these values come from.
             var previous = Settings.OverrideAppDataDir;
@@ -5001,12 +5001,12 @@ namespace ExplorerNative
                 "album", DriveMount.Sanitise("album."));
 
             // And Drive lets two files in one folder share a name, where NTFS
-            // would have the second quietly replace the first.
+            // would have the second silently replace the first.
             var used = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             Equal("the first of a name is itself", "song.flac", DriveMount.Unique("song.flac", used));
             Equal("the second is numbered", "song (2).flac", DriveMount.Unique("song.flac", used));
             Equal("and so is the third", "song (3).flac", DriveMount.Unique("song.flac", used));
-            // Drive names are case sensitive and NTFS is not, so this collides —
+            // Drive names are case sensitive and NTFS is not, so this collides,
             // but the name keeps the casing Drive gave it rather than being
             // folded to match whatever happened to be seen first.
             Equal("case collides without being rewritten",
@@ -5025,7 +5025,7 @@ namespace ExplorerNative
 
             // One mount must not claim another's tree. PickRoot steps aside to
             // GoogleDrive-2 whenever GoogleDrive is stuck, so the two sit side by
-            // side in the same folder — and a plain StartsWith said every path
+            // side in the same folder, and a plain StartsWith said every path
             // under GoogleDrive-2 belonged to the GoogleDrive mount. Owns then
             // answered yes about a path the id map correctly knew nothing about,
             // so deleting a leftover through the file manager was routed to Drive
@@ -5056,7 +5056,7 @@ namespace ExplorerNative
             // ---- Where a resumed upload carries on from ----
             //
             // Google's byte count is the one to trust, and it may point backwards
-            // when a chunk was only half received — that is what resumable means.
+            // when a chunk was only half received, that is what resumable means.
             // What it must never do is send the walk somewhere impossible, into
             // an offset nothing downstream checks before writing to somebody's
             // file.
@@ -5083,7 +5083,7 @@ namespace ExplorerNative
             Check("everything that fits is held", pool.Get("a", 0) != null);
 
             // Reading chunk 0 just made it the most recent, so the next eviction
-            // must take chunk 1 — the genuinely least recently used — not the
+            // must take chunk 1, the really least recently used, not the
             // oldest by insertion.
             pool.Put("a", 3, new byte[100]);
             Check("the least recently used chunk goes", pool.Get("a", 1) == null);
@@ -5235,8 +5235,8 @@ namespace ExplorerNative
         /// <summary>
         /// What a folder upload decides to send, before anything is sent.
         ///
-        /// This is the half that used not to exist — folders were refused rather
-        /// than half-copied — and it is also the half that can be checked without
+        /// This is the half that used not to exist, folders were refused rather
+        /// than half-copied, and it is also the half that can be checked without
         /// a Drive account, which makes it the half worth a test. Everything past
         /// it is one HTTP call per line.
         /// </summary>
@@ -5267,8 +5267,8 @@ namespace ExplorerNative
                     "3", work.Files.Count.ToString());
                 Equal("the byte total is the sum of them", "18", work.TotalBytes.ToString());
 
-                // An empty folder is part of the shape. Robocopy keeps them — that
-                // is what /E means — and an upload that only walks files loses
+                // An empty folder is part of the shape. Robocopy keeps them, that
+                // is what /E means, and an upload that only walks files loses
                 // them with no error and no failed count.
                 var folders = work.Folders.OrderBy(f => f, StringComparer.Ordinal).ToList();
                 Equal("the folders are the tree, empty ones included",
@@ -5286,7 +5286,7 @@ namespace ExplorerNative
                 Check("something to do", !work.IsEmpty);
 
                 // The source folders are what a move deletes afterwards, and only
-                // the ones actually chosen — never the destination and never a
+                // the ones actually chosen, never the destination and never a
                 // parent nobody named.
                 Equal("one source folder was named", "1", work.SourceFolders.Count.ToString());
 
@@ -5336,7 +5336,7 @@ namespace ExplorerNative
             Equal("an unmeasured size renders as nothing", "", SizeFormatter.Format(-1, SizeUnitStyle.FullWords, 1));
             Equal("any negative renders as nothing", "", SizeFormatter.Format(-999999, SizeUnitStyle.Abbreviated, 2));
 
-            // 1023 bytes must not round up into "1 kilobyte" — it is under one.
+            // 1023 bytes must not round up into "1 kilobyte", it is under one.
             Equal("just under a kilobyte stays in bytes", "1,023 bytes",
                 SizeFormatter.Format(1023, SizeUnitStyle.FullWords, 1));
             Equal("just over a kilobyte", "1 kilobyte", SizeFormatter.Format(1025, SizeUnitStyle.FullWords, 1));
@@ -5369,7 +5369,7 @@ namespace ExplorerNative
             // Rounding can reach the unit above the one the number was measured
             // in, and the ladder must not then read out its own overflow.
             // 1,048,570 bytes is 1023.99 kilobytes, which to one decimal place is
-            // 1024.0 — printed as "1,024 kilobytes" on a row a screen reader
+            // 1024.0, printed as "1,024 kilobytes" on a row a screen reader
             // speaks, for a quantity that is a megabyte.
             Equal("rounding up to the next unit moves up a unit", "1 megabyte",
                 SizeFormatter.Format(1048570, SizeUnitStyle.FullWords, 1));
@@ -5460,7 +5460,7 @@ namespace ExplorerNative
             // In a directory of its own. These tests write settings files,
             // corrupt them deliberately and migrate them, and doing that in the
             // real location meant borrowing the user's own configuration for the
-            // duration — which is exactly one crash, or one concurrent save by
+            // duration, which is exactly one crash, or one concurrent save by
             // the running application, away from losing it.
             var sandbox = NewTempDir();
             Settings.OverrideAppDataDir = sandbox;
@@ -5713,7 +5713,7 @@ namespace ExplorerNative
                 Check("there are settings to check", persisted.Count > 20, persisted.Count.ToString());
 
                 // Give every one a value that is not its default, so a property
-                // that quietly failed to persist shows up as its default again.
+                // that silently failed to persist shows up as its default again.
                 foreach (var property in persisted)
                 {
                     var current = property.GetValue(original);
@@ -5731,7 +5731,7 @@ namespace ExplorerNative
                         // value that is not its default like everything else, or
                         // the check below is comparing two arrays of zeroes and
                         // would pass against a property that never persisted at
-                        // all — which is the exact failure this whole test is
+                        // all, which is the exact failure this whole test is
                         // for. Filled with something no clamp will touch.
                         var t when t == typeof(int[]) => DistinctIntArray(current as int[]),
                         var t when t == typeof(List<DriveSyncPair>) => new List<DriveSyncPair>
@@ -5913,9 +5913,9 @@ namespace ExplorerNative
         /// Whether two settings values are the same, arrays included.
         ///
         /// object.Equals on an array is reference equality, so a list-of-numbers
-        /// setting compared that way is *always* different after a reload — a
+        /// setting compared that way is *always* different after a reload, a
         /// false failure that would have to be silenced, and silencing it would
-        /// have left the setting genuinely untested.
+        /// have left the setting really untested.
         /// </summary>
         private static bool SameSetting(object? wanted, object? got)
         {
@@ -6153,8 +6153,8 @@ namespace ExplorerNative
         /// How many things an action happened to, as it is said out loud.
         ///
         /// One is just the verb; above one the number is the message. The count
-        /// is the only way a selection can be checked by ear — the rows were read
-        /// as they were picked and nothing ever says how many there are now — so
+        /// is the only way a selection can be checked by ear, the rows were read
+        /// as they were picked and nothing ever says how many there are now, so
         /// dropping it above one would be dropping the useful half.
         /// </summary>
         private static void CountedSpeechTests()
@@ -6175,14 +6175,14 @@ namespace ExplorerNative
                 !NameRules.SayCount("Copied", 1).Contains("1 items", StringComparison.Ordinal));
 
             // Nothing selected is refused before this is reached, so zero is only
-            // ever a bug — but it must read as a sentence rather than as "Copied".
+            // ever a bug, but it must read as a sentence rather than as "Copied".
             Equal("zero is not silently reported as one", "Copied 0 items",
                 NameRules.SayCount("Copied", 0));
 
             // ---- a count that IS the message ----
             //
             // The status bar and the tab announcement exist to say how many, so
-            // unlike SayCount the number is never dropped — but the plural was,
+            // unlike SayCount the number is never dropped, but the plural was,
             // and those two are read out on every folder and every tab switch.
             // "Tab 1, Documents, 1 items" was the actual sentence.
             Equal("one item is singular", "1 item", NameRules.Items(1));
@@ -6217,14 +6217,14 @@ namespace ExplorerNative
 
             // A folder has no extension whatever the dots in its name say. Split
             // at the last one, a second copy of "Backup.2024" came out as
-            // "Backup (2).2024" — and was then announced under that name.
+            // "Backup (2).2024", and was then announced under that name.
             Equal("a folder is numbered at the end, not inside its dots", "Backup.2024 (2)",
                 NameRules.UniqueAmong("Backup.2024", used.Contains, folder: true));
             Equal("and an ordinary folder likewise", "New folder (2)",
                 NameRules.UniqueAmong("New folder", used.Contains, folder: true));
 
-            // Case is the caller's question and not this rule's — the set decides
-            // what counts as taken — but the *casing that comes back* is the one
+            // Case is the caller's question and not this rule's, the set decides
+            // what counts as taken, but the *casing that comes back* is the one
             // that was asked for. A name handed back folded to whatever spelling
             // happened to be seen first is a rename nobody asked for.
             Equal("the set decides what is taken; the caller decides the spelling",
@@ -6255,7 +6255,7 @@ namespace ExplorerNative
 
             // And the window really does use the rule. MainForm is not compiled
             // into this suite, so the alternative is a rule that is tested here
-            // and quietly not applied there.
+            // and silently not applied there.
             var main = SourceFile("MainForm.cs");
             if (main == null) { Check("MainForm.cs can be read", false); Console.WriteLine(); return; }
 
@@ -6271,7 +6271,7 @@ namespace ExplorerNative
         /// The window and the tray tooltip obeyed the setting; the tray balloons,
         /// the "ready" announcement, the restore and the quit did not. So somebody
         /// who had renamed the window was told about it by an application with a
-        /// different name — which reads as a second program having something to
+        /// different name, which reads as a second program having something to
         /// say, not as the one you renamed.
         /// </summary>
         /// <summary>
@@ -6352,7 +6352,7 @@ namespace ExplorerNative
 
             // Everything that names the application reads the setting. Read out
             // of the source because neither file is compiled into this suite, and
-            // because the bug was six call sites of which two were right — the
+            // because the bug was six call sites of which two were right, the
             // sort of thing that comes back one call site at a time.
             foreach (var file in new[] { "TrayApplicationContext.cs", "MainForm.cs" })
             {
@@ -6364,8 +6364,8 @@ namespace ExplorerNative
                     hardcoded + " found");
             }
 
-            // Program's own two dialogs have no Settings to read — one runs before
-            // they are loaded, the other when something has already gone wrong —
+            // Program's own two dialogs have no Settings to read, one runs before
+            // they are loaded, the other when something has already gone wrong,
             // so the name is handed forward instead. If that stops happening they
             // silently go back to saying the wrong thing.
             var program = SourceFile("Program.cs");
@@ -6390,7 +6390,7 @@ namespace ExplorerNative
         /// a 20GB copy five seconds in left a 20GB file at the destination whose
         /// first six gigabytes were real and whose remaining fourteen were zeros.
         /// Same name as the source, same size as the source, sitting in the
-        /// folder — there was nothing to look at that would tell you, short of
+        /// folder, there was nothing to look at that would tell you, short of
         /// reading it. The worst case is somebody deleting the original because
         /// the copy obviously worked.
         ///
@@ -6448,7 +6448,7 @@ namespace ExplorerNative
                     !exists || landedLength == sourceLength,
                     $"left {landedLength:N0} of {sourceLength:N0} bytes");
 
-                // And if something was left, it must really be the file — not a
+                // And if something was left, it must really be the file, not a
                 // preallocated shell of the right length full of zeros, which is
                 // exactly what the bug produced.
                 if (exists && landedLength == sourceLength)
@@ -6555,8 +6555,8 @@ namespace ExplorerNative
         /// the application deciding how loud the hardware may be, and it is not
         /// the application's decision to make. Measured through WASAPI loopback
         /// with the Windows volume at 10%: a float sine rendered into shared mode
-        /// at amplitude 1 came back at 0.126, at 4 at 0.504 — exactly four times
-        /// — and at 8 it reached 0.986 and stopped, with 16 giving 0.986 as well.
+        /// at amplitude 1 came back at 0.126, at 4 at 0.504, exactly four times
+        /// and at 8 it reached 0.986 and stopped, with 16 giving 0.986 as well.
         /// The mixer carries the excess and the *endpoint* clips it, so at 10%
         /// there was a factor of eight of headroom that the old clamp discarded.
         ///
@@ -6569,7 +6569,7 @@ namespace ExplorerNative
             Console.WriteLine("How loud gain is allowed to get:");
 
             // Float rides past full scale, and the renderer is where that now
-            // happens — the transform this used to test is gone with the media
+            // happens, the transform this used to test is gone with the media
             // engine it was written for. The rule it proved has not changed and
             // is asserted against WasapiRenderer in "The direct output path":
             // the sample is carried, not squashed, because the ceiling belongs
@@ -6583,7 +6583,7 @@ namespace ExplorerNative
             Equal("half scale scales the same way", "1.5", samples[2].ToString("0.###"));
             Equal("silence stays silent", "0", samples[3].ToString("0.###"));
 
-            // Unity must be exactly untouched — this runs on every sample of
+            // Unity must be exactly untouched, this runs on every sample of
             // every track at the default volume.
             var unity = new WasapiRenderer { Gain = 1f };
             var untouched = new float[] { 0.123456f, -0.987654f, 1f };
@@ -6599,7 +6599,7 @@ namespace ExplorerNative
         /// What the conflict policy promises about a file that is already there.
         ///
         /// Both engines apply the policy while planning and then write without
-        /// asking — robocopy overwrites unconditionally, and the managed engine
+        /// asking, robocopy overwrites unconditionally, and the managed engine
         /// opens its destination with FileMode.Create, which truncates. So the
         /// entire protection for a file the user already had is that the plan
         /// pointed somewhere else, and nothing was checking that it did.
@@ -6639,7 +6639,7 @@ namespace ExplorerNative
                         // Different lengths and an older destination, deliberately.
                         //
                         // Robocopy decides a file is already there by size *and*
-                        // last-write time, and skips it — so a fixture whose two
+                        // last-write time, and skips it, so a fixture whose two
                         // files are both three bytes written in the same second is
                         // a fixture where "overwrite" legitimately copies nothing.
                         // That is not the policy failing, it is robocopy's
@@ -6776,8 +6776,8 @@ namespace ExplorerNative
                 finally { try { Directory.Delete(temp, true); } catch { } }
             }
 
-            // And with nobody to ask — which is what every engine-internal call
-            // is — the fallback is the answer that cannot destroy anything.
+            // And with nobody to ask, which is what every engine-internal call
+            // is, the fallback is the answer that cannot destroy anything.
             {
                 var temp = Path.Combine(Path.GetTempPath(), "en-ask-" + Guid.NewGuid().ToString("N"));
                 try
@@ -6806,10 +6806,10 @@ namespace ExplorerNative
         /// "Ask" has to actually ask, and the answer has to reach the copy.
         ///
         /// It did neither. `RoboCopyEngine` carried a comment reading "AutoRename
-        /// (and Ask, which the caller resolves before us)" — a contract no caller
-        /// implemented — and its own branch treated everything that was not
+        /// (and Ask, which the caller resolves before us)", a contract no caller
+        /// implemented, and its own branch treated everything that was not
         /// Overwrite or Skip as auto-rename. So the option sat in Preferences
-        /// quietly meaning "keep both": somebody who chose it in order to be warned
+        /// silently meaning "keep both": somebody who chose it in order to be warned
         /// before a file was replaced was never warned, and nothing anywhere said
         /// why. That is the shape this file's own rules call worse than no setting
         /// at all.
@@ -6867,7 +6867,7 @@ namespace ExplorerNative
             // Filling in the gaps is first and so is what Enter does.
             //
             // It replaced keeping-both at the top, and the reason is not that
-            // keeping both was wrong — it destroys nothing either — but that it
+            // keeping both was wrong, it destroys nothing either, but that it
             // is not what pasting the same folder twice ever *means*. A copy
             // that stopped part way is finished by this answer and by no other:
             // keeping both makes "album (2)", replacing recopies everything, and
@@ -6879,14 +6879,14 @@ namespace ExplorerNative
         /// <summary>
         /// A held volume key lands exactly on both ends, and on the way.
         ///
-        /// Acceleration grows the step, so the last one before an end is large —
+        /// Acceleration grows the step, so the last one before an end is large,
         /// large enough to jump straight past it. "Nearly silent" and "nearly
         /// full" are both failures: the whole point of holding the key is to
         /// arrive somewhere definite without having to tap the last few.
         ///
         /// Driven through the real setter so the clamp is the one that ships,
         /// and with no engine, which is the state the ceiling question is
-        /// genuinely open in.
+        /// really open in.
         /// </summary>
         private static void VolumeTravelTests()
         {
@@ -6985,7 +6985,7 @@ namespace ExplorerNative
         /// How much of a signal sits at one frequency, by Goertzel.
         ///
         /// A whole FFT would answer a question nobody asked. What is being
-        /// checked here is one thing — is the note still the note — and that is
+        /// checked here is one thing, is the note still the note, and that is
         /// two bins: the pitch that went in, and the pitch a resampler would
         /// have produced instead.
         /// </summary>
@@ -7010,7 +7010,7 @@ namespace ExplorerNative
         /// How much the equaliser changes a pure tone, in decibels.
         ///
         /// Measured through the real Process, block by block, exactly as the
-        /// render thread drives it — the gains glide in over about twenty
+        /// render thread drives it, the gains glide in over about twenty
         /// milliseconds and the filters take a moment to settle, so the answer
         /// is read from the end of half a second rather than from the first
         /// buffer. Reading it too early measures the glide.
@@ -7045,7 +7045,7 @@ namespace ExplorerNative
 
             double got = EnergyAt(output, at, channels, frequency, rate);
 
-            // Against the amplitude that went in, not against a second pass —
+            // Against the amplitude that went in, not against a second pass,
             // 0.25 is what the generator above writes, and a Goertzel of a pure
             // sine at its own frequency reads half the amplitude.
             double reference = 0.25 / 2.0;
@@ -7058,7 +7058,7 @@ namespace ExplorerNative
         ///
         /// Opt-in, like the other diagnostics here: set
         /// <c>EXPLORERNATIVE_AUDIOFOLDER</c> to a directory and the suite times
-        /// every audio file in it. Off, this does nothing and costs nothing —
+        /// every audio file in it. Off, this does nothing and costs nothing,
         /// a suite that needs somebody's music library is a suite that passes on
         /// one machine.
         ///
@@ -7158,7 +7158,7 @@ namespace ExplorerNative
                 if (warmOpens.Count > 0)
                     Console.WriteLine($"        reopening the same file: median " +
                                       $"{Median(warmOpens)}ms, worst {warmOpens.Max()}ms " +
-                                      $"— this is what warming ahead of Enter would buy");
+                                      $", this is what warming ahead of Enter would buy");
             }
 
             // Nothing is asserted about somebody else's files. This reports.
@@ -7180,7 +7180,7 @@ namespace ExplorerNative
         /// the right speed.
         ///
         /// <see cref="AudioDecoder"/> asks for the device's format in three
-        /// goes, and the last of them lets the decoder pick — because a source
+        /// goes, and the last of them lets the decoder pick, because a source
         /// reader refuses an over-specified type outright and a good many WAVs
         /// only open on the third try. It reads back what it settled on and says
         /// so, and for a long time nothing downstream did anything with the
@@ -7294,7 +7294,7 @@ namespace ExplorerNative
 
                     // Printed, not merely asserted. Whether Media Foundation
                     // honours a request for 48000 stereo depends on the file,
-                    // the machine and the codecs installed on it — so the run
+                    // the machine and the codecs installed on it, so the run
                     // says what it actually got, and a build where the answer
                     // changes is a build where somebody can see it changed.
                     bool converted = decoder.SampleRate != 48000 || decoder.Channels != 2;
@@ -7417,7 +7417,7 @@ namespace ExplorerNative
         /// "Gapless, every file" is three separate silences and they have three
         /// separate causes: the front of a track, the middle of one, and the
         /// join where a repeat turns round. Only the last is what the word
-        /// usually means, and it was the worst of the three — most of a second.
+        /// usually means, and it was the worst of the three, most of a second.
         /// </summary>
         private static void GaplessTests()
         {
@@ -7437,12 +7437,12 @@ namespace ExplorerNative
             //
             // The turn has to happen where the frames are produced. Anything
             // further out only finds out the track ended *after* the ring has
-            // drained to nothing — that is how the render thread knows to raise
-            // Finished — and by then the gap has been heard.
+            // drained to nothing, that is how the render thread knows to raise
+            // Finished, and by then the gap has been heard.
             // Matched without its closing bracket on purpose: the condition has
-            // room for more than the two terms — it also counts the turns, so a
+            // room for more than the two terms, it also counts the turns, so a
             // decoder that cannot restart ends the track instead of spinning
-            // silently for ever — and this test is about *where* the turn
+            // silently for ever, and this test is about *where* the turn
             // happens, not about how the guard is spelled.
             Check("a repeat turns the decoder round inside the pump",
                 pump.Contains("if (Loop && _decoder != null", StringComparison.Ordinal) &&
@@ -7452,7 +7452,7 @@ namespace ExplorerNative
             Check("and the ring is not cleared when it does",
                 !Between(pump, "if (Loop && _decoder != null", "_sourceDone = true;")
                     .Contains("_writeAt = _readAt = _stored = 0", StringComparison.Ordinal),
-                "clearing it at the loop point throws away the audio that makes it seamless");
+                "clearing it at the loop point throws away the audio that makes it gapless");
 
             Check("repeat is pushed to the pump rather than answered by an event",
                 player.Contains("direct.Loop = value", StringComparison.Ordinal),
@@ -7475,7 +7475,7 @@ namespace ExplorerNative
 
             // And the floor is never above the level this track is going to be
             // filled to. The ring is kept shallow whenever nothing is racing
-            // playback — see ShallowFrames — and a floor above that level is a
+            // playback, see ShallowFrames, and a floor above that level is a
             // device held suspended for ever, waiting for audio the pump has
             // already decided not to decode.
             Check("and the floor is never above what the ring will hold",
@@ -7486,7 +7486,7 @@ namespace ExplorerNative
             // after a read that produced something. A short file reaches
             // _sourceDone without ever filling the floor, and a release that
             // only ran on a successful write left the device suspended for ever
-            // — a track that plays in total silence, which is a far worse gap
+            // a track that plays in total silence, which is a far worse gap
             // than the one the floor closes. The real-audio test caught it.
             Check("and the gate is checked on every pass, not only after a read",
                 Between(pump, "ReleaseWhenBuffered();", "int stored, room;").Length < 400 &&
@@ -7501,7 +7501,7 @@ namespace ExplorerNative
             // those stages is not heard until what is in front of it has played.
             // Filled to the brim that is four seconds, which is what "adjusting
             // the pitch is not instant" was. The four seconds exists for one
-            // case — a download racing playback — and that case is the one
+            // case, a download racing playback, and that case is the one
             // StreamingSource.Complete answers.
             Check("the pump fills to a level rather than to the brim",
                 pump.Contains("room = Math.Min(room, TargetFrames() - stored);", StringComparison.Ordinal),
@@ -7512,7 +7512,7 @@ namespace ExplorerNative
                 "shallow while a Drive download races playback is the stutter it was raised for");
 
             // Complete is not the question. It means the cache budget is full,
-            // and the budget is capped — so a track bigger than it reports
+            // and the budget is capped, so a track bigger than it reports
             // complete with most of itself still on the network. There is a
             // 1.3GB Ogg in the folder this was found in, against a 1GB budget.
             Check("and it asks whether every byte is in memory, not whether the cache is full",
@@ -7527,7 +7527,7 @@ namespace ExplorerNative
             //
             // Suspending stops the audio client and releasing it starts the
             // client again, so gating the device that way puts an extra
-            // Stop/Start on the endpoint at the front of every track — free on
+            // Stop/Start on the endpoint at the front of every track, free on
             // some drivers and not on others, which is a slow start bought to
             // fix a short one. This shipped for one turn and was unwound.
             Check("the gate does not stop and restart the audio device",
@@ -7578,7 +7578,7 @@ namespace ExplorerNative
             int blockAlign = channels * bytesPerSample;
             int dataBytes = frames * blockAlign;
 
-            // 1 is PCM, 3 is IEEE float, 0xFFFE is EXTENSIBLE — which names the
+            // 1 is PCM, 3 is IEEE float, 0xFFFE is EXTENSIBLE, which names the
             // real format in a sub-format GUID instead.
             short tag = extensible ? unchecked((short)0xFFFE) : (short)(isFloat ? 3 : 1);
             int fmtSize = extensible ? 40 : 16;
@@ -7645,8 +7645,8 @@ namespace ExplorerNative
         ///
         /// The reads have to be right whatever the download is doing, and the
         /// pump must not play audio decoded for a position the key has already
-        /// passed. Both were wrong, and a third thing — a moving download
-        /// window — was tried as a speed fix and reverted for making seeking
+        /// passed. Both were wrong, and a third thing, a moving download
+        /// window, was tried as a speed fix and reverted for making seeking
         /// worse; see CLAUDE.md.
         /// </summary>
         private static void SkipWhileDownloadingTests()
@@ -7754,7 +7754,7 @@ namespace ExplorerNative
             // The correctness half, checked by reading the source: the pump must
             // not write a block to the ring when a further seek is already
             // waiting. The ring is empty at that moment and the renderer is
-            // starving, so anything written goes straight out of the speakers —
+            // starving, so anything written goes straight out of the speakers,
             // a fragment from a position the key has already passed.
             var pump = SourceFile("WasapiPlayback.cs");
             if (pump == null) { Check("WasapiPlayback.cs can be read", false); }
@@ -7780,7 +7780,7 @@ namespace ExplorerNative
             // A "point the download at the skip" hint was added and reverted. It
             // fixed one case and thrashed every other: a skip forward moved the
             // held window, a skip back fell behind it, and the download was torn
-            // down and restarted on each change of direction — throwing away the
+            // down and restarted on each change of direction, throwing away the
             // bytes being played. Holding a skip key changes direction
             // constantly. The note in StreamingSource says so; this makes sure
             // nobody reinstates it without reading that.
@@ -7800,7 +7800,7 @@ namespace ExplorerNative
             //
             // The other half of the regression, and the one that made it sound
             // like the song restarting. A decoder reading through a download can
-            // come up empty without being finished — a skip lands past what has
+            // come up empty without being finished, a skip lands past what has
             // arrived and Media Foundation hands back nothing rather than
             // blocking. Called the end of the track, that raises Finished, and
             // Finished with repeat on seeks to zero.
@@ -7822,7 +7822,7 @@ namespace ExplorerNative
             // stood down does not stop when told; it stops when it next looks,
             // which is after the four megabyte read it is already inside, and
             // until then it goes on writing. Release has always handled that by
-            // dropping the array rather than waiting for the thread — and an
+            // dropping the array rather than waiting for the thread, and an
             // "optimisation" that reused the array instead put a whole chunk
             // into the middle of the live buffer at the wrong offset.
             Check("a superseded download is left writing into an array nobody reads",
@@ -8017,7 +8017,7 @@ namespace ExplorerNative
                 // Appended rather than re-read into the same buffer. Read always
                 // writes from index zero, so a loop that passes the same array
                 // each time keeps the *last* chunk and leaves the rest of the
-                // buffer as silence — which measures as no tone at any
+                // buffer as silence, which measures as no tone at any
                 // frequency, and looks exactly like a broken resampler.
                 var output = new float[rate * 8 * channels];
                 var chunk = new float[4096 * channels];
@@ -8118,10 +8118,10 @@ namespace ExplorerNative
         ///
         /// The check that matters most is not "does the band get louder". A
         /// volume control passes that. It is that the band next door does *not*
-        /// — which is the only thing separating an equaliser from a gain.
+        /// which is the only thing separating an equaliser from a gain.
         /// </summary>
         /// <summary>
-        /// Tone, gap, tone — interleaved, at a real sample rate, the way the
+        /// Tone, gap, tone, interleaved, at a real sample rate, the way the
         /// decoder hands them over.
         /// </summary>
         private static float[] ToneGapTone(int rate, int channels,
@@ -8192,8 +8192,8 @@ namespace ExplorerNative
         /// <summary>
         /// The silence shortener, with audio in it.
         ///
-        /// This is the file where that rule was learned — see "the gain effect,
-        /// and why not to try it again" in CLAUDE.md — and it bites harder here
+        /// This is the file where that rule was learned, see "the gain effect,
+        /// and why not to try it again" in CLAUDE.md, and it bites harder here
         /// than anywhere: a stage whose whole job is to *remove* audio is one
         /// whose failure mode is removing all of it, and a test that only checked
         /// the output got shorter would call that a success. So every check below
@@ -8316,7 +8316,7 @@ namespace ExplorerNative
             int resumeAt = gapAt + (int)(rate * 0.3);
 
             // The fade out ends where the sound does, and with the gap left as it
-            // was recorded that is the cut — so the ramp is on the *tail* of the
+            // was recorded that is the cut, so the ramp is on the *tail* of the
             // kept gap, not its head. The head of the gap is still the recording
             // at its own level.
             float beforeFade = PeakBetween(withFades, channels, gapAt, gapAt + rate / 100);
@@ -8338,7 +8338,7 @@ namespace ExplorerNative
             Check("and is at full amplitude by the end of the fade",
                 tailOfResume > 0.45f, tailOfResume.ToString("0.000"));
 
-            // ---- and the two are genuinely independent ----
+            // ---- and the two are really independent ----
             //
             // The fault this replaced: one number for both, taken out of the front
             // of the gap that was left, so asking for nothing to be left silently
@@ -8358,7 +8358,7 @@ namespace ExplorerNative
             var backwards = Drain(reachesBack, channels);
 
             // With nothing left of the gap, the cut is at the end of the first
-            // tone — so the last 200ms of that tone are what the fade lands on.
+            // tone, so the last 200ms of that tone are what the fade lands on.
             int cutAt = rate;
             float beforeRamp = PeakBetween(backwards, channels,
                 cutAt - (int)(rate * 0.21), cutAt - (int)(rate * 0.2));
@@ -8369,7 +8369,7 @@ namespace ExplorerNative
                 $"{beforeRamp:0.000} down to {atCut:0.000}");
 
             // The same signal with no fade out keeps the music at full amplitude
-            // right up to the cut — which is the check that the ramp above is the
+            // right up to the cut, which is the check that the ramp above is the
             // fade and not something else about the signal.
             var noFadeOut = new SilenceReduction(channels, rate)
             {
@@ -8406,12 +8406,12 @@ namespace ExplorerNative
                 PeakBetween(asymmetric, channels, resumeAt, resumeAt + rate / 100) > 0.45f);
 
             // Without a fade the same signal arrives at full amplitude in the
-            // first block — which is the check that the fade above is the fade
+            // first block, which is the check that the fade above is the fade
             // and not something else about the signal.
             // ---- what has been read and not handed on is declared ----
             //
-            // A gap that turns out to be too short comes out in one go — the
-            // whole of it, at the moment the music comes back — so a caller
+            // A gap that turns out to be too short comes out in one go, the
+            // whole of it, at the moment the music comes back, so a caller
             // asking for less than that leaves the rest staged here. Those frames
             // have been read from the decoder and not yet heard, and the position
             // display subtracts exactly this number; without it the clock runs
@@ -8483,7 +8483,7 @@ namespace ExplorerNative
 
             // ---- the far end of every range, which is reachable on purpose ----
             //
-            // Minus three decibels, and a gap that is a fifth of full scale — so
+            // Minus three decibels, and a gap that is a fifth of full scale, so
             // the "silence" being taken out here is a signal most of a recording
             // would call music. The tone is at full scale, which is the only
             // thing left above the threshold.
@@ -8515,7 +8515,7 @@ namespace ExplorerNative
 
             // And the honest consequence of a threshold above the whole
             // recording: there is nothing left, the stage says so by running out,
-            // and the pump ends the track. Not a hang and not a crash — an answer.
+            // and the pump ends the track. Not a hang and not a crash, an answer.
             var everything = new SilenceReduction(channels, rate)
             {
                 Source = SourceOver(ToneGapTone(rate, channels, 0.2, 0.2, 0.1, 0.0), channels),
@@ -8531,7 +8531,7 @@ namespace ExplorerNative
             //
             // The block follows the minimum down: a quarter of it, floored at
             // eight frames. Without that, everything under about three
-            // milliseconds would behave identically — the control would go on
+            // milliseconds would behave identically, the control would go on
             // offering numbers it had stopped being able to tell apart, which is
             // a dial with nothing on the end of it.
             //
@@ -8765,7 +8765,7 @@ namespace ExplorerNative
                     StringComparison.Ordinal));
 
             // The words are what a list read out for free and a spin box cannot.
-            // Said by the application, once the arrowing stops — see the note on
+            // Said by the application, once the arrowing stops, see the note on
             // SayWhereItLanded.
             Check("the words are spoken once the arrowing stops",
                 dialog.Contains("Speech.Speak(row.Describe(row.Value), interrupt: false)",
@@ -8797,8 +8797,8 @@ namespace ExplorerNative
             Check("they go up, one band at a time", rising);
 
             // Half an octave a step, give or take the rounding to preferred
-            // numbers — and the last step narrower, because 22.4kHz would be
-            // above the Nyquist frequency of a CD. A ladder that had quietly
+            // numbers, and the last step narrower, because 22.4kHz would be
+            // above the Nyquist frequency of a CD. A ladder that had silently
             // become uneven would make one slider cover twice the range of its
             // neighbour with nothing to show for it.
             double widest = 0, narrowest = 99;
@@ -8912,9 +8912,9 @@ namespace ExplorerNative
 
                 // At the band's own centre, which is the number printed under
                 // the slider. A shelf sitting *on* 20kHz would read about two
-                // decibels here for a slider set to twelve — half its gain is at
+                // decibels here for a slider set to twelve, half its gain is at
                 // the corner and the rest is above the Nyquist frequency of a CD
-                // — so the top slider would be a control that does nothing. The
+                // so the top slider would be a control that does nothing. The
                 // corner goes between the last two bands instead.
                 double got = EqualiserGainAt(equaliser, 20000);
                 Check("and the highest is a shelf that reaches its own frequency",
@@ -8948,7 +8948,7 @@ namespace ExplorerNative
                     $"{onBand:0.00} on band, {between:0.00} between, {onNext:0.00} on the next");
 
                 // And a flat six decibels asked for across the whole bank comes
-                // out as a lift somewhere in the region of six — not as one
+                // out as a lift somewhere in the region of six, not as one
                 // band's worth, and not as twenty bands multiplied together.
                 Check("and a flat six decibels comes out as a sensible lift",
                     onBand > 5 && onBand < 16, $"measured {onBand:0.00} dB");
@@ -8958,8 +8958,8 @@ namespace ExplorerNative
             //
             // Not an absolute number of decibels, because that is not what the
             // property is. The dip between two band centres grows in proportion
-            // to how far the bands are pushed — measured at about a tenth of the
-            // total lift at every Q from 1.2 to 2.0 — so an absolute threshold
+            // to how far the bands are pushed, measured at about a tenth of the
+            // total lift at every Q from 1.2 to 2.0, so an absolute threshold
             // would either pass trivially at +6 or fail inevitably at +24 while
             // describing the same bank either way.
             //
@@ -9073,13 +9073,13 @@ namespace ExplorerNative
 
         /// <summary>
         /// With nothing switched on, the samples come out exactly as they went
-        /// in — the whole chain, not one piece of it.
+        /// in, the whole chain, not one piece of it.
         ///
         /// Each part promises this for itself and is tested for it separately:
         /// TimeStretch bypasses at rate 1, the equaliser bypasses when it is off
         /// or flat, the gain is exactly 1.0 at 100 percent. What nothing checked
         /// is the promise they add up to, which is the only one anybody actually
-        /// has: put a file in, get the file out. A single stage quietly rounding
+        /// has: put a file in, get the file out. A single stage silently rounding
         /// or lifting is not visible from any of the individual tests, and it is
         /// audible.
         /// </summary>
@@ -9139,7 +9139,7 @@ namespace ExplorerNative
             // This is the one that was wrong, and it was wrong at the volume
             // most listening happens at. The ceiling was BaseBoost * drive *
             // drive with drive clamped up to 1, so at a gain of one the limiter
-            // was still allowed to lift the quiet parts by eight times — which
+            // was still allowed to lift the quiet parts by eight times, which
             // is not "the effect grows with the volume", it is eighteen
             // decibels of compression at 100 percent and more of it at 6.
             foreach (int percent in new[] { 6, 50, 100 })
@@ -9234,7 +9234,7 @@ namespace ExplorerNative
         /// <summary>
         /// A timeout is never reported as somebody pressing Cancel.
         ///
-        /// This is the bug behind "Google Drive disconnects mid copy — it just
+        /// This is the bug behind "Google Drive disconnects mid copy, it just
         /// cancels ten percent through because it's a lot of files", and it is
         /// entirely a matter of exception *type*. HttpClient reports its own
         /// Timeout by throwing TaskCanceledException, which derives from
@@ -9244,7 +9244,7 @@ namespace ExplorerNative
         /// other file in the batch, and the window reported "Cancelled after 216
         /// of 1134".
         ///
-        /// It got worse the bigger the job, which is exactly backwards — more
+        /// It got worse the bigger the job, which is exactly backwards, more
         /// files means more folders to create and list, so more chances for one
         /// request to run long, and any single one of them ended everything.
         ///
@@ -9300,7 +9300,7 @@ namespace ExplorerNative
                            Occurrences(text, "catch (OperationCanceledException)\r\n") +
                            Occurrences(text, "catch (OperationCanceledException) {");
                 Check($"{name} never catches a cancellation unguarded", bare == 0,
-                    $"{bare} unguarded catch(es) — each one can abandon a whole transfer");
+                    $"{bare} unguarded catch(es), each one can abandon a whole transfer");
             }
 
             // The metadata half of an upload has a ceiling of its own now, and a
@@ -9320,7 +9320,7 @@ namespace ExplorerNative
             int retried = Occurrences(client, "SendWithRetry(") + Occurrences(writes, "SendWithRetry(");
             Check("and is retried rather than being fatal",
                 client.Contains("SendWithRetry", StringComparison.Ordinal) && retried >= 3,
-                $"{retried} mentions — expected the definition plus a listing and a folder create");
+                $"{retried} mentions, expected the definition plus a listing and a folder create");
 
             // A request cannot be sent twice, so the retry has to rebuild it.
             Check("the retry rebuilds the request each time round",
@@ -9344,7 +9344,7 @@ namespace ExplorerNative
         /// "Keep both" made a second folder beside the first. "Replace" recopied
         /// all thousand, which for forty gigabytes over a slow link is the whole
         /// job again. "Skip" skipped the *folder*, because it works on the names
-        /// being pasted rather than on what is inside them — so the four hundred
+        /// being pasted rather than on what is inside them, so the four hundred
         /// missing files stayed missing, and the operation reported success.
         /// </summary>
         private static void FillGapsTests()
@@ -9377,7 +9377,7 @@ namespace ExplorerNative
                     File.WriteAllText(Path.Combine(source, relative), "original " + relative);
 
                 // A previous attempt that got two of the five, one of them deep
-                // in the tree — and the destination folder therefore exists,
+                // in the tree, and the destination folder therefore exists,
                 // which is what used to make Skip throw the whole thing away.
                 Directory.CreateDirectory(Path.Combine(destination, "album"));
                 Directory.CreateDirectory(Path.Combine(destination, "album", "disc 2"));
@@ -9410,7 +9410,7 @@ namespace ExplorerNative
                     File.ReadAllText(Path.Combine(destination, "album", "disc 2", "four.txt")));
 
                 // Nothing was renamed, which is what "keep both" would have done
-                // — and what a folder called "album (2)" beside the real one
+                // and what a folder called "album (2)" beside the real one
                 // means for somebody who cannot see the listing at a glance.
                 Check("and nothing was copied in beside it under a new name",
                     !Directory.Exists(Path.Combine(destination, "album (2)")) &&
@@ -9465,7 +9465,7 @@ namespace ExplorerNative
         /// What an upload does when Google says "not now".
         ///
         /// Written after a real upload of about a million small files lost one
-        /// to a 502 whose own body says "please try again in 30 seconds" — a
+        /// to a 502 whose own body says "please try again in 30 seconds", a
         /// file reported as permanently failed on the strength of an answer that
         /// said the opposite. The resumable path had retried from the beginning;
         /// the small-file path, which is the one that runs a million times, had
@@ -9504,7 +9504,7 @@ namespace ExplorerNative
 
                 // Jittered. Four upload streams hit the same bad moment
                 // together, and a fixed backoff brings all four back at the same
-                // instant to fail together — which is how a blip becomes an
+                // instant to fail together, which is how a blip becomes an
                 // outage.
                 var spread = new HashSet<double>();
                 for (int i = 0; i < 20; i++) spread.Add(DriveClient.RetryDelay(3, random).TotalSeconds);
@@ -9516,7 +9516,7 @@ namespace ExplorerNative
             //
             // Google spells rate limiting two ways. 429 is one. The other is a
             // 403 whose payload carries a reason, and it is indistinguishable by
-            // status code from the 403 that means "you may not do that" — which
+            // status code from the 403 that means "you may not do that", which
             // is why the status-only test refuses all of them, and why that
             // refusal was wrong for exactly the case that matters: told to slow
             // down, the upload failed the file and immediately asked for the
@@ -9642,7 +9642,7 @@ namespace ExplorerNative
                     read?.TotalSeconds.ToString("0.0") ?? "null");
 
                 // Capped, because an honest Retry-After is seconds and a very
-                // large one is an outage — which is not a reason for a progress
+                // large one is an outage, which is not a reason for a progress
                 // window to sit silent for an hour.
                 var silly = new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable);
                 silly.Headers.Add("Retry-After", "86400");
@@ -9658,7 +9658,7 @@ namespace ExplorerNative
 
             // ---- the two that stop everything, and say why ----
             //
-            // "If I hit my daily rate limit, tell me why" — and the point is
+            // "If I hit my daily rate limit, tell me why", and the point is
             // that these must not join a list of nine hundred other failures,
             // because every one of those nine hundred would be this same
             // sentence and the explanation would scroll off the top.
@@ -9716,7 +9716,7 @@ namespace ExplorerNative
             // ---- eight streams, and the headroom to justify them ----
             //
             // Google's quota since May 2026 is weighted units: an upload is an
-            // edit at 50, against 325,000 units per minute per user — about a
+            // edit at 50, against 325,000 units per minute per user, about a
             // hundred uploads a second. Eight streams against a 700ms round trip
             // is about twelve. The check is that the ceiling has not been
             // approached by a later change, not that eight is magic.
@@ -9755,7 +9755,7 @@ namespace ExplorerNative
             // This is the other half of the same report. Google's 502 body is a
             // full HTML page, about seven hundred characters of doctype,
             // stylesheet and a link to a picture of a robot, and it went into
-            // the failure dialog whole — pushing every other failure off the
+            // the failure dialog whole, pushing every other failure off the
             // screen, and reading aloud as a minute of markup.
             {
                 const string page =
@@ -9771,7 +9771,7 @@ namespace ExplorerNative
                     said.Contains("temporarily unavailable", StringComparison.OrdinalIgnoreCase), said);
 
                 // A real API error carries a real message, and that is the one
-                // worth keeping — it is more specific than anything this code
+                // worth keeping, it is more specific than anything this code
                 // could write from the status alone.
                 var json = """
                     {"error":{"code":403,"message":"The user has exceeded their Drive storage quota."}}
@@ -9812,7 +9812,7 @@ namespace ExplorerNative
                 // A stream already read to the end cannot be sent again and
                 // neither can a request that has been sent once, so a retry that
                 // reused either would fail for a reason unrelated to the failure
-                // it was retrying — and would look exactly like the server
+                // it was retrying, and would look exactly like the server
                 // refusing twice.
                 Check("and opens the file again for each attempt",
                     writes.Contains("using var source = OpenRead(localPath);", StringComparison.Ordinal) &&
@@ -9829,8 +9829,8 @@ namespace ExplorerNative
         /// This is the thing the media engine was kept for, and the only reason
         /// it survived being replaced as the player. Resampling changes the
         /// speed by changing the pitch, which is a chipmunk, so the test that
-        /// matters is not "did it come out shorter" — that a resampler passes
-        /// too — but "is it still the same note".
+        /// matters is not "did it come out shorter", that a resampler passes
+        /// too, but "is it still the same note".
         /// </summary>
         private static void TimeStretchTests()
         {
@@ -9884,7 +9884,7 @@ namespace ExplorerNative
             //
             // Going from normal to 1.5x started the first hop 640 frames into
             // the input with nothing faded, and coming back resumed from the
-            // front of the input rather than where the last hop led — each a
+            // front of the input rather than where the last hop led, each a
             // step in the waveform. A 440Hz sine at half scale never moves more
             // than 0.029 between two samples, so anything much larger is a join.
             foreach (double speed in new[] { 1.5, 0.75 })
@@ -9983,7 +9983,7 @@ namespace ExplorerNative
             // The length test and the pitch test both pass on a stretcher that
             // clicks: the clicks are quiet, broadband and periodic, and they are
             // exactly what "speeded up" sounds like as against "faster". A pure
-            // sine in has only one place its energy can honestly be, so anything
+            // sine in has only one place its energy can truly be, so anything
             // that is not at 440Hz on the way out was manufactured at a join.
             //
             // This is the measurement the hop length, the full overlap and the
@@ -10075,7 +10075,7 @@ namespace ExplorerNative
             // A steady tone at a given amplitude, run through the renderer for
             // long enough that the envelope and the lift have both settled. The
             // release is a quarter of a second, so "long enough" is seconds of
-            // audio — which costs nothing here, since no device is involved.
+            // audio, which costs nothing here, since no device is involved.
             static float Settled(float amplitude, float gain, bool limiter,
                 int seconds = 3, bool wholeRange = false)
             {
@@ -10109,7 +10109,7 @@ namespace ExplorerNative
             // This assertion is the other way round from the one it replaced,
             // and the change was asked for. The old ceiling was
             // BaseBoost * drive * drive with drive clamped up to one, so at a
-            // gain of one the limiter was allowed eight times — eighteen
+            // gain of one the limiter was allowed eight times, eighteen
             // decibels of upward compression at 100 percent volume, and the same
             // eighteen at six percent, on a switch whose description says the
             // effect grows with the volume. It does not grow from eight; it
@@ -10127,7 +10127,7 @@ namespace ExplorerNative
 
             // ---- and stops at the ceiling it is allowed ----
             //
-            // Thirty-two times at a gain of two — BaseBoost times the square of
+            // Thirty-two times at a gain of two, BaseBoost times the square of
             // the drive. Not infinite: a leveller with no ceiling turns the
             // silence between tracks into a wall of hiss, which is the failure
             // that makes people turn these things off and never turn them on
@@ -10156,7 +10156,7 @@ namespace ExplorerNative
                 loudOn >= loudOff - 0.0001f, $"{loudOff} -> {loudOn}");
 
             // Where a signal is already past the ceiling, it is left exactly
-            // alone — which at any volume above 100 percent is most of a track.
+            // alone, which at any volume above 100 percent is most of a track.
             float overOff = Settled(0.8f, 4f, limiter: false);
             float overOn = Settled(0.8f, 4f, limiter: true);
             Check($"and leaves anything past the ceiling exactly where it was ({overOff:0.##} to {overOn:0.##})",
@@ -10176,7 +10176,7 @@ namespace ExplorerNative
             // ---- and it can be taken off the volume entirely ----
             //
             // The lift normally grows with the square of the gain, which means
-            // it is at its mildest at ordinary volumes — exactly where somebody
+            // it is at its mildest at ordinary volumes, exactly where somebody
             // sits down to find out what it does. This is the switch for
             // listening into a recording rather than making one loud, so at a
             // volume of one it has to do considerably more, not the same.
@@ -10207,7 +10207,7 @@ namespace ExplorerNative
                 wide > narrow * 4, $"{narrow} -> {wide}");
 
             // Still the same ceiling, though. "More lift available" is not
-            // "louder than full scale" — the aim does not move.
+            // "louder than full scale", the aim does not move.
             Check($"and still aims at the ceiling ({wide:0.###})",
                 wide <= 0.91f, wide.ToString("0.####"));
 
@@ -10221,7 +10221,7 @@ namespace ExplorerNative
             //
             // This is the whole shape of the thing. The lift grows with the
             // square of the gain, so pushing the volume up does not merely make
-            // the same sound louder — it opens the background up further, which
+            // the same sound louder, it opens the background up further, which
             // is what it is for.
             float atOne = Settled(0.01f, 1f, limiter: true);
             float atFour = Settled(0.01f, 4f, limiter: true);
@@ -10265,7 +10265,7 @@ namespace ExplorerNative
             Equal("and the meter saw the loudest of them", "1", renderer.ReadPeak().ToString("0.###"));
             Equal("reading the meter clears it", "0", renderer.ReadPeak().ToString("0.###"));
 
-            // Past full scale the sample is carried, not squashed — measured
+            // Past full scale the sample is carried, not squashed, measured
             // through the endpoint, the Windows mixer takes it and clips at the
             // device. Counted all the same, because "is it clipping" has to be
             // answerable by somebody who cannot look at a meter.
@@ -10288,7 +10288,7 @@ namespace ExplorerNative
             // Reported as "this folder will not play", about a folder of
             // perfectly good 32-bit float WAVs. Every track in the application
             // was failing: the saved output device had been unplugged, and
-            // `Open` only fell back to the default when *GetDevice* failed —
+            // `Open` only fell back to the default when *GetDevice* failed,
             // which it does not for an unplugged endpoint. It hands back a good
             // IMMDevice for a thing that is not there and the refusal arrives one
             // step later, as AUDCLNT_E_DEVICE_INVALIDATED from Activate. So the
@@ -10312,13 +10312,13 @@ namespace ExplorerNative
 
             // The message that sent somebody looking at their files. A renderer
             // failure affects every track, so the file must not be the subject of
-            // the sentence — naming it is what did the damage.
+            // the sentence, naming it is what did the damage.
             var playerSource = SourceFile("AudioPlayer.cs");
             Check("no audio output is not reported as a fault in the file",
                 playerSource != null &&
                 !playerSource.Contains("$\"Could not play {Path.GetFileName(path)}: no audio output\"",
                     StringComparison.Ordinal) &&
-                playerSource.Contains("No audio output —", StringComparison.Ordinal),
+                playerSource.Contains("No audio output, ", StringComparison.Ordinal),
                 "the file is named in the subject of a sentence about the device");
 
             LimiterTests();
@@ -10340,7 +10340,7 @@ namespace ExplorerNative
             // under "Playing through". Starting a track on the direct path used
             // to overwrite the first with the second, so the page showed the
             // renderer's line twice and the label on one of them was simply
-            // wrong — and the answer to "is the media engine working", which is
+            // wrong, and the answer to "is the media engine working", which is
             // the whole reason that label exists, was gone.
             using (var player = new AudioPlayer())
             {
@@ -10355,7 +10355,7 @@ namespace ExplorerNative
             // its own MFStartup calls without recording whether *it* had made
             // one. A decoder disposed twice, or disposed having never opened
             // anything, therefore called MFShutdown for a startup it did not
-            // hold — and MFShutdown does not fail, it simply takes Media
+            // hold, and MFShutdown does not fail, it simply takes Media
             // Foundation down for the process. The engine kept its object, kept
             // answering, kept reporting that it was playing, and never made
             // another sound. Nothing in the application could see it, because
@@ -10413,7 +10413,7 @@ namespace ExplorerNative
             // saved speed meant the engine played from the moment the
             // application started. That half had no test and it was broken: the
             // position never moved, the endpoint had no stream, and the window
-            // went on saying it was playing. `IsPlaying` alone could not see it —
+            // went on saying it was playing. `IsPlaying` alone could not see it,
             // the clock is what says whether anything is actually happening, and
             // it is still the assertion now the stretcher does the work.
             {
@@ -10448,9 +10448,9 @@ namespace ExplorerNative
             //
             // FLAC is the case this is about. The rate belonged to the media
             // engine, Windows' FLAC decoder refused everything above normal, and
-            // the speed dialog quietly dropped half its entries for a whole
+            // the speed dialog silently dropped half its entries for a whole
             // library. The stretcher works on decoded samples, so the container
-            // cannot have an opinion — and this is the file type that proves it.
+            // cannot have an opinion, and this is the file type that proves it.
             {
                 var flacs = NewTempDir();
                 try
@@ -10542,7 +10542,7 @@ namespace ExplorerNative
                 finally { Cleanup(moving); }
 
                 // A device id that belongs to nothing falls back rather than
-                // going silent — the remembered headset that is not plugged in.
+                // going silent, the remembered headset that is not plugged in.
                 var missing = NewTempDir();
                 try
                 {
@@ -10585,7 +10585,7 @@ namespace ExplorerNative
                     }
                     play.Stop();
 
-                    // The tone is a sine, so the peak is the amplitude — and the
+                    // The tone is a sine, so the peak is the amplitude, and the
                     // whole point is that it *moves with the gain*. A path that
                     // emits silence reads zero here whatever the gain is.
                     Check($"a real tone at gain {gain} comes out at about {expected:0.###}",
@@ -10611,7 +10611,7 @@ namespace ExplorerNative
             Check("an ordinary name is accepted", NameRules.IsUsableName("holiday photos"));
             Check("a name with an extension is accepted", NameRules.IsUsableName("track 01.flac"));
             Check("a name with dots inside is accepted", NameRules.IsUsableName("archive.tar.gz"));
-            Check("a unicode name is accepted", NameRules.IsUsableName("Ünïcodé — ファイル"));
+            Check("a unicode name is accepted", NameRules.IsUsableName("Ünïcodé, ファイル"));
             Check("a leading dot is accepted", NameRules.IsUsableName(".gitignore"));
 
             // The whole point: these used to be combined with the current folder
@@ -10662,7 +10662,7 @@ namespace ExplorerNative
             Console.WriteLine("Paths arriving from a command line:");
 
             // The shell registers `"app.exe" "%1"`. For a drive it substitutes
-            // D:\, so the command line reads "app.exe" "D:\" — and Windows reads
+            // D:\, so the command line reads "app.exe" "D:\", and Windows reads
             // the backslash as escaping the quote, delivering D:" as the argument.
             // Trimmed to D:, that means "the current directory on D", not the
             // drive. Opening a drive showed the app's own folder because of it.
@@ -10698,7 +10698,7 @@ namespace ExplorerNative
                 "ab", NameRules.NormaliseLaunchPath("ab"));
 
             // The behaviour this all exists to prevent: a bare drive letter really
-            // does resolve to the working directory, so the repair is load-bearing.
+            // does resolve to the working directory, so the repair matters.
             var currentDrive = Path.GetPathRoot(Environment.CurrentDirectory)!;
             var letter = currentDrive.Substring(0, 2);           // e.g. "C:"
             Check("a bare drive letter really does resolve to the working directory",
@@ -10830,7 +10830,7 @@ namespace ExplorerNative
             Equal("\"web\" reaches Web", "7", FindIn(names, "web", 0).ToString());
 
             // Without this, "sy" landed on something starting with "s" and then
-            // on something starting with "y" — the bug being fixed.
+            // on something starting with "y", the bug being fixed.
             Check("a two-letter prefix does not degrade to the last letter alone",
                 FindIn(names, "sy", 0) == 4, FindIn(names, "sy", 0).ToString());
 
@@ -10901,7 +10901,7 @@ namespace ExplorerNative
             resettable.Reset();
             Equal("resetting clears the word", "y", resettable.Accept('y', 10));
 
-            // Walking a folder by ear: type, hear, type again, inside the pause —
+            // Walking a folder by ear: type, hear, type again, inside the pause,
             // the sequence the whole feature exists for.
             var walk = new TypeAheadBuffer();
             int at = -1;
@@ -11040,7 +11040,7 @@ namespace ExplorerNative
                 // A folder has no extension, whatever the dots in its name say.
                 // GetFileNameWithoutExtension splits at the last one regardless,
                 // so a second copy of "Backup.2024" came out as "Backup (2).2024"
-                // — and "Saved as …", the sentence this whole mechanism exists to
+                // and "Saved as …", the sentence this whole mechanism exists to
                 // be able to say, then named something nobody would recognise.
                 var dotted = Path.Combine(temp, "Backup.2024");
                 Directory.CreateDirectory(dotted);
@@ -11331,7 +11331,7 @@ namespace ExplorerNative
                 Check("first measurement is cached", calc.TryGetCached(changing, out _));
 
                 // The cache is keyed on the folder's write time, which has limited
-                // resolution — wait long enough that the change is visible.
+                // resolution, wait long enough that the change is visible.
                 await Task.Delay(50);
                 File.WriteAllText(Path.Combine(changing, "two.bin"), new string('y', 700));
                 await Task.Delay(50);
@@ -11413,12 +11413,12 @@ namespace ExplorerNative
                     timed.ElapsedMilliseconds < 15_000);
                 Check("a timed-out walk reports itself incomplete", !partial.Complete);
 
-                // Using the calculator after disposal must not throw either — the
+                // Using the calculator after disposal must not throw either, the
                 // form disposes it while background work may still be arriving.
                 var disposable = new FolderSizeCalculator();
                 disposable.Dispose();
                 var afterDispose = await disposable.CalculateAsync(deep);
-                Check("calculating after disposal returns quietly instead of throwing",
+                Check("calculating after disposal returns silently instead of throwing",
                     !afterDispose.Complete || afterDispose.Bytes >= 0);
             }
             finally { Cleanup(temp); }
@@ -11727,7 +11727,7 @@ namespace ExplorerNative
         ///
         /// Progress used to come only from parsing robocopy's per-file output,
         /// and a child process writing to a redirected pipe does not line-buffer
-        /// — it fills a block and flushes, so those lines arrive in bursts of
+        /// it fills a block and flushes, so those lines arrive in bursts of
         /// roughly fifty and mostly at the end. Measured on a 40-file copy with
         /// the engine's own arguments: one line at 37ms, the other 39 together at
         /// 45-48ms.
@@ -11744,7 +11744,7 @@ namespace ExplorerNative
         /// Every one of these is reachable: names come off somebody else's disk
         /// or out of Google Drive, paths arrive on a command line from the shell,
         /// and settings.json is a file people are invited to edit. The bar is not
-        /// that the answer is pretty — it is that there is an answer, and that
+        /// that the answer is pretty, it is that there is an answer, and that
         /// nothing here throws its way up into a keystroke.
         /// </summary>
         private static void HostileInputTests()
@@ -11961,7 +11961,7 @@ namespace ExplorerNative
             var picked = new Dictionary<string, NotificationChannel>
             {
                 // Each of these differs from its own default, or it would not be
-                // written at all — only differences are stored.
+                // written at all, only differences are stored.
                 ["audio.play"] = NotificationChannel.Speech,
                 ["copy.done"] = NotificationChannel.None,
                 ["not.a.real.id"] = NotificationChannel.Speech,
@@ -12050,7 +12050,7 @@ namespace ExplorerNative
         ///
         /// A bound that is documented and not enforced, a depth limit whose
         /// meaning is spelled out in a comment, and the quoting rules for a
-        /// registered shell command — which decide whether a path with a space in
+        /// registered shell command, which decide whether a path with a space in
         /// it opens or turns into two arguments.
         /// </summary>
         private static async Task StatedClaimTests()
@@ -12163,7 +12163,7 @@ namespace ExplorerNative
         ///
         /// RegisterHotKey is exclusive machine-wide. Setting "play or pause" to
         /// Ctrl+C would register cleanly, report no conflict, and stop copying
-        /// working in every program on the computer — including this one, whose
+        /// working in every program on the computer, including this one, whose
         /// own Copy would never receive the key again. Nothing in Windows would
         /// call that an error.
         /// </summary>
@@ -12195,7 +12195,7 @@ namespace ExplorerNative
             Check("Delete on its own is reserved", ReservedShortcuts.OwnerOf(Shortcut.Parse("Delete")) != null);
 
             // Space on its own is what selects the row you are standing on, and
-            // it is refused twice over — no modifier, and reserved. The reserved
+            // it is refused twice over, no modifier, and reserved. The reserved
             // answer is the one worth having, because it says what would break.
             var spaceOwner = ReservedShortcuts.OwnerOf(Shortcut.Parse("Space"));
             Check("Space on its own is reserved", spaceOwner != null, "it was allowed through");
@@ -12205,7 +12205,7 @@ namespace ExplorerNative
 
             // ---- every function key, on its own ----
             //
-            // A function key is only ever a command — nothing types F6 — so
+            // A function key is only ever a command, nothing types F6, so
             // handing one to Windows is that command gone from every program on
             // the machine, with nothing on screen to connect the two. F13 to F24
             // are in as well, even though Shortcut.IsSelfContained says Windows
@@ -12230,7 +12230,7 @@ namespace ExplorerNative
 
             // A function key with a modifier is a different key and stays usable:
             // reserving all 24 times all 8 modifier combinations would take away
-            // most of the shortcut space there is, to protect nothing — Ctrl+Alt
+            // most of the shortcut space there is, to protect nothing, Ctrl+Alt
             // +F9 is not a command any application already has.
             Check("Ctrl+Alt+F9 is still allowed",
                 ReservedShortcuts.OwnerOf(Shortcut.Parse("Ctrl+Alt+F9")) == null);
@@ -12251,7 +12251,7 @@ namespace ExplorerNative
             Check("and neither is the window's own shortcut",
                 ReservedShortcuts.OwnerOf(window) == null, window.ToString());
 
-            // Something plainly free stays free.
+            // Something clearly free stays free.
             //
             // The last ones are a real person's settings, and the list must not
             // take a combination somebody already chose on purpose.
@@ -12303,7 +12303,7 @@ namespace ExplorerNative
             }
 
             // A scan that matched nothing would pass this whatever the menu said,
-            // which is the way a check like it quietly stops meaning anything.
+            // which is the way a check like it silently stops meaning anything.
             Check($"the menu scan actually read the menu ({found} shortcuts)", found >= 15, $"{found} found");
             Check("every shortcut the menu declares is reserved", unreserved == 0,
                 $"{unreserved} were not");
@@ -12311,7 +12311,7 @@ namespace ExplorerNative
             // ---- and a refusal has to be visible ----
             //
             // Preferences will not let one of these be typed, so anything that
-            // reaches the registration arrived by editing settings.json — the one
+            // reaches the registration arrived by editing settings.json, the one
             // route where a silent refusal is worst. Somebody who has just
             // hand-edited a file to get a shortcut they were told they could not
             // have will read a key that does nothing as the edit not having
@@ -12326,12 +12326,12 @@ namespace ExplorerNative
             // One dialog, not one per kind of problem. Two posted together open
             // about ten milliseconds apart and the second lands inside the
             // first's modal loop, so they stack and a screen reader announces
-            // only the top one — measured, with the first never announced at all.
+            // only the top one, measured, with the first never announced at all.
             int calls = Occurrences(tray, "ShowShortcutDialog(");
             Check("and there is one dialog for all of them, not one each",
                 calls == 2, calls + " mentions (want a definition and a single call)");
 
-            // Posted, because this runs from the constructor — before there is a
+            // Posted, because this runs from the constructor, before there is a
             // window to own a dialog or a loop to pump one. Shown inline there,
             // it stops the application appearing at all until it is dismissed.
             int at = tray.IndexOf("private void ShowShortcutDialog", StringComparison.Ordinal);
@@ -12434,7 +12434,7 @@ namespace ExplorerNative
             // Read out of the source because driving it cannot reach this. A copy
             // small enough to run in a test finishes before the conditions that
             // broke it can arise, so an end-to-end test passes whether the kernel
-            // counter is connected or disconnected — proved by disconnecting it
+            // counter is connected or disconnected, proved by disconnecting it
             // and watching the suite stay green. What is left is to check that
             // the wire exists, which is worth more than a test that cannot fail.
             var engine = SourceFile("RoboCopyEngine.cs");
@@ -12460,7 +12460,7 @@ namespace ExplorerNative
         /// <c>Progress&lt;T&gt;</c> posts to the thread pool, so reports can be
         /// delivered in a different order from the one they were made in. That is
         /// harmless for a dialog and useless for asserting that a number only ever
-        /// goes up — a first attempt at that check failed on the delivery order
+        /// goes up, a first attempt at that check failed on the delivery order
         /// rather than on anything the engine did.
         /// </summary>
         private sealed class SyncProgress<T> : IProgress<T>
@@ -12471,7 +12471,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Runs a check at the moment a report is made, on the reporting thread,
-        /// for the questions that are about *when* rather than what — looking
+        /// for the questions that are about *when* rather than what, looking
         /// at the list afterwards cannot say what was on disk at the time.
         /// </summary>
         private sealed class InlineProgress<T> : IProgress<T>
@@ -12567,9 +12567,9 @@ namespace ExplorerNative
                     {
                         // The number a person reads. Reported bytes must land on
                         // the real total rather than on the fraction that escaped
-                        // robocopy's buffer — this is the check that fails if
+                        // robocopy's buffer, this is the check that fails if
                         // progress goes back to being parsed from stdout alone.
-                        Check("it finished reporting essentially all the bytes",
+                        Check("it finished reporting nearly all the bytes",
                             last.BytesDone >= manyBytes * 0.9,
                             $"reported {last.BytesDone:N0} of {manyBytes:N0}");
 
@@ -12606,7 +12606,7 @@ namespace ExplorerNative
                 // Read what this does and does not prove. It is a sanity check on
                 // a long multi-file copy: the numbers move, stay inside their
                 // bounds and end up right. It is *not* a regression test for
-                // where the bytes come from — it was written as one and it failed
+                // where the bytes come from, it was written as one and it failed
                 // at that, passing just as happily with the kernel counter
                 // disconnected, because a copy this size finishes far too fast on
                 // a local SSD to reproduce the conditions the original failure
@@ -12647,7 +12647,7 @@ namespace ExplorerNative
                     {
                         // A disk fast enough to finish inside one tick of the
                         // 250ms ticker. Nothing was observable, so nothing is
-                        // claimed — a check that passes having seen nothing is
+                        // claimed, a check that passes having seen nothing is
                         // worse than no check at all.
                         Console.WriteLine("  ....  the copy outran the progress ticker; nothing to judge here");
                     }
@@ -12660,8 +12660,8 @@ namespace ExplorerNative
                 }
 
                 // ---- "It says preparing and never changes." The name came only
-                // from robocopy's lines, and under /MT — which is always passed,
-                // even for one thread — robocopy prints a file's line when the
+                // from robocopy's lines, and under /MT, which is always passed,
+                // even for one thread, robocopy prints a file's line when the
                 // file *finishes*. Copying one track, the window had no name for
                 // the whole of the copy.
                 //
@@ -12956,7 +12956,7 @@ namespace ExplorerNative
 
             // What matters is that a real handler is found so the fast path is
             // taken. Which player is registered is the machine's business, not
-            // this app's — asserting a particular one made the suite fail on any
+            // this app's, asserting a particular one made the suite fail on any
             // computer that had chosen differently, which says nothing about
             // whether the code works.
             var flac = FileLauncher.ResolveHandlerPath(".flac");
@@ -12979,7 +12979,7 @@ namespace ExplorerNative
             }
 
             // Case must not matter: the shell does not care, and neither should
-            // the cache — otherwise ".TXT" and ".txt" resolve twice.
+            // the cache, otherwise ".TXT" and ".txt" resolve twice.
             Check("extension resolution ignores case",
                 FileLauncher.ResolveHandlerPath(".TXT") == FileLauncher.ResolveHandlerPath(".txt"));
 
@@ -12993,7 +12993,7 @@ namespace ExplorerNative
             Check($"10,000 cached lookups in under 50 ms (took {sw.ElapsedMilliseconds} ms)",
                 sw.ElapsedMilliseconds < 50);
 
-            // An unknown extension resolves to OpenWith.exe — Windows' "how do
+            // An unknown extension resolves to OpenWith.exe, Windows' "how do
             // you want to open this?" dialog. That is correct, and the same
             // thing ShellExecute would do. What matters is that whatever comes
             // back is a real executable and never a broken path.
@@ -13028,7 +13028,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// The parsing of a registered shell command, against the exact shapes
-        /// Windows actually registers — tested directly rather than through
+        /// Windows actually registers, tested directly rather than through
         /// whatever this particular machine has installed.
         /// </summary>
         private static void CommandTemplateTests()
@@ -13051,7 +13051,7 @@ namespace ExplorerNative
 
             // ---- The quoting bug: a bare %1 and a path with a space ----
             // Windows registers plenty of these, because the shell quotes what it
-            // substitutes. Building the command line by hand, we must do it too —
+            // substitutes. Building the command line by hand, we must do it too,
             // otherwise "C:\my folder\a file.html" arrived as three arguments and
             // the application opened nothing, or the wrong thing.
             var ie = FileLauncher.ParseRegisteredCommand(
@@ -13080,7 +13080,7 @@ namespace ExplorerNative
                     @"""C:\Program Files\App\app.exe""", Exists)) ?? "(null)");
 
             // ---- Placeholders only the shell can fill ----
-            // Compressed folders register Explorer.exe /idlist,%I,%L — %I is a
+            // Compressed folders register Explorer.exe /idlist,%I,%L, %I is a
             // handle to memory in the calling process, not text. Substituting a
             // path and launching anyway produces a nonsense command line.
             Check("an ITEMIDLIST placeholder falls back to the shell",
@@ -13146,7 +13146,7 @@ namespace ExplorerNative
             Console.WriteLine("Single-instance handoff:");
 
             // A private pipe name, so this exercises the mechanism without
-            // reaching the copy of the app the user may have running — which
+            // reaching the copy of the app the user may have running, which
             // would both answer the "nobody is listening" case and yank their
             // window around while the suite runs.
             SingleInstance.NameSuffix = "_selftest_" + Guid.NewGuid().ToString("N")[..8];
@@ -13184,7 +13184,7 @@ namespace ExplorerNative
                         received.Count > 0 ? received[0] : "(nothing)");
 
                 // The pipe is rebuilt per connection, so a second request has to
-                // work as well as the first — this is the case that wedges if the
+                // work as well as the first, this is the case that wedges if the
                 // server reuses one stream without re-arming it.
                 Check("a second delivery also succeeds",
                     SingleInstance.SendToRunningInstance(@"C:\Users"));
@@ -13201,14 +13201,14 @@ namespace ExplorerNative
 
                 // Names with spaces and unicode must survive the wire, since the
                 // shell hands us whatever the folder is actually called.
-                var awkward = @"C:\Users\Ünïcodé — folder (1)";
+                var awkward = @"C:\Users\Ünïcodé, folder (1)";
                 Check("an awkward path is delivered", SingleInstance.SendToRunningInstance(awkward));
                 Check("the awkward path arrived", await gotOne.WaitAsync(5000));
                 lock (received)
                     Check("the awkward path survived the wire unchanged", received.Contains(awkward),
                         received.LastOrDefault() ?? "(nothing)");
 
-                // Several launches at once — the shell does this when a folder of
+                // Several launches at once, the shell does this when a folder of
                 // shortcuts is opened.
                 int burst = 8;
                 var sends = await Task.WhenAll(Enumerable.Range(0, burst).Select(i =>
@@ -13224,7 +13224,7 @@ namespace ExplorerNative
 
                 // A path is not ASCII. The bytes arrive in whatever sized reads
                 // the pipe hands over, so a character whose UTF-8 lands across a
-                // boundary must still come out whole — decoding each chunk on its
+                // boundary must still come out whole, decoding each chunk on its
                 // own turns it into replacement characters, and the folder that
                 // opens for most people does not open for this one.
                 var accented = @"C:\Users\Conner\Música\Björk – Vespertine\наташа.flac";
@@ -13237,7 +13237,7 @@ namespace ExplorerNative
 
                 // A client that connects and never writes must not wedge the
                 // listener. This was a blocking ReadLine with no deadline, so one
-                // such client — killed between connecting and writing — parked
+                // such client, killed between connecting and writing, parked
                 // the listener for ever, and from that moment every folder
                 // double-click on the machine opened nothing at all.
                 //
@@ -13297,7 +13297,7 @@ namespace ExplorerNative
             // Stand the takeover down before snapshotting. What "unregister
             // restores" is the state before *any* takeover, so a snapshot taken
             // while one was already in place is not the baseline the code is
-            // aiming at — it is another app's registration, and putting that back
+            // aiming at, it is another app's registration, and putting that back
             // is precisely what unregistering must not do. Re-enabled at the end.
             if (defaultWasOn) ShellRegistration.SetDefaultFileExplorer(false);
 
@@ -13332,8 +13332,8 @@ namespace ExplorerNative
                 // leaves a route back into File Explorer.
                 // The base Folder class must never be claimed.
                 //
-                // Every shell folder inherits from it — Control Panel, Settings,
-                // This PC, Recycle Bin — so taking its open verb does not mean
+                // Every shell folder inherits from it, Control Panel, Settings,
+                // This PC, Recycle Bin, so taking its open verb does not mean
                 // "all folders", it means "all of Windows". It was claimed once,
                 // and opening a Control Panel applet launched this application
                 // with something that was not a path.
@@ -13366,8 +13366,8 @@ namespace ExplorerNative
 
                 // Windows+E is deliberately left alone.
                 //
-                // Windows implements that verb in process — no command line, only
-                // a DelegateExecute pointing into the shell — so taking it over
+                // Windows implements that verb in process, no command line, only
+                // a DelegateExecute pointing into the shell, so taking it over
                 // means blanking that, and the shell uses the same verb for
                 // ordinary navigation. Claiming it made opening Settings and
                 // moving to the Power page close Settings and launch this
@@ -13379,7 +13379,7 @@ namespace ExplorerNative
                 Check("...and its DelegateExecute is not blanked",
                     winEDelegate != "", winEDelegate ?? "(unset)");
 
-                // Registering twice must not corrupt the saved originals — that is
+                // Registering twice must not corrupt the saved originals, that is
                 // how a backup gets overwritten with our own value and the removal
                 // "restores" the takeover it was meant to undo.
                 ShellRegistration.SetDefaultFileExplorer(true);
@@ -13403,7 +13403,7 @@ namespace ExplorerNative
                 Check("deregistering twice is harmless", !ShellRegistration.IsDefaultFileExplorer());
 
                 // A machine that ran the build which claimed the base Folder class
-                // has to be cleaned up, whatever the current settings say —
+                // has to be cleaned up, whatever the current settings say,
                 // otherwise Control Panel and Settings stay broken for anyone who
                 // simply turned the takeover off.
                 const string folderCommand = @"Software\Classes\Folder\shell\open\command";
@@ -13428,7 +13428,7 @@ namespace ExplorerNative
 
                 // Put the base Folder class back the way it was found. The
                 // sweep-up above deliberately leaves another application's
-                // registration alone, so this block has to clear its own props —
+                // registration alone, so this block has to clear its own props,
                 // otherwise the next run starts with Control Panel pointed at a
                 // fictional executable.
                 WriteKey(folderCommand, (null, null));
@@ -13456,8 +13456,8 @@ namespace ExplorerNative
                 WriteKey(winECommand, (null, null));
 
                 // Deregistering must never touch a handler that is not ours.
-                // It used to: with no backup recorded — which is the state right
-                // after a deregistration — it deleted the value regardless of who
+                // It used to: with no backup recorded, which is the state right
+                // after a deregistration, it deleted the value regardless of who
                 // had put it there, so a stray --unregister-default wiped whoever
                 // actually owned folders.
                 const string someoneElse = @"""C:\Some Other App\other.exe"" ""%1""";
@@ -13622,7 +13622,7 @@ namespace ExplorerNative
                 "ExplorerNative.exe", Path.GetFileName(AppInstall.ExePath));
 
             // This suite is a different binary in a build folder, so it is
-            // certainly not the installed copy — which is exactly the case that
+            // certainly not the installed copy, which is exactly the case that
             // must not be allowed to claim the registration.
             Check("a build output is not mistaken for the installed copy",
                 !AppInstall.IsRunningInstalledCopy, AppInstall.RunningDirectory);
@@ -13772,7 +13772,7 @@ namespace ExplorerNative
             }
 
             // Two actions on one combination means the second registration fails
-            // and that action silently does nothing — the sort of thing that is
+            // and that action silently does nothing, the sort of thing that is
             // obvious in a table and invisible one row at a time.
             var claimed = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             int clashes = 0;
@@ -13792,7 +13792,7 @@ namespace ExplorerNative
             Check($"all {AudioActions.All.Count} default audio shortcuts are distinct", clashes == 0);
 
             // The Audio menu's access keys. Two items sharing a letter means the
-            // letter stops acting and starts cycling — which is invisible reading
+            // letter stops acting and starts cycling, which is invisible reading
             // the labels one at a time, and is exactly what happened when Speed
             // up was written "Speed u&p" next to "&Pause".
             var letters = new Dictionary<char, string>();
@@ -13929,8 +13929,8 @@ namespace ExplorerNative
 
         /// <summary>
         /// Whether a held combination is still held. Global hotkeys never see a
-        /// key-up — the release happens in whatever application has the keyboard
-        /// — so this is asked about the keys directly, and getting it wrong means
+        /// key-up, the release happens in whatever application has the keyboard
+        /// so this is asked about the keys directly, and getting it wrong means
         /// a shortcut that keeps firing into somebody else's window.
         /// </summary>
         private static void HoldRepeatTests()
@@ -13948,7 +13948,7 @@ namespace ExplorerNative
             Check("released when the key comes up",
                 !HoldRepeat.StillHeld(combination, vk => vk == control || vk == alt));
 
-            // Letting go of a modifier ends the shortcut. Carrying on would be a
+            // Letting go of a modifier ends the shortcut. Continuing would be a
             // bare letter repeating into whatever the user went back to.
             Check("released when Control comes up but the letter is still down",
                 !HoldRepeat.StillHeld(combination, vk => vk == key || vk == alt));
@@ -13981,7 +13981,7 @@ namespace ExplorerNative
 
             // The pacing. A repeated action runs on the thread that owns the
             // engine, and play or pause on a network source can take a hundred
-            // milliseconds or more — asking for one every sixty leaves the
+            // milliseconds or more, asking for one every sixty leaves the
             // window nothing to paint with, which is what "not responding"
             // means. The next repeat is therefore scheduled from how long the
             // last one took, never using more than half the thread.
@@ -14006,7 +14006,7 @@ namespace ExplorerNative
                     volume.AccelerationCap, volume.AccelerationEvery);
 
             // Time, not repeats. This used to assert "under twenty repeats",
-            // which was a proxy for "a hold sweeps rather than counts" — and it
+            // which was a proxy for "a hold sweeps rather than counts", and it
             // stopped meaning that the moment the range went from 300 to 1000,
             // because the same sweep across a bigger dial simply needs more
             // steps. What a hand actually notices is how long it takes, and at
@@ -14129,7 +14129,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// The read-ahead exists to make a NAS behave, so it cannot be tested
-        /// against one here — what can be tested is that it reads what it was
+        /// against one here, what can be tested is that it reads what it was
         /// asked for, stops when told, and never throws whatever it is pointed
         /// at. It runs on a worker beside a file the media engine has open, so
         /// "never throws" is the important half.
@@ -14146,7 +14146,7 @@ namespace ExplorerNative
             // A cloud drive mounts as an ordinary letter and calls itself a fixed
             // disk, so the drive type alone would say "local" about a file that
             // is actually across the internet. The file's own attributes are what
-            // give it away — and a real local file must not trip the same check.
+            // give it away, and a real local file must not trip the same check.
             var cloudy = NewTempDir();
             try
             {
@@ -14181,7 +14181,7 @@ namespace ExplorerNative
                 await prefetch.Begin(file, long.MaxValue, remoteOnly: false);
                 Check("reading a whole local file completes", true);
 
-                // The file must still be openable — and writable — afterwards.
+                // The file must still be openable, and writable, afterwards.
                 using (var check = new FileStream(file, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
                     Check("the read-ahead does not keep the file open", check.Length > 0);
 
@@ -14333,7 +14333,7 @@ namespace ExplorerNative
                 Check("reads are still correct once it is fully downloaded",
                     ReadsMatch(source, original, original.Length / 3, 8192));
 
-                // Handing the memory back must not stop it working — a released
+                // Handing the memory back must not stop it working, a released
                 // track still plays, it just reads from the share again.
                 source.Release();
                 Check("releasing gives the memory back", !source.Held);
@@ -14466,7 +14466,7 @@ namespace ExplorerNative
             Check("every position on the dial stays inside the engine's range", true);
 
             // Perceptual is quieter everywhere in between, which is the point of
-            // it — the same dial position, more room at the bottom.
+            // it, the same dial position, more room at the bottom.
             Check("perceptual is never louder than linear",
                 AudioPlayer.EngineVolume(30, VolumeCurve.Perceptual) < AudioPlayer.EngineVolume(30, VolumeCurve.Linear));
 
@@ -14521,7 +14521,7 @@ namespace ExplorerNative
                 Check("the size is always known", rows.Any(r => r.Name == "Size"), seen);
                 Check("the folder is always known", rows.Any(r => r.Name == "Folder"), seen);
 
-                // No tags at all must produce no rows for them, not empty ones —
+                // No tags at all must produce no rows for them, not empty ones,
                 // a properties list of blanks is worse than a short one. The
                 // numbers are the trap: an absent property converts to 0 rather
                 // than failing, so this listed "Year: 0" and "Track: 0" until the
@@ -14565,7 +14565,7 @@ namespace ExplorerNative
                 // What the player calls the track out loud when the preference
                 // says to prefer the tag.
                 Equal("the spoken name puts the artist before the title",
-                    "Pink Floyd — Careful With That Axe", AudioTags.TitleOf(flac) ?? "(none)");
+                    "Pink Floyd, Careful With That Axe", AudioTags.TitleOf(flac) ?? "(none)");
             }
             finally
             {
@@ -14600,7 +14600,7 @@ namespace ExplorerNative
         ///
         /// Answered the only way it can be: create a real engine, hand it a real
         /// file, and check that what comes back is what was put in. The file is
-        /// two seconds of silence generated here — asserting on a duration proves
+        /// two seconds of silence generated here, asserting on a duration proves
         /// the engine actually decoded something, and nothing is audible.
         /// </summary>
         private static void AudioEngineTests()
@@ -14696,7 +14696,7 @@ namespace ExplorerNative
         /// the engine where it was, and the engine's clock does not move until a
         /// seek has actually completed. Five quick presses therefore all read the
         /// same position, all computed the same target, and all landed in the
-        /// same place — the key did nothing after the first press, which is
+        /// same place, the key did nothing after the first press, which is
         /// exactly what "skipping lags" felt like.
         /// </summary>
         private static void SeekTests()
@@ -14706,7 +14706,7 @@ namespace ExplorerNative
             var sandbox = NewTempDir();
             try
             {
-                // 3200 frames of 4096 samples at 44.1kHz — just under five minutes.
+                // 3200 frames of 4096 samples at 44.1kHz, just under five minutes.
                 const int frames = 3200;
                 double length = frames * 4096 / 44100.0;
 
@@ -14860,8 +14860,8 @@ namespace ExplorerNative
 
         /// <summary>
         /// FLAC is the reason the player is built on Media Foundation rather than
-        /// on MCI or waveOut, which cannot decode it — so "Windows can decode
-        /// FLAC" is a load-bearing assumption and not one to take on trust.
+        /// on MCI or waveOut, which cannot decode it, so "Windows can decode
+        /// FLAC" is an assumption everything rests on, and not one to take on trust.
         ///
         /// Proved with a FLAC file assembled here, byte by byte, for the same
         /// reason the WAV is: a test that needs somebody's music library is a test
@@ -14896,7 +14896,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// A valid FLAC stream: the magic, one STREAMINFO block, then identical
-        /// frames of one constant-value subframe — which is how FLAC spells
+        /// frames of one constant-value subframe, which is how FLAC spells
         /// silence, and is why this can be written without an encoder.
         /// </summary>
         private static void WriteSilentFlac(string path, int frames, string[]? tags = null)
@@ -14927,7 +14927,7 @@ namespace ExplorerNative
 
             if (tags != null)
             {
-                // VORBIS_COMMENT, which is where FLAC keeps its tags — and the
+                // VORBIS_COMMENT, which is where FLAC keeps its tags, and the
                 // one part of the format whose lengths are little-endian.
                 var comment = new List<byte>();
                 var vendor = System.Text.Encoding.UTF8.GetBytes("ExplorerNative self-test");
@@ -14973,7 +14973,7 @@ namespace ExplorerNative
         /// <summary>
         /// A FLAC frame number is UTF-8 coded, so past 127 it stops fitting in a
         /// byte. Only noticed once a track long enough to seek around in was
-        /// needed — every fixture before this one was 21 frames.
+        /// needed, every fixture before this one was 21 frames.
         /// </summary>
         private static byte[] Utf8Number(int n)
         {

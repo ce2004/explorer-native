@@ -19,7 +19,7 @@ namespace ExplorerNative
     /// <see cref="MaxWaitMilliseconds"/> from the first change, so a folder that
     /// never stops changing still shows what is in it every few seconds.
     ///
-    /// A change to a file the list already shows — its size or date — is not a
+    /// A change to a file the list already shows, its size or date, is not a
     /// reason to re-read the folder at all. Those paths are collected
     /// (<see cref="Take"/>) and the window updates the rows in place, so a
     /// download in progress costs one reload when it appears and nothing after.

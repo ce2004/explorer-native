@@ -14,7 +14,7 @@ namespace ExplorerNative
     ///
     /// It is not an answer at all for Ogg Vorbis and Opus. Measured on this
     /// machine: a real .opus file fails to open with
-    /// MF_E_UNSUPPORTED_BYTESTREAM_TYPE in 33ms, and the registry says why —
+    /// MF_E_UNSUPPORTED_BYTESTREAM_TYPE in 33ms, and the registry says why,
     /// there is no byte-stream handler registered for .ogg, .oga or .opus, where
     /// .flac and .mp3 both have one. The Web Media Extensions are the documented
     /// fix, are installed here, and make no difference, because that package
@@ -46,7 +46,7 @@ namespace ExplorerNative
         bool SeekTo(double seconds);
 
         /// <summary>
-        /// Asks for a different output format without reopening the file — what
+        /// Asks for a different output format without reopening the file, what
         /// makes moving to a device that mixes at another rate cheap.
         /// </summary>
         bool Reopen(int sampleRate, int channels);
@@ -76,9 +76,9 @@ namespace ExplorerNative
             var extension = SafeExtension(path);
 
             // Straight to the managed decoder when Windows is known not to have
-            // a handler for this kind of file. Not an optimisation — Media
-            // Foundation fails in 33ms — but the diagnostic is much better for
-            // it: an Ogg file that is genuinely corrupt should be reported by
+            // a handler for this kind of file. Not an optimisation, Media
+            // Foundation fails in 33ms, but the diagnostic is much better for
+            // it: an Ogg file that is really corrupt should be reported by
             // something that got far enough to look inside it, rather than by
             // the layer that could not identify the container at all.
             bool oggTried = false;
@@ -124,8 +124,8 @@ namespace ExplorerNative
             // working, and the file in front of us is the only real test.
             //
             // And for anything that *is* an Ogg file, whatever it is called. An
-            // Ogg file named .mp3 — a download given the wrong name, a rip tool's
-            // idea of a default — failed with "Windows cannot decode .mp3",
+            // Ogg file named .mp3, a download given the wrong name, a rip tool's
+            // idea of a default, failed with "Windows cannot decode .mp3",
             // because this used to ask the extension and nothing else.
             if ((!oggTried && OggDecoder.Handles(extension)) || StartsWithOggS(path, stream))
             {

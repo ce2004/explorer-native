@@ -14,7 +14,7 @@ namespace ExplorerNative
     /// The question each check asks is the one a listener would: after
     /// skipping to a moment, is what plays exactly what would have played at
     /// that moment had the track run there on its own? So every file is
-    /// decoded twice — once straight through to the target, once by seeking —
+    /// decoded twice, once straight through to the target, once by seeking,
     /// and the two have to agree sample for sample, at the device's rate as
     /// well as the file's. Before this, a variable-bitrate MP3 answered that
     /// 5.6 seconds out on an hour-long file, FLAC up to 35 seconds, and the
@@ -29,8 +29,8 @@ namespace ExplorerNative
     /// tests\Fixtures.
     ///
     /// Beyond the two targets checked in every shape, each file also takes a
-    /// run of seeks on one decoder — the edges (a sample in, the run-up's own
-    /// length, the last half second) and a spread in between — because the
+    /// run of seeks on one decoder, the edges (a sample in, the run-up's own
+    /// length, the last half second) and a spread in between, because the
     /// faults this found lived at the edges and in what one seek left behind
     /// for the next. WMA is left out: its container keeps time to the
     /// millisecond, and a seek into it is only that exact (see CLAUDE.md).
@@ -71,7 +71,7 @@ namespace ExplorerNative
                 {
                     var path = Path.Combine(dir, name);
                     if (MfEncoder.Write(path, pcm, FileRate, subtype, out string why)) files.Add(path);
-                    else Console.WriteLine($"  ({name}: this machine will not encode it — {why})");
+                    else Console.WriteLine($"  ({name}: this machine will not encode it, {why})");
                 }
 
                 var opus = Path.Combine(dir, "noise.opus");
@@ -257,8 +257,8 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// A stream that starts at a large granule position — a capture begun
-        /// part way through a broadcast — plays, measures and seeks exactly like
+        /// A stream that starts at a large granule position, a capture begun
+        /// part way through a broadcast, plays, measures and seeks exactly like
         /// the same audio starting at zero.
         /// </summary>
         private static void LateStartTests(string dir, string original, long offset = 10_000_000)
@@ -444,7 +444,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// A CD track, served from sectors held in memory, decodes to exactly
-        /// what the same samples as WAV decode to — at the disc's own rate and
+        /// what the same samples as WAV decode to, at the disc's own rate and
         /// converted to the device's. The track starts part way into the "disc"
         /// so a sector numbered from the track rather than the disc would show.
         /// </summary>
@@ -571,7 +571,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// ALAC in an MP4, with every frame stored uncompressed — which ALAC
+        /// ALAC in an MP4, with every frame stored uncompressed, which ALAC
         /// allows, and which needs no encoder. Windows' own ALAC encoder
         /// crashes finalising on this machine, so this is how there is an ALAC
         /// file to test at all.
@@ -809,7 +809,7 @@ namespace ExplorerNative
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"  (Opus: could not be written — {ex.Message})");
+                Console.WriteLine($"  (Opus: could not be written, {ex.Message})");
                 return false;
             }
         }

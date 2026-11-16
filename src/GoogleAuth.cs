@@ -28,7 +28,7 @@ namespace ExplorerNative
     /// The client secret is not a secret. Google says so for installed
     /// applications: it ships inside the executable, where anybody can read it,
     /// and the security of the flow rests on PKCE and on the redirect being
-    /// loopback — not on hiding this string. The *refresh token* is the thing
+    /// loopback, not on hiding this string. The *refresh token* is the thing
     /// worth protecting, and that one is encrypted to the user account.
     /// </summary>
     internal sealed class GoogleAuth
@@ -53,7 +53,7 @@ namespace ExplorerNative
         ///
         /// A refresh token is only good for the scope it was granted under, and a
         /// token saved under the old read-only scope will keep on refreshing
-        /// happily and then fail every write with "insufficient permissions" —
+        /// happily and then fail every write with "insufficient permissions",
         /// which reads like a bug in the upload rather than a stale sign-in. A
         /// new file name means the old token is simply not found, and consent is
         /// asked for once.
@@ -64,7 +64,7 @@ namespace ExplorerNative
         private readonly string _clientSecret;
         private readonly string _tokenPath;
         // Fifteen seconds, for the same reason DriveClient uses it: a token
-        // refresh sits on exactly the same path as a ranged read — inside a
+        // refresh sits on exactly the same path as a ranged read, inside a
         // filesystem callback, holding up whoever is listing a folder. This was
         // left on HttpClient's default of a hundred seconds, so a token endpoint
         // that stopped answering could freeze a directory listing for over a
@@ -76,7 +76,7 @@ namespace ExplorerNative
         ///
         /// False everywhere except a deliberate connect. A refresh token expires
         /// after seven days while the app is in Testing, and that expiry surfaces
-        /// on whichever call happened to need a token next — which, for a cloud
+        /// on whichever call happened to need a token next, which, for a cloud
         /// provider, is a filesystem callback on a Cloud Files worker thread.
         /// Opening a consent page from there hangs the directory listing that
         /// asked, for as long as the person takes to sign in. Better to fail the
@@ -116,14 +116,14 @@ namespace ExplorerNative
 
         /// <summary>
         /// Raised when a request needed a sign-in it could not have: whatever
-        /// asked — a search, an upload, a track — rather than only a folder
+        /// asked, a search, an upload, a track, rather than only a folder
         /// listing, which was the one place that noticed.
         /// </summary>
         public event Action? SignInLapsed;
 
         /// <summary>
         /// Where a user-facing message goes, as (notification id, sentence).
-        /// Null when nobody is listening, which is the ordinary case — this class
+        /// Null when nobody is listening, which is the ordinary case, this class
         /// has no window and is not gaining one.
         /// </summary>
         public Action<string, string>? Notify { get; set; }
@@ -143,8 +143,8 @@ namespace ExplorerNative
         /// <summary>
         /// The access token and when it stops being good, as one value.
         ///
-        /// Two fields read without the lock could be read half-updated — the new
-        /// expiry beside the old token — which is a request sent with a token
+        /// Two fields read without the lock could be read half-updated, the new
+        /// expiry beside the old token, which is a request sent with a token
         /// Google has already let go of, once in a long while, and a 401 nothing
         /// here expected.
         /// </summary>
@@ -206,7 +206,7 @@ namespace ExplorerNative
         /// One refresh at a time.
         ///
         /// Every Drive request asks for a token, and Drive requests run several
-        /// at once by design — two ranged reads per track, plus whatever
+        /// at once by design, two ranged reads per track, plus whatever
         /// callbacks Windows has in flight. When the hour was up they all saw an
         /// expired token in the same instant and all went to refresh it: several
         /// simultaneous POSTs to Google for the same thing, and if the refresh
@@ -220,8 +220,8 @@ namespace ExplorerNative
         ///
         /// Consent waits for a person to click through a sign-in page, which can
         /// be minutes. The callers with AllowConsent false are filesystem
-        /// callbacks holding up somebody's directory listing — that is the entire
-        /// reason the flag exists — so they must not queue behind it. They wait
+        /// callbacks holding up somebody's directory listing, that is the entire
+        /// reason the flag exists, so they must not queue behind it. They wait
         /// long enough for an ordinary refresh to finish and then report that a
         /// sign-in is needed, which is what they would have done anyway.
         /// </summary>
@@ -236,7 +236,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// The credentials to sign in with: the client file chosen in
-        /// Preferences, Google Drive. Nothing is compiled into the application —
+        /// Preferences, Google Drive. Nothing is compiled into the application,
         /// the published build ships without any Google client, and each person
         /// brings the desktop-client JSON from their own Cloud project.
         /// </summary>
@@ -445,7 +445,7 @@ namespace ExplorerNative
             if (current.Good) return current.Token;
 
             // A caller that may not consent and has waited this long is behind a
-            // refresh that is not coming back, or behind somebody signing in —
+            // refresh that is not coming back, or behind somebody signing in,
             // neither of which is the sign-in having expired, which is what
             // saying so used to announce while the person was in the browser.
             if (!await _tokenGate.WaitAsync(
@@ -508,7 +508,7 @@ namespace ExplorerNative
             if (!response.IsSuccessStatusCode)
             {
                 // Told apart, because one of these is permanent and the other is
-                // Google having a bad minute — and the saved sign-in was thrown
+                // Google having a bad minute, and the saved sign-in was thrown
                 // away for both. A 500 or a 503 from the token endpoint deleted
                 // the DPAPI-protected refresh token, and since consent is only
                 // ever asked for on a deliberate connect, what the user saw was
@@ -520,7 +520,7 @@ namespace ExplorerNative
                 // expired, and no amount of retrying will make it work.
                 //
                 // unauthorized_client is as final: a token issued to another
-                // client — the built-in one, before a client_secret.json was
+                // client, the built-in one, before a client_secret.json was
                 // dropped in. Thrown as a network failure, it failed every mount
                 // and every deliberate Connect with "answered 401", and nothing
                 // offered the browser that would have fixed it.
@@ -530,7 +530,7 @@ namespace ExplorerNative
                      body.Contains("unauthorized_client", StringComparison.OrdinalIgnoreCase));
 
                 // invalid_client is not the token's fault: the client itself was
-                // refused — a mistyped or deleted client_secret.json. The token is
+                // refused, a mistyped or deleted client_secret.json. The token is
                 // kept, so taking the bad file away brings the sign-in back, and
                 // the refusal is said as what it is.
                 // deleted_client and disabled_client are the same kind of thing:
@@ -550,7 +550,7 @@ namespace ExplorerNative
                 }
 
                 // Anything else is Google having a bad minute, and saying "false"
-                // here reported it as the sign-in having expired — to everybody
+                // here reported it as the sign-in having expired, to everybody
                 // listening, with a browser opened on a deliberate connect. It is a
                 // failed request, and it is reported as one.
                 throw new HttpRequestException(
@@ -607,7 +607,7 @@ namespace ExplorerNative
 
             // Said here rather than by the caller, because this is the moment the
             // application stops being the thing you are looking at and starts
-            // waiting on a browser tab somewhere else — for up to the thirty
+            // waiting on a browser tab somewhere else, for up to the thirty
             // minutes below, with nothing else to explain the pause.
             try { Notify?.Invoke("drive.signin.opened", "Waiting for you to allow access in the browser. If Google says the app is not verified, choose Advanced, then Go to the app."); }
             catch (Exception ex) { Diag.Note(ex); }
@@ -646,9 +646,9 @@ namespace ExplorerNative
                 query = context.Request.QueryString;
 
                 // Only Google's redirect for this sign-in carries this state.
-                // Anything else on the port — the browser asking for an icon, a
+                // Anything else on the port, the browser asking for an icon, a
                 // tab left over from an earlier try, a page that opened the
-                // address — is told so and the wait goes on. It used to end the
+                // address, is told so and the wait goes on. It used to end the
                 // sign-in, so the real redirect then found nobody listening.
                 if (query["state"] == state) break;
                 try
@@ -837,7 +837,7 @@ namespace ExplorerNative
             // is as likely to be listening to this page as looking at it.
             var bytes = Encoding.UTF8.GetBytes(
                 "<!doctype html><html lang=en><meta charset=utf-8>" +
-                $"<title>{heading} — Explorer Native</title>" +
+                $"<title>{heading} - Explorer Native</title>" +
                 "<body style='font:16px/1.5 system-ui;padding:3rem;max-width:34rem'>" +
                 $"<h1>{heading}</h1><p>{detail}</p></body></html>");
 

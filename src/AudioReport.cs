@@ -4,14 +4,14 @@ namespace ExplorerNative
 {
     /// <summary>
     /// What the player is doing right now, for the Audio preferences page to
-    /// print — and the only thing that page needed the entry point for.
+    /// print, and the only thing that page needed the entry point for.
     ///
     /// It read <c>Program.AudioOutputDiagnostic</c> and two neighbours directly,
     /// which sounds harmless and was not: <see cref="Program"/> owns
     /// <c>Main</c>, so a project that compiles it has an entry point of its own,
     /// and the self-test therefore could not include <see cref="SettingsForm"/>
-    /// at all. The largest hand-built window in the application — nine pages of
-    /// controls, every one of them constructed in code — had no test that it so
+    /// at all. The largest hand-built window in the application, nine pages of
+    /// controls, every one of them constructed in code, had no test that it so
     /// much as builds, while the two small dialogs beside it did.
     ///
     /// Three delegates and a fallback is the whole of the fix. Program fills
@@ -36,7 +36,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Never throws and never comes back empty. This is read while building
-        /// a dialog, and the player's state is owned by other threads — a
+        /// a dialog, and the player's state is owned by other threads, a
         /// diagnostic that took the Preferences window down with it would be the
         /// least useful failure in the application.
         /// </summary>

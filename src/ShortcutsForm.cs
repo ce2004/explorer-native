@@ -118,12 +118,12 @@ namespace ExplorerNative
             Info(page,
                 "A combination already claimed by another application cannot be registered, and the " +
                 "tray icon says which ones failed. The media keys work on their own, without Control " +
-                "or Alt — but taking Volume Up that way means it no longer changes the volume of " +
+                "or Alt, but taking Volume Up that way means it no longer changes the volume of " +
                 "Windows itself.");
 
             Info(page,
                 "A shortcut can also register cleanly and still never fire, if something with a " +
-                "keyboard hook takes it first — Control+Alt with the arrow keys is NVDA's table " +
+                "keyboard hook takes it first, Control+Alt with the arrow keys is NVDA's table " +
                 "navigation, and NVDA sees it before Windows does. Nothing can warn about that, so " +
                 "if a shortcut does nothing, that is why: pick different keys.");
 

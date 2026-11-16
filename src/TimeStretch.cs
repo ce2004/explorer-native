@@ -10,7 +10,7 @@ namespace ExplorerNative
     /// the player: resampling alone gives you a chipmunk or a drunk, and the
     /// speed keys are useless if the music changes key when you use them.
     ///
-    /// The method is WSOLA — overlap-add, with the overlap position chosen by
+    /// The method is WSOLA, overlap-add, with the overlap position chosen by
     /// similarity rather than fixed. Output is produced in hops of
     /// <see cref="Hop"/> frames; each hop consumes <c>Hop * Rate</c> frames of
     /// input, which is the whole of how the speed changes. The join between one
@@ -37,12 +37,12 @@ namespace ExplorerNative
     internal sealed class TimeStretch
     {
         /// <summary>
-        /// Output frames produced per pass — about 21ms at 48kHz.
+        /// Output frames produced per pass, about 21ms at 48kHz.
         ///
         /// It was 2048, which is 43ms, and that is long enough to hear. A hop is
         /// a piece of the recording repeated or skipped, and at 43ms the ear
         /// stops taking it as a change of tempo and starts taking it as a short
-        /// echo — the "flanged" or "underwater" quality that speeded-up speech
+        /// echo, the "flanged" or "underwater" quality that speeded-up speech
         /// gets. Half of that is under the ear's threshold for the same effect
         /// while still being long enough to correlate a low note against, which
         /// is the other constraint: a hop shorter than a bass period cannot find
@@ -56,7 +56,7 @@ namespace ExplorerNative
         /// All of it. This was a quarter of the hop, which means three quarters
         /// of every segment was butted straight on to the crossfade with no
         /// smoothing at all, and the discontinuity at that boundary is a click
-        /// at the hop rate — the exact artefact the search exists to avoid,
+        /// at the hop rate, the exact artefact the search exists to avoid,
         /// reintroduced a few hundred samples later. A 50 percent overlap is
         /// what WSOLA is normally written with, and it means every output sample
         /// is the sum of two windowed inputs rather than most of them being one
@@ -84,8 +84,8 @@ namespace ExplorerNative
         /// The crossfade shape, and the reason it is a table.
         ///
         /// A straight line was what this used before. Linear is the right
-        /// *gain* law for two correlated signals — which is what the search has
-        /// just gone to some trouble to produce — but its corners are not: the
+        /// *gain* law for two correlated signals, which is what the search has
+        /// just gone to some trouble to produce, but its corners are not: the
         /// slope changes instantly at both ends of the fade, and a discontinuity
         /// in the first derivative is heard, faintly, as the same periodic edge
         /// the fade was there to remove. A raised cosine has the same
@@ -109,7 +109,7 @@ namespace ExplorerNative
         /// How much of the overlap the similarity is measured over.
         ///
         /// The whole of it. It was a quarter, on the grounds that a join which
-        /// starts badly stays bad — which is true, and is also how a join gets
+        /// starts badly stays bad, which is true, and is also how a join gets
         /// chosen that is perfect for four milliseconds and wrong for the
         /// twenty after it. With the coarse pass below, correlating the whole
         /// overlap costs less than correlating a quarter of it did.
@@ -121,8 +121,8 @@ namespace ExplorerNative
         ///
         /// A normalised correlation over 1281 offsets and 1024 samples each is
         /// 1.3 million multiply-adds per 21ms of output, which is real work on a
-        /// laptop processor. The correlation surface is smooth at this scale —
-        /// it is a waveform against a copy of itself — so a pass every eighth
+        /// laptop processor. The correlation surface is smooth at this scale,
+        /// it is a waveform against a copy of itself, so a pass every eighth
         /// offset finds the right lobe, and a second pass either side of the
         /// winner finds the peak within it. Sixteen times less arithmetic for
         /// the same answer.
@@ -151,7 +151,7 @@ namespace ExplorerNative
         ///
         /// Mono rather than the first channel. Correlating channel zero alone is
         /// what the first version did, and on anything with a wide stereo image
-        /// — a guitar hard left, say — the search is aligning to whatever
+        /// a guitar hard left, say, the search is aligning to whatever
         /// happens to be on the left while the join is applied to both sides. A
         /// sum is what is actually being joined.
         /// </summary>
@@ -191,7 +191,7 @@ namespace ExplorerNative
         public Func<float[], int, int>? Source { get; set; }
 
         /// <summary>
-        /// Source frames held here — read from the file but not yet heard.
+        /// Source frames held here, read from the file but not yet heard.
         /// The position display has to subtract these or it runs ahead.
         /// </summary>
         public int HeldSourceFrames => _inFrames;
@@ -216,7 +216,7 @@ namespace ExplorerNative
         // milliseconds:
         //
         //   * going from normal speed to anything else, where the first hop
-        //     started Search frames into the input — also the first 13ms after
+        //     started Search frames into the input, also the first 13ms after
         //     every seek at a speed other than normal;
         //   * coming back to normal, where playback resumed from the front of
         //     the input rather than from where the last hop's tail leads;
@@ -243,14 +243,14 @@ namespace ExplorerNative
         private bool _plain = true;
 
         /// <summary>
-        /// The source has more to give after all — it was seeked back rather
+        /// The source has more to give after all, it was seeked back rather
         /// than being finished with.
         ///
         /// <see cref="_sourceDone"/> is a latch: once the source returns nothing
         /// this stops asking, which is right at the end of a track and wrong at
         /// the *loop* point of one. A gapless repeat turns the decoder round
         /// without stopping anything, so the stage above has to be told the well
-        /// is full again or it will never draw from it — the track goes silent
+        /// is full again or it will never draw from it, the track goes silent
         /// for ever, at the first repeat, and only when the stretcher is doing
         /// any work at all. At rate 1 it is a pass-through and never latches,
         /// which is why this only ever showed up after somebody moved the speed
@@ -258,10 +258,10 @@ namespace ExplorerNative
         ///
         /// Deliberately not <see cref="Reset"/>: what is held is the tail of the
         /// last hop, and letting it cross into the first hop of the new pass is
-        /// the join being seamless. Only the latch is cleared.
+        /// the join being gapless. Only the latch is cleared.
         /// </summary>
         /// <summary>
-        /// The source may have more after all — an empty read retried — without
+        /// The source may have more after all, an empty read retried, without
         /// having gone back anywhere: a skip still owed is still owed.
         /// </summary>
         public void SourceResumed() => _sourceDone = false;
@@ -287,7 +287,7 @@ namespace ExplorerNative
             int written = 0;
 
             // Anything already made, and at normal speed anything already read,
-            // comes out first — whatever the rate is now. Coming back to normal
+            // comes out first, whatever the rate is now. Coming back to normal
             // speed must not throw away a fifth of a second that has been read
             // and not yet heard: that is a gap in the music at the exact moment
             // a key was pressed.
@@ -353,7 +353,7 @@ namespace ExplorerNative
             return take;
         }
 
-        /// <summary>The tail of the last hop, played plainly on the way back to normal speed.</summary>
+        /// <summary>The tail of the last hop, played clearly on the way back to normal speed.</summary>
         private int TakeTail(float[] destination, int at, int frames)
         {
             int take = Math.Min(frames, Overlap - _tailTaken);
@@ -366,7 +366,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Hands over source frames read ahead but never stretched. Only correct
-        /// at rate 1 — anywhere else these are the stretcher's working input.
+        /// at rate 1, anywhere else these are the stretcher's working input.
         /// </summary>
         private int TakeHeld(float[] destination, int at, int frames)
         {
@@ -408,7 +408,7 @@ namespace ExplorerNative
 
             // A tail partly handed out at normal speed, and the speed changed
             // before the rest went: crossfading against the whole of it played
-            // again what had just been heard. The rest goes out plainly, the
+            // again what had just been heard. The rest goes out clearly, the
             // input is brought to just past it, and stretching starts afresh.
             if (_haveTail && _tailTaken > 0)
             {
@@ -446,7 +446,7 @@ namespace ExplorerNative
             if (_inFrames < needed)
             {
                 // The end of the track. What is left is too short to search
-                // within, so it is emitted plainly — but only as much of it as
+                // within, so it is emitted clearly, but only as much of it as
                 // the rate calls for. Emitting all of it would play the last
                 // fragment at normal speed however fast the track was set to,
                 // and at four times that is a sixth of a second of the ending
@@ -455,8 +455,8 @@ namespace ExplorerNative
                 // The tail first: it is what follows the last hop, and the
                 // leftover input is only right from the point just past it.
                 // Every way out of here leaves nothing to join to, so what
-                // comes next — a repeat's first hop, or the track after a
-                // momentary empty read — starts plainly. Left as it was, that
+                // comes next, a repeat's first hop, or the track after a
+                // momentary empty read, starts clearly. Left as it was, that
                 // first hop took the no-tail branch below, skipped its first
                 // stretch of input and butted the rest on with no fade.
                 if (_sourceDone && _haveTail)
@@ -486,7 +486,7 @@ namespace ExplorerNative
             }
 
             // Straight after plain playback, the first hop starts exactly where
-            // that left off — the front of the input — and nothing is faded.
+            // that left off, the front of the input, and nothing is faded.
             if (_plain)
             {
                 _plain = false;
@@ -526,7 +526,7 @@ namespace ExplorerNative
 
             // There is no "and the rest of the hop, straight through" any more,
             // and its absence is the point. Overlap is the whole hop, so every
-            // output sample is a crossfade of two windowed inputs — there is no
+            // output sample is a crossfade of two windowed inputs, there is no
             // raw stretch left anywhere with a seam at each end of it for a
             // click to come out of.
 
@@ -584,7 +584,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Where, within the search window, the input best continues what is
-        /// already playing — normalised, so a loud passage is not preferred to a
+        /// already playing, normalised, so a loud passage is not preferred to a
         /// well-matched quiet one.
         ///
         /// Two passes. The first walks the whole window every
@@ -592,7 +592,7 @@ namespace ExplorerNative
         /// walks every offset within one coarse step of the winner, at full
         /// resolution. The surface being searched is a waveform against a copy
         /// of itself, so it has no structure finer than the coarse step to be
-        /// missed by it — and the arithmetic is a sixteenth of what a single
+        /// missed by it, and the arithmetic is a sixteenth of what a single
         /// full-resolution pass would cost, which is what makes correlating the
         /// whole overlap affordable at all.
         /// </summary>

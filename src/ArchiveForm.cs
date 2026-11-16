@@ -15,8 +15,8 @@ namespace ExplorerNative
     /// The one question compressing has to ask: what to call it, what kind, and
     /// how hard to squeeze.
     ///
-    /// Three controls and no more. Everything else an archiver usually asks —
-    /// dictionary size, word size, solid block, split volumes, filters — is
+    /// Three controls and no more. Everything else an archiver usually asks,
+    /// dictionary size, word size, solid block, split volumes, filters, is
     /// either a number with one right answer or a number whose right answer is a
     /// property of the machine, and this codebase has a rule about both. The
     /// thread count is not here for exactly that reason: it is worked out from
@@ -24,7 +24,7 @@ namespace ExplorerNative
     /// good answer looked like.
     ///
     /// The name field comes first and is focused on the way in with the stem
-    /// selected, the same bargain renaming makes — type to replace the name, and
+    /// selected, the same bargain renaming makes, type to replace the name, and
     /// the extension stays. Changing the format rewrites that extension in place
     /// rather than leaving somebody with "photos.zip" that is a 7z, because a
     /// name that lies about its format is a file nothing will open by
@@ -50,11 +50,11 @@ namespace ExplorerNative
 
         /// <param name="singleFile">
         /// Whether the selection is exactly one *file*, which decides whether a
-        /// bare .gz is on the list — it holds one file and has nowhere to put a
+        /// bare .gz is on the list, it holds one file and has nowhere to put a
         /// second. Answered by the caller, on a worker: this used to be a
         /// File.Exists here, on the UI thread, in the constructor, so selecting
         /// something on a share that had gone quiet meant no dialog appeared at
-        /// all until the SMB timeout expired — not even a window to say that
+        /// all until the SMB timeout expired, not even a window to say that
         /// something was happening.
         /// </param>
         public ArchiveForm(string destinationFolder, IReadOnlyList<string> sources,
@@ -115,9 +115,9 @@ namespace ExplorerNative
             _level.AccessibleName = "Compression";
             _level.Items.AddRange(new object[]
             {
-                "Fastest — least time, largest file",
-                "Balanced — the usual answer",
-                "Smallest — most time, smallest file",
+                "Fastest, least time, largest file",
+                "Balanced, the usual answer",
+                "Smallest, most time, smallest file",
             });
             _level.SelectedIndex = (int)startLevel;
 
@@ -175,7 +175,7 @@ namespace ExplorerNative
         /// How a format reads in the list.
         ///
         /// The extension is in the label because it is the part somebody
-        /// recognises — "Zip" and ".zip" are the same word to most people and
+        /// recognises, "Zip" and ".zip" are the same word to most people and
         /// "Zstandard-compressed tar" is not obviously ".tar.zst" to anybody.
         /// </summary>
         private static string Label(ArchiveFormat format) => $"{format.Name} ({format.Extension})";
@@ -278,7 +278,7 @@ namespace ExplorerNative
 
             // Bounded, and awaited rather than waited on. This is the UI thread
             // of a modal dialog, and the folder being written into can be a share
-            // that has gone to sleep — blocking on the existence checks is the
+            // that has gone to sleep, blocking on the existence checks is the
             // window not answering with no way to tell why (it was a two second
             // freeze at worst; now the window keeps answering). If it does not come back in two seconds
             // the question is asked anyway: a "replace it?" about a file that

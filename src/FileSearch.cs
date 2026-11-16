@@ -20,8 +20,8 @@ namespace ExplorerNative
     /// <summary>
     /// Finding files by name, under a folder and everything below it.
     ///
-    /// The local half. Drive is searched through Google rather than by walking —
-    /// see <see cref="GoogleDrive.SearchAsync"/> — because walking a cloud folder
+    /// The local half. Drive is searched through Google rather than by walking,
+    /// see <see cref="GoogleDrive.SearchAsync"/>, because walking a cloud folder
     /// is one network listing per directory at about 1.3 seconds each, and a
     /// music library is hundreds of them.
     /// </summary>
@@ -48,7 +48,7 @@ namespace ExplorerNative
         /// not simply the folder that was searched.
         ///
         /// The name comes first and the location after it, which is the way round
-        /// that keeps type-ahead working — a row beginning with its folder means
+        /// that keeps type-ahead working, a row beginning with its folder means
         /// pressing L no longer jumps to the L files. It also reads as a sentence
         /// rather than a path: "Lovesick.flac, in 2019".
         /// </summary>
@@ -103,7 +103,7 @@ namespace ExplorerNative
             var query = SearchQuery.Parse(term);
 
             // An explicit stack rather than recursion. A deep tree is a stack
-            // overflow, which takes the process with it and cannot be caught —
+            // overflow, which takes the process with it and cannot be caught,
             // and this walks whatever folder somebody happened to be standing in.
             // Each folder carries its path below the root, already folded, so a
             // word can be found in the folders a file sits in ("tate greedy").
@@ -118,7 +118,7 @@ namespace ExplorerNative
 
                 // Each entry is looked at where the scan left it, and only a hit
                 // or a folder to go into is turned into strings. The walk used to
-                // make a FileInfo — an object and two strings — for every file in
+                // make a FileInfo, an object and two strings, for every file in
                 // the tree in order to read its name and throw it away.
                 //
                 // One folder at a time, deliberately. Reading the next few ahead
@@ -130,7 +130,7 @@ namespace ExplorerNative
                 IEnumerator<Found> walk;
                 try
                 {
-                    // Exact: a folder called "Backup." read plainly is "Backup",
+                    // Exact: a folder called "Backup." read clearly is "Backup",
                     // so the search listed the sibling's files under the wrong
                     // folder, or nothing at all. Paths come back plain (Look).
                     walk = new System.IO.Enumeration.FileSystemEnumerable<Found>(NameRules.ExactPath(folder),
@@ -296,7 +296,7 @@ namespace ExplorerNative
                     else without.Add(FoldName(token[1..]));
                     continue;
                 }
-                // Typed plainly, size>1mb and the like are about the item,
+                // Typed clearly, size>1mb and the like are about the item,
                 // not its name; one that does not parse is an ordinary word.
                 if (!quoted && facts.TryTake(token, now)) continue;
                 // Even quoted: no Windows name holds * or ?, so they can only

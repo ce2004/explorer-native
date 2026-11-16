@@ -15,7 +15,7 @@ namespace ExplorerNative
     /// raises the ToggleState change through WinForms' own provider, whose method
     /// is internal and found once by reflection: the public UiaRaise call returned
     /// S_OK and reached no client, and AccessibilityNotifyClients raised nothing.
-    /// If WinForms ever renames it, this box quietly behaves like a stock one.
+    /// If WinForms ever renames it, this box silently behaves like a stock one.
     ///
     /// Use it for every check box. If a later WinForms raises the event itself,
     /// each toggle would be said twice: check again after a .NET upgrade.

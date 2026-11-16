@@ -13,13 +13,13 @@ namespace ExplorerNative
     /// ShellExecute is not used for the normal path. It resolves the association
     /// through COM every time, and if the association carries a DelegateExecute
     /// handler that cannot load in this process, it spends hundreds of
-    /// milliseconds failing before it gives up — which is exactly what foobar's
+    /// milliseconds failing before it gives up, which is exactly what foobar's
     /// FLAC association does after a reinstall.
     ///
     /// Instead the handler's command line is read from the association database
     /// once per extension, cached, and launched with a direct CreateProcess. No
     /// COM, no verb resolution, no DelegateExecute, and no touching the file
-    /// itself — which also matters on a network share, where a stat is a round
+    /// itself, which also matters on a network share, where a stat is a round
     /// trip. ShellExecute remains the fallback for anything unresolvable.
     /// </summary>
     public static class FileLauncher
@@ -233,9 +233,9 @@ namespace ExplorerNative
         /// into the executable and the argument template, or null when it cannot
         /// be launched directly and the shell should be asked instead.
         ///
-        /// <paramref name="exists"/> is injected so the parsing — which has to
+        /// <paramref name="exists"/> is injected so the parsing, which has to
         /// consult the filesystem to find where an unquoted executable path ends
-        /// — can be tested against commands that are not installed here.
+        /// can be tested against commands that are not installed here.
         /// </summary>
         public static ParsedCommand? ParseRegisteredCommand(string? command, Func<string, bool> exists)
         {
@@ -281,7 +281,7 @@ namespace ExplorerNative
             // The environment variable has to be expanded before the split is
             // tested, not after: the registered command for text files has always
             // been "%SystemRoot%\system32\NOTEPAD.EXE %1", and %SystemRoot%\... is
-            // not a path that exists until it is expanded — so the search for
+            // not a path that exists until it is expanded, so the search for
             // where the executable ended walked straight past it and swallowed
             // the %1 into the executable name.
             if (!exists(exe)) return null;
@@ -290,7 +290,7 @@ namespace ExplorerNative
             rest = rest.Replace("%L", "%1").Replace("%l", "%1").Replace("%*", "");
             if (!rest.Contains("%1")) rest = string.IsNullOrEmpty(rest) ? "\"%1\"" : rest + " \"%1\"";
 
-            // Some handlers ask for things only the shell can supply — an ITEMIDLIST
+            // Some handlers ask for things only the shell can supply, an ITEMIDLIST
             // handle, the containing directory, a view object. Compressed folders
             // register "Explorer.exe /idlist,%I,%L", and %I is a handle to memory in
             // the calling process, not text. Substituting the path and hoping is how
@@ -300,8 +300,8 @@ namespace ExplorerNative
 
             // Quote the placeholder, always.
             //
-            // A registered command is free to write a bare %1 — Internet Explorer's
-            // html verb does, and Notepad's has for decades — because the shell
+            // A registered command is free to write a bare %1, Internet Explorer's
+            // html verb does, and Notepad's has for decades, because the shell
             // quotes what it substitutes. We build a command line by hand, so an
             // unquoted %1 became several arguments the moment a path contained a
             // space. Any existing quotes are stripped first so this cannot double

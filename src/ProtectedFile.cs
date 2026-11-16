@@ -7,8 +7,8 @@ using System.Text;
 namespace ExplorerNative
 {
     /// <summary>
-    /// Everything the application saves under AppData — settings (which hold
-    /// the Connect pairing code), the Google client file, the logs — is
+    /// Everything the application saves under AppData, settings (which hold
+    /// the Connect pairing code), the Google client file, the logs, is
     /// encrypted with DPAPI for the current Windows account. A copy of the
     /// folder is unreadable to another user or on another machine, and nothing
     /// in it can be read by opening it in Notepad.
@@ -115,8 +115,8 @@ namespace ExplorerNative
         /// Appends one encrypted line. Newlines inside it are kept, since the line is opaque.
         ///
         /// One write through a handle nobody else may write through, retried
-        /// for a moment when another writer — or <see cref="EncryptLogInPlace"/>
-        /// — has the file: two processes logging at once is normal, and a line
+        /// for a moment when another writer, or <see cref="EncryptLogInPlace"/>
+        /// has the file: two processes logging at once is normal, and a line
         /// dropped for that is a line missing from the one record that outlives
         /// the run.
         /// </summary>
@@ -209,8 +209,8 @@ namespace ExplorerNative
         /// <summary>A log's lines in the clear; older plain lines come through as they are.</summary>
         public static IEnumerable<string> ReadLog(string path)
         {
-            // A whole encrypted file — settings.json, or a copy of a damaged one
-            // kept beside it — rather than a log of encrypted lines.
+            // A whole encrypted file, settings.json, or a copy of a damaged one
+            // kept beside it, rather than a log of encrypted lines.
             var bytes = File.ReadAllBytes(path);
             if (IsProtected(bytes))
             {

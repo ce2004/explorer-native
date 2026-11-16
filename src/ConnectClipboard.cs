@@ -38,7 +38,7 @@ namespace ExplorerNative
     }
 
     /// <summary>
-    /// The PC clipboard, watched and written from one STA thread of its own — never the window's.
+    /// The PC clipboard, watched and written from one STA thread of its own, never the window's.
     ///
     /// Change comes from <c>AddClipboardFormatListener</c> on a message-only window that thread owns, so
     /// nothing polls: each <c>WM_CLIPBOARDUPDATE</c> bumps <c>seq</c> and marks the snapshot stale, and only

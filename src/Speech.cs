@@ -41,7 +41,7 @@ namespace ExplorerNative
         private static bool _shuttingDown;
 
         /// <summary>
-        /// A backlog longer than this can only ever be stale — the user has moved
+        /// A backlog longer than this can only ever be stale, the user has moved
         /// on several times over. Oldest entries are dropped, not newest, so what
         /// survives is what they are actually looking at now.
         /// </summary>
@@ -185,7 +185,7 @@ namespace ExplorerNative
             // The host unpacks native libraries to a directory of its own and
             // records it here. NativeLibrary.TryLoad given a bare name goes
             // through the ordinary OS search, which does not include that
-            // directory — so bundling the client produced a build that silently
+            // directory, so bundling the client produced a build that silently
             // could not speak, with the DLL sitting right there inside it.
             if (AppContext.GetData("NATIVE_DLL_SEARCH_DIRECTORIES") is string search)
             {
@@ -264,7 +264,7 @@ namespace ExplorerNative
         /// on a timer for the whole session; this one only ever reads a number
         /// that was about to be read anyway.
         ///
-        /// Raised on the speech pump thread — a subscriber that touches the UI
+        /// Raised on the speech pump thread, a subscriber that touches the UI
         /// has to marshal.
         /// </summary>
         public static event Action<string, string>? Notification;
@@ -316,7 +316,7 @@ namespace ExplorerNative
             {
                 if (_shuttingDown) return;
 
-                // An interrupting message supersedes everything still waiting —
+                // An interrupting message supersedes everything still waiting,
                 // that is what "interrupt" means, and it stops a fast arrow run
                 // from leaving a queue of announcements nobody wants any more.
                 if (interrupt) Pending.Clear();

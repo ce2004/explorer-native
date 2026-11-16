@@ -10,15 +10,15 @@ namespace ExplorerNative
     /// Ogg Vorbis and Ogg Opus, decoded in managed code because Windows will not
     /// decode them for us.
     ///
-    /// Both codecs are pure IL — Concentus is a managed port of libopus, NVorbis
-    /// is a managed Vorbis decoder — so there is no native binary, nothing per
+    /// Both codecs are pure IL, Concentus is a managed port of libopus, NVorbis
+    /// is a managed Vorbis decoder, so there is no native binary, nothing per
     /// architecture, and nothing that behaves differently on ARM64. Together
     /// they are about half a megabyte inside a 160MB executable.
     ///
     /// The work here is not the decoding, which those two do. It is everything
     /// around it: telling the two containers apart, matching the device's rate
     /// and channel count, and keeping a position that means the same thing as
-    /// <see cref="AudioDecoder"/>'s — because <see cref="WasapiPlayback"/> talks
+    /// <see cref="AudioDecoder"/>'s, because <see cref="WasapiPlayback"/> talks
     /// to whichever of them opened the file and must not be able to tell.
     /// </summary>
     internal sealed class OggDecoder : ITrackDecoder
@@ -26,7 +26,7 @@ namespace ExplorerNative
         /// <summary>
         /// Resampler quality, 0 to 10. Speex's own scale: 3 is telephony, 10 is
         /// mastering. Five is the middle and is inaudible against a Vorbis file
-        /// that is already lossy — and this runs on the pump thread, where the
+        /// that is already lossy, and this runs on the pump thread, where the
         /// budget is a network read, not arithmetic.
         /// </summary>
         private const int ResamplerQuality = 5;
@@ -35,13 +35,13 @@ namespace ExplorerNative
         /// How hard the sniff tries to read the head of the file before giving up
         /// and answering "cannot tell".
         ///
-        /// Twenty attempts fifty milliseconds apart — one second at the outside,
+        /// Twenty attempts fifty milliseconds apart, one second at the outside,
         /// against the fifteen the whole open is given. The head of a file is the
         /// first thing any download fetches and the part
         /// <see cref="AudioPrefetch"/> has already warmed, so this is waiting for
         /// something that is on its way rather than hoping. Getting it wrong the
         /// other way costs a fifteen-second timeout and a track that will not
-        /// play at all — see <see cref="Sniff"/>.
+        /// play at all, see <see cref="Sniff"/>.
         /// </summary>
         private const int SniffAttempts = 20;
         private const int SniffWaitMilliseconds = 50;
@@ -75,7 +75,7 @@ namespace ExplorerNative
         private double _positionBase;
 
         /// <summary>
-        /// Output frames still to be thrown away after a seek — the run-up the
+        /// Output frames still to be thrown away after a seek, the run-up the
         /// resampler is given so that what is heard starts clean. See
         /// <see cref="SeekTo"/>.
         /// </summary>
@@ -146,7 +146,7 @@ namespace ExplorerNative
                 // A positive identification is trusted and not second-guessed.
                 // What it read is the format's own statement about itself, so a
                 // stream that says Vorbis and will not open as Vorbis is a broken
-                // file — and handing it on to the Opus reader could only produce
+                // file, and handing it on to the Opus reader could only produce
                 // a second failure, since that reader wants an OpusHead first.
                 //
                 // Unknown keeps the order this has always had, so a sniff that
@@ -207,7 +207,7 @@ namespace ExplorerNative
         /// Opus at all, which is how this doubles as the sniff". Measured against
         /// Concentus 2.2.2 with a page carrying a Vorbis identification header:
         /// the reader constructs, `HasNextPacket` is **true**, and
-        /// `DecodeNextPacket` returns null — so every Vorbis file was claimed by
+        /// `DecodeNextPacket` returns null, so every Vorbis file was claimed by
         /// the Opus reader and decoded nothing.
         ///
         /// **And then the first fix was wrong in the other direction, which is
@@ -216,14 +216,14 @@ namespace ExplorerNative
         /// download: <see cref="StreamingSource.Read"/> returns *no bytes* when it
         /// has not reached that offset yet, `ReadExactly` turns that into an
         /// exception, and a genuine Opus file was therefore declared Vorbis and
-        /// handed to NVorbis — which walked a large remote container looking for
+        /// handed to NVorbis, which walked a large remote container looking for
         /// a Vorbis stream that was not there until the fifteen-second open
         /// budget ran out. "Could not play … it did not open in time."
         ///
         /// So there are three answers and not two, and **an unknown is never a
-        /// no**. A head that will not read is waited for — it is the first thing
+        /// no**. A head that will not read is waited for, it is the first thing
         /// any download fetches, so nothing is being asked for that is not on its
-        /// way — and if it still will not come, the answer is Unknown and the
+        /// way, and if it still will not come, the answer is Unknown and the
         /// order falls back to what it always was.
         /// </summary>
         private Container Sniff()
@@ -277,7 +277,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Fills as much of <paramref name="into"/> as the stream will give right
-        /// now. Zero is "nothing yet", not "end of file" — which is exactly the
+        /// now. Zero is "nothing yet", not "end of file", which is exactly the
         /// distinction the first version of the sniff got wrong.
         /// </summary>
         private static int ReadWhatThereIs(Stream source, byte[] into)
@@ -310,7 +310,7 @@ namespace ExplorerNative
         /// Vorbis is then whatever is left that NVorbis will accept.
         ///
         /// Read by <see cref="OggOpusReader"/>, which reads the head and the tail
-        /// of the file to open it and nothing in between — see there for what
+        /// of the file to open it and nothing in between, see there for what
         /// the library reader did instead on a twenty-hour recording.
         /// </summary>
         private bool OpenOpus()
@@ -358,11 +358,11 @@ namespace ExplorerNative
                 if (reader.Channels <= 0 || reader.SampleRate <= 0) { reader.Dispose(); return false; }
 
                 // One seek a sample in and back, so the packet provider learns
-                // where the stream starts before the length is read — see
+                // where the stream starts before the length is read, see
                 // OggVorbisPackets.EnsureBase. Cheap: the first page, twice.
                 //
-                // Two tries, not one. A stream that starts a little way in —
-                // too little to count as a late start — refuses the first seek,
+                // Two tries, not one. A stream that starts a little way in,
+                // too little to count as a late start, refuses the first seek,
                 // and the way back to the beginning sat in the same try and was
                 // skipped: the file opened and played nothing at all.
                 try { reader.SeekTo(1); } catch { }
@@ -384,7 +384,7 @@ namespace ExplorerNative
         /// <summary>
         /// Sets up the conversion from what the file is to what the device wants.
         ///
-        /// A resampler only when the rates really differ — Opus is 48kHz and so
+        /// A resampler only when the rates really differ, Opus is 48kHz and so
         /// is nearly every Windows mix format, so the common case builds nothing
         /// and converts nothing.
         /// </summary>
@@ -490,7 +490,7 @@ namespace ExplorerNative
 
             // Rate, then channels. Resampling first means the resampler works in
             // the file's own channel count, which is the layout it was built for
-            // — and it means a mono file is resampled once rather than twice
+            // and it means a mono file is resampled once rather than twice
             // after being duplicated into stereo.
             var atRate = Resample(_decoded, got, out int rateFrames);
             if (rateFrames <= 0) return true;
@@ -518,7 +518,7 @@ namespace ExplorerNative
                 // exited. A packet that cannot be decoded ends the track instead.
                 //
                 // The end is trimmed here, to the last page's granule position,
-                // rather than by NVorbis — see OggVorbisPackets.ReadPage for the
+                // rather than by NVorbis, see OggVorbisPackets.ReadPage for the
                 // damaged granule that made its own trim spin for ever.
                 long end = _vorbisEnd;
                 long at;
@@ -600,7 +600,7 @@ namespace ExplorerNative
         ///
         /// Mono to stereo duplicates, which is what makes a mono recording sit in
         /// the middle rather than in one ear. More channels than the device has
-        /// are folded down by averaging — crude against a proper downmix matrix,
+        /// are folded down by averaging, crude against a proper downmix matrix,
         /// and the alternative is dropping the centre channel of a surround file,
         /// which is where the dialogue is.
         /// </summary>
@@ -816,7 +816,7 @@ namespace ExplorerNative
         ///
         /// Both readers land exactly. What needs care is the resampler, when
         /// there is one: emptied at a seek, it starts from silence, and it lays
-        /// its output grid from the first sample it is given — so a seek that
+        /// its output grid from the first sample it is given, so a seek that
         /// hands it the target directly plays the first few milliseconds wrong,
         /// and everything after a fraction of a sample out from a straight
         /// decode. So the reader starts a little early, on a sample that is on
@@ -847,7 +847,7 @@ namespace ExplorerNative
                     }
 
                     // To the sample, which NVorbis does given a packet source
-                    // that keeps its side of the bargain — see
+                    // that keeps its side of the bargain, see
                     // OggVorbisPackets.SeekTo.
                     if (_vorbis != null)
                         _vorbis.SeekTo(start, SeekOrigin.Begin);

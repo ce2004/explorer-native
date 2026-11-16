@@ -1425,7 +1425,7 @@ namespace ExplorerNative
         /// <summary>
         /// A merge into a folder that already holds a 3GB file, through real
         /// robocopy. The file is sparse on both sides and identical, so robocopy
-        /// skips it and nothing is written — but its summary says 3GB, which is
+        /// skips it and nothing is written, but its summary says 3GB, which is
         /// what failed the copy. A second source is a second robocopy job, which
         /// never ran.
         /// </summary>
@@ -1515,8 +1515,8 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// A stream that cannot be copied — another program holds it here; on
-        /// FAT, exFAT or a NAS there is nowhere to put one — failed and deleted a
+        /// A stream that cannot be copied, another program holds it here; on
+        /// FAT, exFAT or a NAS there is nowhere to put one, failed and deleted a
         /// keep-both copy whose file had arrived whole.
         /// </summary>
         private static async Task StreamsBestEffortTests()
@@ -1859,7 +1859,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Reset keeps what makes the kept things work, and refuses while the
-        /// file cannot be read — which used to save defaults over it.
+        /// file cannot be read, which used to save defaults over it.
         /// </summary>
         private static void ResetTests()
         {
@@ -1943,7 +1943,7 @@ namespace ExplorerNative
 
     /// <summary>
     /// Folders whose name ends in a dot, away from the main window. Windows
-    /// strips the dot from an ordinary path, so "Backup." asked about plainly is
+    /// strips the dot from an ordinary path, so "Backup." asked about clearly is
     /// "Backup": a shortcut made inside it landed in the sibling (or nowhere),
     /// an archive with no telling extension in it was not recognised, Compress
     /// and Extract could not write into it, and its size came out as nothing.
@@ -2176,7 +2176,7 @@ namespace ExplorerNative
         /// <summary>A folder has no extension, so "Backup." compressed is "Backup..zip", not "Backup.zip".</summary>
         private static void SuggestedName(string root)
         {
-            // No sibling "Solo": asked plainly, the folder is not there and was
+            // No sibling "Solo": asked clearly, the folder is not there and was
             // taken for a file, whose "extension" (the dot) was stripped.
             var solo = Path.Combine(root, "Solo.");
             Directory.CreateDirectory(NameRules.ExactPath(solo));
@@ -2735,7 +2735,7 @@ namespace ExplorerNative
         /// <summary>
         /// Fill gaps, cancelled twice, then run to the end. The second cancel lands
         /// in a folder that already existed, which the cleanup used to leave
-        /// alone — so its half-written file stayed, dated now, and every later
+        /// alone, so its half-written file stayed, dated now, and every later
         /// Fill gaps excluded it as "newer" for ever while reporting success.
         /// </summary>
         private static async Task FillGapsResumeTests()
@@ -3215,7 +3215,7 @@ namespace ExplorerNative
             /// <summary>
         /// A move is renamed only off the Drive letter. A rename inside the sync
         /// root is local and the account never hears of it, so either end being
-        /// on the letter — or the source being a cloud copy at all — must go the
+        /// on the letter, or the source being a cloud copy at all, must go the
         /// ordinary way.
         /// </summary>
         private static async Task NoRenameOnTheLetterTests()
@@ -3445,7 +3445,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Fill gaps through the managed engine — the one the Ask dialog's "Fill
+        /// Fill gaps through the managed engine, the one the Ask dialog's "Fill
         /// gaps" answer reaches, and any paste the window hands it. It fell into
         /// keep both and made "F (2)" with everything copied a second time.
         /// </summary>
@@ -3496,8 +3496,8 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// A folder moved file by file — here because the destination already
-        /// has one of its name — with a junction inside. The walk skipped the
+        /// A folder moved file by file, here because the destination already
+        /// has one of its name, with a junction inside. The walk skipped the
         /// junction and nothing after it looked, so the move left it in the
         /// source and said "Move complete".
         /// </summary>

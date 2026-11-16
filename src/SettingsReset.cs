@@ -40,7 +40,7 @@ namespace ExplorerNative
         /// Why a reset cannot happen now, or null when it can.
         ///
         /// While settings.json cannot be read, what this session holds are
-        /// defaults standing in for the file — no pairing code, no sync pairs.
+        /// defaults standing in for the file, no pairing code, no sync pairs.
         /// A reset built from those and saved wrote them over the real file,
         /// wiping the very things the question promised to keep; and since a
         /// reset carries no "unreadable" mark, the retry that would have merged

@@ -158,7 +158,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// What is said when Apple stops taking the media-user-token. The
-        /// cookies.txt sign-in lasts months, then quietly stops working, and
+        /// cookies.txt sign-in lasts months, then silently stops working, and
         /// every list and play failed with a sentence that did not say why.
         /// </summary>
         public const string ExpiredSentence =

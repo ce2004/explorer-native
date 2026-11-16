@@ -510,7 +510,7 @@ namespace ExplorerNative
             AddCheck(panel, "Interrupt current speech for new announcements", _working.InterruptSpeech, v => _working.InterruptSpeech = v);
             AddInfo(panel,
                 "Position in the list (\"69 of 2170\") is announced by NVDA itself, at the end of the row. " +
-                "This app deliberately does not announce it too — doing so only ever produced an echo. " +
+                "This app deliberately does not announce it too, doing so only ever produced an echo. " +
                 "Control it in NVDA: Preferences, Settings, Object Presentation, \"Report object position information\".");
 
             // The whole catalogue, one message at a time. It is the only place a
@@ -528,8 +528,8 @@ namespace ExplorerNative
             });
 
             AddInfo(panel,
-                $"Every message this application can produce — {total} of them across " +
-                $"{Notifications.Categories.Count} categories — with a choice for each of whether it " +
+                $"Every message this application can produce, {total} of them across " +
+                $"{Notifications.Categories.Count} categories, with a choice for each of whether it " +
                 "is spoken. Everything is written to the status bar either way; that costs nothing " +
                 "and interrupts nobody, so it is not a setting.");
 
@@ -540,7 +540,7 @@ namespace ExplorerNative
                 "went wrong, is on.");
 
             AddInfo(panel,
-                "Each one has a Preview button, and it says the message whatever the setting is — " +
+                "Each one has a Preview button, and it says the message whatever the setting is, " +
                 "including when the setting is off, because a preview that refuses to demonstrate the " +
                 "thing you are configuring is a broken button. Half of these only happen when " +
                 "something has gone wrong, and a setting you cannot check without breaking something " +
@@ -599,7 +599,7 @@ namespace ExplorerNative
                 v => _working.TypeAheadMilliseconds = v);
             AddInfo(panel,
                 "Typing letters jumps to the first matching name. Letters typed within this threshold " +
-                "build one word — \"s\", \"y\", \"s\" becomes \"sys\" — and a longer gap starts again. " +
+                "build one word, \"s\", \"y\", \"s\" becomes \"sys\", and a longer gap starts again. " +
                 "Raise it if letters typed as a word are being treated separately; lower it if a single " +
                 "letter feels slow to act on its own.");
             AddCheck(panel, "Confirm before deleting", _working.ConfirmDelete, v => _working.ConfirmDelete = v);
@@ -655,14 +655,14 @@ namespace ExplorerNative
             var keys = new List<uint>();
 
             // No key at all is a choice of its own. Shown as E, an unset shortcut
-            // either turned itself on at the next OK or — guarded — could never
+            // either turned itself on at the next OK or, guarded, could never
             // be set to E on purpose.
             keyBox.Items.Add("(none)");
             keys.Add(0);
             for (char c = 'A'; c <= 'Z'; c++) { keyBox.Items.Add(c.ToString()); keys.Add((uint)(Keys)c); }
             for (int f = 1; f <= 12; f++) { keyBox.Items.Add("F" + f); keys.Add((uint)(Keys.F1 + f - 1)); }
 
-            // A key the list does not offer — a digit, set in the file by hand —
+            // A key the list does not offer, a digit, set in the file by hand,
             // is added rather than replaced. Falling back to the first entry
             // meant pressing OK on any page of this dialog changed the window's
             // shortcut to A without anybody touching it.
@@ -717,7 +717,7 @@ namespace ExplorerNative
                 string? refusal = null;
 
                 // This page builds a combination out of four tick boxes and a
-                // list, so it can produce Ctrl+C as easily as Ctrl+Alt+E — and
+                // list, so it can produce Ctrl+C as easily as Ctrl+Alt+E, and
                 // this one is registered globally like the audio shortcuts are.
                 // Taking Ctrl+C machine-wide would stop copying working
                 // everywhere, so the old setting is kept and the reason said.
@@ -801,7 +801,7 @@ namespace ExplorerNative
             // This said the opposite until the scope changed under it: "nothing
             // this application does can change or delete anything in your Drive".
             // Copy, move and delete were added, the scope became full Drive
-            // access, and the sentence stayed — telling somebody their files were
+            // access, and the sentence stayed, telling somebody their files were
             // safe on a page whose Delete key now reaches the account.
             AddInfo(panel,
                 "This can change your Drive. Google Drive is a real drive: anything any program saves, " +
@@ -825,7 +825,7 @@ namespace ExplorerNative
         /// JSON file.
         ///
         /// The page used to say "sign-in needs a client_secret.json from your
-        /// own Google Cloud project" and name a folder — which is an accurate
+        /// own Google Cloud project" and name a folder, which is an accurate
         /// instruction and a hopeless one for anybody who was handed this
         /// application. So the file is a button now: Choose credentials file
         /// takes the JSON exactly as the Cloud console downloads it, checks it
@@ -834,7 +834,7 @@ namespace ExplorerNative
         ///
         /// Signing in is deliberately *not* done from here. It opens a browser
         /// and waits on consent, which is a thing to do from the main window
-        /// with the drive being mounted around it — so the button closes
+        /// with the drive being mounted around it, so the button closes
         /// Preferences and hands the job to the tray, which is what the tick box
         /// at the top of this page does too. Signing out is local and instant,
         /// so it happens here.
@@ -938,8 +938,8 @@ namespace ExplorerNative
 
                 // Closing with OK means the caller saves and says "Preferences
                 // saved", so this has to do what OK does before it leaves.
-                // Without it every other change on every other page — the font
-                // size, a column, a shortcut — was quietly discarded by a button
+                // Without it every other change on every other page, the font
+                // size, a column, a shortcut, was silently discarded by a button
                 // that says it connects a drive.
                 driveBox.Checked = true;
                 foreach (var apply in _applies) apply();
@@ -987,7 +987,7 @@ namespace ExplorerNative
                 bool gone = GoogleDrive.ForgetSignIn();
 
                 // The box, not the field: OK applies from the box, so setting
-                // the field alone was undone by pressing OK — signing out and
+                // the field alone was undone by pressing OK, signing out and
                 // then saving left Drive switched on, and the next mount opened
                 // the browser for a new sign-in rather than leaving the drive
                 // away as the message promises.
@@ -1157,7 +1157,7 @@ namespace ExplorerNative
             AddInfo(panel,
                 $"{AudioActions.All.Count} actions, each with its own global shortcut. They open in their own window " +
                 "rather than filling this page, and a combination already used by another action is " +
-                "refused there rather than quietly taking it over.");
+                "refused there rather than silently taking it over.");
 
             AddInfo(panel,
                 "Enter always starts a track from the beginning. There is no resuming from where " +
@@ -1184,7 +1184,7 @@ namespace ExplorerNative
                 "Music on a network drive is slow to start and slow to skip through, and it is the " +
                 "round trips rather than the bytes. Reading ahead from the selected file makes " +
                 "pressing Enter quicker; zero turns it off. A track on a network drive is also " +
-                "downloaded into memory as it plays, which is what makes skipping instant — anything " +
+                "downloaded into memory as it plays, which is what makes skipping instant, anything " +
                 "already fetched costs nothing to jump into, and anything not yet reached is read " +
                 "straight from the share. Only one track is held at a time and starting another " +
                 "releases the last. Zero minutes keeps a paused track in memory for ever.");
@@ -1194,7 +1194,7 @@ namespace ExplorerNative
             AddInfo(panel, "Playing through: " + AudioReport.OutputText);
 
             // Only when it has something to say. "Media engine: not started" sat
-            // here for a while after the media engine stopped existing — a label
+            // here for a while after the media engine stopped existing, a label
             // naming a thing that is gone, reporting a state that means nothing,
             // directly above the line that actually answers the question.
             var problem = AudioReport.ProblemText;
@@ -1214,7 +1214,7 @@ namespace ExplorerNative
         ///
         /// The switch used to be here and the four things that shape it were on
         /// the menu, which meant one effect with two homes and a rule connecting
-        /// them — the menu entry appeared only while the tick box was ticked, so
+        /// them, the menu entry appeared only while the tick box was ticked, so
         /// finding the controls meant knowing that a preferences page you were
         /// not on governed whether a menu entry existed. Every one of those
         /// controls has to be judged by ear against music that is playing, and
@@ -1230,20 +1230,20 @@ namespace ExplorerNative
             AddInfo(panel,
                 "The limiter lifts whatever is quiet at that moment up towards full scale, so the " +
                 "things living thirty or forty decibels under the music come up where they can be " +
-                "heard — room tone, reverb tails, the breath before a line, the second guitar in " +
+                "heard, room tone, reverb tails, the breath before a line, the second guitar in " +
                 "the far corner of the mix. Loud passages are left exactly where the volume put " +
                 "them, clipping included: protecting the peaks would flatten the difference it " +
                 "exists to open up.");
 
             AddInfo(panel,
                 "Normally it does nothing at or below 100 percent volume. Above that the lift it is " +
-                "allowed grows with the square of the volume — at 200 percent it is a leveller, and " +
+                "allowed grows with the square of the volume, at 200 percent it is a leveller, and " +
                 "at 800 it is a different recording. \"Same lift at any volume\" is what makes it " +
                 "work below 100 as well, and that is the setting for listening into a recording " +
                 "rather than for making one loud.");
 
             AddInfo(panel,
-                "All of it is on the Audio menu, under \"Limiter…\" — the switch, the attack, the " +
+                "All of it is on the Audio menu, under \"Limiter…\", the switch, the attack, the " +
                 "release, the ceiling and that last option. The twenty-band equaliser is beside it " +
                 "under \"Equaliser…\". Neither is here, because every control in both of them " +
                 "changes the sound as you arrow onto it, and none of them means anything except " +
@@ -1252,7 +1252,7 @@ namespace ExplorerNative
             // The meter, which existed from the first version of the renderer
             // and was never once asked a question. Peak and clipping were both
             // measured on every buffer, by a player whose whole reason for
-            // owning the render loop was to be able to answer "is it clipping" —
+            // owning the render loop was to be able to answer "is it clipping",
             // and there was nowhere at all that the answer came out.
             AddInfo(panel, "Right now: " + AudioReport.LevelText);
         }
@@ -1269,7 +1269,7 @@ namespace ExplorerNative
                 v => _working.AudioFadeOutMilliseconds = v);
             AddInfo(panel,
                 "Fading in applies when a track starts and when it resumes; fading out happens before " +
-                "a pause actually takes effect. Zero for neither. Stop never fades — stop means stop.");
+                "a pause actually takes effect. Zero for neither. Stop never fades, stop means stop.");
 
             AddInfo(panel,
                 "This is the player's own volume and nothing else's. It does not touch the Windows " +
@@ -1289,7 +1289,7 @@ namespace ExplorerNative
                 _working.AudioAnnounceUsesTitleTag, v => _working.AudioAnnounceUsesTitleTag = v);
             AddInfo(panel,
                 "Reads the tag in the background, so a file with no tags or one on a slow share costs " +
-                "nothing — the file name is used until a title turns up, and stays if none does.");
+                "nothing, the file name is used until a title turns up, and stays if none does.");
         }
 
         /// <summary>
@@ -2269,13 +2269,13 @@ namespace ExplorerNative
                 var answer = MessageBox.Show(this,
                     "Double-clicking a folder and opening a drive will open Explorer Native " +
                     "from now on.\n\n" +
-                    "Windows+E is not affected — Windows handles that shortcut inside the shell " +
+                    "Windows+E is not affected, Windows handles that shortcut inside the shell " +
                     "itself, and taking it over breaks ordinary navigation elsewhere. Use this " +
                     "application's own hotkey instead (Preferences, Hotkey).\n\n" +
                     "A copy of the application is installed to\n" + AppInstall.Directory +
                     "\nand that is the copy Windows will open folders with, so rebuilding or moving " +
                     "the original does not break anything.\n\n" +
-                    "The desktop, taskbar and Start menu still belong to Windows Explorer — those " +
+                    "The desktop, taskbar and Start menu still belong to Windows Explorer, those " +
                     "cannot be replaced safely and are left alone.\n\n" +
                     "Everything is written under your own user account only, and unticking this box " +
                     "puts it all back. Go ahead?",
@@ -2323,7 +2323,7 @@ namespace ExplorerNative
         /// A number, as a list of the numbers that are allowed.
         ///
         /// Not a spin box. A spin box is an edit field with arrows on it, so it
-        /// can be typed into — and what gets typed is not always a number, is not
+        /// can be typed into, and what gets typed is not always a number, is not
         /// always in range, and on the way to being either it passes through
         /// states like empty and "-" that the rest of the application then has to
         /// survive. A drop-down list cannot hold a value that was never offered.
@@ -2387,8 +2387,8 @@ namespace ExplorerNative
 
         // The ladder itself is SettingChoices.Between, in a file of its own. It
         // lived here as a private helper, which meant the one part of this
-        // dialog that is pure arithmetic — and the part that decides whether any
-        // of its controls are usable at all — was the part with no test on it,
+        // dialog that is pure arithmetic, and the part that decides whether any
+        // of its controls are usable at all, was the part with no test on it,
         // because this file needs a message loop and is not compiled into the
         // suite. It was wrong for a long time; see that file for how.
 

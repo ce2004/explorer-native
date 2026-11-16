@@ -9,8 +9,8 @@ namespace ExplorerNative
     /// nothing could see. It lived as a private helper inside
     /// <see cref="SettingsForm"/>, which needs a message loop and is not
     /// compiled into the self-test at all, so the one part of that dialog that
-    /// is pure arithmetic — and the part that decides whether any of its
-    /// controls are usable — was the part with no test on it.
+    /// is pure arithmetic, and the part that decides whether any of its
+    /// controls are usable, was the part with no test on it.
     ///
     /// <para>
     /// What it got wrong: the step was worked out from how *wide* the range was
@@ -18,8 +18,8 @@ namespace ExplorerNative
     /// paused (minutes)" runs 0 to 1440, so the step came out at 100 and the
     /// list was 0, 100, 200 … 1400, with the saved value of ten inserted as a
     /// one-off in the middle. From a default of ten minutes the only reachable
-    /// settings were ten and a hundred: five, fifteen, twenty and thirty — every
-    /// figure anybody would actually choose — could not be expressed, and one
+    /// settings were ten and a hundred: five, fifteen, twenty and thirty, every
+    /// figure anybody would actually choose, could not be expressed, and one
     /// press of the down arrow went from ten minutes to an hour and forty.
     /// "Skip by (seconds)" was 1, 10, 25, 50; most of the rest were the same.
     /// </para>
@@ -28,7 +28,7 @@ namespace ExplorerNative
     /// Round numbers are round at their own magnitude. Nobody wants 325 minutes
     /// and everybody wants 15, so the step grows with the *value* rather than
     /// with the span. The lists come out longer and every entry in one is a
-    /// number a person would pick, which is the trade worth making — these are
+    /// number a person would pick, which is the trade worth making, these are
     /// drop-down lists, so a typed digit jumps straight into them.
     /// </para>
     /// </summary>

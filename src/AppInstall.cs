@@ -26,7 +26,7 @@ namespace ExplorerNative
     ///
     /// It used to, and that was the whole of what went wrong. Windows will not
     /// let a running image be *overwritten*, so the install asked the live
-    /// instance to stand down and then copied over it — which made a file copy
+    /// instance to stand down and then copied over it, which made a file copy
     /// depend on inter-process co-operation, and therefore on the one thing that
     /// had already failed. Four instances were running with no single-instance
     /// pipe server between them; the install asked the pipe, got no answer, read
@@ -35,21 +35,21 @@ namespace ExplorerNative
     /// so the caller waited three minutes and learned nothing.
     ///
     /// Windows will not let a running image be overwritten. It will happily let
-    /// one be **renamed** — measured, not assumed: a process keeps running
+    /// one be **renamed**, measured, not assumed: a process keeps running
     /// perfectly after its own executable is moved aside, because the mapping
     /// follows the file rather than the name. So the new build is staged beside
     /// the old one, the old one is renamed out of the way, and the new one is
     /// renamed into its place. Nothing has to close and nothing has to answer a
     /// pipe. There is a window between the two renames in which the path names
-    /// nothing — a folder opened in that instant opens nothing — but it is two
+    /// nothing, a folder opened in that instant opens nothing, but it is two
     /// renames of files already on the volume, and the alternative is a copy
     /// that cannot happen at all while the application is running. If the second
     /// rename fails the first is put back.
     ///
     /// What a running instance keeps is the *old* binary, which is correct and
     /// is what every updater on this platform does: it carries on out of the file
-    /// that has been renamed, and the next launch — the next folder anybody
-    /// opens — gets the new one. See <see cref="InstallResult.RunningCopyIsStale"/>,
+    /// that has been renamed, and the next launch, the next folder anybody
+    /// opens, gets the new one. See <see cref="InstallResult.RunningCopyIsStale"/>,
     /// which is how the caller knows to say so rather than implying otherwise.
     /// </summary>
     public static class AppInstall
@@ -120,7 +120,7 @@ namespace ExplorerNative
         /// <param name="Hash">
         /// SHA-256 of the executable now at <paramref name="ExePath"/>, read back
         /// off the disk after the install rather than carried over from the copy.
-        /// The old procedure had a step 5 that said "prove it, by hash — the
+        /// The old procedure had a step 5 that said "prove it, by hash, the
         /// dialog not complaining is not proof"; a tool that can prove its own
         /// work should not leave that to whoever remembers to do it.
         /// </param>
@@ -133,7 +133,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Copies this build into the install directory, replacing whatever is
-        /// there — running or not. Returns what happened rather than throwing,
+        /// there, running or not. Returns what happened rather than throwing,
         /// because every caller has somebody to tell.
         /// </summary>
         public static InstallResult Install()
@@ -148,7 +148,7 @@ namespace ExplorerNative
 
                 // Anything a previous install had to rename aside. Done first, so
                 // a machine that has been updated twenty times is not carrying
-                // twenty copies of a hundred and sixty megabytes — and done
+                // twenty copies of a hundred and sixty megabytes, and done
                 // best-effort, because the one belonging to a process that is
                 // still running cannot go yet and is not a failure.
                 SweepRetired();
@@ -215,9 +215,9 @@ namespace ExplorerNative
         ///
         /// Internal rather than private so the suite can point it at a temporary
         /// folder and a process of its own. This is the one piece of the install
-        /// that had to be *measured* rather than reasoned about — Windows
+        /// that had to be *measured* rather than reasoned about, Windows
         /// refusing an overwrite and allowing a rename of the same running file
-        /// is not something the type system knows — so it is also the one piece
+        /// is not something the type system knows, so it is also the one piece
         /// that must be exercised against a real running executable rather than
         /// against a file with a handle open on it, which behaves differently.
         /// </summary>
@@ -228,8 +228,8 @@ namespace ExplorerNative
             var retired = target + RetiredMarker + stamp;
 
             // Always written beside the target first, never straight over it. A
-            // copy over the live file that stops part way — a full disk, a
-            // cancelled session — left the registered handler of every folder on
+            // copy over the live file that stops part way, a full disk, a
+            // cancelled session, left the registered handler of every folder on
             // the machine as half an executable, and a folder opened during the
             // copy started one.
             File.Copy(source, staged, overwrite: true);
@@ -281,7 +281,7 @@ namespace ExplorerNative
         /// Best-effort by design: the one a live process is still executing
         /// cannot be deleted until that process exits, which is exactly the
         /// normal case straight after an update. It goes on the next sweep
-        /// instead — which is why this runs at startup as well as at install
+        /// instead, which is why this runs at startup as well as at install
         /// time, since by then whatever was holding it has usually gone.
         /// </summary>
         public static int SweepRetired() => SweepRetired(Directory);
@@ -381,7 +381,7 @@ namespace ExplorerNative
         ///
         /// The copy alone only ever adds, so installing a single-file build over
         /// the older multi-file one left its DLLs, deps.json and runtime config
-        /// sitting beside the new executable — dead weight that looks like part
+        /// sitting beside the new executable, dead weight that looks like part
         /// of the application and would be loaded in preference to what is inside
         /// it if the layout ever changed back.
         /// </summary>
@@ -412,7 +412,7 @@ namespace ExplorerNative
         ///
         /// A single-file build is exactly one: everything else is inside it. A
         /// build that is not single-file is its executable plus the libraries and
-        /// runtime files the build put beside it — named for what they are, so a
+        /// runtime files the build put beside it, named for what they are, so a
         /// text file or a download that happens to share the folder is not
         /// mistaken for part of the program.
         /// </summary>
@@ -467,7 +467,7 @@ namespace ExplorerNative
         ///
         /// Asked of the filesystem rather than of the process list, because the
         /// question is "can this file be written", which is the thing that
-        /// actually decides what the install has to do — and because a process
+        /// actually decides what the install has to do, and because a process
         /// list can be answered "no" by a copy that is running under another
         /// name.
         /// </summary>

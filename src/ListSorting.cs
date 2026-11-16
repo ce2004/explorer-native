@@ -37,7 +37,7 @@ namespace ExplorerNative
         /// <summary>
         /// Gives each row the key its name sorts by, so the sort compares bytes
         /// instead of calling into Windows n log n times. Rows that already have
-        /// one — a progressive load keyed them batch by batch — keep it. Spread
+        /// one, a progressive load keyed them batch by batch, keep it. Spread
         /// over the cores for a big folder; this runs on a worker, apart from
         /// search results, which stop at ten thousand.
         /// </summary>
@@ -87,7 +87,7 @@ namespace ExplorerNative
         /// <summary>
         /// The whole order as one comparison: folders first when asked, then the
         /// column, then the direction. Total, because every column falls back to
-        /// the name and the name to the path — which is what lets a progressive
+        /// the name and the name to the path, which is what lets a progressive
         /// load sort each batch on the worker and merge it into what is already
         /// shown, instead of re-sorting everything on the UI thread every tick.
         /// </summary>
@@ -106,7 +106,7 @@ namespace ExplorerNative
         /// A short sorted batch merged into a long sorted list: each new entry's
         /// place is found by binary search from the last one's, and the rows in
         /// between are copied without being compared. That is m log n
-        /// comparisons rather than n + m — which matters because a logical name
+        /// comparisons rather than n + m, which matters because a logical name
         /// comparison is a call into Windows, and a plain merge of 100,000 rows
         /// spent 80ms of the UI thread on one tick doing them.
         /// </summary>

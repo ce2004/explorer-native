@@ -10,7 +10,7 @@ namespace ExplorerNative
     /// One playback device, as something to choose from a list.
     ///
     /// The id is what gets remembered and the name is what a person picks from.
-    /// Not the other way round: names are neither unique nor stable — two
+    /// Not the other way round: names are neither unique nor stable, two
     /// identical headsets give the same string, and a driver update rewrites it.
     /// </summary>
     public readonly record struct AudioDevice(string Id, string Name);
@@ -19,7 +19,7 @@ namespace ExplorerNative
     /// Audio out, through WASAPI, with the samples in our hands.
     ///
     /// The media engine renders for itself and offers exactly one hook into its
-    /// audio path — an MFT — and on this machine the pipeline never pulls output
+    /// audio path, an MFT, and on this machine the pipeline never pulls output
     /// back out of one, so the player is silent whenever the gain transform is
     /// inserted. That is the immediate reason this exists. The larger reason is
     /// that owning the render loop is the only way to reach any of the things
@@ -34,7 +34,7 @@ namespace ExplorerNative
     ///
     /// <para>
     /// It is also the only shape of this that can be tested. Media Foundation
-    /// uses hardware offload here, which bypasses the software mixer entirely —
+    /// uses hardware offload here, which bypasses the software mixer entirely,
     /// a WASAPI loopback capture reads silence while the player is at full scale,
     /// and every audio test in the suite plays a generated *silent* WAV, so a
     /// render path that emitted nothing at all looked exactly like one that
@@ -111,7 +111,7 @@ namespace ExplorerNative
         /// one opened through ActivateAudioInterfaceAsync is moved by Windows. So
         /// "follow the system default" followed it only when the old device went
         /// away, and headphones that became the default while the speakers stayed
-        /// plugged in played nothing — the music stayed on the speakers.
+        /// plugged in played nothing, the music stayed on the speakers.
         /// </summary>
         public static event Action<string>? DefaultDeviceChanged
         {
@@ -151,7 +151,7 @@ namespace ExplorerNative
 
             // From a multithreaded apartment: from the window's thread the
             // callback would be marshalled through a message loop that is not
-            // always pumping. Directly when already on one — a play runs on the
+            // always pumping. Directly when already on one, a play runs on the
             // thread pool, and blocking a pool thread on a pool task is a wait
             // that grows with how busy the pool is.
             try
@@ -224,7 +224,7 @@ namespace ExplorerNative
         private const uint DeviceStateActive = 1;
         private const ushort VtLpwstr = 31;
 
-        /// <summary>PKEY_Device_FriendlyName — "Speakers (Realtek Audio)".</summary>
+        /// <summary>PKEY_Device_FriendlyName, "Speakers (Realtek Audio)".</summary>
         private static PropertyKey FriendlyName = new()
         {
             FormatId = new Guid("A45C254E-DF1C-4EFD-8020-67D146A850E0"),
@@ -252,7 +252,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// The only reason this is here is <see cref="SetClientProperties"/>, and
-        /// through it AUDCLNT_STREAMOPTIONS_RAW — the stream option that takes the
+        /// through it AUDCLNT_STREAMOPTIONS_RAW, the stream option that takes the
         /// system effects out of the way without taking the device.
         ///
         /// All twelve of IAudioClient's methods are written out again rather than
@@ -383,7 +383,7 @@ namespace ExplorerNative
         /// Every playback device that is plugged in and switched on.
         ///
         /// Ids rather than names for the choosing, because names are neither
-        /// unique nor stable — two identical headsets give the same string, and
+        /// unique nor stable, two identical headsets give the same string, and
         /// a driver update rewrites it. The name is what a person picks from and
         /// the id is what gets remembered.
         /// </summary>
@@ -487,7 +487,7 @@ namespace ExplorerNative
         public event Action? Drained;
 
         /// <summary>
-        /// The endpoint has gone — unplugged, disabled, or no longer the default
+        /// The endpoint has gone, unplugged, disabled, or no longer the default
         /// it was opened as. Raised once, on the thread pool.
         ///
         /// Before this, the render loop went on timing out every two seconds
@@ -556,7 +556,7 @@ namespace ExplorerNative
         /// <summary>
         /// What proportion of the audio is over the top, as a percentage.
         ///
-        /// The count on its own answers nothing — a million clipped samples is
+        /// The count on its own answers nothing, a million clipped samples is
         /// either a badly overdriven track or four seconds out of an hour, and
         /// which of those it is decides whether anything is wrong. This is the
         /// number that can be said out loud.
@@ -574,7 +574,7 @@ namespace ExplorerNative
         /// Starts the count again, at the start of a track.
         ///
         /// It never used to be reset, so the figure was "since this process
-        /// started" — which for an application the shell launches on every
+        /// started", which for an application the shell launches on every
         /// folder open is a number about a track nobody remembers playing.
         /// </summary>
         public void ResetClipping()
@@ -603,8 +603,8 @@ namespace ExplorerNative
         /// The limiter: lift whatever is quiet, and leave the loud alone.
         ///
         /// This is not a peak limiter and does not stop anything clipping. It is
-        /// the other half of the same idea — an upward compressor with a very
-        /// high ceiling on how much lift it is allowed — and what it does is
+        /// the other half of the same idea, an upward compressor with a very
+        /// high ceiling on how much lift it is allowed, and what it does is
         /// take the parts of a track that sit thirty or forty decibels under the
         /// music and push them up towards full scale. Room tone, reverb tails,
         /// the breath before a line, the second guitar in the far corner of the
@@ -615,7 +615,7 @@ namespace ExplorerNative
         /// peaks would flatten the difference this exists to open up.
         ///
         /// It gets more extreme the further the volume is pushed, because the
-        /// lift it may apply grows with the square of the gain — see
+        /// lift it may apply grows with the square of the gain, see
         /// <see cref="LimitCeiling"/> and the loop below. At normal volume it is
         /// a gentle leveller. At eight times it is a different recording.
         /// </summary>
@@ -630,7 +630,7 @@ namespace ExplorerNative
         /// continuous crunch rather than an open-sounding one.
         ///
         /// Settable, unlike the rest of this file's constants, because it is one
-        /// of the three that can only be judged by ear against real music — see
+        /// of the three that can only be judged by ear against real music, see
         /// <see cref="LimiterForm"/>, which changes it while a track plays.
         /// </summary>
         public float LimitCeiling { get; set; } = 0.9f;
@@ -643,7 +643,7 @@ namespace ExplorerNative
         /// before the envelope has seen it. At two milliseconds that is a click
         /// at the start of every phrase; at a half it is an edge; below a tenth
         /// the envelope starts to follow the waveform of a bass note rather than
-        /// its outline, which is intermodulation distortion — audible as a
+        /// its outline, which is intermodulation distortion, audible as a
         /// growl on low notes, and the reason the fast end of the ladder is
         /// worth having as well as worth avoiding.
         /// </summary>
@@ -660,9 +660,9 @@ namespace ExplorerNative
         /// <summary>
         /// The most the limiter will ever lift, at a gain of one.
         ///
-        /// Eighteen decibels. Enough to be plainly audible on the quiet parts of
+        /// Eighteen decibels. Enough to be clearly audible on the quiet parts of
         /// an ordinary track without turning a silent passage between songs into
-        /// a wall of hiss — that is what the volume control is for, and it
+        /// a wall of hiss, that is what the volume control is for, and it
         /// multiplies this.
         /// </summary>
         private const float BaseBoost = 8f;
@@ -671,14 +671,14 @@ namespace ExplorerNative
         /// Lift the quiet parts by the same amount whatever the volume is.
         ///
         /// Off, the lift the limiter may apply grows with the square of the gain
-        /// — which is what makes pushing the volume up open the background
+        /// which is what makes pushing the volume up open the background
         /// further, and is the shape the limiter was asked for. It has one
         /// consequence that is not obvious until you meet it: at or below 100
         /// percent there is no gain to square, so the effect is at its mildest
         /// exactly where somebody is most likely to be sitting when they want to
         /// hear what it does.
         ///
-        /// On, the ceiling is <see cref="WholeRangeBoost"/> regardless — about
+        /// On, the ceiling is <see cref="WholeRangeBoost"/> regardless, about
         /// 54dB of available lift at any volume, including a very quiet one. It
         /// is the setting for listening *into* a recording rather than for
         /// making one loud.
@@ -687,7 +687,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// The lift allowed when the volume is taken out of it. Five hundred and
-        /// twelve — the same figure the square would reach at eight times gain,
+        /// twelve, the same figure the square would reach at eight times gain,
         /// which is where the effect stops being subtle and starts being the
         /// point.
         /// </summary>
@@ -726,7 +726,7 @@ namespace ExplorerNative
         /// Everything COM here is created on the thread that uses it, and that is
         /// not tidiness. A WASAPI client built on the caller's apartment and then
         /// touched from the render thread fails the cross-apartment
-        /// QueryInterface with E_NOINTERFACE — which surfaces as a player that
+        /// QueryInterface with E_NOINTERFACE, which surfaces as a player that
         /// reports itself playing and never produces a sample, because the render
         /// loop's own catch swallows it. Build it where it will be used.
         /// </summary>
@@ -753,7 +753,7 @@ namespace ExplorerNative
                 // than leaving it to a Dispose that has already run: the caller
                 // stops waiting after ten seconds and disposes, and an Open still
                 // assigning _client, _formatBlock and two event handles into the
-                // object being disposed is a use-after-free in both directions —
+                // object being disposed is a use-after-free in both directions,
                 // and an audio client left Started that nothing can ever stop.
                 if (abandoned)
                 {
@@ -808,8 +808,8 @@ namespace ExplorerNative
                 //
                 // **The state check is the whole of it, and it was missing.**
                 // GetDevice *succeeds* for an endpoint that is unplugged or
-                // disabled — it hands back a perfectly good IMMDevice for a thing
-                // that is not there — and the refusal only arrives later, when
+                // disabled, it hands back a perfectly good IMMDevice for a thing
+                // that is not there, and the refusal only arrives later, when
                 // Activate answers AUDCLNT_E_DEVICE_INVALIDATED (0x88890004). So
                 // the fallback above never fired, the open failed at the next
                 // step, and the player reported "no audio output" *naming the
@@ -842,7 +842,7 @@ namespace ExplorerNative
                 DeviceName = NameOf(device) ?? "";
 
                 // IAudioClient2 first, because raw mode is only reachable through
-                // it — and because SetClientProperties has to happen *before*
+                // it, and because SetClientProperties has to happen *before*
                 // Initialize, which is the whole reason the order matters here.
                 IAudioClient? client = null;
                 var iid2 = typeof(IAudioClient2).GUID;
@@ -981,7 +981,7 @@ namespace ExplorerNative
                 // something to play while the first real fill is being made.
                 PrimeSilence();
 
-                // Not started at all when asked to open suspended — a device
+                // Not started at all when asked to open suspended, a device
                 // being switched to waits for the swap, and a Start here would
                 // only be followed by the render loop's Stop. The loop starts it
                 // when the suspension is lifted.
@@ -1025,8 +1025,8 @@ namespace ExplorerNative
         ///
         /// This is the battery rule, and it is not a micro-optimisation. An
         /// audio client that has been Started keeps asking for buffers at the
-        /// device period for as long as it exists — about a hundred times a
-        /// second, on a thread at Highest priority, filling them with silence —
+        /// device period for as long as it exists, about a hundred times a
+        /// second, on a thread at Highest priority, filling them with silence,
         /// and it holds the endpoint awake while it does. A track paused and
         /// left alone did that indefinitely. Stopped, the callbacks cease
         /// entirely and the hardware is free to idle.
@@ -1075,7 +1075,7 @@ namespace ExplorerNative
 
                     // A device unplugged while paused says so here, on resume.
                     // Ignored, the loop waited out two two-second timeouts before
-                    // calling it lost — four seconds of silence after play.
+                    // calling it lost, four seconds of silence after play.
                     if (hr == DeviceInvalidated) RaiseLost();
                 }
 
@@ -1116,7 +1116,7 @@ namespace ExplorerNative
                     // finally, and that is not tidiness. A buffer claimed from
                     // WASAPI and not given back makes every later GetBuffer fail
                     // with AUDCLNT_E_OUT_OF_ORDER, which this loop reads as
-                    // "continue" — so one exception anywhere in the copy would
+                    // "continue", so one exception anywhere in the copy would
                     // leave the device permanently silent while the player went
                     // on reporting that it was playing.
                     try
@@ -1161,7 +1161,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// The gain, the ceiling, and the meter — one pass over the samples.
+        /// The gain, the ceiling, and the meter, one pass over the samples.
         ///
         /// Separated out and internal so it can be tested with real numbers
         /// rather than only heard, which is the mistake that let a silent
@@ -1204,7 +1204,7 @@ namespace ExplorerNative
             //
             // Half a millisecond is also the whole of the overshoot. There is no
             // lookahead here, so the first instant of a note arriving into a
-            // fully-open limiter is lifted before the envelope has seen it — at
+            // fully-open limiter is lifted before the envelope has seen it, at
             // two milliseconds that is a click at the start of every phrase, and
             // at a half it is an edge.
             int rate = SampleRate > 0 ? SampleRate : 48000;
@@ -1238,7 +1238,7 @@ namespace ExplorerNative
             // hundred, and below a hundred there is nothing for it to do.
             bool limit = Limiter && (LimiterWholeRange || gain > 1f);
 
-            // Switched off — or the volume brought back below a hundred — the
+            // Switched off, or the volume brought back below a hundred, the
             // lift comes down over a few milliseconds rather than at the buffer
             // boundary. Dropping from as much as five hundred times to one in a
             // single sample was a click in the middle of whatever was playing.
@@ -1275,7 +1275,7 @@ namespace ExplorerNative
                     // The very first frame starts the envelope where the music
                     // is rather than ramping up to it from silence. Ramping made
                     // every track begin with the limiter wide open for a couple
-                    // of milliseconds — brief, but at a ceiling of a hundred
+                    // of milliseconds, brief, but at a ceiling of a hundred
                     // times it is brief and very loud.
                     //
                     // And again after silence. "Nothing yet" used to be exactly
@@ -1343,7 +1343,7 @@ namespace ExplorerNative
 
                 // Nothing is clamped. Measured through the endpoint: the
                 // Windows shared mixer carries float above 1.0 linearly and
-                // clips at the *endpoint*, after the master volume — amplitude 4
+                // clips at the *endpoint*, after the master volume, amplitude 4
                 // came back at exactly four times, and only at 8 did it stop,
                 // with the Windows volume at 10%. Clamping here would put the
                 // ceiling back in the application and throw away every bit of
@@ -1397,7 +1397,7 @@ namespace ExplorerNative
         {
             _running = false;
 
-            // Both, because the loop may be waiting on either one — the device's
+            // Both, because the loop may be waiting on either one, the device's
             // event while playing, or the wake event while suspended.
             try { if (_readyEvent != IntPtr.Zero) SetEvent(_readyEvent); } catch { }
             try { if (_wake != IntPtr.Zero) SetEvent(_wake); } catch { }
@@ -1411,7 +1411,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Whether the device open is still running, finished, or was given up
-        /// on by Start — whichever side gets there first decides, atomically.
+        /// on by Start, whichever side gets there first decides, atomically.
         /// </summary>
         private int _openState;
         private const int Opening = 0, OpenDone = 1, OpenAbandoned = 2;
@@ -1424,7 +1424,7 @@ namespace ExplorerNative
         /// Whichever of the two possible owners gets here first does it: the
         /// caller disposing normally, or an abandoned open finishing after the
         /// caller has stopped waiting. Freeing twice is a handle closed twice
-        /// and memory freed twice, which is not an error anybody sees — it is
+        /// and memory freed twice, which is not an error anybody sees, it is
         /// the kind that shows up somewhere else entirely.
         /// </summary>
         private void FreeResources()

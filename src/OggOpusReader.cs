@@ -11,20 +11,20 @@ namespace ExplorerNative
     /// played.
     ///
     /// **This replaced Concentus.OggFile's `OpusOggReadStream`, and the reason
-    /// is what that class does before it returns.** Given a seekable stream —
-    /// which every stream here is — its constructor asks for the total length,
+    /// is what that class does before it returns.** Given a seekable stream,
+    /// which every stream here is, its constructor asks for the total length,
     /// and it can only answer by reading every page of the file, checksumming
     /// each one a byte at a time, and building a linked list with an object for
     /// every packet in it. Then it walks that list again to count the pages.
     /// Measured on a real 1.18GB, twenty-hour recording: **five seconds** before
-    /// the first sample, 465MB allocated and 411MB still held while it played —
+    /// the first sample, 465MB allocated and 411MB still held while it played,
     /// and "back to the start" built the whole thing again. The fifteen-second
     /// open budget is all that stood between that and a file that would not
     /// play at all on a cold read.
     ///
     /// None of that was needed. The format says where everything is, and
     /// <see cref="OggPages"/> reads it that way: the length off the last page,
-    /// a seek by bisection. What is Opus-specific is here — **every page says
+    /// a seek by bisection. What is Opus-specific is here, **every page says
     /// where its own packets end**, so a packet's place on the timeline is
     /// worked backwards from the granule of the page it finishes on. That is
     /// what lets a read start on any page and still know exactly which sample
@@ -35,7 +35,7 @@ namespace ExplorerNative
     internal sealed class OggOpusReader : IDisposable
     {
         /// <summary>
-        /// Opus always decodes at 48kHz. It is not a choice the format offers —
+        /// Opus always decodes at 48kHz. It is not a choice the format offers,
         /// the codec is defined at that rate and the encoder's original rate is
         /// only a tag.
         /// </summary>
@@ -57,7 +57,7 @@ namespace ExplorerNative
         ///
         /// RFC 7845 asks for 80 milliseconds, which is enough to sound right and
         /// not enough to be right: measured against a straight decode, seeks with
-        /// 80ms (and 200ms) of run-up differed by up to 0.0016 — faint, and
+        /// 80ms (and 200ms) of run-up differed by up to 0.0016, faint, and
         /// still not the same audio. 400ms matched to the sample on every one of
         /// two hundred seeks; this is half a second, plus a longest-possible
         /// packet because the first packet after the page a seek lands on may be
@@ -69,7 +69,7 @@ namespace ExplorerNative
         private IOpusDecoder? _codec;
 
         /// <summary>
-        /// For a surround stream — channel mapping family 1 or 255 — whose
+        /// For a surround stream, channel mapping family 1 or 255, whose
         /// packets hold several Opus streams each. The plain decoder read those
         /// as noise, or threw and left silence.
         /// </summary>
@@ -174,8 +174,8 @@ namespace ExplorerNative
                 Channels = channels;
             }
 
-            // The comment header can run across pages — a cover picture makes it
-            // megabytes — so this walks until a packet finishes, which is where
+            // The comment header can run across pages, a cover picture makes it
+            // megabytes, so this walks until a packet finishes, which is where
             // it ends. The audio starts on that page or the next; starting on
             // that one is safe, because what is left of the comment header is
             // either a dropped fragment or recognised and skipped.
@@ -316,7 +316,7 @@ namespace ExplorerNative
 
                 if (durations.Count == 0) continue;
 
-                // Worked back from the end of the page — except on the last one,
+                // Worked back from the end of the page, except on the last one,
                 // whose granule is where the audio stops rather than where its
                 // packets do. That is how the end of a file is trimmed to the
                 // sample, so there the running clock places them instead.

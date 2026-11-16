@@ -59,7 +59,7 @@ namespace ExplorerNative
 
     /// <param name="AlreadyThere">
     /// Files inside a merged folder that the destination already had, so they
-    /// were left alone — and on a move, whose originals therefore stayed where
+    /// were left alone, and on a move, whose originals therefore stayed where
     /// they were. Not copied, not failed, and said so rather than counted as
     /// either.
     /// </param>
@@ -85,13 +85,13 @@ namespace ExplorerNative
     /// and the remaining 51MB over the following ninety-three. The average at
     /// the nine-second mark said two megabytes a second and twenty-five seconds
     /// remaining. The real answer was ninety-three, and the number on screen went
-    /// on being wrong in the same direction for the whole copy — the estimate
+    /// on being wrong in the same direction for the whole copy, the estimate
     /// climbing steadily instead of counting down, which is the one thing a time
     /// remaining is for.
     ///
     /// A window, so the figure is about the part of the transfer happening now.
     /// Ten seconds because it has to be long enough to ride out robocopy's
-    /// block-buffered output — which arrives in bursts of fifty lines — without
+    /// block-buffered output, which arrives in bursts of fifty lines, without
     /// being so long that the opening burst is still colouring the answer a
     /// minute later.
     /// </summary>
@@ -129,7 +129,7 @@ namespace ExplorerNative
 
                 // One sample older than the window is kept deliberately, so the
                 // span never collapses to nothing at the moment the oldest is
-                // dropped — which would divide by very nearly zero and report a
+                // dropped, which would divide by very nearly zero and report a
                 // speed of several gigabytes a second.
                 //
                 // And the oldest is kept while dropping it would leave a window
@@ -184,9 +184,9 @@ namespace ExplorerNative
         /// A robocopy report, corrected by what the Drive mount has actually handed
         /// over, for a copy out of the Drive letter.
         ///
-        /// The larger of the two byte counts, because each is late in its own way —
+        /// The larger of the two byte counts, because each is late in its own way,
         /// robocopy's by a whole file, the mount's not at all for bytes it served
-        /// but blind to a file that was already downloaded and never asked for —
+        /// but blind to a file that was already downloaded and never asked for,
         /// and never less than what is already on screen, so the window does not go
         /// backwards when robocopy's late line for one file lands while the mount
         /// has moved on to the next. Capped at the total, which neither source may
@@ -198,7 +198,7 @@ namespace ExplorerNative
         /// </summary>
         /// <param name="rate">
         /// The window the speed is measured over. Without one the speed is the
-        /// average since the start — which is what brought back, for Drive, the
+        /// average since the start, which is what brought back, for Drive, the
         /// "time remaining keeps climbing" that <see cref="RecentRate"/> fixed.
         /// </param>
         internal static TransferProgress WithDownloads(
@@ -269,9 +269,9 @@ namespace ExplorerNative
         /// <summary>
         /// The whole transfer, on a worker.
         ///
-        /// Everything in it is filesystem work — an existence check per source
+        /// Everything in it is filesystem work, an existence check per source
         /// before the first await, then the watcher, the waits for robocopy, its
-        /// log read back and parsed — and called from the window, the part before
+        /// log read back and parsed, and called from the window, the part before
         /// the first await and every continuation after it ran on the UI thread.
         /// A source on a share that had gone to sleep froze the window before the
         /// progress window was even up. Progress marshals itself: the caller's
@@ -309,10 +309,10 @@ namespace ExplorerNative
             // source file is a placeholder this same process downloads while
             // robocopy reads it. How many to read at once is the caller's decision
             // (MainForm.TransferThreads, which says one); what changes here is the
-            // attributes — see where the switches are added.
+            // attributes, see where the switches are added.
             //
             // onCloudLetter: whether a path is on the Drive letter, where nothing
-            // may be renamed into or out of — a rename there is not a move in
+            // may be renamed into or out of, a rename there is not a move in
             // the account. Null when Drive is not mounted.
 
             var errors = new List<string>();
@@ -330,7 +330,7 @@ namespace ExplorerNative
             // Selected links being moved, and top-level folders whose names end in
             // a dot or a space. Neither can be handed to robocopy: it follows a
             // link at the root of a job (/XJ only covers links inside one), and
-            // given "fold." it quietly copies the sibling "fold" instead.
+            // given "fold." it silently copies the sibling "fold" instead.
             var linkMoves = new List<(string Source, string Target)>();
             var literalFolders = new List<string>();
 
@@ -345,7 +345,7 @@ namespace ExplorerNative
             // everything that appears under one of them was put there by us.
             //
             // This is what makes cleaning up after a cancellation safe. Anything
-            // we did not create is never touched, however incomplete it looks —
+            // we did not create is never touched, however incomplete it looks,
             // once a destination already existed there is no way to tell our
             // half-written bytes from somebody else's file, and guessing wrong
             // there deletes data nobody asked us to touch.
@@ -353,14 +353,14 @@ namespace ExplorerNative
             var transferStartedUtc = DateTime.UtcNow;
 
             // Targets this paste has already given to a source. A second source
-            // with the same name — two "photos" out of search results — would be
+            // with the same name, two "photos" out of search results, would be
             // a second robocopy job into the same folder, merging the two and, on
             // a move, deleting both originals.
             var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var sameName = new List<string>();
 
             // A file that is already there, under Fill gaps: left alone, which
-            // robocopy would do anyway — but said, so nothing downstream takes it
+            // robocopy would do anyway, but said, so nothing downstream takes it
             // for copied. A move out of Drive trashed such a file's original.
             var gapSkipped = new List<string>();
 
@@ -408,15 +408,15 @@ namespace ExplorerNative
                 catch { collides = false; }
 
                 // A selected link, moved: as itself, never through robocopy, which
-                // follows a link at the root of a job and moved — so deleted —
+                // follows a link at the root of a job and moved, so deleted,
                 // whatever it pointed at.
                 if (move && FileOperations.IsLinkAt(exactSource))
                 {
                     if (!collides) linkMoves.Add((source, target));
 
                     // The managed engine moves links as links. Overwrite and Fill
-                    // gaps have no meaning for one — neither replaces a folder with
-                    // a link nor merges into one — so it is kept both.
+                    // gaps have no meaning for one, neither replaces a folder with
+                    // a link nor merges into one, so it is kept both.
                     else if (conflictPolicy is PasteConflictPolicy.Overwrite or PasteConflictPolicy.FillGaps)
                         sameName.Add(source);
                     else colliding.Add(source);
@@ -425,7 +425,7 @@ namespace ExplorerNative
 
                 // A file where a folder of that name is, or the other way round.
                 // Robocopy will not put one over the other and says so only as
-                // exit code 4, which counts as success — a move out of Drive then
+                // exit code 4, which counts as success, a move out of Drive then
                 // trashed an original that was never copied. Keeping both is the
                 // one answer that can go ahead.
                 if (collides && conflictPolicy is PasteConflictPolicy.Overwrite or PasteConflictPolicy.FillGaps)
@@ -447,7 +447,7 @@ namespace ExplorerNative
                 }
 
                 // A folder robocopy would be handed by a name ending in a dot or a
-                // space — the folder itself, the one it is in, or the destination.
+                // space, the folder itself, the one it is in, or the destination.
                 // Robocopy strips the dot and copies the sibling of that name, and
                 // does not take the literal form at all. The managed engine does.
                 bool isFolder;
@@ -466,7 +466,7 @@ namespace ExplorerNative
                 // FillGaps never splits anything off. Its whole job is to go
                 // *into* what is already there, which is precisely what the
                 // managed rename engine below cannot do and what robocopy does
-                // natively — merge the tree, and copy a file only where the
+                // natively, merge the tree, and copy a file only where the
                 // destination has none. Splitting a colliding folder off here
                 // would hand the one case this policy exists for to the one
                 // engine that answers it by making "folder (2)".
@@ -488,7 +488,7 @@ namespace ExplorerNative
                     // A folder too: robocopy merged it and wrote over every file
                     // inside that the destination already had, in place, and the
                     // cleanup after a cancel never touches a file that was there
-                    // before — so the one being written when Cancel was pressed
+                    // before, so the one being written when Cancel was pressed
                     // was left half old, half new. The managed engine merges the
                     // same way and swaps each file in whole.
                     literalFolders.Add(source);
@@ -501,7 +501,7 @@ namespace ExplorerNative
                     // file was replaced rather than merely written.
                     //
                     // Not for FillGaps, which reaches the same branch and
-                    // destroys nothing — it merges into what is there and writes
+                    // destroys nothing, it merges into what is there and writes
                     // only where there was no file. Calling that "replaced"
                     // would announce a file as destroyed for the one policy
                     // chosen specifically because it does not do that.
@@ -522,7 +522,7 @@ namespace ExplorerNative
             //
             // These are different units and the second was being reported as the
             // first. A folder pasted back beside itself is one collision and one
-            // rename — and a thousand files, so "1 file transferred" was the
+            // rename, and a thousand files, so "1 file transferred" was the
             // answer for a thousand in the one place a partial failure gets
             // explained. That is the same mistake the comment further down
             // records having already fixed once, in its other form.
@@ -540,7 +540,7 @@ namespace ExplorerNative
             // keep-both copy sat at "Starting" for its whole length. One clock
             // and one rate across every phase, with what the earlier phases
             // finished carried as a base, so the count never goes backwards
-            // from one phase to the next — or into robocopy's after them.
+            // from one phase to the next, or into robocopy's after them.
             var managedClock = new Stopwatch();
             var managedRate = new RecentRate();
             var managedGate = new object();
@@ -702,7 +702,7 @@ namespace ExplorerNative
             }
 
             // A move that can be a rename is one. Robocopy's /MOVE copies every
-            // byte and then deletes the original — a gigabyte moved within C: took
+            // byte and then deletes the original, a gigabyte moved within C: took
             // as long as copying it and came out a different file. A rename is
             // instant, and is exactly what the user asked for.
             //
@@ -714,7 +714,7 @@ namespace ExplorerNative
             //
             // Selected links are moved here too, as themselves.
             // Items already moved by renaming, carried into the copy's count so
-            // the window never goes backwards — "1 of 3" to "0 of 2" — when
+            // the window never goes backwards, "1 of 3" to "0 of 2", when
             // what could not be renamed falls back to copying.
             int renamedItems = 0;
 
@@ -873,7 +873,7 @@ namespace ExplorerNative
             var plannedSize = new Dictionary<string, long>(StringComparer.OrdinalIgnoreCase);
 
             // Only what the jobs will copy. Walking every clean source counted a
-            // refused folder — copied into itself, or a whole drive — into the
+            // refused folder, copied into itself, or a whole drive, into the
             // total, so the percentage never reached a hundred, and waited for
             // that walk at the end.
             var accepted = jobs
@@ -921,14 +921,14 @@ namespace ExplorerNative
             string copying = "";
 
             // Bytes written by robocopy jobs that have already finished, and the
-            // one running now — see BytesWritten for why the operating system is
+            // one running now, see BytesWritten for why the operating system is
             // asked rather than robocopy.
             long finishedJobBytes = 0;
             Process? liveJob = null;
 
             // Never allowed to fall. Two sources feed this and either can drop
-            // for an instant — a job ending between the ticker reading the
-            // process and the total being added to finishedJobBytes — and a
+            // for an instant, a job ending between the ticker reading the
+            // process and the total being added to finishedJobBytes, and a
             // progress figure that goes backwards is its own bug.
             long shown = 0;
 
@@ -944,7 +944,7 @@ namespace ExplorerNative
             //
             // Not what robocopy has said so far, which is the whole point. Its
             // per-file lines are the only thing that used to move this, and a
-            // child process writing to a redirected pipe does not line-buffer —
+            // child process writing to a redirected pipe does not line-buffer,
             // it fills a block and flushes, so the lines arrive in bursts of
             // roughly fifty and mostly at the end. Measured on a 40-file copy
             // with these exact arguments: one line at 37ms, the other 39 in a
@@ -953,7 +953,7 @@ namespace ExplorerNative
             // What that produced was not a slightly stale number, it was a
             // meaningless one. A real 42GB copy running at 36MB/s showed
             // "12.4 megabytes of 41.5 gigabytes", "59.3 kilobytes per second"
-            // and "203 hours, 34 minutes" remaining — one file's worth of lines
+            // and "203 hours, 34 minutes" remaining, one file's worth of lines
             // having escaped the buffer while fifty had actually been copied.
             // The true answer was about eight minutes.
             //
@@ -997,7 +997,7 @@ namespace ExplorerNative
             // which arrive in bursts and mostly at the end, so for nearly the
             // whole of a copy the window said "(preparing)" and "0 of 6 items".
             // Robocopy creates each file at the destination the moment it starts
-            // it, under its final name, and Windows says so at once — so the
+            // it, under its final name, and Windows says so at once, so the
             // newest one is the file being copied now. At most `threads` are in
             // flight, which makes "started less threads" a count of finished
             // files that can only be too low, never too high.
@@ -1015,7 +1015,7 @@ namespace ExplorerNative
                 return Math.Min(Math.Max(parsed, seen), Math.Max(parsed, Volatile.Read(ref itemsTotal)));
             }
 
-            // Per file, a report is at most one every 100ms — the rule the
+            // Per file, a report is at most one every 100ms, the rule the
             // archive engine keeps, and for the same reason: fifty thousand small
             // files were fifty thousand posts to the window, each rewriting
             // fields a screen reader announces. The ticker reports regardless.
@@ -1059,7 +1059,7 @@ namespace ExplorerNative
             // file in it: while a 3GB file copied, a browser writing its cookies
             // in a subfolder had the window naming "Cookies-journal" and counting
             // it as an item. And the cleanup below needs the same answer the
-            // other way round — which files this transfer made.
+            // other way round, which files this transfer made.
             var treeJobs = jobs.Where(j => j.WholeTree)
                 .Select(j => (Dest: Prefix(j.DestDir), Source: Prefix(j.SourceDir)))
                 .ToList();
@@ -1074,7 +1074,7 @@ namespace ExplorerNative
             // Every file already in the destinations before robocopy starts, with
             // its size and date. The cleanup after a cancel has to guess at what
             // this transfer wrote when the watcher lost events, or on Overwrite
-            // where writing over a file raises none — and its guess was "anything
+            // where writing over a file raises none, and its guess was "anything
             // dated in the last few seconds", which took in a file somebody had
             // just saved there, that robocopy never reached. A file still exactly
             // as it was here was not written by this transfer, and is never
@@ -1152,15 +1152,15 @@ namespace ExplorerNative
 
             // Files this transfer created, as Windows announced them. Every one
             // is a file robocopy started, whether or not the destination existed
-            // before — which is what the cleanup needs and the old "new roots
+            // before, which is what the cleanup needs and the old "new roots
             // only" rule could not see.
             var created = new System.Collections.Concurrent.ConcurrentDictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
             int landingsLost = 0;
 
             using var landings = WatchLandings(destinationDir, landing =>
             {
-                // Only what the plan copies, and — inside a folder being merged
-                // into, where anything else may be writing — only what has a
+                // Only what the plan copies, and, inside a folder being merged
+                // into, where anything else may be writing, only what has a
                 // source. Not on a move, where robocopy may already have deleted
                 // the source of a small file by the time this is heard.
                 var source = SourceFor(landing);
@@ -1185,7 +1185,7 @@ namespace ExplorerNative
             // Not "did robocopy print its name", which was the first attempt and
             // is wrong: its stdout is block-buffered through the redirected pipe,
             // so the line for a file it has only *started* arrives when the
-            // buffer is flushed — which killing it does. Every half-written file
+            // buffer is flushed, which killing it does. Every half-written file
             // therefore announced itself as finished, and the cleanup skipped
             // exactly the ones it existed to remove.
             //
@@ -1197,7 +1197,7 @@ namespace ExplorerNative
             // Not the timestamp either, which was the third wrong answer.
             // Robocopy stamps the source's last-write time onto the destination
             // as it closes the file, so an unclosed one keeps the time it was
-            // created — which is *now*, and so is the source's whenever somebody
+            // created, which is *now*, and so is the source's whenever somebody
             // copies a file they have just made. Two files written seconds apart
             // match on any tolerance loose enough to be worth having.
             //
@@ -1206,7 +1206,7 @@ namespace ExplorerNative
             // file killed part way has been found with its last 64KB written and
             // the two megabytes before them still zeros. So a file up to 64MB is
             // compared whole, and a bigger one at the tail and at blocks spaced
-            // by doubling distances back from it — an unwritten stretch runs
+            // by doubling distances back from it, an unwritten stretch runs
             // from wherever the writing stopped up towards the end, so one of
             // those falls inside it whatever its size, for a few dozen reads.
             static bool LooksComplete(string source, string landing, DateTime startedUtc)
@@ -1223,7 +1223,7 @@ namespace ExplorerNative
                     if (a.Length == 0) return true;
 
                     // Stamped with the source's time, which robocopy does as it
-                    // closes the file, from a source older than this transfer —
+                    // closes the file, from a source older than this transfer,
                     // so not the "made a moment ago" coincidence above. Finished,
                     // without reading it: a late cancel of a big copy otherwise
                     // read back everything already copied.
@@ -1246,8 +1246,8 @@ namespace ExplorerNative
                         return x.AsSpan(0, count).SequenceEqual(y.AsSpan(0, count));
                     }
 
-                    // A source that itself ends in zeros — a WAV with a silent
-                    // tail, a disk image, a preallocated database — matches a
+                    // A source that itself ends in zeros, a WAV with a silent
+                    // tail, a disk image, a preallocated database, matches a
                     // copy that stopped anywhere near its end. Unverifiable, so
                     // not kept: the source is still there to copy again.
                     int tail = (int)Math.Min(BlockBytes, a.Length);
@@ -1281,8 +1281,8 @@ namespace ExplorerNative
             // Robocopy is killed where it stands, and it preallocates: cancelling
             // a 20GB copy five seconds in left a 20GB file at the destination
             // whose first six gigabytes were the real thing and whose remaining
-            // fourteen were zeros. Nothing about it looked wrong — same name,
-            // same size as the source, sitting right there in the folder — so the
+            // fourteen were zeros. Nothing about it looked wrong, same name,
+            // same size as the source, sitting right there in the folder, so the
             // only way to find out was to read it, and the worst case is somebody
             // deleting the original because the copy "obviously worked".
             //
@@ -1328,8 +1328,8 @@ namespace ExplorerNative
                 else
                 {
                     // From what actually landed, not from the plan. The planning
-                    // walk stops when the transfer is cancelled — and a cancel
-                    // early enough lands before it has started at all — so a
+                    // walk stops when the transfer is cancelled, and a cancel
+                    // early enough lands before it has started at all, so a
                     // plan-driven cleanup found nothing to check.
                     //
                     // Everything under a destination that did not exist before.
@@ -1356,13 +1356,13 @@ namespace ExplorerNative
                     // Every file this transfer created, wherever it is. That was
                     // the missing half: Fill gaps resumed into a folder that was
                     // already there, was cancelled again, and left its part-written
-                    // file behind, dated now — which every later Fill gaps then
+                    // file behind, dated now, which every later Fill gaps then
                     // excluded as "newer" and reported success over.
                     foreach (var landing in created.Keys)
                         if (SourceFor(landing) is { } source) Consider(source, landing);
 
-                    // And when the watcher cannot be believed — it overflowed, or
-                    // could not watch at all — or files were written over rather
+                    // And when the watcher cannot be believed, it overflowed, or
+                    // could not watch at all, or files were written over rather
                     // than created, which raises no event: whatever in the
                     // destinations was written during this transfer.
                     if (Volatile.Read(ref landingsLost) != 0 || conflictPolicy == PasteConflictPolicy.Overwrite)
@@ -1401,7 +1401,7 @@ namespace ExplorerNative
 
                     // The source is gone, so this is a move that already finished
                     // this file and deleted the original. Removing the
-                    // destination now would destroy the only copy there is — the
+                    // destination now would destroy the only copy there is, the
                     // one outcome worse than leaving a half-written file.
                     if (!File.Exists(NameRules.ExactPath(source))) { kept++; continue; }
 
@@ -1440,7 +1440,7 @@ namespace ExplorerNative
                         refused++;
                         errors.Add($"could not remove the half-copied \"{Path.GetFileName(landing)}\" " +
                                    (failedSources == null ? "after cancelling" : "after it failed") +
-                                   " — it is incomplete");
+                                   ", it is incomplete");
                     }
                 }
 
@@ -1455,7 +1455,7 @@ namespace ExplorerNative
             // file is in flight and robocopy has printed nothing yet.
             using var ticker = new Timer(_ => Report(), null, 250, 250);
 
-            // How long robocopy waits on a file it cannot open — held by another
+            // How long robocopy waits on a file it cannot open, held by another
             // program, or gone since the plan. See RetriesFor.
             // On a worker: it asks Windows about volumes, which on a mapped
             // drive whose server is asleep is not instant.
@@ -1555,7 +1555,7 @@ namespace ExplorerNative
                     if (move)
                     {
                         // What is still in the source after a move is what did not
-                        // move: the failures, and the rest — files the destination
+                        // move: the failures, and the rest, files the destination
                         // already had, which Fill gaps leaves and robocopy excludes.
                         // A Fill gaps move said "Move complete" over them.
                         int left = token.IsCancellationRequested ? 0 : await Task.Run(() => FilesLeftIn(job));
@@ -1668,7 +1668,7 @@ namespace ExplorerNative
             if (token.IsCancellationRequested)
             {
                 // On a worker. Deleting a part-written 20GB file, and waiting out
-                // a handle that has not been released yet, is filesystem work —
+                // a handle that has not been released yet, is filesystem work,
                 // and this continuation resumes on the UI thread, which measured
                 // 294ms of the window not answering at the exact moment somebody
                 // has just asked for something to stop.
@@ -1792,7 +1792,7 @@ namespace ExplorerNative
             }
 
             // Deepest first, and never recursive: a folder that still holds
-            // anything — a link that would not move, a file Fill gaps left —
+            // anything, a link that would not move, a file Fill gaps left,
             // refuses, and stays.
             foreach (var dir in folders.OrderByDescending(d => d.Length))
             {
@@ -1824,13 +1824,13 @@ namespace ExplorerNative
         /// <summary>
         /// The name of a file robocopy is retrying, in its own letters. Robocopy
         /// writes its output in the console code page, so anything outside it
-        /// arrives as "?" — which is a wildcard for exactly one character, so the
+        /// arrives as "?", which is a wildcard for exactly one character, so the
         /// folder is asked which file that was.
         ///
         /// The output is now read in the OEM code page it is written in
         /// (<see cref="RobocopyOutputEncoding"/>), so an accent the code page has
-        /// comes through as itself. What it has not — Japanese, most of
-        /// everything else — is still "?", and a name read in the wrong page
+        /// comes through as itself. What it has not, Japanese, most of
+        /// everything else, is still "?", and a name read in the wrong page
         /// is not the file's at all; either way, any "?" or non-ASCII letter is
         /// taken as one unknown character and the folder is asked.
         ///
@@ -1943,7 +1943,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// The code page robocopy writes its standard output in: the console's,
-        /// which for the hidden console it is started with is the OEM page —
+        /// which for the hidden console it is started with is the OEM page,
         /// 437 or 850 here, not the ANSI 1252 it was being read as, which turned
         /// "café" into "caf‚".
         /// </summary>
@@ -1974,8 +1974,8 @@ namespace ExplorerNative
         /// not changed. A file robocopy overwrites rather than creates is named
         /// by its own line instead, later, as before.
         ///
-        /// <paramref name="lost"/> is called when Windows dropped events — the
-        /// buffer overflowed — so the caller knows the list of created files is
+        /// <paramref name="lost"/> is called when Windows dropped events, the
+        /// buffer overflowed, so the caller knows the list of created files is
         /// no longer the whole of it.
         /// </summary>
         private static FileSystemWatcher? WatchLandings(string destinationDir, Action<string> started, Action lost)
@@ -2097,7 +2097,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// What robocopy's own summary says one job did, per file — the number
+        /// What robocopy's own summary says one job did, per file, the number
         /// of files it copied, skipped (already there, or excluded), would not
         /// put over a folder of the same name, and failed; and the same for
         /// folders where it matters.
@@ -2177,7 +2177,7 @@ namespace ExplorerNative
                 {
                     // As long, and never thrown: the Bytes row of anything over
                     // 2GB does not fit an int, and parsing it as one threw out of the
-                    // whole transfer after it had finished — "Copy failed", and
+                    // whole transfer after it had finished, "Copy failed", and
                     // a multi-item move left half done. A number too big even
                     // for a long is held at the top rather than failing either.
                     var row = SummaryRow.Match(line);
@@ -2236,7 +2236,7 @@ namespace ExplorerNative
         /// Runs one robocopy job. <paramref name="onProcess"/> is handed the live
         /// process while it runs and null the moment it stops being safe to touch,
         /// so the progress ticker can ask the operating system how many bytes it
-        /// has written — see <see cref="BytesWritten"/>. The count comes back with
+        /// has written, see <see cref="BytesWritten"/>. The count comes back with
         /// the result because the next job starts its own counter at zero.
         /// <paramref name="onRetry"/> hears each file robocopy is about to try
         /// again, and which attempt it will be.
@@ -2258,10 +2258,10 @@ namespace ExplorerNative
 
             // Junctions are not followed. The planner already skips them, and
             // robocopy by default does not: moving a folder that held a junction
-            // moved — and so deleted — whatever the junction pointed at, anywhere
+            // moved, and so deleted, whatever the junction pointed at, anywhere
             // on the disk. A self-referencing one ("Application Data") recursed
             // until the paths were too long. A *selected* junction never gets
-            // here — /XJ does not cover the root of a job — see RunAsync.
+            // here, /XJ does not cover the root of a job, see RunAsync.
             args.Add("/XJ");
             if (move) args.Add(job.WholeTree ? "/MOVE" : "/MOV");
 
@@ -2270,13 +2270,13 @@ namespace ExplorerNative
             // It decides what to copy by comparing size and timestamp, and
             // classifies each file as lonely (only at the source), same, newer,
             // older or changed. Excluding the last three leaves exactly the
-            // lonely ones — a file the destination does not have — and "same" is
+            // lonely ones, a file the destination does not have, and "same" is
             // skipped anyway. So a folder that copied six hundred of a thousand
             // files and stopped copies the four hundred and re-reads nothing.
             //
             // Deliberately *not* /XN alone, which would still recopy anything
             // whose timestamp drifted. Between two filesystems that happens for
-            // reasons that have nothing to do with the contents — and recopying
+            // reasons that have nothing to do with the contents, and recopying
             // forty gigabytes because a clock disagrees is the failure this
             // policy exists to avoid.
             //
@@ -2292,7 +2292,7 @@ namespace ExplorerNative
             }
             args.Add("/MT:" + Math.Clamp(threads, 1, 128));
 
-            // Robocopy copies attributes, and a placeholder carries Offline — so the file that landed in Downloads had the
+            // Robocopy copies attributes, and a placeholder carries Offline, so the file that landed in Downloads had the
             // right bytes, the right size and the Offline flag, which Explorer
             // draws as unavailable and plenty of programs refuse to open. It
             // looked exactly like the copy had not happened. /A-:O takes it off
@@ -2307,7 +2307,7 @@ namespace ExplorerNative
             // Retries: long for a share, short for a local disk (RetriesFor).
             //
             // Twenty retries five seconds apart is right for a NAS that drops
-            // for a few seconds or a laptop changing access point — one retry a
+            // for a few seconds or a laptop changing access point, one retry a
             // second later fails every file in flight over an interruption that
             // lasted less than a minute. It is wrong for a local file that is
             // simply held open by another program, or deleted since the plan:
@@ -2327,7 +2327,7 @@ namespace ExplorerNative
             // The job summary is kept, because it is the only place robocopy
             // says per file what it did; and so is a log of everything, in
             // UTF-16. Its standard output is in the console code page, so a name
-            // outside it — any Japanese, most accents — arrived as "???" in the
+            // outside it, any Japanese, most accents, arrived as "???" in the
             // very error that had to say which file failed. /TEE keeps standard
             // output as well, which the progress reads; without it everything
             // goes to the log and the window sees nothing until the end.
@@ -2378,7 +2378,7 @@ namespace ExplorerNative
                     lock (attempts) attempts[file] = attempt = attempts.GetValueOrDefault(file) + 1;
 
                     // The attempt that has just failed is followed by a wait while
-                    // there are retries left — that is the moment to say so.
+                    // there are retries left, that is the moment to say so.
                     if (attempt <= retries)
                         try { onRetry(file, attempt); } catch (Exception ex) { Diag.Note(ex); }
                     return;
@@ -2391,7 +2391,7 @@ namespace ExplorerNative
             };
             // The stderr callback runs on a threadpool thread while this method is
             // reading and returning the same list. Unsynchronised that is a torn
-            // List<T> — a lost message at best, an IndexOutOfRange at worst.
+            // List<T>, a lost message at best, an IndexOutOfRange at worst.
             process.ErrorDataReceived += (_, e) =>
             {
                 if (e.Data == null) return;
@@ -2414,7 +2414,7 @@ namespace ExplorerNative
                 }
 
                 // Published only once it is running, and taken back inside the finally
-                // below — before `using` disposes it, so the ticker can never reach a
+                // below, before `using` disposes it, so the ticker can never reach a
                 // handle that has gone.
                 onProcess(process);
                 try
@@ -2441,7 +2441,7 @@ namespace ExplorerNative
                         // asks; until the process has exited it still holds the
                         // destination file open, and the cleanup that runs next then
                         // finds every delete refused and leaves the half-written file
-                        // exactly where it was — the thing the cleanup exists to
+                        // exactly where it was, the thing the cleanup exists to
                         // prevent, defeated by a race with a dying process.
                         try { process.WaitForExit(5000); } catch { }
 
@@ -2544,7 +2544,7 @@ namespace ExplorerNative
         /// <summary>
         /// How far along to say a transfer is, given both answers.
         ///
-        /// Pure, because the arithmetic is the part worth testing — the rest is a
+        /// Pure, because the arithmetic is the part worth testing, the rest is a
         /// kernel call and a timer. Three rules, each of which exists for a case
         /// that really happened:
         ///
@@ -2555,12 +2555,12 @@ namespace ExplorerNative
         /// <paramref name="parsed"/> wins when *it* is larger, which is when the
         /// kernel counter cannot be read for the running process. (A move within
         /// one volume used to be described here as robocopy renaming; it does
-        /// not — /MOVE copies and deletes — which is why RunAsync renames such
+        /// not, /MOVE copies and deletes, which is why RunAsync renames such
         /// moves itself before robocopy is started.)
         ///
         /// And neither may exceed <paramref name="total"/> or fall below
         /// <paramref name="alreadyShown"/>. The kernel counts a little more than
-        /// file data — metadata, its own output — so it can overshoot at the end,
+        /// file data, metadata, its own output, so it can overshoot at the end,
         /// and a job finishing between the ticker reading the process and its
         /// total being banked can dip. A progress figure that reads 104 percent,
         /// or that counts down, is a bug whatever caused it.
@@ -2600,7 +2600,7 @@ namespace ExplorerNative
                 var plain = NameRules.PlainPath(path);
 
                 // A subst letter is asked as the folder it stands for, and first.
-                // GetVolumePathName answers for one perfectly happily — "S:\" —
+                // GetVolumePathName answers for one perfectly happily, "S:\",
                 // and the volume name of "S:\" is then refused, so a move from a
                 // subst letter to the disk under it was a copy rather than a
                 // rename. "\??\C:\folder" is a subst; a real drive's device is
@@ -2631,7 +2631,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// The volume a path is on, as Windows names it ("\\?\Volume{…}\"), or
-        /// null for anything that has no such name — a network share among them.
+        /// null for anything that has no such name, a network share among them.
         ///
         /// Not the drive letter. A folder that is a mount point puts paths under
         /// C: on another volume, and a subst drive puts another letter's paths on
@@ -2804,8 +2804,8 @@ namespace ExplorerNative
 
         /// <summary>
         /// Bytes a robocopy process has actually written, straight from the
-        /// kernel. Zero for anything it cannot ask about — a process that has
-        /// been disposed, or none at all — which is why the caller only ever
+        /// kernel. Zero for anything it cannot ask about, a process that has
+        /// been disposed, or none at all, which is why the caller only ever
         /// takes this as the larger of two answers rather than the answer.
         ///
         /// Still correct after the process has exited: the handle stays valid
@@ -2814,7 +2814,7 @@ namespace ExplorerNative
         ///
         /// Internal so a test can prove it reads the field it means to. IO_COUNTERS
         /// is six identical unsigned longs, so naming the wrong one compiles
-        /// perfectly and returns a plausible number — the same class of mistake as
+        /// perfectly and returns a plausible number, the same class of mistake as
         /// a COM vtable slot, and checked the same way: write a known amount and
         /// see whether this is what moved.
         /// </summary>
@@ -2829,8 +2829,8 @@ namespace ExplorerNative
                 // Less what robocopy wrote that is not anybody's file: its log
                 // and the lines it printed to us. The counter counts every write
                 // the process makes, and for small files those are most of them
-                // — a line and a log line per file, both longer than a short
-                // text file — so the bar ran ahead of the copy.
+                // a line and a log line per file, both longer than a short
+                // text file, so the bar ran ahead of the copy.
                 if (OwnWrites.TryGetValue(process, out var own)) written -= own.Bytes();
 
                 return written < 0 ? 0 : written;
@@ -2865,7 +2865,7 @@ namespace ExplorerNative
         /// <summary>
         /// Robocopy prints one line per file. Rather than depend on its exact
         /// column layout, the line is matched against the names we already know
-        /// we are copying — which is stable across robocopy versions and locales.
+        /// we are copying, which is stable across robocopy versions and locales.
         /// </summary>
         private static string? MatchCopiedFile(string line, Dictionary<string, long> sizeByName, out long size)
         {
@@ -2904,7 +2904,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Every file under <paramref name="root"/>, links not followed, with its
-        /// size — in the order and with the answers the two-call walk gave, from
+        /// size, in the order and with the answers the two-call walk gave, from
         /// one listing per folder. The size and whether a folder is a reparse
         /// point come with each name, so nothing is asked of a file twice: a
         /// FileInfo per file and a DirectoryInfo per folder were a second round
@@ -2983,7 +2983,7 @@ namespace ExplorerNative
         /// Two traps here. A trailing backslash immediately before the closing
         /// quote is read as an escape, so "C:\dir\" swallows the quote. And
         /// trimming it off a drive root leaves "D:", which does not mean the
-        /// root of D — it means the current directory on D, so a copy would
+        /// root of D, it means the current directory on D, so a copy would
         /// land somewhere else entirely. A root is therefore written "D:\."
         /// which has no trailing separator and still resolves to the root.
         /// </summary>
@@ -3088,7 +3088,7 @@ namespace ExplorerNative
         ///
         /// For the "into itself" checks. A folder moved into a junction that
         /// points inside it looked, by its letters, like a move somewhere else
-        /// entirely — and the copy then walked into its own output, S\inner\S\
+        /// entirely, and the copy then walked into its own output, S\inner\S\
         /// inner\S, until the paths were too long.
         /// </summary>
         public static string Resolved(string path)
@@ -3141,7 +3141,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Whether <paramref name="candidate"/> is <paramref name="ancestor"/> or
-        /// inside it, by where both really are — see <see cref="Resolved"/> —
+        /// inside it, by where both really are, see <see cref="Resolved"/>,
         /// as well as by their letters.
         /// </summary>
         public static bool ResolvedWithin(string candidate, string ancestor)

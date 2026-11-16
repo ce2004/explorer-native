@@ -11,8 +11,8 @@ namespace ExplorerNative
     /// CRC-32 (the IEEE 802.3 polynomial, reflected), which is the checksum both
     /// zip and gzip are defined in terms of.
     ///
-    /// Hand-written because there is nowhere else to get it. .NET has a CRC-32 —
-    /// <c>System.IO.Hashing.Crc32</c> — and it is not in the framework: it is a
+    /// Hand-written because there is nowhere else to get it. .NET has a CRC-32,
+    /// <c>System.IO.Hashing.Crc32</c>, and it is not in the framework: it is a
     /// NuGet package, and this project takes packages only where there is no
     /// other way (see the csproj, and the two audio codecs that are the whole of
     /// that exception). Thirty lines of table lookup is not "no other way".
@@ -76,7 +76,7 @@ namespace ExplorerNative
         /// Folds <paramref name="data"/> into a running checksum.
         ///
         /// The caller keeps the running value between calls, which is what makes
-        /// this usable from a loop reading a file in blocks — and from the zip
+        /// this usable from a loop reading a file in blocks, and from the zip
         /// writer, which needs the checksum of an entry it is streaming past
         /// rather than holding.
         /// </summary>
@@ -86,7 +86,7 @@ namespace ExplorerNative
             //
             // Worth knowing because it reads like a coincidence and is not:
             // ARM defines two families, CRC32 and CRC32C, and the first is
-            // 0x04C11DB7 — the one zip and gzip are defined in terms of. The
+            // 0x04C11DB7, the one zip and gzip are defined in terms of. The
             // second is Castagnoli, which is a different checksum and would
             // silently produce archives nothing could verify. This is
             // <see cref="Arm.Crc32"/>, never <c>Arm.Crc32C</c>.
@@ -98,7 +98,7 @@ namespace ExplorerNative
             // is never exercised is not a fallback.
             //
             // Measured over 256MB on this machine: 134 MB/s a byte at a time,
-            // 300 MB/s from the tables, 2.0 GB/s here — fifteen times the naive
+            // 300 MB/s from the tables, 2.0 GB/s here, fifteen times the naive
             // loop. What makes that worth having is not the deflate, which is
             // thirty times slower than any of the three; it is the *stored*
             // entry. A folder of jpegs and video goes into a zip without being

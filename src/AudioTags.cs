@@ -39,7 +39,7 @@ namespace ExplorerNative
 
     /// <summary>
     /// What a music file says about itself, read through the Windows property
-    /// system — the same store File Explorer's Details pane reads.
+    /// system, the same store File Explorer's Details pane reads.
     ///
     /// No tag parser of our own, and no library. Windows already knows how to
     /// read ID3, Vorbis comments and MP4 atoms, and asking it means the numbers
@@ -77,7 +77,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Sixteen bytes on 32-bit, twenty-four on 64-bit — the union is two
+        /// Sixteen bytes on 32-bit, twenty-four on 64-bit, the union is two
         /// pointers wide. Never read directly; it is handed straight back to
         /// propsys for conversion and then cleared.
         /// </summary>
@@ -191,7 +191,7 @@ namespace ExplorerNative
                     }
 
                     Raise("audiofile.tags", artist == null ? title : $"{title} by {artist}");
-                    return artist == null ? title : artist + " — " + title;
+                    return artist == null ? title : artist + " - " + title;
                 }
                 finally { Release(store); }
             }
@@ -807,7 +807,7 @@ namespace ExplorerNative
                     // rather than failing, so "absent" and "blank" arrive looking
                     // identical. They are the same thing here, and treating them
                     // as different is how a file with no tags got announced as
-                    // " — " instead of by its name.
+                    // ", " instead of by its name.
                     var read = Marshal.PtrToStringUni(text);
                     return string.IsNullOrWhiteSpace(read) ? null : read;
                 }

@@ -2297,7 +2297,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// A code tried by <paramref name="key"/>: a right one clears its record, a wrong one counts — once per
+        /// A code tried by <paramref name="key"/>: a right one clears its record, a wrong one counts, once per
         /// distinct <paramref name="code"/>. A page polling with a code that has since changed sends the same
         /// wrong code every second; that is one stale code, not somebody guessing, and must not set off the
         /// spoken warning. Null counts every time.

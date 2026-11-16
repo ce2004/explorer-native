@@ -17,7 +17,7 @@ namespace ExplorerNative
     /// from then on every double-click on a folder anywhere in Windows starts
     /// this executable with a path. Without a handoff each of those either opens
     /// a second window or, worse, starts, finds the single-instance lock taken,
-    /// and exits — so the folder the user asked for simply never appears.
+    /// and exits, so the folder the user asked for simply never appears.
     ///
     /// A named pipe rather than a window message, because the running instance
     /// may have no window at all: closing to the tray hides it, and starting
@@ -50,11 +50,11 @@ namespace ExplorerNative
 
         /// <summary>
         /// Per-user: two people signed in at once must not cross wires.
-        /// Internal rather than private so the suite can impersonate a client —
+        /// Internal rather than private so the suite can impersonate a client,
         /// the one that connects and says nothing has to be testable.
         ///
         /// And per session. The single-instance mutex is a session-local name, so
-        /// the same person signed in twice — a console and a remote desktop —
+        /// the same person signed in twice, a console and a remote desktop,
         /// runs a copy in each; a pipe name shared between them let only one of
         /// those listen, and sent the other session's folders to a window on a
         /// screen nobody in that session could see.
@@ -87,14 +87,14 @@ namespace ExplorerNative
 
         /// <summary>
         /// Only this user may serve or reach the pipe. Without it anyone on the
-        /// machine could create the name first — the listener then never starts,
+        /// machine could create the name first, the listener then never starts,
         /// and every folder this user opens is handed to a stranger's process.
         /// </summary>
         private const PipeOptions Restricted = PipeOptions.CurrentUserOnly;
 
         private const int ConnectTimeoutMs = 2500;
 
-        /// <summary>Sent when a second copy is launched with no folder — just show the window.</summary>
+        /// <summary>Sent when a second copy is launched with no folder, just show the window.</summary>
         public const string ShowCommand = "<show>";
 
         /// <summary>
@@ -102,7 +102,7 @@ namespace ExplorerNative
         /// changed settings.json behind a live instance's back.
         ///
         /// Without it the running copy still holds the settings it loaded at
-        /// startup, writes them out on exit, and silently undoes the change — and
+        /// startup, writes them out on exit, and silently undoes the change, and
         /// worse, reconciles the registry against them on the next launch, so the
         /// takeover the user had just asked for removed itself.
         /// </summary>
@@ -185,7 +185,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Waits for the listener to finish with a client it had already
-        /// accepted when it was stopped — up to the read deadline and a little —
+        /// accepted when it was stopped, up to the read deadline and a little,
         /// so what that client asked for is handed on before quitting takes
         /// stock of what is waiting.
         /// </summary>
@@ -308,7 +308,7 @@ namespace ExplorerNative
                     catch
                     {
                         if (token.IsCancellationRequested) return;
-                        // Something transient — a client that died mid-write, a pipe
+                        // Something transient, a client that died mid-write, a pipe
                         // in a bad state. Pause briefly rather than spin the CPU
                         // rebuilding a pipe that is going to fail again immediately.
                         try { Task.Delay(250, token).GetAwaiter().GetResult(); }
@@ -327,7 +327,7 @@ namespace ExplorerNative
         ///
         /// Must stay below <see cref="ConnectTimeoutMs"/>, and that is the whole
         /// design. Only one server instance exists at a time, so while a silent
-        /// client is being waited on nobody else can connect — a real launch
+        /// client is being waited on nobody else can connect, a real launch
         /// arriving in that window sits in Connect. Keeping this the shorter of
         /// the two means the stall clears first and the waiting launch still gets
         /// in, so one misbehaving client costs a delay rather than a folder that
@@ -344,7 +344,7 @@ namespace ExplorerNative
         ///
         /// A blocking StreamReader.ReadLine here was a single point of failure
         /// for the entire handoff. One client that connects and then never
-        /// writes — killed between the two calls, or simply not us — parks this
+        /// writes, killed between the two calls, or simply not us, parks this
         /// thread for ever, and from that moment every folder double-click on the
         /// machine opens nothing, because the listener that would have answered
         /// it is still waiting on the last one. Nothing recovers that except
@@ -355,7 +355,7 @@ namespace ExplorerNative
         /// blocks and nothing waits on the thread pool. The bytes are decoded
         /// once at the end rather than per chunk: a path can carry characters
         /// whose UTF-8 runs across a read boundary, and decoding each chunk on
-        /// its own splits them into replacement characters — a folder that
+        /// its own splits them into replacement characters, a folder that
         /// opens for most people and not for the one with an accent in their
         /// user name.
         /// </summary>
@@ -425,8 +425,8 @@ namespace ExplorerNative
         /// </summary>
         public static bool SendToRunningInstance(string request)
         {
-            // Only the name of this session. The name without a session part —
-            // what a copy from before sessions were in the name listened on — is
+            // Only the name of this session. The name without a session part,
+            // what a copy from before sessions were in the name listened on, is
             // also session 1's name now, so from any other session it reached
             // another session's copy.
             return Send(PipeName, request, ConnectTimeoutMs);
@@ -504,7 +504,7 @@ namespace ExplorerNative
     internal static class LaunchArguments
     {
         /// <summary>
-        /// The switches that do their work and exit without a window — the only
+        /// The switches that do their work and exit without a window, the only
         /// runs that are allowed to borrow a console.
         /// </summary>
         public static readonly string[] CommandLineSwitches =

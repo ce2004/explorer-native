@@ -24,7 +24,7 @@ namespace ExplorerNative
     /// Watches whether Google Drive is reachable, and says so once when the
     /// answer changes.
     ///
-    /// A cloud drive that goes offline is not an error, it is a Tuesday — a lid
+    /// A cloud drive that goes offline is not an error, it is a Tuesday, a lid
     /// closed, a train tunnel, a router rebooting. What matters is that the
     /// application does not pretend otherwise: a folder that will not list and a
     /// track that will not play should say "Drive is offline" rather than
@@ -32,7 +32,7 @@ namespace ExplorerNative
     ///
     /// Deliberately not a poller. Asking Google every thirty seconds whether the
     /// internet exists is traffic spent on a question that only matters when
-    /// something is actually being read — so the state is inferred from the
+    /// something is actually being read, so the state is inferred from the
     /// requests the application was making anyway, and only a recovery check
     /// costs a request of its own.
     /// </summary>
@@ -75,7 +75,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// A request threw. Only network-shaped failures count towards going
-        /// offline — a 403 or a bad token means Drive answered, and calling that
+        /// offline, a 403 or a bad token means Drive answered, and calling that
         /// "offline" would send somebody looking at their router when the problem
         /// is their sign-in.
         /// </summary>
@@ -115,7 +115,7 @@ namespace ExplorerNative
                 // Note what is *not* here: a bare TaskCanceledException.
                 //
                 // It used to be, on the reasoning that HttpClient reports its own
-                // timeout that way — which it does, but wrapped around a
+                // timeout that way, which it does, but wrapped around a
                 // TimeoutException, and the loop below finds that on the next
                 // step. What the bare one really means is that somebody passed a
                 // token and then cancelled it, which is us: disposing a

@@ -10,8 +10,8 @@ namespace ExplorerNative
     ///
     /// That is how every other application asks for a shortcut, and it is also
     /// much less to walk through with a screen reader: one control per action
-    /// instead of five. The Hotkey page still uses the tick boxes — it has a
-    /// single shortcut on it and predates this — but eight audio actions that way
+    /// instead of five. The Hotkey page still uses the tick boxes, it has a
+    /// single shortcut on it and predates this, but eight audio actions that way
     /// would be forty controls in a list read one at a time.
     ///
     /// Tab, Shift+Tab, Enter and Escape are never captured, so the box can always
@@ -28,7 +28,7 @@ namespace ExplorerNative
 
         private Shortcut _value;
 
-        /// <summary>What the box now holds, and why — the caller announces it.</summary>
+        /// <summary>What the box now holds, and why, the caller announces it.</summary>
         public event Action<string>? Captured;
 
         /// <summary>
@@ -113,7 +113,7 @@ namespace ExplorerNative
             if ((modifiers & Keys.Alt) != 0) mods |= HotkeyManager.MOD_ALT;
             if ((modifiers & Keys.Shift) != 0) mods |= HotkeyManager.MOD_SHIFT;
 
-            // Keys.Modifiers has no Windows bit — WinForms does not carry one —
+            // Keys.Modifiers has no Windows bit, WinForms does not carry one,
             // so the Windows key has to be asked about directly.
             if ((GetKeyState(VK_LWIN) & 0x8000) != 0 || (GetKeyState(VK_RWIN) & 0x8000) != 0)
                 mods |= HotkeyManager.MOD_WIN;
@@ -152,7 +152,7 @@ namespace ExplorerNative
         /// <summary>Takes a pressed combination, or says why not.</summary>
         internal void Accept(Shortcut candidate)
         {
-            // A key with no name here — a Japanese IME key, an unnamed OEM key —
+            // A key with no name here, a Japanese IME key, an unnamed OEM key,
             // is written to the file as a number that never parses back, and the
             // shortcut then silently does not exist on the next start.
             if (!Shortcut.Parse(candidate.ToString()).Equals(candidate))

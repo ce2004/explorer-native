@@ -15,7 +15,7 @@ namespace ExplorerNative
     /// The volume itself: what Windows asks of the drive letter, answered from
     /// the mount's listings, its chunk cache and its write-back. Plus the two
     /// things a real drive has to do that a folder of placeholders never could
-    /// — tell Windows when something changed elsewhere, and go away when Google
+    /// tell Windows when something changed elsewhere, and go away when Google
     /// cannot be reached.
     /// </summary>
     internal sealed partial class DriveMount
@@ -48,8 +48,8 @@ namespace ExplorerNative
         /// <summary>
         /// What a path on the mount is, from what the mount holds: whether it is
         /// there, a folder, and its size and date (a file held here at the size
-        /// it has here). Null when the mount does not know — its folder never
-        /// listed — and the caller may ask the letter. The file manager asks
+        /// it has here). Null when the mount does not know, its folder never
+        /// listed, and the caller may ask the letter. The file manager asks
         /// this rather than File and Directory: those go through the volume,
         /// which is this process answering itself, and which is not there at
         /// all while the letter is hidden offline.
@@ -922,8 +922,8 @@ namespace ExplorerNative
         /// <summary>
         /// A read of a file that is only on Drive, through its chunk cache: a
         /// piece at a time into Windows' buffer, each piece with its own
-        /// deadline. Never answered short — a short read before the end looks
-        /// like the end to most readers — so a piece that will not come fails
+        /// deadline. Never answered short, a short read before the end looks
+        /// like the end to most readers, so a piece that will not come fails
         /// the whole read.
         /// </summary>
         internal unsafe int ReadFromDrive(Opened opened, IntPtr buffer, ulong offset, uint length, out uint transferred)

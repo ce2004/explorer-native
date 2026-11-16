@@ -41,8 +41,8 @@ namespace ExplorerNative
             Task.Run(() => Lowered(() => { work(); return 0; }), token);
 
         /// <summary>
-        /// For work that waits for long stretches — a writer waiting on a
-        /// queue, the thread that drives a whole archive — on a thread of its
+        /// For work that waits for long stretches, a writer waiting on a
+        /// queue, the thread that drives a whole archive, on a thread of its
         /// own, below normal. Waiting on a pool thread, eight tar writers held
         /// all eight of the pool's threads, and the gzip pieces they were
         /// waiting for queued behind them until the pool slowly grew: a

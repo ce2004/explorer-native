@@ -8,7 +8,7 @@ namespace ExplorerNative
     ///
     /// The control's own incremental search cannot do this here. A virtual
     /// ListView owns no items to search, so single letters were all that ever
-    /// worked — typing "sy" in a folder jumped to something beginning with "s"
+    /// worked, typing "sy" in a folder jumped to something beginning with "s"
     /// and then to something beginning with "y", which in a folder of thousands
     /// is worse than useless.
     /// </summary>
@@ -22,8 +22,8 @@ namespace ExplorerNative
         ///
         /// A quarter of a second, which is deliberately quicker than the shell's
         /// own second. A short window means a letter typed on its own acts on its
-        /// own — the single-letter cycling that walks the S entries stays
-        /// responsive instead of waiting to see whether more is coming — while
+        /// own, the single-letter cycling that walks the S entries stays
+        /// responsive instead of waiting to see whether more is coming, while
         /// letters typed as one burst still make a word. Adjustable, because the
         /// right value is entirely a matter of how fast someone types.
         /// </summary>
@@ -40,7 +40,7 @@ namespace ExplorerNative
         /// word being typed right now" got the answer yes for ever.
         ///
         /// That is how Space stopped selecting. Space is part of a name while a
-        /// word is being typed — "Program Files" has one — and toggles the row
+        /// word is being typed, "Program Files" has one, and toggles the row
         /// otherwise, so it is exactly the question above. Type three letters,
         /// pause, and the buffer still said a word was in progress: every Space
         /// from then on went into a search nobody was running instead of
@@ -95,14 +95,14 @@ namespace ExplorerNative
         /// already expect:
         ///
         /// The same letter over and over cycles through everything starting with
-        /// it — "s", "s", "s" walks the S entries — so it must always move on.
+        /// it, "s", "s", "s" walks the S entries, so it must always move on.
         ///
-        /// A growing prefix is a refinement — "s", "sy", "sys" — so it starts
+        /// A growing prefix is a refinement, "s", "sy", "sys", so it starts
         /// from the current row and stays put while that row still matches,
         /// rather than jumping away and back.
         ///
         /// Indexed, so the caller need not materialise a list of names on every
-        /// keystroke — in a folder of a hundred thousand rows that allocation
+        /// keystroke, in a folder of a hundred thousand rows that allocation
         /// would cost more than the search.
         /// </summary>
         public static int Find(int count, Func<int, string?> nameAt, string query, int currentIndex)
@@ -110,7 +110,7 @@ namespace ExplorerNative
             if (count <= 0 || nameAt == null || string.IsNullOrEmpty(query)) return -1;
 
             // Both sides without their accents, so "e" reaches "Éclair" and
-            // "étoile" — which the list sorts among the E names (see
+            // "étoile", which the list sorts among the E names (see
             // NameRules.CompareNames), so the jump lands where the eye and the
             // ear expect the E names to start.
             //
@@ -175,7 +175,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// True for "s", "ss", "sss" — a single character is the same case as a
+        /// True for "s", "ss", "sss", a single character is the same case as a
         /// repeat of one, because a lone letter has always meant "next one of
         /// these", not "the first one of these".
         ///
@@ -220,7 +220,7 @@ namespace ExplorerNative
         ///
         /// Decomposed by Windows itself (NormalizeString), not by
         /// string.Normalize: the application runs with InvariantGlobalization,
-        /// where string.Normalize leaves everything above ASCII untouched —
+        /// where string.Normalize leaves everything above ASCII untouched,
         /// measured, "Éclair" comes back unchanged.
         /// </summary>
         public static string Fold(string text)

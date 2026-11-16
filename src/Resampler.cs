@@ -8,7 +8,7 @@ namespace ExplorerNative
     ///
     /// This is the other half of pitch shifting. On its own it is a tape
     /// machine: run the tape fast and everything gets higher *and* shorter.
-    /// <see cref="TimeStretch"/> is the opposite — it changes the length and
+    /// <see cref="TimeStretch"/> is the opposite, it changes the length and
     /// leaves the pitch alone. Put one behind the other and the two effects can
     /// be dialled independently, because they are the same two knobs in a
     /// different basis:
@@ -36,7 +36,7 @@ namespace ExplorerNative
         /// Where the next output sample sits in the input, as a whole part and
         /// a fraction. Kept between calls, because a hop that ends three
         /// quarters of the way between two input frames has to start there next
-        /// time — rounding it to a whole frame is a phase step at every buffer
+        /// time, rounding it to a whole frame is a phase step at every buffer
         /// boundary, which is a click at the buffer rate.
         /// </summary>
         private double _position;
@@ -98,7 +98,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// The source has more to give after all — it was seeked back rather
+        /// The source has more to give after all, it was seeked back rather
         /// than being finished with.
         ///
         /// <see cref="_sourceDone"/> is a latch, and it has to be: a source that
@@ -108,7 +108,7 @@ namespace ExplorerNative
         /// gapless repeat turns the decoder round without stopping anything.
         ///
         /// Left latched, this stage never draws again and the track is silent
-        /// from the first repeat onwards — and only when the pitch is not
+        /// from the first repeat onwards, and only when the pitch is not
         /// normal, because at ratio 1 this is a pass-through that never latches.
         /// "Moving pitch on repeat breaks it", exactly.
         ///
@@ -138,8 +138,8 @@ namespace ExplorerNative
             // interpolator that would round every one of them.
             //
             // Coming back to normal pitch, what is still held is handed out as
-            // it is first — from the nearest whole frame, which is at most half
-            // a sample's shift, once — and then the stage is out of the way.
+            // it is first, from the nearest whole frame, which is at most half
+            // a sample's shift, once, and then the stage is out of the way.
             // It used to wait for a seek to empty itself, interpolating at ratio
             // one with a fractional position in the meantime: a treble loss of
             // 3dB at 16kHz on audio that was supposed to be untouched.
@@ -169,7 +169,7 @@ namespace ExplorerNative
                 {
                     // Catmull-Rom, not linear. Linear interpolation is a
                     // triangular filter, which rolls the top off audibly and
-                    // folds what it does not remove back down as aliasing —
+                    // folds what it does not remove back down as aliasing,
                     // exactly the two things a pitch control gets blamed for.
                     // Four points and a cubic cost a handful of multiplies and
                     // sound like the recording.
@@ -207,7 +207,7 @@ namespace ExplorerNative
 
             // Held frames still to hand out. Asked of the frames, not of the
             // position: a position within half a frame of the end rounds to the
-            // end, holds nothing, and still compared as less than it — so this
+            // end, holds nothing, and still compared as less than it, so this
             // returned nothing for ever, and the track ended early.
             if (held > made) return made;
 
@@ -271,7 +271,7 @@ namespace ExplorerNative
         /// <summary>
         /// The anti-alias filter, and it only exists in one direction.
         ///
-        /// Reading the source *faster* than it is played — pitching up — moves
+        /// Reading the source *faster* than it is played, pitching up, moves
         /// every frequency in it upwards, and anything that lands above half the
         /// output rate does not vanish, it folds back down as a tone that was
         /// never in the recording. So the input is band-limited before it is
@@ -359,7 +359,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Semitones to a frequency ratio. Twelve to an octave, which is a
-        /// doubling — the only formula in music that everybody agrees on.
+        /// doubling, the only formula in music that everybody agrees on.
         /// </summary>
         public static double RatioForSemitones(double semitones) =>
             Math.Pow(2.0, semitones / 12.0);

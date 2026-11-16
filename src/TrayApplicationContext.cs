@@ -48,7 +48,7 @@ namespace ExplorerNative
         ///
         /// Captured in the constructor, which runs on the UI thread before the
         /// message loop starts. A NotifyIcon has no window handle of its own to
-        /// BeginInvoke through, and the form may not exist yet — so the
+        /// BeginInvoke through, and the form may not exist yet, so the
         /// synchronisation context is the only handle onto the right thread.
         /// </summary>
         private readonly SynchronizationContext _ui;
@@ -79,7 +79,7 @@ namespace ExplorerNative
             });
             menu.Items.Add(new ToolStripSeparator());
 
-            // The way to reach the player when a shortcut does not work — and a
+            // The way to reach the player when a shortcut does not work, and a
             // shortcut can fail without saying so. RegisterHotKey reports a
             // conflict only against another RegisterHotKey; anything with a
             // low-level keyboard hook above it (a screen reader, a graphics
@@ -163,7 +163,7 @@ namespace ExplorerNative
             _audio.Failed += path => PostUi(() => OnTrackFailed(path));
 
             // The engine is built on this thread and belongs to it, so the
-            // player's own timers — the seek coalescer and the volume fade — come
+            // player's own timers, the seek coalescer and the volume fade, come
             // back here rather than calling across an apartment boundary.
             _audio.Post = work => PostUi(() => work());
 
@@ -177,7 +177,7 @@ namespace ExplorerNative
 
             // The four notification hooks the layers below expose. Each is null
             // until something subscribes, and each layer checks that before
-            // building a string — the fetch callback alone runs 891 times for one
+            // building a string, the fetch callback alone runs 891 times for one
             // 232MB track, on a thread that is holding up whoever is reading.
             _audio.Notify = OnPlayerNotification;
             _browsePrefetch.Notify = OnPlayerNotification;
@@ -286,10 +286,10 @@ namespace ExplorerNative
 
             // Google expires a refresh token after seven days for an app that has
             // not been through verification, and verification for a Drive scope
-            // means a third-party security assessment — so this is a weekly fact
+            // means a third-party security assessment, so this is a weekly fact
             // of life, not a fault. Said once, with the way back in the same
             // sentence.
-            // A cloud drive going offline is a Tuesday, not a fault — a lid
+            // A cloud drive going offline is a Tuesday, not a fault, a lid
             // closed, a tunnel, a router rebooting. Said once when it happens and
             // once when it comes back, rather than once per file that would not
             // open.
@@ -307,8 +307,8 @@ namespace ExplorerNative
                     "Google Drive sign-in has expired. Open Preferences, Google Drive, to sign in again."));
 
             // The registry is the only thing that knows whether a claim actually
-            // changed hands — everything here is reconciled on every launch and
-            // rewrites entries that were already ours — so the report comes from
+            // changed hands, everything here is reconciled on every launch and
+            // rewrites entries that were already ours, so the report comes from
             // where the write happens rather than from a comparison of settings.
             ShellRegistration.Changed += OnShellRegistrationChanged;
 
@@ -364,7 +364,7 @@ namespace ExplorerNative
             _registrationWatch.Tick += (_, _) => CheckFolderRegistration();
             _registrationWatch.Start();
 
-            // "Start minimised" is about an unprompted startup — signing in, or
+            // "Start minimised" is about an unprompted startup, signing in, or
             // the Run key firing. Being handed a folder is a direct request to
             // look at something, so it wins: without this, double-clicking a
             // folder while the app is the default handler started a process that
@@ -378,7 +378,7 @@ namespace ExplorerNative
 
             // Posted, not said. Everything above is the path to the window, and
             // this application is the shell's handler for every folder on the
-            // machine — started afresh on every folder open, ~420ms cold. The
+            // machine, started afresh on every folder open, ~420ms cold. The
             // catalogue is 167 entries and looking one up builds it, so the
             // lookup waits for the message loop and lands after the folder is on
             // screen. The post itself is a queued delegate and nothing else.
@@ -449,7 +449,7 @@ namespace ExplorerNative
         /// <summary>
         /// The waiting releases, laid over <paramref name="merged"/>. The folder
         /// release gives way to a takeover the command line recorded after it
-        /// (<see cref="Settings.FoldersTakenAt"/>) — a decision, where the file's
+        /// (<see cref="Settings.FoldersTakenAt"/>), a decision, where the file's
         /// own date is any write at all.
         /// </summary>
         private void ApplyPendingReleases(Settings merged)
@@ -476,7 +476,7 @@ namespace ExplorerNative
                     return;
                 }
 
-                // Still held: try again. Opened and damaged is an answer too — a
+                // Still held: try again. Opened and damaged is an answer too, a
                 // copy has been kept aside and the defaults are what there is.
                 var fresh = Settings.Load(out bool _);
                 if (fresh.UnreadableOnDisk) return;
@@ -507,8 +507,8 @@ namespace ExplorerNative
         /// Runs <paramref name="work"/> on the UI thread, unless the application
         /// is on its way out.
         ///
-        /// Workers keep raising things after Quit — a Drive notification, a track
-        /// failing as its source is torn down — and posting then either threw on
+        /// Workers keep raising things after Quit, a Drive notification, a track
+        /// failing as its source is torn down, and posting then either threw on
         /// the worker, which is an unhandled exception during exit, or ran against
         /// a tray icon and a window that had already been disposed.
         /// </summary>
@@ -656,7 +656,7 @@ namespace ExplorerNative
         ///
         /// Never on the way in to the UI thread: this signs in over the network
         /// and lists the top of the Drive, and this application is the shell
-        /// handler for every folder on the machine — it is started afresh on
+        /// handler for every folder on the machine, it is started afresh on
         /// every folder open, and nothing that waits on Google belongs in that
         /// path.
         /// </summary>
@@ -704,7 +704,7 @@ namespace ExplorerNative
                     if (_quitting || !_settings.GoogleDriveEnabled || attempt != Volatile.Read(ref _mountAttempt) ||
                         _drive.Mounted) return;
                     // Never a browser from a retry: it only refreshes a saved sign-in.
-                    ok = await _drive.Mount(_settings, quietly: true, mayConsent: false);
+                    ok = await _drive.Mount(_settings, silently: true, mayConsent: false);
                     if (!ok && !_drive.FailedOnNetwork && !_settings.GoogleDriveEnabled) return;
                 }
                 PostUi(() =>
@@ -884,7 +884,7 @@ namespace ExplorerNative
                 : MessageBox.Show(body, "Explorer Native", buttons, icon);
         }
         /// <param name="reload">
-        /// The file was changed from outside — a command-line flag — rather
+        /// The file was changed from outside, a command-line flag, rather
         /// than by somebody pressing OK in Preferences. Nothing is announced,
         /// no shortcut dialog is put up again, and Drive is only connected when
         /// the change is what switched it on: a reload used to open a Google
@@ -943,7 +943,7 @@ namespace ExplorerNative
             ApplyFileServers(announce: !reload);
 
             // Switched back on in Preferences since: that choice stands over a
-            // release still waiting for the file to open — that one setting,
+            // release still waiting for the file to open, that one setting,
             // and only when it is on. OK on anything else leaves the rest.
             if (!reload)
             {
@@ -972,7 +972,7 @@ namespace ExplorerNative
 
             // Reconcile records where the executable was when the registry was
             // written, and that has to be saved or it is recomputed as "moved" on
-            // every single launch — rewriting the shell entries each time for no
+            // every single launch, rewriting the shell entries each time for no
             // reason. The constructor already did this; here it was dropped,
             // because Program.ApplySettings saves *before* calling us.
             if (!_settings.UnreadableOnDisk && ShellRegistration.Reconcile(_settings)) _settings.Save();
@@ -1015,7 +1015,7 @@ namespace ExplorerNative
         /// one.
         ///
         /// Ticking the box in Preferences would otherwise register whichever
-        /// executable happened to be running — and if that is a build output,
+        /// executable happened to be running, and if that is a build output,
         /// the next rebuild replaces it and the next clean deletes it, taking
         /// every folder on the machine with it. Installing first means the
         /// registry names a copy that only an explicit install ever touches.
@@ -1062,7 +1062,7 @@ namespace ExplorerNative
         ///
         /// <paramref name="announce"/> is false on the way in. What succeeded is
         /// only news when something has just been changed, and the constructor
-        /// runs on the path that opens every folder on the machine — a catalogue
+        /// runs on the path that opens every folder on the machine, a catalogue
         /// lookup per shortcut there would be nine of them before the window.
         /// What *failed* is still reported on both paths, because a shortcut that
         /// was working yesterday and is not today is worth hearing about whether
@@ -1096,7 +1096,7 @@ namespace ExplorerNative
             // Combinations the application will not hand to Windows whatever the
             // settings file says. A global registration is exclusive machine-wide,
             // so a shortcut of Ctrl+C would take copying away from every program
-            // on the computer — this one included, whose own Copy would then never
+            // on the computer, this one included, whose own Copy would then never
             // see the key. Preferences refuses these as they are typed;
             // settings.json is a text file people are invited to edit, and
             // Settings.Validated deliberately leaves shortcut text alone, so the
@@ -1209,7 +1209,7 @@ namespace ExplorerNative
 
             // One dialog for all three, never one each. Two of these posted
             // together arrive about ten milliseconds apart, and the second opens
-            // *inside the first one's modal loop* — so they stack, and a screen
+            // *inside the first one's modal loop*, so they stack, and a screen
             // reader announces only the one on top. Measured with NVDA's own
             // speech log: the second dialog was read out in full, title, body and
             // button, and the first was never announced as a dialog at all. It
@@ -1237,7 +1237,7 @@ namespace ExplorerNative
         /// Null unless a harness is watching, exactly like
         /// <see cref="PerfCounters"/>. This
         /// path decides what every global key on the machine does and it reports
-        /// its outcomes through notifications and a dialog — which is to say,
+        /// its outcomes through notifications and a dialog, which is to say,
         /// through the very things that were not appearing when it needed
         /// investigating. Set EXPLORERNATIVE_HOTKEYLOG to a file path.
         /// </summary>
@@ -1262,7 +1262,7 @@ namespace ExplorerNative
         /// answered.
         ///
         /// Preferences refuses all three of these as they are typed, so anything
-        /// reaching here arrived by editing settings.json — which is the one route
+        /// reaching here arrived by editing settings.json, which is the one route
         /// where silence is worst. Somebody who has just hand-edited a file to get
         /// a shortcut they were told they could not have will conclude, from a key
         /// that does nothing, that the edit did not take: and the natural next
@@ -1272,14 +1272,14 @@ namespace ExplorerNative
         ///
         /// The duplicate case is the quietest of the three and the most misleading.
         /// One of the two keys works perfectly, so what it looks like is not "my
-        /// settings clash" but "this action is broken" — and which of the two
+        /// settings clash" but "this action is broken", and which of the two
         /// survives depends on the order this walks the list, which is nothing
         /// anybody can see from the file.
         ///
         /// **One dialog, never one per problem.** Two posted together arrive about
         /// ten milliseconds apart and the second opens inside the first's modal
         /// loop, so they stack. Measured with NVDA's speech log: the second was
-        /// read out in full — title, body, button — and the first was never
+        /// read out in full, title, body, button, and the first was never
         /// announced as a dialog at all, while still sitting underneath waiting to
         /// be found by somebody with no way of knowing it was there.
         ///
@@ -1292,7 +1292,7 @@ namespace ExplorerNative
         /// Posted rather than shown inline. This runs from the constructor, before
         /// there is a window to own a dialog or a message loop to pump one, and a
         /// modal window put up at that point stops the application appearing at
-        /// all until it is dismissed — a file manager that looks like it failed to
+        /// all until it is dismissed, a file manager that looks like it failed to
         /// start, in answer to a shortcut being wrong.
         /// </summary>
         private void ShowShortcutDialog(
@@ -1317,7 +1317,7 @@ namespace ExplorerNative
             if (reserved.Count > 0)
                 why.Add("A global shortcut is taken from every application on this computer, " +
                         "this one included. Setting one of these would stop that key doing its " +
-                        "usual job everywhere — and nothing would warn you, because as far as " +
+                        "usual job everywhere, and nothing would warn you, because as far as " +
                         "Windows is concerned nothing went wrong.");
 
             if (duplicates.Count > 0)
@@ -1384,7 +1384,7 @@ namespace ExplorerNative
         private void OnHotkey(int id)
         {
             // Any hotkey press ends the previous key's repeat, including this
-            // one's own — a second press is a new hold, not a continuation.
+            // one's own, a second press is a new hold, not a continuation.
             _hold.Stop();
 
             if (id == HotkeyManager.MainWindowHotkeyId) { ToggleWindow(); return; }
@@ -1411,14 +1411,14 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// One step of a held key, grown by how long it has been held — with the
+        /// One step of a held key, grown by how long it has been held, with the
         /// ceiling taken from the action's own entry, so the list stays the one
         /// place that says how an action behaves.
         /// </summary>
         private int Step(AudioAction action, int step, int repeat)
         {
             // Always accelerating. It was a preference, and without it the
-            // repeat rate is beside the point — one percent of volume fifty
+            // repeat rate is beside the point, one percent of volume fifty
             // times a second still takes two seconds to cross the dial. A tap is
             // exactly one step whatever this does, so there was never anything
             // for the switch to protect.
@@ -1436,7 +1436,7 @@ namespace ExplorerNative
         public void RunAudioAction(AudioAction action, int repeat)
         {
             // The dialogs are modal, and global shortcuts still arrive while one
-            // is up — so pressing a dialog's key again opened a second on top,
+            // is up, so pressing a dialog's key again opened a second on top,
             // and cancelling the outer one then put back values the inner one
             // had just applied and saved. One at a time.
             //
@@ -1461,8 +1461,8 @@ namespace ExplorerNative
                     _audioDialogOpen = false;
                     ExplorerNative.MainForm.AudioDialogOpen = false;
 
-                    // Whatever was held back while the dialog was up — a reload,
-                    // a track started — goes to the player now.
+                    // Whatever was held back while the dialog was up, a reload,
+                    // a track started, goes to the player now.
                     if (_audioApplyPending)
                     {
                         _audioApplyPending = false;
@@ -1641,12 +1641,12 @@ namespace ExplorerNative
             };
 
             // "Nothing is loaded" is an answer to a command that could not run,
-            // not chatter about one that did — it is said whatever the category
+            // not chatter about one that did, it is said whatever the category
             // is switched to, or the key just appears to be broken.
             var info = AudioActions.For(action);
 
             // The player may have named this event more precisely on the way
-            // past — "volume at maximum" rather than "volume up", "the format
+            // past, "volume at maximum" rather than "volume up", "the format
             // will not go faster" rather than "speed down". That finer name
             // replaces the action's generic one; announcing both would say the
             // same thing twice, once under each id.
@@ -1666,12 +1666,12 @@ namespace ExplorerNative
             SayAudio(info.NotificationId, message);
 
             // A different sentence is a different event that happened to land
-            // during this one — a fade starting, a track finishing — so it is
+            // during this one, a fade starting, a track finishing, so it is
             // delivered on its own account rather than dropped.
             //
             // Once per hold, by id. Held at the end of a ladder, "Already at 400
             // percent" was raised on every repeat and started itself over eight
-            // times a second — and a hold is also when most of these happen, so
+            // times a second, and a hold is also when most of these happen, so
             // they are not simply dropped after the first press. (Cleared at
             // the top on repeat 0.)
             if (finerId != null && !string.IsNullOrEmpty(finerMessage) && _saidThisHold.Add(finerId))
@@ -1688,7 +1688,7 @@ namespace ExplorerNative
         /// happened on. One raised synchronously by the command we just called is
         /// a finer name for that command's own answer and must replace it; one
         /// arriving from a Media Foundation worker is a separate event and must
-        /// be delivered. Comparing the thread is what tells them apart — a flag
+        /// be delivered. Comparing the thread is what tells them apart, a flag
         /// alone would capture a worker's event whenever a key press happened to
         /// be in flight.
         /// </summary>
@@ -1874,7 +1874,7 @@ namespace ExplorerNative
             // OK saves what the dialog chose, not what the player happens to hold.
             // They differ exactly when the saved device has been unplugged: the
             // list shows "Follow the system default", nothing was arrowed, and the
-            // player still names the missing device — so OK kept it pinned there.
+            // player still names the missing device, so OK kept it pinned there.
             if (outcome == DialogResult.OK) _audio.OutputDeviceId = dialog.SelectedId;
             _settings.AudioOutputDeviceId = _audio.OutputDeviceId;
             if (outcome == DialogResult.OK) _settings.Save();
@@ -1891,7 +1891,7 @@ namespace ExplorerNative
         ///
         /// The limiter is switched on for the duration if it was not already.
         /// Adjusting an effect that is switched off is three lists that do
-        /// nothing, and this dialog is only reachable while it is on — but a
+        /// nothing, and this dialog is only reachable while it is on, but a
         /// shortcut is a shortcut and can be pressed at any moment. Switched
         /// back on the way out, unless OK was pressed.
         /// </summary>
@@ -1945,7 +1945,7 @@ namespace ExplorerNative
         ///
         /// Same shape as the limiter and equaliser dialogs beside it, and it
         /// opens showing whatever it is actually set to rather than
-        /// switching anything on behind your back — the switch is a tick box
+        /// switching anything on behind your back, the switch is a tick box
         /// inside the dialog, one press away.
         /// </summary>
         private string ShowSilenceDialog()
@@ -1997,9 +1997,9 @@ namespace ExplorerNative
         /// Opens the twenty bands, which land on the sound as they are moved.
         ///
         /// It opens showing whatever the equaliser is actually set to, and does
-        /// not switch it on behind your back. An earlier version did — the same
+        /// not switch it on behind your back. An earlier version did, the same
         /// trick the limiter used to need, from when its switch lived on a
-        /// preferences page — and it is wrong here for the reason it was wrong
+        /// preferences page, and it is wrong here for the reason it was wrong
         /// there: the switch is a control in this dialog, so there is nothing to
         /// work around, and a window that silently changes the sound on the way
         /// up is a window you cannot use to find out what the sound was.
@@ -2035,7 +2035,7 @@ namespace ExplorerNative
         ///
         /// Same shape as the speed, limiter and equaliser dialogs, and it opens
         /// showing what the pitch actually is rather than switching anything on
-        /// — there is nothing to switch on. Zero semitones is already a bypass.
+        /// there is nothing to switch on. Zero semitones is already a bypass.
         /// </summary>
         private string ShowPitchDialog()
         {
@@ -2081,9 +2081,9 @@ namespace ExplorerNative
         /// bypass was granted.
         ///
         /// Two of the settings on that page are requests rather than
-        /// instructions — the device is allowed to refuse raw mode, and the
+        /// instructions, the device is allowed to refuse raw mode, and the
         /// direct path stands aside for the media engine whenever the speed is
-        /// not normal — so a tick box is not an answer to "is it doing it".
+        /// not normal, so a tick box is not an answer to "is it doing it".
         /// A setting whose effect cannot be seen is one nobody can tell is
         /// broken, which this codebase has now shipped twice.
         /// </summary>
@@ -2144,7 +2144,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Audio feedback goes to the window when there is one, so the status bar
-        /// agrees with what happened, and straight to NVDA when there is not —
+        /// agrees with what happened, and straight to NVDA when there is not,
         /// which is most of the time, this being a player with no window.
         ///
         /// Showing and speaking are separate. A shortcut that is set not to talk
@@ -2161,7 +2161,7 @@ namespace ExplorerNative
         /// It used to return early when the id was set to Off, which contradicts
         /// the paragraph above it: "volume down" is off by default, so holding
         /// the volume key moved the level and left the status bar reading
-        /// whatever it said before — the one place a sighted user could have
+        /// whatever it said before, the one place a sighted user could have
         /// checked what the level actually was.
         /// </summary>
         private void SayAudio(string? notificationId, string? message, bool speak = true)
@@ -2225,8 +2225,8 @@ namespace ExplorerNative
         private void ApplyAudioSettings()
         {
             // An effect dialog is applying values as they are arrowed through,
-            // and the saved ones put back underneath it — by a track starting,
-            // or a reload — were then what its OK saved.
+            // and the saved ones put back underneath it, by a track starting,
+            // or a reload, were then what its OK saved.
             if (_audioDialogOpen) { _audioApplyPending = true; return; }
 
             _audio.OutputDeviceId = _settings.AudioOutputDeviceId;
@@ -2250,8 +2250,8 @@ namespace ExplorerNative
 
             // PreferRawOutput, StreamWhilePlaying and CacheBytes are not pushed
             // in any more. All three had a preference behind them and all three
-            // had one right answer — see the notes where those settings used to
-            // be in Settings.cs — so the player's own defaults are the whole of
+            // had one right answer, see the notes where those settings used to
+            // be in Settings.cs, so the player's own defaults are the whole of
             // it now.
 
             _audio.VolumePercent = _settings.AudioVolumePercent;
@@ -2268,7 +2268,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Starts a file in the built-in player. Returns false if the player is
-        /// switched off or unavailable — the caller then opens the file the
+        /// switched off or unavailable, the caller then opens the file the
         /// ordinary way rather than leaving the user with silence.
         ///
         /// Nothing is announced unless the preference asks for it. Pressing Enter
@@ -2281,18 +2281,18 @@ namespace ExplorerNative
         /// The waiting is the whole point of this method's shape. Opening a
         /// track means opening a decoder, and opening a decoder on a cloud or
         /// network file means Media Foundation reading a header through a
-        /// connection — measured here at 800ms to 2.7 seconds for a cold track
+        /// connection, measured here at 800ms to 2.7 seconds for a cold track
         /// on the Drive letter, and `WasapiPlayback.Start` will wait fifteen
         /// seconds before giving up on one. All of that used to happen on the UI
         /// thread, because Enter called straight through: press Enter on a song
         /// and the window stopped repainting until it began. That is the whole
         /// of "the app lags trying to load an audio file", and it is the same
         /// rule this codebase already applies to enumeration, folder sizing and
-        /// existence checks — it had simply never been applied to the one thing
+        /// existence checks, it had simply never been applied to the one thing
         /// that is guaranteed to touch the network.
         ///
-        /// So this answers the only question the caller genuinely needs
-        /// synchronously — would the player take this file at all — and does the
+        /// So this answers the only question the caller really needs
+        /// synchronously, would the player take this file at all, and does the
         /// opening on a worker. True means "it is being dealt with here", and
         /// the fallback to whatever else owns the extension moves in here with
         /// it, because by the time that is known the caller has long returned.
@@ -2557,8 +2557,8 @@ namespace ExplorerNative
 
             ApplyAudioSettings();
 
-            // The head of this file is very likely already warm — it is the row
-            // the cursor was on — and the player is about to download the rest
+            // The head of this file is very likely already warm, it is the row
+            // the cursor was on, and the player is about to download the rest
             // of it as it plays, so there is nothing left for that one to do.
             _browsePrefetch.Cancel();
 
@@ -2566,7 +2566,7 @@ namespace ExplorerNative
             // to be serialised by the UI thread simply because it was the UI
             // thread doing the work; off it, three workers would race to start
             // three tracks on one player. The newest press wins and the older
-            // ones give up at the gate rather than queueing — a track nobody is
+            // ones give up at the gate rather than queueing, a track nobody is
             // waiting for any more should not be opened at all, let alone opened
             // and then immediately disposed by the next one.
             int mine = System.Threading.Interlocked.Increment(ref _playRequest);
@@ -2597,7 +2597,7 @@ namespace ExplorerNative
 
                 // Nothing here could open it. The player has raised Failed,
                 // and OnTrackFailed hands the file to whichever application owns
-                // the extension — once. This used to open it as well, so a file
+                // the extension, once. This used to open it as well, so a file
                 // the player could not decode opened twice.
                 if (message == null) return;
 
@@ -2653,14 +2653,14 @@ namespace ExplorerNative
             // Two different things, and only one of them keeps what it reads.
             //
             // For a track that will play through a download, the download itself
-            // is started here — so by the time Enter is pressed the head of the
+            // is started here, so by the time Enter is pressed the head of the
             // file is already in memory rather than needing a fresh network read
             // per header field. Measured on a cold Drive track: 2.7 seconds to
             // open a decoder against 186ms once the bytes were held.
             //
             // The plain read-ahead stays for everything else it covers: a file
             // on a share that will not be streamed, and warming the operating
-            // system's own cache. Network drives only — on a local disk it buys
+            // system's own cache. Network drives only, on a local disk it buys
             // nothing worth the reading and competes with everything else that
             // wants the disk, which was measured rather than assumed.
             System.Threading.ThreadPool.QueueUserWorkItem(_ =>
@@ -2683,7 +2683,7 @@ namespace ExplorerNative
         /// the track's spoken name.
         ///
         /// On a worker because the property store opens the file, and the file
-        /// can be on a share whose server has gone away — the exact case the rest
+        /// can be on a share whose server has gone away, the exact case the rest
         /// of this application goes to such lengths to keep off the UI thread.
         /// </summary>
         private void BeginReadingTitle(string path)
@@ -2710,7 +2710,7 @@ namespace ExplorerNative
         /// album and the tracks on it are one recording cut into pieces.
         ///
         /// The listing is read on a worker because it is the disc, and the next
-        /// track only starts if nothing else has in the meantime — Enter on
+        /// track only starts if nothing else has in the meantime, Enter on
         /// another file, or Stop, is somebody saying they are done with the CD.
         /// </summary>
         private void PlayNextCdTrack(string finished)
@@ -2731,7 +2731,7 @@ namespace ExplorerNative
         /// <summary>
         /// Windows had no decoder for it. The file goes to whichever application
         /// owns the extension, which is where it would have gone had the player
-        /// not been switched on — a wrong guess in the extension list costs a
+        /// not been switched on, a wrong guess in the extension list costs a
         /// moment, not a file that will not open.
         /// </summary>
         private void OnTrackFailed(string path)
@@ -2910,7 +2910,7 @@ namespace ExplorerNative
         /// <summary>
         /// The settings as a command-line request leaves them: what the file now
         /// says, and for a recovery flag its change applied whatever the file
-        /// says — the file may be unreadable, and the flag must hold regardless.
+        /// says, the file may be unreadable, and the flag must hold regardless.
         /// </summary>
         private Settings SettingsAfter(string request, Settings live)
         {
@@ -2931,7 +2931,7 @@ namespace ExplorerNative
 
             // The file reads again: the waiting releases are carried by this
             // merge, written down, and done with. Left waiting, every later quit
-            // applied them over whatever was chosen since — a takeover switched
+            // applied them over whatever was chosen since, a takeover switched
             // back on was handed back again on the way out.
             if (!merged.UnreadableOnDisk && _pendingRelease != Released.None)
             {
@@ -2974,7 +2974,7 @@ namespace ExplorerNative
 
             // Not PostUi, which drops work once quitting has begun. What is in
             // the inbox when quitting ends is opened by the copy that comes
-            // after this one — a posted message still queued then is never run.
+            // after this one, a posted message still queued then is never run.
             _inbox.Enqueue(request);
             try { _ui.Post(_ => DrainInbox(), null); } catch { }
         }
@@ -2983,14 +2983,14 @@ namespace ExplorerNative
 
         /// <summary>
         /// Command-line settings changes that arrived while quitting. Taken on
-        /// before the last save, or that save put the old values back — and the
+        /// before the last save, or that save put the old values back, and the
         /// next launch undid, say, a --register-default made a moment earlier.
         /// </summary>
         private readonly System.Collections.Concurrent.ConcurrentQueue<string> _settingsWhileQuitting = new();
 
         /// <summary>
-        /// The live settings with every settings request still waiting — in the
-        /// inbox, or turned away while quitting — and a plain reload regardless,
+        /// The live settings with every settings request still waiting, in the
+        /// inbox, or turned away while quitting, and a plain reload regardless,
         /// which merges only what differs and keeps the live values when the file
         /// cannot be read.
         /// </summary>
@@ -3001,7 +3001,7 @@ namespace ExplorerNative
                 merged = SettingsAfter(request, merged);
 
             // And the releases made while the file could not be read, which a
-            // merge against the defaults cannot carry — whether or not the retry
+            // merge against the defaults cannot carry, whether or not the retry
             // got as far as taking the file on.
             ApplyPendingReleases(merged);
             return merged;
@@ -3018,7 +3018,7 @@ namespace ExplorerNative
                 try
                 {
                     // A settings change made from the command line must not also
-                    // put a window on screen — the point of those flags is that
+                    // put a window on screen, the point of those flags is that
                     // they work without one.
                     if (IsSettingsRequest(request))
                     {
@@ -3061,7 +3061,7 @@ namespace ExplorerNative
                 {
                     // This used to swallow everything, which from the outside is
                     // a folder that was double-clicked and then simply never
-                    // opened — no window, no message, nothing to go on.
+                    // opened, no window, no message, nothing to go on.
                     try { Notify("error.generic", ex.Message); } catch { }
                 }
             }
@@ -3357,7 +3357,7 @@ namespace ExplorerNative
         private void ShowWindow()
         {
             // Only a window that had gone away can come back. Asked before
-            // anything is shown, and false on the first show of the session —
+            // anything is shown, and false on the first show of the session,
             // which is a start, not a restore, and happens on the way in where a
             // catalogue lookup does not belong.
             bool restoring = _form is { IsDisposed: false } &&
@@ -3446,7 +3446,7 @@ namespace ExplorerNative
                 else _form.WindowState = FormWindowState.Minimized;
 
                 // Said after the window has gone, because that is when it is
-                // true — and it is why a status-bar-only setting delivers
+                // true, and it is why a status-bar-only setting delivers
                 // nothing here: there is no bar left to read it from. The two
                 // outcomes are different places, so they are different words.
                 Notify("app.minimised", _settings.CloseToTray
@@ -3486,12 +3486,12 @@ namespace ExplorerNative
             // Only where somebody chose to quit with the application in front of
             // them. A transfer running in its own window is something quitting
             // destroys, and that was unreachable while a transfer held the file
-            // manager modal — it is easy now, with a forty gigabyte upload two
+            // manager modal, it is easy now, with a forty gigabyte upload two
             // thirds through and its window minimised.
             //
             // Deliberately *not* asked on every path into here. The other caller
             // is the exit command a new launch sends down the pipe when it wants
-            // this instance to stand down — which is how --install-only replaces
+            // this instance to stand down, which is how --install-only replaces
             // the running copy. A modal question on that path is an installer
             // waiting out its thirty seconds against a dialog nobody is looking
             // at, and then reporting that the file is in use.
@@ -3510,7 +3510,7 @@ namespace ExplorerNative
             // Stop answering handoffs first of all.
             //
             // Quitting runs on the UI thread, so from here to the end nothing is
-            // pumping — while the pipe listener is still up and still saying yes.
+            // pumping, while the pipe listener is still up and still saying yes.
             // A folder double-clicked during those seconds (Drive unmounting and
             // reads coming back is the slow part) was accepted by a copy that
             // could no longer act on it: the launcher took the answer as success
@@ -3521,8 +3521,8 @@ namespace ExplorerNative
             _quitting = true;
 
             // And off the screen. A launcher that gets no answer from the pipe
-            // looks for this window to bring forward, and finding it — still up
-            // for the seconds teardown takes — it raised a window that was
+            // looks for this window to bring forward, and finding it, still up
+            // for the seconds teardown takes, it raised a window that was
             // closing and never opened the folder it carried.
             try { if (_form is { IsDisposed: false } closing) closing.Hide(); } catch { }
 
@@ -3592,7 +3592,7 @@ namespace ExplorerNative
 
                 // The letter and the sync root both outlive this process, so they
                 // are taken down deliberately rather than left for the next launch
-                // to sweep — but **after** everything here that reads from them,
+                // to sweep, but **after** everything here that reads from them,
                 // never before, and that order is the difference between quitting
                 // and a process nobody can kill.
                 //
@@ -3601,7 +3601,7 @@ namespace ExplorerNative
                 // placeholder is answered by this process, so pulling the provider
                 // out from under one leaves a read waiting for an answer that can
                 // never come; Windows will not let a process exit with I/O still
-                // outstanding, so the process stopped halfway out — exit code set,
+                // outstanding, so the process stopped halfway out, exit code set,
                 // runtime gone, unkillable, and only a reboot cleared it. The
                 // player goes first, and DriveMount.Dispose then waits for any
                 // callback still being answered before it disconnects.
@@ -3654,8 +3654,8 @@ namespace ExplorerNative
             }
 
             // --restart: the new copy waits for this one's lock rather than
-            // handing the folder to a window that is closing. A plain launch —
-            // no folder — comes back as a plain start.
+            // handing the folder to a window that is closing. A plain launch,
+            // no folder, comes back as a plain start.
             while (!sessionEnding && _unserved.TryDequeue(out var folder))
             {
                 try

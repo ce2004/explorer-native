@@ -10,7 +10,7 @@ namespace ExplorerNative
     /// the music is playing.
     ///
     /// Every one of them changes the sound on the arrow press rather than when
-    /// the dialog is dismissed — the same bargain <see cref="LimiterForm"/> and
+    /// the dialog is dismissed, the same bargain <see cref="LimiterForm"/> and
     /// <see cref="SpeedForm"/> make, and the only one that works here. What
     /// counts as silence in *this* recording, and how long a gap has to be before
     /// taking it out is an improvement rather than a mangling, are questions with
@@ -23,24 +23,24 @@ namespace ExplorerNative
     /// <see cref="LimiterForm"/> sets out: a list cannot hold a value nobody
     /// offered, and it reads its value out on every press. That is the right
     /// trade for an attack time, whose useful values are decades apart. It is the
-    /// wrong one here — these are lengths of silence in milliseconds, every one
+    /// wrong one here, these are lengths of silence in milliseconds, every one
     /// of them is a value somebody can want and can hear, and a ladder of
     /// suggestions is a ladder that decides for you.
     ///
     /// Two ways of getting there were tried and are recorded so they are not
     /// tried again:
     ///
-    /// - **An editable combo box** — the list for arrowing, typing for anything
+    /// - **An editable combo box**, the list for arrowing, typing for anything
     ///   else. It stopped announcing what it was set to, and a control that
     ///   cannot be heard is not a control in this application.
     /// - **A list holding every value in the range.** It announces perfectly and
-    ///   it takes **1030ms to open** — eight thousand items across five combo
+    ///   it takes **1030ms to open**, eight thousand items across five combo
     ///   boxes, and a combo with its handle made takes one window message per
     ///   item. Measured, not guessed, by the check that is still in the suite:
     ///   105ms to build the strings and nine hundred more to hand them to
     ///   Windows. This window opens on a keystroke while music is playing.
     ///
-    /// What a spin box gives up is the words, and the words are the point — "150"
+    /// What a spin box gives up is the words, and the words are the point, "150"
     /// is not an answer to "how long a gap", and "150 milliseconds, between
     /// words" is. So the application says them itself, once the arrowing stops:
     /// see <see cref="SettleMilliseconds"/>. Sweeping through a range is a run of
@@ -106,7 +106,7 @@ namespace ExplorerNative
         /// <summary>
         /// <paramref name="apply"/> is handed the threshold, the minimum gap, how
         /// much to leave, the fade out, the fade in, and whether the whole thing
-        /// is on — in that order, every time any of the six changes.
+        /// is on, in that order, every time any of the six changes.
         /// </summary>
         public SilenceForm(int thresholdDecibels, int minimumMilliseconds, int leaveMilliseconds,
             int fadeOutMilliseconds, int fadeInMilliseconds, bool on,
@@ -159,7 +159,7 @@ namespace ExplorerNative
             // Two fades, because they are two events. An earlier version had one
             // number for both and took it out of the front of the gap it was
             // leaving, so "shorten them to nothing" silently meant "and splice
-            // it" — a control quietly overruled by another control. The fade out
+            // it", a control silently overruled by another control. The fade out
             // now reaches back into the music when the gap is too short to hold
             // it, and neither number can be overruled by anything else here.
             var fadeOut = AddRow("&Fade out over:", 130,
@@ -179,7 +179,7 @@ namespace ExplorerNative
 
             // The switch, after the five numbers in the tab order: the dialog
             // opens on the first number, and this is the answer to "is this
-            // doing anything" — the way to compare the effect against none.
+            // doing anything", the way to compare the effect against none.
             var onBox = new SpokenCheckBox
             {
                 Text = "Silence &reduction on",
@@ -200,7 +200,7 @@ namespace ExplorerNative
             void Changed()
             {
                 // A typed number is committed when its box loses focus, which on
-                // Escape is after the values have been put back — and applying it
+                // Escape is after the values have been put back, and applying it
                 // then kept the sound the person had just cancelled.
                 if (_closing) return;
 
@@ -291,7 +291,7 @@ namespace ExplorerNative
         /// Says the words that go with the number somebody has stopped on.
         ///
         /// The application says these, not the screen reader, because a spin box
-        /// has nowhere to put them — it announces its value and that is all it
+        /// has nowhere to put them, it announces its value and that is all it
         /// has. "150" is not an answer to "how long a gap"; "150 milliseconds,
         /// between words" is, and this file's neighbours have carried that
         /// sentence on every rung of every list since the limiter was written.
@@ -318,7 +318,7 @@ namespace ExplorerNative
         /// are the ends of the range.
         ///
         /// A spin box handles neither by itself, and a range five thousand long
-        /// with a step of one needs a coarse gear — that is what the old ladder
+        /// with a step of one needs a coarse gear, that is what the old ladder
         /// of suggestions was for, and it is still the right set of numbers to
         /// jump between even when every number between them can be reached.
         /// </summary>
@@ -364,7 +364,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Grows the window until every control is on it — the lesson
+        /// Grows the window until every control is on it, the lesson
         /// <see cref="ProgressForm"/> learned and <see cref="LimiterForm"/>
         /// repeats: a size worked out in the constructor is worked out before the
         /// fonts are resolved, and at 150 percent scaling a fixed height that fits
@@ -421,7 +421,7 @@ namespace ExplorerNative
         /// <summary>
         /// Whether the application may speak at all. The words are the
         /// application's own speech, and "spoken announcements" switched off
-        /// means none — this dialog was the one place that did not ask.
+        /// means none, this dialog was the one place that did not ask.
         /// </summary>
         public Func<bool> MaySpeak { get; set; } = () => true;
 

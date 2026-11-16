@@ -15,14 +15,14 @@ namespace ExplorerNative
     /// drive every program reads and writes, whose changes all go to Google.
     /// Enumeration, tags, robocopy, the shell context menu and the media engine
     /// keep working unchanged, and so do other programs' saves, moves and
-    /// renames — which a Cloud Files sync root never sent anywhere.
+    /// renames, which a Cloud Files sync root never sent anywhere.
     ///
     /// Folders fill in as they are opened, by any program: one Drive listing
     /// each. See <see cref="Populate"/>, which pays that cost up front on
     /// navigation.
     /// </summary>
     /// <summary>
-    /// A file in Drive, read straight from Google by byte range — what the
+    /// A file in Drive, read straight from Google by byte range, what the
     /// player downloads a track through, rather than through the letter. The
     /// letter would answer the same reads from this process's own provider,
     /// holding a second copy in its own cache, and a read of an entry on the letter left
@@ -127,7 +127,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// The Drive API itself. Held because the write operations need it, and
-        /// they are addressed by path rather than by id — only this class knows
+        /// they are addressed by path rather than by id, only this class knows
         /// how to get from one to the other.
         /// </summary>
         private DriveClient? _client;
@@ -140,7 +140,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Raised when the stored sign-in has expired and something tried to use
-        /// it. Roughly weekly, by Google's design — see
+        /// it. Roughly weekly, by Google's design, see
         /// <see cref="GoogleSignInRequiredException"/>.
         /// </summary>
         public event Action? SignInRequired;
@@ -160,7 +160,7 @@ namespace ExplorerNative
         ///
         /// Two things about the thread it arrives on. Several of these are raised
         /// from inside a request the drive is answering for Windows, which is
-        /// holding up whoever is listing a folder or reading a track — so a
+        /// holding up whoever is listing a folder or reading a track, so a
         /// handler must hand the message on and return, never block,
         /// never speak inline. And the raise itself is wrapped, because a handler
         /// that throws in there would fail the read that happened to be underway.
@@ -224,7 +224,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// How a byte count is spelled in these messages — the same preference
+        /// How a byte count is spelled in these messages, the same preference
         /// every other size in the application obeys, read once at mount.
         /// </summary>
         private SizeUnitStyle _units = SizeUnitStyle.FullWords;
@@ -239,7 +239,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// How often an upload may report its progress. Measured: a gigabyte is
-        /// 128 chunks, one about every 570ms — a message each is not a progress
+        /// 128 chunks, one about every 570ms, a message each is not a progress
         /// report, it is something talking over the top of everything else.
         /// </summary>
         private const long UploadReportMs = 5000;
@@ -299,7 +299,7 @@ namespace ExplorerNative
         private string _status = "Not connected.";
 
         /// <summary>
-        /// Plain English, for the Preferences page — and, when
+        /// Plain English, for the Preferences page, and, when
         /// EXPLORERNATIVE_DRIVELOG names a file, for that file too.
         ///
         /// A mount that fails leaves no window, no dialog and one balloon that is
@@ -338,7 +338,7 @@ namespace ExplorerNative
         /// <summary>
         /// Whether there is a saved sign-in on this computer.
         ///
-        /// The presence of the token file, not whether it still works — asking
+        /// The presence of the token file, not whether it still works, asking
         /// Google that costs a round trip, and this is read while building a
         /// preferences page. A token that has been revoked at the other end
         /// looks signed in here and says so when it is next used, which is the
@@ -440,21 +440,21 @@ namespace ExplorerNative
         /// <summary>
         /// Signs in if needed and puts Drive on a letter. Returns false with
         /// <see cref="Status"/> set to why, because every failure here is
-        /// something the person can act on — no credentials, no letter free, or a
+        /// something the person can act on, no credentials, no letter free, or a
         /// consent they declined.
         /// </summary>
-        /// <param name="quietly">A retry after the network failed: "Connecting" is not said again.</param>
+        /// <param name="silently">A retry after the network failed: "Connecting" is not said again.</param>
         /// <param name="mayConsent">
         /// A deliberate connect (Connect, OK in Preferences), the only kind that
         /// may open Google's sign-in page. The start-up mount and the retries
         /// after a network failure pass false: with no saved sign-in they say so
         /// instead of putting a browser in front of somebody who asked for nothing.
         /// </param>
-        public async Task<bool> Mount(Settings settings, CancellationToken token = default, bool quietly = false,
+        public async Task<bool> Mount(Settings settings, CancellationToken token = default, bool silently = false,
             bool mayConsent = true)
         {
-            // One at a time. Two in parallel — OK pressed and a settings reload a
-            // moment apart — both chose the same root, and the second tore the
+            // One at a time. Two in parallel, OK pressed and a settings reload a
+            // moment apart, both chose the same root, and the second tore the
             // first one's registration down while it was being populated.
             var lifetime = _lifetime;
             using var linked = CancellationTokenSource.CreateLinkedTokenSource(token, lifetime.Token);
@@ -481,7 +481,7 @@ namespace ExplorerNative
 
                 // Already up. Reconnecting is what OK on the Drive page means when
                 // the sign-in has expired, and it used to mean mounting again from
-                // scratch — whose first step, choosing a root, found the live
+                // scratch, whose first step, choosing a root, found the live
                 // mount's own directory, unregistered its drive and stood a
                 // second provider up over it to clear it out. The mount stays; the
                 // sign-in is renewed underneath it.
@@ -515,10 +515,10 @@ namespace ExplorerNative
                     if (GoogleAuth.Credentials(SafeDirectory()) is { } credentials)
                         new GoogleAuth(credentials.ClientId, credentials.ClientSecret, TokenPath).AdoptFrom(fresh);
                     if (linked.IsCancellationRequested) return false;
-                    return await MountFresh(settings, linked.Token, quietly: true).ConfigureAwait(false);
+                    return await MountFresh(settings, linked.Token, silently: true).ConfigureAwait(false);
                 }
 
-                return await MountFresh(settings, linked.Token, quietly, mayConsent, consentToken).ConfigureAwait(false);
+                return await MountFresh(settings, linked.Token, silently, mayConsent, consentToken).ConfigureAwait(false);
             }
             finally
             {
@@ -548,7 +548,7 @@ namespace ExplorerNative
         /// <summary>
         /// Cancelled by <see cref="Unmount"/>, so a mount still on its way up when
         /// Drive is switched off does not arrive afterwards. Replaced rather than
-        /// reset, and never disposed — see the note on cancellation sources.
+        /// reset, and never disposed, see the note on cancellation sources.
         /// </summary>
         private CancellationTokenSource _lifetime = new();
 
@@ -629,7 +629,7 @@ namespace ExplorerNative
             try { SignInRequired?.Invoke(); } catch (Exception ex) { Diag.Note(ex); }
         }
 
-        private async Task<bool> MountFresh(Settings settings, CancellationToken token, bool quietly = false,
+        private async Task<bool> MountFresh(Settings settings, CancellationToken token, bool silently = false,
             bool mayConsent = true, CancellationToken consentToken = default)
         {
             _units = settings.SizeUnits;
@@ -653,7 +653,7 @@ namespace ExplorerNative
                 return false;
             }
 
-            if (!quietly) Say("drive.mounting", "Connecting to Google Drive");
+            if (!silently) Say("drive.mounting", "Connecting to Google Drive");
 
             // The client ID and secret entered in Preferences. Nothing is compiled in.
             var client = GoogleAuth.Credentials(SafeDirectory());
@@ -716,7 +716,7 @@ namespace ExplorerNative
                 // every start would be an echo of nothing having happened.
                 if (auth.ConsentGranted) Say("drive.signin.done", $"Signed in to Google Drive as {user}");
 
-                // The quota was already read here and thrown away — it is in the
+                // The quota was already read here and thrown away, it is in the
                 // same response that proves the token, so it costs nothing.
                 QuotaUsed = used;
                 QuotaLimit = limit;
@@ -762,7 +762,7 @@ namespace ExplorerNative
                 };
 
                 // Start lists the root, creates the volume and then takes a
-                // letter, and any of those can throw — no free letter is the
+                // letter, and any of those can throw, no free letter is the
                 // likeliest, and it happens last. The catch below calls Unmount,
                 // which disposes _mount; on a first mount that is still null, so
                 // this one is disposed here or its volume would outlive the mount.
@@ -886,7 +886,7 @@ namespace ExplorerNative
         /// <summary>
         /// Moves a mounted Drive to the letter Preferences now names, without
         /// unmounting. Returns the old and new letters when it moved, otherwise
-        /// null — not mounted, already there, or no letter free.
+        /// null, not mounted, already there, or no letter free.
         /// </summary>
         public event Action<string, string>? LetterMoved;
 
@@ -999,7 +999,7 @@ namespace ExplorerNative
             // still in flight, and a callback whose request fails raises the
             // health event, which takes this lock: held here, that callback
             // could not finish, the wait ran out, and the provider disconnected
-            // under a read — the one thing the wait exists to prevent.
+            // under a read, the one thing the wait exists to prevent.
             try { old?.Dispose(); } catch { }
             if (old == null) return;
             lock (_gate) _goingAway.Remove(old);
@@ -1045,7 +1045,7 @@ namespace ExplorerNative
             catch (Exception ex)
             {
                 // A folder that will not populate still lists, just emptily. That
-                // is a worse folder, not a broken application — but an empty
+                // is a worse folder, not a broken application, but an empty
                 // folder that is not empty is exactly the thing nobody can tell
                 // by looking, so it is worth one sentence.
                 // A deadline is "took too long", not the framework's "operation was canceled".
@@ -1060,9 +1060,9 @@ namespace ExplorerNative
             var full = Path.GetFullPath(path);
 
             // Both halves anchored on a path boundary. A bare StartsWith on the
-            // root claimed GoogleDrive-2 for the GoogleDrive mount — the two sit
+            // root claimed GoogleDrive-2 for the GoogleDrive mount, the two sit
             // side by side in the same folder whenever PickRoot has had to step
-            // aside — so deleting a leftover through the file manager was sent to
+            // aside, so deleting a leftover through the file manager was sent to
             // Drive, where the path is not known, and refused. The map then
             // correctly answered "not part of the mounted Drive" about a path this
             // method had just claimed, which is the two halves disagreeing.
@@ -1085,7 +1085,7 @@ namespace ExplorerNative
         }
         /// <summary>Whether this path lives on the mounted drive.</summary>
         /// <summary>
-        /// Watches what the mount downloads for <paramref name="paths"/> — how a
+        /// Watches what the mount downloads for <paramref name="paths"/>, how a
         /// copy out of the drive learns how far it has really got. Null when
         /// nothing is mounted.
         /// </summary>
@@ -1239,15 +1239,15 @@ namespace ExplorerNative
         /// is the obvious way and it is hopeless: populating a cloud folder is a
         /// network listing at about 1.3 seconds, and a library is hundreds of
         /// folders, so a recursive search would be several minutes of nothing
-        /// happening. Instead Google is asked to do the searching — one query for
-        /// the matches and one for the folder graph — and the answer is then
+        /// happening. Instead Google is asked to do the searching, one query for
+        /// the matches and one for the folder graph, and the answer is then
         /// narrowed to this subtree here, out of memory. See
         /// <see cref="DriveSearch"/>.
         ///
         /// The folders that turn out to *hold* something are populated, and only
         /// those: a search of two thousand tracks that finds four of them costs
         /// the listings for the handful of folders they are in, not for the tree.
-        /// That is also what makes the paths real — see
+        /// That is also what makes the paths real, see
         /// <see cref="DriveMount.ChildPathForId"/> for why the name Drive returns
         /// cannot be used to build one.
         ///
@@ -1272,7 +1272,7 @@ namespace ExplorerNative
             var query = SearchQuery.Parse(term);
 
             // The list of shared drives holds drives, and a search there is a
-            // search of their names — searching inside all of them at once is
+            // search of their names, searching inside all of them at once is
             // minutes of Drive listing on an account with many (see Query).
             // The trash the same way: a search of what is in it, by name. Drive's
             // own search leaves trashed files out, and inside a trashed folder
@@ -1301,7 +1301,7 @@ namespace ExplorerNative
             // ConfigureAwait(false) on every await in this method, and it is not
             // decoration. This is called from the clipboard-and-keystroke side of
             // the application, so without it each continuation resumes on the UI
-            // thread — and what runs after them is Populate, which is a
+            // thread, and what runs after them is Populate, which is a
             // *synchronous* Drive listing at about 1.3 seconds each. A search
             // across five folders would have been six seconds of frozen window,
             // which is the one rule this codebase does not bend.
@@ -1358,7 +1358,7 @@ namespace ExplorerNative
 
             // Folders already walked down, so a second hit in the same place
             // costs nothing. The value is the path on the letter, or null for one
-            // that could not be resolved — remembered either way, so a folder
+            // that could not be resolved, remembered either way, so a folder
             // that is not there is not looked for again once per hit inside it.
             var resolved = new Dictionary<string, string?>(StringComparer.Ordinal);
 
@@ -1447,8 +1447,8 @@ namespace ExplorerNative
         /// How long the folder graph is reused between searches.
         ///
         /// Measured on this account: 1347 folders, 2.9 of the 3.9 seconds a whole
-        /// search costs. It is also the part that barely changes — folders are
-        /// made far more rarely than files — so a second search a minute later
+        /// search costs. It is also the part that barely changes, folders are
+        /// made far more rarely than files, so a second search a minute later
         /// paying for it again is the wrong trade. Five minutes rather than the
         /// session, because a folder created in the meantime should turn up
         /// without restarting the application.
@@ -1596,7 +1596,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// How big a folder on the letter is, from Drive's own listing of the
-        /// whole account rather than a walk of its entries on the letter — which would be
+        /// whole account rather than a walk of its entries on the letter, which would be
         /// one Drive listing per folder and populate the tree as a side effect.
         /// The first answer builds the index; the rest are lookups, refreshed
         /// through the changes feed. Null when it cannot be told.
@@ -1720,14 +1720,14 @@ namespace ExplorerNative
 
         /// <summary>
         /// What a Drive folder contains, from the listing that populating it
-        /// already fetched — no filesystem walk and no network.
+        /// already fetched, no filesystem walk and no network.
         ///
         /// This is the difference between a Drive folder opening instantly and
         /// taking half a minute. Enumerating entries on the letter costs about fifteen
         /// milliseconds each and never caches: a folder of 2118 tracks measured
         /// **33 seconds**, on every visit, against 310ms for a local folder of
-        /// twice the size. Every one of those facts — the name, the size, the
-        /// modified time — was already in the Drive listing that placed the
+        /// twice the size. Every one of those facts, the name, the size, the
+        /// modified time, was already in the Drive listing that placed the
         /// files, and was being thrown away.
         ///
         /// False when nothing has populated the folder yet, which is the
@@ -1774,7 +1774,7 @@ namespace ExplorerNative
         /// <summary>
         /// Drops what is remembered about a folder, so the next visit asks Drive
         /// again. This is what Refresh has to mean on a drive whose contents are
-        /// somewhere else — re-walking the entries on the letter would re-read a listing
+        /// somewhere else, re-walking the entries on the letter would re-read a listing
         /// that is just as stale, thirty seconds more slowly.
         /// </summary>
         /// <summary>
@@ -2010,7 +2010,7 @@ namespace ExplorerNative
         /// open for anybody who has the link first.
         ///
         /// Null when the path is not on Drive or has no id we can find, and the
-        /// caller says so — the same shape as <see cref="TrashPath"/>, which is
+        /// caller says so, the same shape as <see cref="TrashPath"/>, which is
         /// the other command that has to turn a path back into a Drive id.
         /// </summary>
         public async Task<string?> LinkFor(
@@ -2048,7 +2048,7 @@ namespace ExplorerNative
         ///
         /// The ids are built as a folder is populated, so a folder populated by
         /// an earlier run has entries on the letter on disk with nothing here to match
-        /// them to. The file is plainly there — somebody has it selected — so
+        /// them to. The file is clearly there, somebody has it selected, so
         /// asking Drive for the parent again is the answer rather than reporting
         /// that it is not part of the mounted drive, which is both untrue and
         /// impossible to act on.
@@ -2105,7 +2105,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Whether a folder on the drive has nothing in it, asked of Drive rather
-        /// than of the listing — which leaves out Google documents and shortcuts,
+        /// than of the listing, which leaves out Google documents and shortcuts,
         /// so a folder holding only those looked empty and was trashed with them.
         /// False when it cannot be told.
         /// </summary>
@@ -2129,8 +2129,8 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Whether everything Drive holds under a folder — asked of Drive, not of
-        /// the listing — is at <paramref name="copiedTo"/> with the same size.
+        /// Whether everything Drive holds under a folder, asked of Drive, not of
+        /// the listing, is at <paramref name="copiedTo"/> with the same size.
         /// What a move out of the drive asks before it trashes the original.
         ///
         /// False for a Google document or shortcut, which is not a file here; for
@@ -2192,8 +2192,8 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Whether a folder directly holds anything the letter does not show —
-        /// Google documents and shortcuts — asked of Drive. True when it cannot
+        /// Whether a folder directly holds anything the letter does not show,
+        /// Google documents and shortcuts, asked of Drive. True when it cannot
         /// be told, so the caller says so rather than claiming a complete copy.
         /// </summary>
         public async Task<bool> HasDocumentsIn(string path, CancellationToken token = default)
@@ -2247,7 +2247,7 @@ namespace ExplorerNative
 
             // From the listing the folder was placed from, which already holds it:
             // a request per item was most of a second each across a big paste.
-            // Only a recent one — the name is passed to Drive explicitly, and an
+            // Only a recent one, the name is passed to Drive explicitly, and an
             // old listing put back a rename made on the web since.
             var parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(path));
             var leaf = Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
@@ -2264,7 +2264,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// For each path, why it cannot be taken out of Drive — which a move
+        /// For each path, why it cannot be taken out of Drive, which a move
         /// off the letter does, by copying and then trashing. Asked before the
         /// copy, so a move that is not allowed does not leave a copy behind and
         /// report a failure; it is refused, and says to copy instead.
@@ -2335,7 +2335,7 @@ namespace ExplorerNative
             // that was populated by an earlier run, or whose listing was dropped by
             // a refresh, has entries on the letter on disk with nothing here to match them
             // to. Asking Drive for the parent again rebuilds exactly the entries
-            // needed — and "it is not part of the mounted Drive" is both untrue and
+            // needed, and "it is not part of the mounted Drive" is both untrue and
             // impossible to act on.
             // Still on its way up (a recording a moment ago, a big file
             // streaming): Drive has no id for it yet, so it is deleted the way the
@@ -2401,7 +2401,7 @@ namespace ExplorerNative
         /// files below it are addressed by that id and nothing else.
         ///
         /// **A folder of that name already there is used, not duplicated.** Drive
-        /// would allow a second one — names are not unique in an account — and the
+        /// would allow a second one, names are not unique in an account, and the
         /// result would be two folders that NTFS can only tell apart by calling
         /// one of them "album (2)", with somebody's album split across both.
         /// Pasting a folder onto a folder of the same name means merge everywhere
@@ -2442,7 +2442,7 @@ namespace ExplorerNative
             }
 
             // Already there. The entry on the letter is on disk and the id is in the map,
-            // so there is nothing to create and nothing to place — only a path to
+            // so there is nothing to create and nothing to place, only a path to
             // hand back.
             var existing = mount.ChildFolderId(parentFullPath, name);
             if (existing != null)
@@ -2494,8 +2494,8 @@ namespace ExplorerNative
         ///
         /// "New file" on the drive letter used to be `File.Create` on a path
         /// inside the drive: a real local file that Drive had never heard of,
-        /// which the pane could not show — it is built from the Drive listing, and
-        /// the file is not in it — and which the next mount deleted, because
+        /// which the pane could not show, it is built from the Drive listing, and
+        /// the file is not in it, and which the next mount deleted, because
         /// clearing the drive is how a leftover tree is dealt
         /// with. So the file was announced as created, was invisible immediately,
         /// and was gone for good by the next launch, along with anything anybody
@@ -2550,7 +2550,7 @@ namespace ExplorerNative
         ///
         /// F2 used to be a plain <c>File.Move</c>, which renames the *entry on the letter*
         /// and tells Drive nothing. The account keeps the old name, so the next
-        /// listing puts the old name back — and the renamed entry on the letter is left on
+        /// listing puts the old name back, and the renamed entry on the letter is left on
         /// disk under a name no listing mentions, invisible to the pane and in the
         /// way of the file it was made from. "Renamed to X" was announced every
         /// time, and nothing was.
@@ -2671,15 +2671,15 @@ namespace ExplorerNative
         /// <param name="replace">
         /// Take the place of a file of the same name already in the folder, rather
         /// than sitting beside it. Drive allows two files in one folder to share a
-        /// name, so "replace" here is genuinely two steps — put the new one up,
-        /// then trash the old — and they happen in that order because the other
+        /// name, so "replace" here is really two steps, put the new one up,
+        /// then trash the old, and they happen in that order because the other
         /// one loses the file whenever the upload fails.
         /// </param>
         /// <returns>
         /// The name the file was actually placed under on the drive letter, or
         /// null when it did not go. That is not always the name it was given:
         /// Drive allows two files in one folder to share a name and NTFS does not,
-        /// so a second "song.flac" becomes "song (2).flac" on this machine — and
+        /// so a second "song.flac" becomes "song (2).flac" on this machine, and
         /// "Saved as song (2).flac" is the whole value of saying anything about it,
         /// which the caller cannot say without being told.
         /// </returns>
@@ -2735,7 +2735,7 @@ namespace ExplorerNative
             catch (OperationCanceledException)
             {
                 // Somebody pressed the button on the transfer dialog. Not a
-                // failure, and worth being a different sentence from one — but
+                // failure, and worth being a different sentence from one, but
                 // only once, by whoever asked for the upload, rather than once per
                 // file that happened to be in flight when the button was pressed.
                 if (announce) Say("drive.upload.cancelled", $"Upload of {name} cancelled");
@@ -2744,7 +2744,7 @@ namespace ExplorerNative
             catch (Exception ex)
             {
                 // Rethrown: the caller collects the failures and reports the
-                // count. This names the file while the reason is still to hand —
+                // count. This names the file while the reason is still to hand,
                 // and only when this file is one of a few, because a tree whose
                 // whole destination has gone away is one problem said two thousand
                 // times, over the top of the summary that would explain it.
@@ -2785,7 +2785,7 @@ namespace ExplorerNative
         /// that has just arrived.
         ///
         /// The renaming half is not cosmetic. While the old entry on the letter still held
-        /// the name, the new one had to be placed as "song (2).flac" — that is
+        /// the name, the new one had to be placed as "song (2).flac", that is
         /// exactly what <c>PlaceOne</c> is for, and it is what keeps the path map
         /// honest about which id is which. Left there, "replace" would produce a
         /// folder holding one file with a number after its name and nothing to say
@@ -2806,7 +2806,7 @@ namespace ExplorerNative
             catch (Exception ex)
             {
                 // The upload worked and the tidying did not, which is worth
-                // saying plainly: what is in Drive now is two files of that name,
+                // saying clearly: what is in Drive now is two files of that name,
                 // not one, and nobody would guess that from "uploaded".
                 Say("drive.upload.failed",
                     $"Uploaded {wanted}, but the copy that was already there could not be removed: {ex.Message}");
@@ -2824,7 +2824,7 @@ namespace ExplorerNative
         /// The caller's progress callback, with a spoken one alongside it that
         /// fires far less often.
         ///
-        /// The dialog wants every chunk — it is drawing a bar and a rate — and a
+        /// The dialog wants every chunk, it is drawing a bar and a rate, and a
         /// screen reader wants almost none of them: measured, a gigabyte is 128
         /// chunks about 570ms apart, so one message each would talk for the whole
         /// upload and over everything else. The caller's callback is passed
@@ -2852,7 +2852,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Moves something already on the drive, under <paramref name="newName"/>
-        /// when that is given — one request either way, since a name and a
+        /// when that is given, one request either way, since a name and a
         /// parent are both only properties.
         /// </summary>
         public async Task<bool> MoveOnDrive(string fromPath, string toFolder, string? newName = null,
@@ -2889,7 +2889,7 @@ namespace ExplorerNative
             if (string.IsNullOrEmpty(fromId))
                 throw new InvalidOperationException("Google Drive would not say which folder it is in");
 
-            // Asked first, and said plainly. Drive refuses a move the account may
+            // Asked first, and said clearly. Drive refuses a move the account may
             // not make, but a shared item is the one place where what is allowed
             // is not obvious from here: a viewer, a commenter, a contributor in
             // a shared drive, an owner who has locked the file down.
@@ -2965,7 +2965,7 @@ namespace ExplorerNative
         /// Copies something that is already on the drive into another folder on
         /// it, without a byte leaving Google.
         ///
-        /// A file is one `files.copy` — see <see cref="DriveClient.Copy"/>. A
+        /// A file is one `files.copy`, see <see cref="DriveClient.Copy"/>. A
         /// folder is not, because Drive will not copy one: it is a new folder and
         /// then the same question about everything inside it, which is why this
         /// lives here rather than in the client. The listing it walks is Drive's
@@ -2973,7 +2973,7 @@ namespace ExplorerNative
         /// this machine copies exactly as well as one that is on screen.
         ///
         /// <paramref name="name"/> is what to call it at the destination, already
-        /// made unique by the caller, or null to keep Drive's own name — two
+        /// made unique by the caller, or null to keep Drive's own name, two
         /// files with one name in one folder is
         /// legal in Drive and impossible on a drive letter, where the entry on the letter
         /// for the second would have nowhere to go.
@@ -3032,7 +3032,7 @@ namespace ExplorerNative
                 if (string.IsNullOrEmpty(single.Id)) return 0;
                 report?.Copied(shown, Math.Max(0, single.Size));
 
-                // Placed, so it is on screen without a fresh listing — the same
+                // Placed, so it is on screen without a fresh listing, the same
                 // bookkeeping MoveOnDrive does, and for the same reason: the
                 // destination folder has already been populated and will not be
                 // asked about again.
@@ -3042,11 +3042,11 @@ namespace ExplorerNative
 
             // A folder: make it, then everything under it. The new folder has to
             // exist before anything can be copied into it, so this cannot be done
-            // in parallel with its own contents — but Drive is doing all the real
+            // in parallel with its own contents, but Drive is doing all the real
             // work and none of it is our link.
             // Listed before anything is made, and everything made is remembered
             // and never copied. Copying a folder into itself, or into a folder
-            // inside it, otherwise finds its own copy among the things to copy —
+            // inside it, otherwise finds its own copy among the things to copy,
             // and copies that, into itself, until Drive or the quota gives out.
             var children = await client.ListChildren(id, token, max: int.MaxValue, driveId: fromDrive).ConfigureAwait(false);
             var made = new HashSet<string>(StringComparer.Ordinal);
@@ -3097,7 +3097,7 @@ namespace ExplorerNative
         /// trips end to end with Google doing all the work and the link idle.
         /// The folders stay in order, after the files: each has to exist before
         /// anything goes into it. What is shared is serialised under
-        /// <paramref name="gate"/> — the report, whose listeners count and were
+        /// <paramref name="gate"/>, the report, whose listeners count and were
         /// written for one caller, and the placing, which reads a folder's names
         /// to choose a free one. A copy already sent when another fails or the
         /// copy is cancelled is let finish and placed, because Drive has made it.
@@ -3136,7 +3136,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// How many files a copy inside Drive will make and how big they are,
-        /// from Drive's own listings — the copy itself says nothing until each
+        /// from Drive's own listings, the copy itself says nothing until each
         /// file is done, so this is what a percentage is measured against.
         /// Four folders are listed at a time. <paramref name="looking"/> is
         /// told each folder as it is read.
@@ -3196,8 +3196,8 @@ namespace ExplorerNative
         /// <summary>
         /// The same again one level down, by id rather than by path.
         ///
-        /// Below the top of the copy there is no local path to work from — the
-        /// folders being made have never existed on this machine — so the
+        /// Below the top of the copy there is no local path to work from, the
+        /// folders being made have never existed on this machine, so the
         /// recursion carries the Drive id it is copying into and the local path
         /// only as far as the entries on the letter have actually been placed.
         /// </summary>
@@ -3244,7 +3244,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Whether a path is the list of shared drives or one of the drives in it
-        /// — neither of which is a file Drive will trash, rename or move.
+        /// neither of which is a file Drive will trash, rename or move.
         /// </summary>
         private static bool IsDriveItself(DriveMount mount, string path) =>
             mount.IsSharedDrivesFolder(path) || mount.IsSharedDriveRoot(path) || mount.IsTrashFolder(path);

@@ -8,14 +8,14 @@ namespace ExplorerNative
     /// The twenty bands, as twenty sliders.
     ///
     /// Sliders here, where <see cref="LimiterForm"/> and <see cref="SpeedForm"/>
-    /// next door both argue for drop-down lists — and the difference is worth
+    /// next door both argue for drop-down lists, and the difference is worth
     /// writing down, because the rule those two follow is a good one. A list is
     /// right when the useful values are unevenly spaced and few: a limiter's
     /// attack matters below a millisecond and hardly at all above ten, so a
     /// slider there would hand out 0.37ms, which is not a decision anybody made.
     ///
     /// Decibels are not like that. They are already a perceptual scale, evenly
-    /// spaced by construction, and every value on this one is worth having —
+    /// spaced by construction, and every value on this one is worth having,
     /// there is no rung between -3 and -4 that a person would not choose. What
     /// there is instead is a shape: twenty bands make a *curve*, and the thing
     /// you want to know while building one is where this band sits relative to
@@ -41,7 +41,7 @@ namespace ExplorerNative
         public int[] Gains { get; private set; }
 
         /// <summary>
-        /// Whether the equaliser is switched on — deliberately not called
+        /// Whether the equaliser is switched on, deliberately not called
         /// "Enabled". A Form already has an <c>Enabled</c>, which is what
         /// WinForms reads to decide whether the window answers the keyboard at
         /// all, and a property that shadows it is a dialog that goes deaf
@@ -52,7 +52,7 @@ namespace ExplorerNative
         /// <summary>
         /// <paramref name="applyBand"/> is handed a band index and its new
         /// setting in decibels, every time one moves. One band at a time rather
-        /// than the whole set, because that is what changed — pushing twenty
+        /// than the whole set, because that is what changed, pushing twenty
         /// values down to move one is nineteen chances to write a stale value
         /// over something.
         /// </summary>
@@ -81,7 +81,7 @@ namespace ExplorerNative
             // A vertical slider for each band, laid out left to right in the
             // order they are heard. The label under each one names its frequency
             // and never changes, because the name of a focused control changing
-            // is an announcement — see the rule in CLAUDE.md about never
+            // is an announcement, see the rule in CLAUDE.md about never
             // renaming the focused control. The number lives in the slider's
             // value, which a screen reader reads on every press without being
             // asked, and in the one read-out line below.
@@ -110,7 +110,7 @@ namespace ExplorerNative
 
                     // One decibel an arrow press, six a page. The default page
                     // size is a fifth of the range, which across forty-eight
-                    // decibels is a jump of nine — enough to cross from a deep
+                    // decibels is a jump of nine, enough to cross from a deep
                     // cut to a boost in one press and land somewhere nobody
                     // chose.
                     //
@@ -179,7 +179,7 @@ namespace ExplorerNative
             };
             onBox.AccessibleName = "Equaliser on";
             onBox.AccessibleDescription =
-                "Off is a true bypass, not a flat curve — the samples come out exactly as they " +
+                "Off is a true bypass, not a flat curve, the samples come out exactly as they " +
                 "went in. Applies as you change it, so it is the way to compare a curve against " +
                 "no curve at all.";
             onBox.CheckedChanged += (_, _) =>
@@ -226,7 +226,7 @@ namespace ExplorerNative
             _loading = false;
 
             // Onto the lowest band, which is the left-hand end of the row and
-            // the one people reach for first — unless the equaliser is switched
+            // the one people reach for first, unless the equaliser is switched
             // off, in which case the switch is the only control that does
             // anything and every slider is a control that does not.
             Shown += (_, _) =>
@@ -266,7 +266,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Says what this band is doing, in words, on the one line that reports
-        /// it. Never spoken directly — the slider's own value change is what a
+        /// it. Never spoken directly, the slider's own value change is what a
         /// screen reader announces, and a second sentence over the top of it is
         /// the "say less, not more" mistake this codebase keeps a rule about.
         /// </summary>
@@ -277,7 +277,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// The caption under a slider, which is read by eye rather than aloud —
+        /// The caption under a slider, which is read by eye rather than aloud,
         /// so it is short. "1.4k", not "1.4 kilohertz"; the accessible name on
         /// the slider itself is the spoken one.
         /// </summary>
@@ -290,7 +290,7 @@ namespace ExplorerNative
 
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
-            // Anything other than OK puts the whole curve back — twenty bands
+            // Anything other than OK puts the whole curve back, twenty bands
             // and the switch. Closing with the X, with Escape, or with Alt+F4
             // all mean the same thing: never mind.
             if (!_keep)

@@ -38,7 +38,7 @@ namespace ExplorerNative
         /// difference is worth writing down because the obvious argument is wrong.
         /// Measured, eight 64KB files sent one after another: **17.2 seconds
         /// through multipart and 17.5 through a resumable session**, medians 1345ms
-        /// and 1372ms — the same, twice, within the noise of a link whose per-file
+        /// and 1372ms, the same, twice, within the noise of a link whose per-file
         /// times ranged from 1.1 to 2.0 seconds either way. Google's session
         /// creation is cheap and the connection is already open, so the extra
         /// request is nearly free in wall clock.
@@ -49,8 +49,8 @@ namespace ExplorerNative
         /// against four streams all spending it at once.
         ///
         /// Above this the session earns its request outright, because what it buys
-        /// — picking a broken transfer up where it stopped rather than sending a
-        /// gigabyte again — starts to be worth far more than one round trip.
+        /// picking a broken transfer up where it stopped rather than sending a
+        /// gigabyte again, starts to be worth far more than one round trip.
         /// </summary>
         public const long SmallUploadBytes = 5 * 1024 * 1024;
 
@@ -60,7 +60,7 @@ namespace ExplorerNative
         /// Nothing is held: this is the copy buffer between a FileStream and the
         /// request body, not a chunk of the upload. The whole file goes up in one
         /// streamed request, so the only memory an upload of any size costs is
-        /// this buffer — a gigabyte and a kilobyte are the same footprint.
+        /// this buffer, a gigabyte and a kilobyte are the same footprint.
         /// </summary>
         public const int UploadBufferBytes = 256 * 1024;
 
@@ -69,7 +69,7 @@ namespace ExplorerNative
         /// dead connection.
         ///
         /// The upload client has no timeout of its own, because a legitimate
-        /// upload is legitimately long — so this is what stands in for one, and it
+        /// upload is legitimately long, so this is what stands in for one, and it
         /// is the better question anyway: "has anything happened lately" rather
         /// than "has this taken a while".
         /// </summary>
@@ -88,14 +88,14 @@ namespace ExplorerNative
         /// something temporary.
         ///
         /// The resumable path above has had this from the start, and the small
-        /// path had nothing at all — which was the wrong way round, because the
+        /// path had nothing at all, which was the wrong way round, because the
         /// small path is the one that runs a million times. A million tiny files
         /// is a million requests, and a service that is right 99.99% of the time
         /// still refuses a hundred of them; every one of those was a file
         /// reported as failed, in a list nobody can read to the end.
         ///
         /// Six, which with the backoff below is about two minutes of trying
-        /// before a file is genuinely given up on.
+        /// before a file is really given up on.
         /// </summary>
         private const int MaxSmallUploadAttempts = 6;
 
@@ -104,7 +104,7 @@ namespace ExplorerNative
         ///
         /// Only the ones that mean "not now". 429 is the rate limit, 408 is a
         /// timeout, and 500, 502, 503 and 504 are Google's own transient
-        /// failures — the 502 page says "please try again in 30 seconds" in as
+        /// failures, the 502 page says "please try again in 30 seconds" in as
         /// many words. Everything else is about the request rather than the
         /// moment: a 403 for quota, a 404 for a parent that has been deleted, a
         /// 401 for a token that has expired. Retrying those is a way of turning
@@ -114,14 +114,14 @@ namespace ExplorerNative
             status is 408 or 429 or 500 or 502 or 503 or 504;
 
         /// <summary>
-        /// The same question, with the body in hand — which is the only way to
+        /// The same question, with the body in hand, which is the only way to
         /// get 403 right.
         ///
         /// **Google spells rate limiting two ways.** 429 is one of them. The
         /// other is a 403 whose payload carries a `reason` of
         /// `rateLimitExceeded` or `userRateLimitExceeded`, and it is
         /// indistinguishable by status code from the 403 that means "you may not
-        /// do that" — which is exactly why the status-only test above refuses
+        /// do that", which is exactly why the status-only test above refuses
         /// all of them. That refusal is right for a permission error and wrong
         /// for the throttling case, where the correct response is to back off
         /// and come back: told to slow down, the upload instead failed the file
@@ -130,10 +130,10 @@ namespace ExplorerNative
         /// Two reasons are deliberately *not* retried even though they arrive
         /// the same way:
         ///
-        /// - `dailyLimitExceeded` — the window is a day. Six retries over two
+        /// - `dailyLimitExceeded`, the window is a day. Six retries over two
         ///   minutes is not going to reach the other side of it, and pretending
         ///   otherwise turns a clear answer into a slow one.
-        /// - `storageQuotaExceeded` / `quotaExceeded` — the account is full.
+        /// - `storageQuotaExceeded` / `quotaExceeded`, the account is full.
         ///   That is not a moment, it is a state, and it needs a person.
         /// </summary>
         internal static bool WorthRetrying(int status, string? body)
@@ -222,7 +222,7 @@ namespace ExplorerNative
         /// The machine-readable <c>reason</c> out of a Google error payload, or
         /// an empty string.
         ///
-        /// The human message is no good for deciding anything — it is prose, it
+        /// The human message is no good for deciding anything, it is prose, it
         /// is localised, and it changes. The reason is the part that is a
         /// contract.
         /// </summary>
@@ -283,7 +283,7 @@ namespace ExplorerNative
         ///
         /// This is the difference between an outage costing a transfer and an
         /// outage costing some time. The retry budget above is sized for a
-        /// server that refused once — six tries over about two minutes — and a
+        /// server that refused once, six tries over about two minutes, and a
         /// dropped connection eats the whole of it in one go. So a thousand-file
         /// upload that met a five-minute outage did not pause: every file still
         /// in flight burned six attempts against a network that was not there,
@@ -291,12 +291,12 @@ namespace ExplorerNative
         /// with nine hundred errors and nothing to show for the wait.
         ///
         /// Only once <see cref="DriveHealth"/> agrees, which takes three failures
-        /// in a row — one timeout is a hiccup and pausing a transfer for it would
+        /// in a row, one timeout is a hiccup and pausing a transfer for it would
         /// be its own fault.
         ///
         /// The probe is the point of the loop. Health only clears on a request
         /// that *worked*, and while the transfer is stopped here nothing else is
-        /// making one — so the wait has to ask, or it would never learn that the
+        /// making one, so the wait has to ask, or it would never learn that the
         /// network came back.
         /// </summary>
         private async Task<bool> WaitOutNetwork(Exception error, string what, CancellationToken token)
@@ -326,7 +326,7 @@ namespace ExplorerNative
 
                 if (!Health.IsOffline)
                 {
-                    // The first waiter to see it come back says so; the rest carry on quietly.
+                    // The first waiter to see it come back says so; the rest carry on silently.
                     if (Interlocked.Exchange(ref _saidOffline, 0) == 1)
                         Say("drive.offline.back", "Back online, picking up where it stopped");
                     return true;
@@ -335,7 +335,7 @@ namespace ExplorerNative
                 // Still away after the whole allowance, and saying "true" here is
                 // what made that allowance meaningless: both callers read true as
                 // "it came back" and un-spend the attempt, so the request was tried
-                // again, failed again, and waited another two hours — for ever, on
+                // again, failed again, and waited another two hours, for ever, on
                 // one file, with a progress window that never moved and no way out
                 // but Cancel. The documented ceiling has to be able to end.
                 return false;
@@ -361,8 +361,8 @@ namespace ExplorerNative
         /// A 429 or a 503 may carry <c>Retry-After</c>, either as seconds or as
         /// an HTTP date, and that figure is worth more than any backoff worked
         /// out here: it is the server saying when it will be ready, rather than
-        /// this end guessing. It was already being read — to put a number in a
-        /// sentence — and then ignored when deciding when to actually come back.
+        /// this end guessing. It was already being read, to put a number in a
+        /// sentence, and then ignored when deciding when to actually come back.
         ///
         /// Clamped at five minutes. An honest Retry-After is seconds; a very
         /// large one is either a mistake or an outage, and neither is a reason
@@ -389,7 +389,7 @@ namespace ExplorerNative
         /// decoration: an upload runs four streams at once and a folder of small
         /// files puts them all through the same moment of trouble, so a fixed
         /// backoff has all four coming back at the same instant, failing
-        /// together, and doing it again — which is the shape that turns a blip
+        /// together, and doing it again, which is the shape that turns a blip
         /// into an outage. Capped, because past half a minute this stops being a
         /// retry and starts being a hang.
         /// </summary>
@@ -419,8 +419,8 @@ namespace ExplorerNative
         /// A server's error body, cut down to something worth putting in front of
         /// somebody.
         ///
-        /// Google answers a 502 with a full HTML page — doctype, stylesheet, a
-        /// link to a picture of a robot, about seven hundred characters of it —
+        /// Google answers a 502 with a full HTML page, doctype, stylesheet, a
+        /// link to a picture of a robot, about seven hundred characters of it,
         /// and that went into the failure list whole. On screen it pushed every
         /// other failure out of the dialog; read aloud it is a minute of markup
         /// before the one sentence that says what happened.
@@ -439,7 +439,7 @@ namespace ExplorerNative
 
             // The three that are worth a sentence of our own, because Google's
             // is either a bare code or prose about "quota" that does not say
-            // which quota — and these are the ones where knowing which decides
+            // which quota, and these are the ones where knowing which decides
             // what somebody should do next.
             //
             // They are all 403s that look identical from the outside, and all
@@ -453,7 +453,7 @@ namespace ExplorerNative
             {
                 case "dailyLimitExceeded":
                     return "Google Drive's daily limit for this account has been reached. " +
-                           "It resets about 24 hours after it was hit — nothing is lost, and " +
+                           "It resets about 24 hours after it was hit, nothing is lost, and " +
                            "pasting again then will fill in whatever did not arrive.";
 
                 case "storageQuotaExceeded":
@@ -616,7 +616,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// The link to a file or folder, and — when asked — the sharing that
+        /// The link to a file or folder, and, when asked, the sharing that
         /// makes the link work for somebody who is not signed in as us.
         ///
         /// Two different things, which is why one method with a flag rather than
@@ -626,7 +626,7 @@ namespace ExplorerNative
         ///   address of the file. Handing it to somebody who has not been given
         ///   access gets them a request-access page, which is exactly right for
         ///   pasting into a message to somebody who already shares the folder.
-        /// - **Public** adds a permission — `{"role":"reader","type":"anyone"}` —
+        /// - **Public** adds a permission, `{"role":"reader","type":"anyone"}`,
         ///   and *that* is what makes the same link open for anyone who has it.
         ///   It is a real change to the account, not a way of writing the URL,
         ///   and it stays until somebody takes it away again.
@@ -637,7 +637,7 @@ namespace ExplorerNative
         ///
         /// `webContentLink` is deliberately not returned. It exists only for
         /// binary files, is absent for anything Google-native, and it is a
-        /// download rather than a page — so a "copy link" that sometimes gave one
+        /// download rather than a page, so a "copy link" that sometimes gave one
         /// and sometimes the other would be a command whose result you had to
         /// inspect to know what you had.
         /// </summary>
@@ -689,7 +689,7 @@ namespace ExplorerNative
         ///
         /// This was written once, called by nothing, and deleted with a comment
         /// saying that uploading a tree means creating every folder in it and
-        /// tracking which id each got — which is exactly right, and is now what
+        /// tracking which id each got, which is exactly right, and is now what
         /// <see cref="DriveUpload"/> does. A folder in Drive is a file with a
         /// particular mime type and no content, so this is the metadata half of
         /// an upload with the bytes left out.
@@ -701,7 +701,7 @@ namespace ExplorerNative
         /// Makes an empty file, and gives back its id.
         ///
         /// The same request as a folder with a different mime type, and no body at
-        /// all — a file created this way has no content, which is exactly what
+        /// all, a file created this way has no content, which is exactly what
         /// "New file" means. Uploading zero bytes would work too and would cost a
         /// second round trip to say nothing.
         /// </summary>
@@ -741,7 +741,7 @@ namespace ExplorerNative
 
             // Through the retrying sender, on the two-minute client. Creating a
             // folder is where an upload of a deep tree spends its first minute,
-            // and it had no retry and a fifteen-second ceiling — so one slow or
+            // and it had no retry and a fifteen-second ceiling, so one slow or
             // temporarily-refused folder took every file underneath it with it,
             // and a timeout ended the whole transfer as a "cancellation".
             using var response = await SendWithRetry(
@@ -777,11 +777,11 @@ namespace ExplorerNative
         ///
         /// **No bytes cross this machine.** Drive copies it server-side, so a
         /// four gigabyte video duplicates in about as long as a four kilobyte
-        /// note — one request, and the answer is the new file. The application
+        /// note, one request, and the answer is the new file. The application
         /// used to refuse this outright, on a comment saying that "copying inside
         /// Drive means downloading and uploading the same bytes". That was simply
         /// wrong about the API, and the cost of being wrong was a file manager
-        /// that told somebody to copy a file out of Drive and back in — several
+        /// that told somebody to copy a file out of Drive and back in, several
         /// gigabytes over the link, both ways, to avoid a request that moves
         /// none.
         ///
@@ -792,7 +792,7 @@ namespace ExplorerNative
         /// listing as well.
         /// </summary>
         /// <param name="name">
-        /// What to call the copy, or null to keep the original's own name — the
+        /// What to call the copy, or null to keep the original's own name, the
         /// one Drive has, not the one the letter shows cleaned up.
         /// </param>
         public async Task<DriveEntry> Copy(
@@ -943,14 +943,14 @@ namespace ExplorerNative
         ///
         /// **Nothing is buffered.** The file is opened and handed to the request
         /// body, and the bytes go from the disk to the socket through
-        /// <see cref="UploadBufferBytes"/> and nothing else — no temporary copy,
+        /// <see cref="UploadBufferBytes"/> and nothing else, no temporary copy,
         /// no chunk held in memory, no whole-file array. A gigabyte and a
         /// kilobyte cost the same amount of memory to send.
         ///
         /// It used to go up in 8MB chunks, each read into an array first and each
         /// its own request. That was written for resumability and it paid for it
         /// twice over: an 8MB allocation per upload, and a full round trip's
-        /// latency every 8MB — 128 of them for a gigabyte, and the link idle for
+        /// latency every 8MB, 128 of them for a gigabyte, and the link idle for
         /// most of each one while Google answered. One streamed request has the
         /// socket busy from the first byte to the last, which is as fast as the
         /// connection goes.
@@ -965,7 +965,7 @@ namespace ExplorerNative
         ///
         /// Resumability is not given up for it, only moved: if the request breaks
         /// the session is asked how much it actually holds and the stream picks up
-        /// from there — see <see cref="UploadResumable"/>. What was a cost on
+        /// from there, see <see cref="UploadResumable"/>. What was a cost on
         /// every upload is now a cost on the ones that go wrong.
         /// </summary>
         public async Task<string> Upload(
@@ -1070,7 +1070,7 @@ namespace ExplorerNative
 
             // Set rather than left to Drive: the placeholder is placed with the
             // same time, so the next listing does not read a newly sent file as
-            // changed contents — and the file keeps the date it had here.
+            // changed contents, and the file keeps the date it had here.
             if (modified is { } when)
                 metadata["modifiedTime"] = RfcTime(when);
             if (tag != null)
@@ -1137,7 +1137,7 @@ namespace ExplorerNative
             Action<UploadProgress>? progress, CancellationToken token, string? replaceId = null,
             Func<Stream>? openSource = null, DateTime? stamp = null, string? givenTag = null)
         {
-            // Sent again when Google says "not now", which it does — this is one
+            // Sent again when Google says "not now", which it does, this is one
             // request per file and a folder of small files is a great many of
             // them. There was no retry here at all, and a real upload of a
             // million tiny files lost one to a 502 whose own body reads "please
@@ -1156,7 +1156,7 @@ namespace ExplorerNative
             // answer that refused us to the top of the next attempt.
             TimeSpan? asked = null;
 
-            // Whether an attempt may have landed with its answer lost — a
+            // Whether an attempt may have landed with its answer lost, a
             // timeout, a reset, a 5xx. Sending again then makes a second file
             // of the same name, so Drive is asked first, by the tag every
             // attempt carries. See SendWithRetry.
@@ -1201,7 +1201,7 @@ namespace ExplorerNative
 
                 // Opened inside the loop. A stream that has already been walked
                 // to the end cannot be sent again, and neither can an
-                // HttpRequestMessage that has been sent once — reusing either is
+                // HttpRequestMessage that has been sent once, reusing either is
                 // a retry that fails for a reason that has nothing to do with
                 // the failure it is retrying.
                 // From memory when the caller has the bytes (a file another
@@ -1256,7 +1256,7 @@ namespace ExplorerNative
                     }
 
                     // Read before the response is disposed, and only useful on
-                    // the answers that carry it — which are exactly the ones we
+                    // the answers that carry it, which are exactly the ones we
                     // are about to wait on.
                     asked = RetryAfter(response);
                 }
@@ -1288,7 +1288,7 @@ namespace ExplorerNative
                     if (sent) maybeDone = true;
 
                     // The network went away. Waited out rather than charged to
-                    // this file's six attempts — otherwise a five-minute outage
+                    // this file's six attempts, otherwise a five-minute outage
                     // fails every file that happened to be in flight, and then
                     // every file behind them.
                     if (await WaitOutNetwork(ex, $"sending {name}", token))
@@ -1387,7 +1387,7 @@ namespace ExplorerNative
         /// The loop is the resume, not the sending. On the ordinary path it runs
         /// exactly once: open the session, stream the file, done. Every further
         /// pass has already asked Google how much it holds and is starting from
-        /// there — which is the one number that may be trusted, and it may
+        /// there, which is the one number that may be trusted, and it may
         /// legitimately point *backwards* when a request was half received.
         /// </summary>
         private async Task<DriveUploaded> UploadResumable(
@@ -1409,7 +1409,7 @@ namespace ExplorerNative
 
             // Whether Google's count has to be asked for before anything more is
             // sent: after a request broke and the question itself could not be
-            // answered, carrying on from our own figure is the one thing not to do.
+            // answered, continuing from our own figure is the one thing not to do.
             bool askFirst = resumeSession != null;
 
             var slow = new SlowDown();
@@ -1483,8 +1483,8 @@ namespace ExplorerNative
 
                 // Every byte is accounted for and Google still has not said so,
                 // which happens when the answer to the last request was lost on
-                // the way home. There is nothing left to send — a zero-length
-                // range is not a request Drive has a meaning for — so the session
+                // the way home. There is nothing left to send, a zero-length
+                // range is not a request Drive has a meaning for, so the session
                 // is asked outright.
                 if (sent >= total)
                 {
@@ -1536,13 +1536,13 @@ namespace ExplorerNative
                 // walked past the bytes Google says it never received, so the
                 // rest of the file would land at an offset nothing checks. A file
                 // of exactly the right length, with a hole in it, reported as a
-                // successful upload — silent, and only on a connection that drops
+                // successful upload, silent, and only on a connection that drops
                 // mid-request, which is the one case this path exists for.
                 if (source.Position != sent) source.Position = sent;
 
                 // The session was opened for the size the file had then, and a
                 // file that has grown or shrunk since breaks every request on its
-                // length — five resumes of the same failure. Stopped at once,
+                // length, five resumes of the same failure. Stopped at once,
                 // unless Google already holds the whole of what was declared.
                 if (Resized(source, total) is { } resizedBefore)
                     return await HeldWhole(session, total, progress, token) ?? throw resizedBefore;
@@ -1592,7 +1592,7 @@ namespace ExplorerNative
                 }
                 catch (UploadRefusedException refused) when (!refused.Retryable)
                 {
-                    // A full account, a daily limit, a parent that has gone — not a
+                    // A full account, a daily limit, a parent that has gone, not a
                     // moment but a state. Sending the rest of the file again five
                     // times cannot change it and costs five times the bandwidth.
                     // The account-wide ones stop the whole upload, as they do for
@@ -1652,7 +1652,7 @@ namespace ExplorerNative
                     }
 
                     // How much of it actually arrived, asked of the only party
-                    // that knows — on the next pass, after the pause, so that a
+                    // that knows, on the next pass, after the pause, so that a
                     // connection that is down for a moment does not fail the
                     // question as well as the request.
                     sent = before;
@@ -1660,7 +1660,7 @@ namespace ExplorerNative
                     continue;
                 }
 
-                // The resume actually happening, which is invisible otherwise —
+                // The resume actually happening, which is invisible otherwise,
                 // the upload simply takes longer than the byte count says it
                 // should.
                 if (sent < total)
@@ -1681,7 +1681,7 @@ namespace ExplorerNative
         /// <summary>
         /// Where the next chunk starts, given what Google says it is holding.
         ///
-        /// Its figure is normally the one to trust — that is what makes the
+        /// Its figure is normally the one to trust, that is what makes the
         /// upload resumable, and it may legitimately point *backwards* when a
         /// chunk was only half received. What it may not do is send the walk
         /// somewhere impossible, so two answers are refused: a negative offset
@@ -1853,7 +1853,7 @@ namespace ExplorerNative
         ///
         /// The byte count is Google's and only Google's. Ours is what was read off
         /// the disk, which after a broken request is exactly the number that is
-        /// wrong — and carrying on from it writes the rest of the file at an
+        /// wrong, and continuing from it writes the rest of the file at an
         /// offset nothing checks.
         /// </summary>
         private static async Task<(bool Finished, DriveUploaded? Done, long Confirmed)> ReadUploadAnswer(
@@ -1871,7 +1871,7 @@ namespace ExplorerNative
                 long confirmed = 0;
                 var range = response.Headers.TryGetValues("Range", out var r) ? FirstOf(r) : null;
 
-                // "bytes=0-8388607" — the last byte held, so the next offset is
+                // "bytes=0-8388607", the last byte held, so the next offset is
                 // one past it.
                 if (range != null)
                 {
@@ -1947,7 +1947,7 @@ namespace ExplorerNative
         /// Sends an upload request with a watchdog on it instead of a timeout.
         ///
         /// The upload client has none, because a legitimate upload is legitimately
-        /// long — so what stands in for one is the question a timeout cannot ask:
+        /// long, so what stands in for one is the question a timeout cannot ask:
         /// are bytes still moving? The stream counts them, and a connection that
         /// has stopped feeding for <see cref="UploadStallSeconds"/> is abandoned
         /// as a dead one, with a sentence saying so rather than the
@@ -1961,7 +1961,7 @@ namespace ExplorerNative
             // Two clocks. While the file is being read, a quiet minute is a dead
             // connection. Once the last byte has been read it is not: what was
             // read is still draining out of the socket's buffers, and then
-            // Google puts the file together before it answers — which for a big
+            // Google puts the file together before it answers, which for a big
             // file on a slow line ran past the minute and failed an upload that
             // had arrived whole.
             var quiet = UploadStallLimit;
@@ -2012,7 +2012,7 @@ namespace ExplorerNative
         ///
         /// This is the whole of "stream it": the request's content is this, the
         /// content length is known up front, and HttpClient pulls from it straight
-        /// into the socket. Nothing accumulates — the only memory an upload of any
+        /// into the socket. Nothing accumulates, the only memory an upload of any
         /// size costs is whatever buffer the copy uses.
         ///
         /// It also carries the clock the stall watchdog reads. The right place for
@@ -2084,7 +2084,7 @@ namespace ExplorerNative
             public override bool CanRead => true;
 
             // Not seekable on purpose. HttpClient rewinds a seekable body to retry
-            // it, and a rewind here would send bytes this has already counted —
+            // it, and a rewind here would send bytes this has already counted,
             // a progress bar that goes backwards over a request nobody was told
             // about. Retrying is the resumable session's job, from Google's own
             // byte count.
@@ -2104,7 +2104,7 @@ namespace ExplorerNative
             public override void SetLength(long value) => throw new NotSupportedException();
             public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 
-            // The file belongs to the caller, which opened it and will close it —
+            // The file belongs to the caller, which opened it and will close it,
             // frequently to send the *next* range through a fresh wrapper.
             // Disposing it here would close the file underneath the resume.
             protected override void Dispose(bool disposing) { }

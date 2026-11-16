@@ -284,7 +284,7 @@ namespace ExplorerNative
     /// out from a single listing of the whole account and kept current with the
     /// changes feed. A folder's size is then a dictionary lookup, which is what
     /// lets the Size column fill in on the Drive letter without walking
-    /// placeholders — walking them is one Drive listing per folder.
+    /// placeholders, walking them is one Drive listing per folder.
     /// </summary>
     internal sealed class DriveSizeIndex
     {

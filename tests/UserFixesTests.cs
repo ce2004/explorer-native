@@ -12,7 +12,7 @@ namespace ExplorerNative
     /// <summary>
     /// Three fixes from a review of what people meet first: Google Drive setup
     /// failures said as what is wrong and how to fix it (GoogleSetupErrors),
-    /// an expired Apple Music sign-in said plainly and asked about once per
+    /// an expired Apple Music sign-in said clearly and asked about once per
     /// sign-in, and speech through UI Automation when NVDA is not answering.
     /// Offline and quick. Group: userfixes.
     /// </summary>
@@ -260,7 +260,7 @@ namespace ExplorerNative
                                           AppleMusicClient.Judge(204) == AppleMusicClient.Answer.Ok);
             Check("a 500 or a 429 is not the sign-in", AppleMusicClient.Judge(500) == AppleMusicClient.Answer.Failed &&
                                                        AppleMusicClient.Judge(429) == AppleMusicClient.Answer.Failed);
-            Equal("the expiry is said plainly, with where to fix it",
+            Equal("the expiry is said clearly, with where to fix it",
                 "Your Apple Music sign-in has expired. Load a new cookies file in Preferences, Apple Music.",
                 AppleMusicClient.ExpiredSentence);
         }

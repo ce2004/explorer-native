@@ -18,7 +18,7 @@ namespace ExplorerNative
     /// <summary>
     /// Google Drive as a real drive (4.3.0): the WinFsp volume mounted on a
     /// free letter over <see cref="FakeDrive"/>, and used the way other
-    /// programs use it — .NET file calls, cmd, robocopy and PowerShell in
+    /// programs use it.NET file calls, cmd, robocopy and PowerShell in
     /// processes of their own. Every write is checked on the Drive side, which
     /// is the side that matters: the letter showing the right thing while
     /// Google holds something else is exactly the bug this replaced.
@@ -1617,7 +1617,7 @@ namespace ExplorerNative
                     status == WinFsp.EndOfFile && !caches.ContainsKey("file-0"), $"0x{status:X8}");
 
                 // A file Drive does not have: the read fails, and its cache is
-                // left still — a failure must not start the whole file downloading.
+                // left still, a failure must not start the whole file downloading.
                 var missing = new DriveMount.Opened { Key = "gone.flac", Id = "file-1", Size = 64 * 1024 };
                 fixed (byte* b = buffer) status = mount.ReadFromDrive(missing, (IntPtr)b, 0, 4096, out _);
                 bool opened = caches.TryGetValue("file-1", out var cache);

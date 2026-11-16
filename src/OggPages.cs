@@ -143,7 +143,7 @@ namespace ExplorerNative
         /// left in <see cref="Lacing"/> and <see cref="Body"/>.
         ///
         /// Page zero alone was the old test, and a file that leads with some
-        /// other stream — an Ogg Skeleton track, say — would not open at all.
+        /// other stream, an Ogg Skeleton track, say, would not open at all.
         /// </summary>
         public bool FindStream(Func<Page, bool> wanted, out Page first)
         {
@@ -327,7 +327,7 @@ namespace ExplorerNative
         /// could not be found.
         ///
         /// Normally in the last window of the file. When the file goes on past
-        /// our stream — a chained file, one recording after another — the pages
+        /// our stream, a chained file, one recording after another, the pages
         /// of each stream are all together, so where ours ends is found by
         /// bisection on the serial numbers rather than by reading backwards: the
         /// old way read up to seventeen megabytes, a network read apiece on the
@@ -403,8 +403,8 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// The same, and the granule position of the page it starts after — the
-        /// end of the audio before the first packet that will be read — or -1
+        /// The same, and the granule position of the page it starts after, the
+        /// end of the audio before the first packet that will be read, or -1
         /// when it starts at <paramref name="start"/>.
         /// </summary>
         public long FindStart(long goal, long start, out long granule)
@@ -551,8 +551,8 @@ namespace ExplorerNative
         /// Reads the next page of our stream and adds the packets that finish on
         /// it to <paramref name="finished"/>. False at the end of the file.
         ///
-        /// A continuation with nothing to continue — the first page read after
-        /// a <see cref="Restart"/>, or after damage — is the tail of a packet
+        /// A continuation with nothing to continue, the first page read after
+        /// a <see cref="Restart"/>, or after damage, is the tail of a packet
         /// that began somewhere this read never saw. It cannot be decoded, so it
         /// is dropped, and <paramref name="dropped"/> says so: the packets after
         /// it are still placed correctly, because a page's packets are placed

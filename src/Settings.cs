@@ -9,8 +9,8 @@ namespace ExplorerNative
 {
     public enum SortColumn { Name, Size, Type, Modified }
     /// <summary>
-    /// Stored as a number. "Never" was 0 and behaved exactly like OnDemand —
-    /// nothing anywhere asked for it — so it is gone and the numbers kept.
+    /// Stored as a number. "Never" was 0 and behaved exactly like OnDemand,
+    /// nothing anywhere asked for it, so it is gone and the numbers kept.
     /// </summary>
     public enum FolderSizeMode { OnDemand = 1, Automatic = 2 }
     /// <summary>
@@ -28,7 +28,7 @@ namespace ExplorerNative
         Ask,
 
         /// <summary>
-        /// Copy only what is not there yet — go *into* folders that already
+        /// Copy only what is not there yet, go *into* folders that already
         /// exist and fill in the files that are missing.
         ///
         /// The difference from <see cref="Skip"/> is depth, and it is the whole
@@ -77,7 +77,7 @@ namespace ExplorerNative
         // CarryRetiredSpeechSwitches.
 
         // There is no SpeakPositionInList. It existed, defaulted to false, was
-        // offered nowhere in the dialog and read nowhere in the app — a switch
+        // offered nowhere in the dialog and read nowhere in the app, a switch
         // that did nothing whichever way it was set. Position is NVDA's to
         // announce ("3 of 47", at the end of the row) and saying it again only
         // ever produced an echo, so the setting is gone rather than left lying
@@ -124,7 +124,7 @@ namespace ExplorerNative
         public int FontSize { get; set; } = 9;
 
         /// <summary>
-        /// What the window is called — in its title bar, in the taskbar, and in
+        /// What the window is called, in its title bar, in the taskbar, and in
         /// the tray tooltip. Applied the moment it is changed.
         /// </summary>
         public string WindowTitle { get; set; } = DefaultWindowTitle;
@@ -135,7 +135,7 @@ namespace ExplorerNative
         /// One place, because there were six and only two of them obeyed the
         /// setting. The window and the tray tooltip were renamed; every tray
         /// balloon, the "ready" announcement, the restore and the quit still said
-        /// "Explorer Native" — so somebody who had renamed the window was told
+        /// "Explorer Native", so somebody who had renamed the window was told
         /// about it by an application with a different name, which is the sort of
         /// thing that reads as a second program having something to say.
         ///
@@ -181,7 +181,7 @@ namespace ExplorerNative
         public PasteConflictPolicy PasteConflict { get; set; } = PasteConflictPolicy.AutoRename;
         public bool RememberLastFolder { get; set; } = true;
 
-        // RestoreWindowPosition was here, and it was always true — a window that
+        // RestoreWindowPosition was here, and it was always true, a window that
         // comes back where you left it is not a preference, it is what a window
         // does. The size and position are still saved and still restored; there
         // is simply no switch for it, and one fewer control between the top of
@@ -196,7 +196,7 @@ namespace ExplorerNative
 
         // FolderSizeMaxDepth was here. Sixty-four levels is deeper than Windows
         // will let a path go in the first place, so the only values that changed
-        // anything were the ones that made the answer wrong — a folder measured
+        // anything were the ones that made the answer wrong, a folder measured
         // to depth 3 reports a size that is not its size, with nothing in the
         // number to say so. The timeout above is the honest ceiling: it bounds
         // the work without lying about the result. See
@@ -204,14 +204,14 @@ namespace ExplorerNative
 
         // Folder sizes are always cached. The cache is keyed on the folder's own
         // last-write time, so it invalidates itself the moment the folder changes
-        // — there was never a case where turning it off was the right answer, only
+        // there was never a case where turning it off was the right answer, only
         // a switch that made re-measuring an unchanged tree the user's problem.
 
         // ---------- Performance ----------
 
         // There is no thread-count setting either. The right number depends on
         // the machine, not on anyone's preference, so it is worked out from the
-        // processor count — see FileOperations.RecommendedThreads.
+        // processor count, see FileOperations.RecommendedThreads.
 
         public int CopyBufferKilobytes { get; set; } = 1024;
 
@@ -223,7 +223,7 @@ namespace ExplorerNative
         // not have to be told the same two things as the first. Somebody who
         // works in .tar.gz should not choose it every time, and somebody who
         // chose Smallest once for a backup should not have it silently applied
-        // to a thirty gigabyte folder next week without seeing it — which is
+        // to a thirty gigabyte folder next week without seeing it, which is
         // why they are shown, filled in, in the dialog that uses them.
         //
         // There is no thread count here for the same reason there is none for
@@ -232,8 +232,8 @@ namespace ExplorerNative
         //
         // The format is stored as its id rather than as an enum so that a file
         // written by a version that knew about one more format still loads. It
-        // is not clamped on the way in either — see the note on
-        // GoogleDriveLetter below about the round-trip guarantee — and
+        // is not clamped on the way in either, see the note on
+        // GoogleDriveLetter below about the round-trip guarantee, and
         // MainForm falls back to zip for anything it does not recognise.
         public string ArchiveFormatId { get; set; } = "zip";
         public ArchiveLevel ArchiveCompression { get; set; } = ArchiveLevel.Balanced;
@@ -260,7 +260,7 @@ namespace ExplorerNative
         // ---------- Audio ----------
 
         /// <summary>
-        /// The built-in player. It has no window — it is the global shortcuts
+        /// The built-in player. It has no window, it is the global shortcuts
         /// below and what they say, and nothing else.
         /// </summary>
         public bool AudioPlayerEnabled { get; set; } = true;
@@ -302,7 +302,7 @@ namespace ExplorerNative
         // the speed somewhere between two rungs of that ladder.
 
         // AudioLowLatencyStart was here. It set MF_MEDIA_ENGINE_REAL_TIME_MODE,
-        // which went with the media engine — the buffering it shortened is now
+        // which went with the media engine, the buffering it shortened is now
         // the ring buffer in WasapiPlayback, and that is sized here rather than
         // asked of Windows. A value left in an old settings file is ignored on
         // load and dropped on the next save.
@@ -318,14 +318,14 @@ namespace ExplorerNative
         // for. It is AUDCLNT_STREAMOPTIONS_RAW: shared mode still, so the device
         // is not taken away from anything else, and it only removes Windows'
         // enhancements from this stream's path. It is a request rather than a
-        // demand — a device is free to refuse it, and playback carries on either
-        // way — which is exactly why there was nothing for a tick box to decide.
+        // demand, a device is free to refuse it, and playback carries on either
+        // way, which is exactly why there was nothing for a tick box to decide.
         // WasapiRenderer.RawMode still reports what was actually granted.
 
         /// <summary>
         /// The limiter.
         ///
-        /// Not a peak limiter — it does not stop anything clipping, and it is not
+        /// Not a peak limiter, it does not stop anything clipping, and it is not
         /// meant to. What it does is lift whatever is quiet at that moment up
         /// towards the ceiling, so the room tone, the reverb tail, the breath
         /// before the line, all the things that live thirty or forty decibels
@@ -334,7 +334,7 @@ namespace ExplorerNative
         /// they clip, and that is the sound of it.
         ///
         /// It gets more extreme the higher the volume goes, because the lift it
-        /// is allowed grows with the gain — see WasapiRenderer.Limiter. At 100
+        /// is allowed grows with the gain, see WasapiRenderer.Limiter. At 100
         /// percent it is a gentle leveller; at 800 it is a different recording.
         /// </summary>
         public bool AudioLimiter { get; set; }
@@ -350,7 +350,7 @@ namespace ExplorerNative
         public int AudioLimiterCeilingPercent { get; set; } = 90;
 
         /// <summary>
-        /// How fast the limiter reacts, in microseconds — a five-hundredth of a
+        /// How fast the limiter reacts, in microseconds, a five-hundredth of a
         /// second by default.
         ///
         /// Microseconds rather than milliseconds because the interesting part of
@@ -372,7 +372,7 @@ namespace ExplorerNative
         /// 100 percent there is no gain to square, so the effect is at its
         /// mildest exactly where somebody sits down to find out what it does.
         ///
-        /// On, the whole lift is available at any volume — including a very
+        /// On, the whole lift is available at any volume, including a very
         /// quiet one. This is the setting for listening *into* a recording
         /// rather than for making one loud.
         /// </summary>
@@ -419,7 +419,7 @@ namespace ExplorerNative
         /// Whether silence reduction is in the audio path.
         ///
         /// Off is a genuine bypass rather than a threshold nothing crosses, so
-        /// it is worth keeping separate from the five numbers below it — the
+        /// it is worth keeping separate from the five numbers below it, the
         /// switch is what makes a setting comparable against no effect at all.
         /// </summary>
         public bool AudioSilenceReduction { get; set; }
@@ -444,16 +444,16 @@ namespace ExplorerNative
 
         // ---- Holding a key down ----
 
-        // The three numbers that used to sit here — the wait before repeating,
-        // the rate, and whether a hold accelerates — are now HoldRepeat.Delay,
+        // The three numbers that used to sit here, the wait before repeating,
+        // the rate, and whether a hold accelerates, are now HoldRepeat.Delay,
         // HoldRepeat.Interval and an unconditional yes. They were measured into
         // place rather than chosen, and every one of them had exactly one right
         // answer:
         //
         // The wait is 200ms because a finger is on a key for about a tenth of a
         // second and Windows' own fastest keyboard setting is 250. Below a
-        // tenth there is no such thing as a press — one tap of play played,
-        // paused, played and paused again — and 400, which this shipped with,
+        // tenth there is no such thing as a press, one tap of play played,
+        // paused, played and paused again, and 400, which this shipped with,
         // reads as the key ignoring you before it gives in.
         //
         // The rate is 20ms because ten is the floor Windows will schedule a
@@ -477,7 +477,7 @@ namespace ExplorerNative
         // There is no "carry on where I left off", deliberately. Pressing Enter on
         // a track means play that track, from the start; a player that sometimes
         // begins two minutes in because of something you did an hour ago is one
-        // you cannot predict. The rewind above is different — that is resuming
+        // you cannot predict. The rewind above is different, that is resuming
         // from a pause you just made, in the track you are already listening to.
 
         // ---- Reading ahead ----
@@ -499,7 +499,7 @@ namespace ExplorerNative
         // on the NAS cost a millisecond instead of half a second. Turning it off
         // was never a preference, it was a way of making skipping slow again.
         //
-        // The memory ceiling is a gigabyte — see AudioPlayer.CacheBytes — and it
+        // The memory ceiling is a gigabyte, see AudioPlayer.CacheBytes, and it
         // exists for the pathological track rather than the ordinary one, which
         // is tens of megabytes. Nothing accumulates: one track at a time, and
         // starting another releases the last.
@@ -511,7 +511,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// How long a track may sit paused before its memory is handed back.
-        /// Nothing is unloaded — playing it again reads from the share and starts
+        /// Nothing is unloaded, playing it again reads from the share and starts
         /// downloading afresh. 0 keeps it for ever.
         /// </summary>
         public int AudioReleaseAfterMinutes { get; set; } = 10;
@@ -725,7 +725,7 @@ namespace ExplorerNative
         /// the old name a saved 1 meant "status bar, silent" and would be read
         /// here as "speak", which is the one migration that cannot be got right
         /// by guessing. A new name means an old file's value is simply not
-        /// found, and every message goes back to its default — which for the
+        /// found, and every message goes back to its default, which for the
         /// vast majority is the value it had anyway.
         /// </summary>
         public string SpeechOverrides { get; set; } = "";
@@ -752,7 +752,7 @@ namespace ExplorerNative
         // ---- State ----
 
         /// <summary>
-        /// The last track played. Not to resume it — nothing resumes — but to
+        /// The last track played. Not to resume it, nothing resumes, but to
         /// warm Media Foundation at startup, which is a per-process cost paid
         /// against whichever file happens to be handy.
         /// </summary>
@@ -789,7 +789,7 @@ namespace ExplorerNative
             return age > TimeSpan.FromMinutes(-1) && age < ResumeAfterRestartFor;
         }
 
-        // Shortcuts are stored as text — "Ctrl+Alt+P" — so settings.json stays
+        // Shortcuts are stored as text, "Ctrl+Alt+P", so settings.json stays
         // something a person can read and edit. See Shortcut.Parse; anything it
         // does not understand is simply not registered.
         //
@@ -797,7 +797,7 @@ namespace ExplorerNative
         // so the whole application is reachable with one hand shape.
         //
         // Letters, not arrows. Ctrl+Alt with the four arrow keys is NVDA's table
-        // navigation, and NVDA's keyboard hook sits above RegisterHotKey — so
+        // navigation, and NVDA's keyboard hook sits above RegisterHotKey, so
         // those registrations succeed, report no conflict, and then never fire.
         // Up, Down, Back and Forward are what the letters stand for.
         public string AudioPlayPauseShortcut { get; set; } = "";
@@ -883,7 +883,7 @@ namespace ExplorerNative
         /// Take over opening folders from File Explorer: double-clicking a folder,
         /// opening a drive, and Win+E all come here instead.
         ///
-        /// Off by default, and deliberately so — it changes how the whole desktop
+        /// Off by default, and deliberately so, it changes how the whole desktop
         /// behaves, which is not something an app should assume on first run.
         /// </summary>
         public bool SetAsDefaultFileExplorer { get; set; } = false;
@@ -898,7 +898,7 @@ namespace ExplorerNative
         public string StartPath { get; set; } = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         public string LastFolder { get; set; } = "";
         public string LastFolderTab2 { get; set; } = "";
-        /// <summary>Which tab was in front, and what was focused in each — restored on restart.</summary>
+        /// <summary>Which tab was in front, and what was focused in each, restored on restart.</summary>
         public int ActiveTab { get; set; }
         public string FocusedPathTab1 { get; set; } = "";
         public string FocusedPathTab2 { get; set; } = "";
@@ -920,7 +920,7 @@ namespace ExplorerNative
         ///
         /// Exists for the self-test, which exercises loading, clamping and
         /// migration against real files. Without it those tests ran against the
-        /// user's own settings.json — backing it up and restoring it afterwards,
+        /// user's own settings.json, backing it up and restoring it afterwards,
         /// which is fine right up until the application is running at the same
         /// time and writes its own copy over the top. That is not a risk worth
         /// taking with somebody's configuration to test a code path.
@@ -944,7 +944,7 @@ namespace ExplorerNative
         /// with everything else: going back a version and forward again used to
         /// cost every setting the newer build had added, because the older one
         /// saved the file without them. From an older or the same build the
-        /// unknowns are settings that were removed, and those are dropped — the
+        /// unknowns are settings that were removed, and those are dropped, the
         /// next save writing the file without them is how a removal is finished.
         /// </summary>
         [JsonExtensionData]
@@ -958,8 +958,8 @@ namespace ExplorerNative
         private bool _unreadableOnDisk;
 
         /// <summary>
-        /// The file was there and could not be opened — held by another program
-        /// — so these are the defaults standing in for settings nobody has seen.
+        /// The file was there and could not be opened, held by another program
+        /// so these are the defaults standing in for settings nobody has seen.
         /// Nothing is reconciled against them, and they are not saved over it.
         /// </summary>
         [JsonIgnore]
@@ -994,7 +994,7 @@ namespace ExplorerNative
         /// How the file is written.
         ///
         /// The relaxed encoder is what keeps it readable. The default one escapes
-        /// every character that could mean something in a web page — so
+        /// every character that could mean something in a web page, so
         /// "Ctrl+Alt+P" was written to the file as Ctrl+Alt+P, and a
         /// window title or path with an accent came out escaped too. The name says
         /// "unsafe" because it is unsafe to drop into HTML or a script; this is a
@@ -1026,7 +1026,7 @@ namespace ExplorerNative
         };
 
         /// <summary>
-        /// The settings on disk, or the defaults — and never the defaults for a
+        /// The settings on disk, or the defaults, and never the defaults for a
         /// file that is merely damaged.
         ///
         /// It used to be all or nothing: one value of the wrong type, one stray
@@ -1034,7 +1034,7 @@ namespace ExplorerNative
         /// save then wrote over the original. So a value that will not read is
         /// dropped on its own and the rest kept; a file that will not parse at all
         /// is copied aside before anything can overwrite it; and a file that could
-        /// not be *opened* — another process swapping it in at that instant — is
+        /// not be *opened*, another process swapping it in at that instant, is
         /// tried again rather than read as missing.
         /// </summary>
         public static Settings Load() => Load(out _);
@@ -1110,7 +1110,7 @@ namespace ExplorerNative
             {
                 loaded = JsonSerializer.Deserialize<Settings>(json, ReadFormat);
 
-                // Left in the clear by an older build — the one an update
+                // Left in the clear by an older build, the one an update
                 // replaced saves on its way out. Encrypted now, same content.
                 if (wasPlain && loaded != null)
                 {
@@ -1252,7 +1252,7 @@ namespace ExplorerNative
             // defaults, switching announcements off, adding formats to the
             // list) are gone for that reason, not because they were wrong once.
             //
-            // Validated may still repair a value that is genuinely broken:
+            // Validated may still repair a value that is really broken:
             // missing, blank, out of any range a version ever allowed, or not a
             // valid choice. A range is never narrowed in a way that changes a
             // value an earlier version accepted.
@@ -1357,14 +1357,14 @@ namespace ExplorerNative
         ///
         /// These properties are declared as <c>string</c>, not <c>string?</c>, so
         /// every line of code that reads one is written against a value that is
-        /// never null — and `"AudioPlayPauseShortcut": null` in settings.json
+        /// never null, and `"AudioPlayPauseShortcut": null` in settings.json
         /// makes it null anyway, because that is what the file says and the
         /// deserialiser has no opinion about nullable annotations.
         ///
         /// Most consumers turn out to survive it by luck rather than by design.
         /// One does not: <see cref="Migrate"/> calls <c>AudioExtensions.TrimEnd</c>,
         /// which throws, and <see cref="Load"/> catches everything and returns a
-        /// default Settings — so a single null in the file silently threw away
+        /// default Settings, so a single null in the file silently threw away
         /// every preference in it, and the next save wrote the defaults back over
         /// the original. Nothing was reported, because from the outside it is just
         /// an application that came up with its settings reset.
@@ -1372,7 +1372,7 @@ namespace ExplorerNative
         /// So this runs *before* Migrate, and it is by reflection rather than as a
         /// list of names for the same reason the round-trip test is: a string
         /// setting added next year is covered without anybody remembering. The
-        /// nullability annotation is the rule — a property genuinely declared
+        /// nullability annotation is the rule, a property really declared
         /// <c>string?</c> is meant to be null and is left alone.
         /// </summary>
         private static readonly System.Reflection.PropertyInfo[] NonNullableStrings =
@@ -1417,7 +1417,7 @@ namespace ExplorerNative
         internal Settings Validated()
         {
             // Before Migrate, which reads several of these and would throw on a
-            // null — taking the whole settings file with it. See NoNullStrings.
+            // null, taking the whole settings file with it. See NoNullStrings.
             NoNullStrings();
             DriveSyncPairs ??= new();
             DriveSyncPairs.RemoveAll(p => p == null);
@@ -1454,7 +1454,7 @@ namespace ExplorerNative
 
             // GoogleDriveLetter is deliberately left alone, like the shortcuts.
             // Validating strings here breaks the round-trip guarantee the whole
-            // settings file rests on — a value written must come back — and
+            // settings file rests on, a value written must come back, and
             // GoogleDrive.PreferredLetter already falls back to G for anything it
             // cannot use. Rubbish costs a different letter, not a failure.
             AudioSeekSeconds = Math.Clamp(AudioSeekSeconds, 1, 300);
@@ -1474,8 +1474,8 @@ namespace ExplorerNative
             AudioLimiterReleaseMilliseconds = Math.Clamp(AudioLimiterReleaseMilliseconds, 5, 5000);
 
             // The equaliser, out of a file people are invited to edit. A missing
-            // or short list is filled in flat rather than rejected — half a curve
-            // is still a curve — and a longer one is cut, because a twenty-first
+            // or short list is filled in flat rather than rejected, half a curve
+            // is still a curve, and a longer one is cut, because a twenty-first
             // band would be a setting for a slider that does not exist.
             var bands = new int[Equaliser.BandCount];
             for (int b = 0; b < bands.Length; b++)
@@ -1486,7 +1486,7 @@ namespace ExplorerNative
             AudioEqualiserBands = bands;
 
             // Silence reduction. Each bound is the point past which the
-            // number stops describing the thing it is named after — a threshold
+            // number stops describing the thing it is named after, a threshold
             // above minus three is the whole recording, and a gap shorter than
             // twenty milliseconds is not a gap, it is a waveform crossing zero.
             // The far ends are deliberately absurd rather than safe; see
@@ -1546,8 +1546,8 @@ namespace ExplorerNative
         ///
         /// It returned void and swallowed the exception, which meant the window
         /// announced "Preferences saved" whether or not anything had been
-        /// written — an announcement that could simply be false, which is worse
-        /// than none at all. Callers that genuinely do not care still ignore the
+        /// written, an announcement that could simply be false, which is worse
+        /// than none at all. Callers that really do not care still ignore the
         /// result; the one that tells somebody it worked now checks.
         /// </summary>
         public bool Save()
@@ -1559,7 +1559,7 @@ namespace ExplorerNative
                 // Stamped on the way out, so a file this build wrote is never
                 // migrated again on the next load. Never *lowered*: a file a newer
                 // build wrote, saved by this one, would otherwise run that build's
-                // migrations a second time when it came back — undoing whatever
+                // migrations a second time when it came back, undoing whatever
                 // somebody had set since.
                 SettingsVersion = Math.Max(SettingsVersion, CurrentSettingsVersion);
 
@@ -1593,7 +1593,7 @@ namespace ExplorerNative
                     ProtectedFile.WriteAllText(temp, json, durable: true);
 
                     // The swap is refused while another process has the file open
-                    // without delete sharing — a reader in the moment of reading —
+                    // without delete sharing, a reader in the moment of reading,
                     // so it is tried a few times before being called a failure.
                     for (int attempt = 0; ; attempt++)
                     {
@@ -1621,7 +1621,7 @@ namespace ExplorerNative
             catch
             {
                 // Losing a settings write is not worth crashing over, but it is
-                // worth saying so — the caller announces success otherwise.
+                // worth saying so, the caller announces success otherwise.
                 return false;
             }
         }
@@ -1883,8 +1883,8 @@ namespace ExplorerNative
         /// process is running with.
         ///
         /// Taking the file wholesale threw away everything this session had not
-        /// written yet — the volume, the speed, repeat, the window's place, the
-        /// sort order, all of which are saved on the way out — so turning folder
+        /// written yet, the volume, the speed, repeat, the window's place, the
+        /// sort order, all of which are saved on the way out, so turning folder
         /// handling on from the command line put the volume back to wherever it
         /// was when the application started. Only what differs between the file
         /// as this process last saw it and the file now is taken.
@@ -1910,7 +1910,7 @@ namespace ExplorerNative
 
             // A file that would not read is not a file full of defaults. Merged
             // as one, every setting that differed from its default was put back
-            // to it — the folder takeover included, which the next reconcile then
+            // to it, the folder takeover included, which the next reconcile then
             // handed back to File Explorer.
             // Nor is a file that would not decrypt: Load hands back defaults for
             // it, and merged against what this process last read, every setting
@@ -1921,7 +1921,7 @@ namespace ExplorerNative
 
             // Never read here: the live values are defaults standing in for a
             // file that could not be opened, with this session's changes on
-            // them. The file, with those changes laid over it — taken wholesale,
+            // them. The file, with those changes laid over it, taken wholesale,
             // every change made meanwhile was lost. Whatever else has read the
             // file since: that reading is not what these values were based on,
             // and merging against it handed the unreadable copy back.
@@ -1938,8 +1938,8 @@ namespace ExplorerNative
         ///
         /// This is what OK in Preferences means. The dialog edits a copy taken
         /// when it opened, and handing that copy back wholesale put back every
-        /// setting that had changed in the meantime without it — a volume key
-        /// pressed while the dialog was up, a speed change, repeat — so pressing
+        /// setting that had changed in the meantime without it, a volume key
+        /// pressed while the dialog was up, a speed change, repeat, so pressing
         /// OK on a page nobody had touched moved the volume.
         /// </summary>
         public static Settings WithChanges(Settings live, Settings before, Settings after)

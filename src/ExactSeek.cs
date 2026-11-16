@@ -20,10 +20,10 @@ namespace ExplorerNative
     ///
     ///   * **Variable-bitrate MP3.** The Xing table of contents has a hundred
     ///     entries for the whole file, so a seek in an hour lands anywhere in a
-    ///     36-second slot — measured 5.6 seconds early — and is stamped as the
+    ///     36-second slot, measured 5.6 seconds early, and is stamped as the
     ///     target.
     ///   * **FLAC.** With a seek table (every FLAC encoder writes one) it lands
-    ///     up to ten seconds early and says so — except before the first seek
+    ///     up to ten seconds early and says so, except before the first seek
     ///     point, where it starts from the beginning and stamps it as the target.
     ///     Without one it lands wherever, up to 35 seconds out, and stamps it as
     ///     the target every time.
@@ -50,7 +50,7 @@ namespace ExplorerNative
         /// <summary>
         /// The seeker for this file, or null when its format does not need one
         /// or its bytes cannot be read here. <paramref name="retry"/> is true
-        /// when the answer might be different later — the head of a download
+        /// when the answer might be different later, the head of a download
         /// has not arrived yet.
         /// </summary>
         public static ExactSeek? For(string path, IStream? stream, out bool retry)
@@ -119,14 +119,14 @@ namespace ExplorerNative
         /// to. The stream is made to start on a sample that falls on that rate's
         /// grid as well as the file's: Windows' resampler lays its output grid
         /// from the first sample it is given, so a start anywhere else plays the
-        /// right audio a fraction of a sample late — measured as a difference of
+        /// right audio a fraction of a sample late, measured as a difference of
         /// 0.1 against a straight decode, where starting on the grid gives none.
         /// </summary>
         public abstract bool TryLocate(double seconds, int outputRate, out IStream stream, out double start);
 
         /// <summary>
         /// The length of the audio as the file's own structure gives it, when
-        /// that is known — which for MP3 is better than Media Foundation's
+        /// that is known, which for MP3 is better than Media Foundation's
         /// estimate from the bitrate: measured at 78ms short on a minute, and
         /// eight seconds short on a file joined from three.
         /// </summary>

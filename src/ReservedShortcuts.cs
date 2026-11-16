@@ -10,14 +10,14 @@ namespace ExplorerNative
     /// is exclusive and machine-wide: whoever registers a combination owns it and
     /// no other program ever sees it again. That is the point for Ctrl+Alt+P, and
     /// a disaster for Ctrl+C. Setting "play or pause" to Ctrl+C would stop copying
-    /// working in every application on this computer — including in this one,
-    /// whose own Copy would never receive the key again — and nothing about the
+    /// working in every application on this computer, including in this one,
+    /// whose own Copy would never receive the key again, and nothing about the
     /// registration would fail or warn, because from Windows' point of view
     /// nothing went wrong.
     ///
     /// So the refusal has to be here rather than in the dialog: settings.json is a
     /// file people are invited to edit, and <c>Settings.Validated</c> deliberately
-    /// leaves shortcut text alone. Both ways in consult this list — the box that
+    /// leaves shortcut text alone. Both ways in consult this list, the box that
     /// captures the keys, and the registration that runs at startup.
     ///
     /// Two kinds of entry, for two different reasons:
@@ -124,7 +124,7 @@ namespace ExplorerNative
         /// uses them and the menu says so. The rest are here as a group, and the
         /// reason is that a function key is the one kind of key that is *only*
         /// ever a command. Nothing types F6, so nothing gives it back the way a
-        /// letter comes back the moment you stop holding Control — a bare F3
+        /// letter comes back the moment you stop holding Control, a bare F3
         /// handed to Windows is Find Next gone from every program on the machine
         /// until this application is closed, and there is nothing on screen
         /// anywhere to connect the two.
@@ -135,8 +135,8 @@ namespace ExplorerNative
         ///
         /// This includes F13 to F24, which <see cref="Shortcut.IsSelfContained"/>
         /// will still say Windows is willing to hand over with no modifier at all.
-        /// Both are right about different questions — that one is "will Windows
-        /// take it", this one is "should we ask" — and where they disagree, this
+        /// Both are right about different questions, that one is "will Windows
+        /// take it", this one is "should we ask", and where they disagree, this
         /// one wins, because it is the one that runs first.
         /// </summary>
         private static readonly Reserved[] All = BuildAll();
@@ -161,7 +161,7 @@ namespace ExplorerNative
         /// <summary>
         /// What already owns this combination, or null when it is free.
         ///
-        /// The sentence is the whole value of the answer — "Ctrl+C is already used
+        /// The sentence is the whole value of the answer, "Ctrl+C is already used
         /// by Copy" sends somebody to pick different keys, where a bare refusal
         /// sends them to wonder whether the box is broken.
         /// </summary>

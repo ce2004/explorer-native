@@ -8,7 +8,7 @@ namespace ExplorerNative
     /// <summary>
     /// A file turned into float samples, through Media Foundation's source reader.
     ///
-    /// The decoding is still Windows' — that was never the part worth replacing.
+    /// The decoding is still Windows', that was never the part worth replacing.
     /// MP3, AAC, WMA, WAV, ALAC and FLAC all decode here for nothing, which is the
     /// reason this application chose Media Foundation in the first place and the
     /// reason it keeps choosing it. What changes is what happens next: the reader
@@ -17,7 +17,7 @@ namespace ExplorerNative
     ///
     /// The reader is also asked to produce the *device's* rate and channel count,
     /// so Windows' own resampler does the conversion once, correctly, inside the
-    /// decode — rather than the mixer doing it afterwards to whatever came out.
+    /// decode, rather than the mixer doing it afterwards to whatever came out.
     /// </summary>
     internal sealed class AudioDecoder : ITrackDecoder
     {
@@ -98,7 +98,7 @@ namespace ExplorerNative
         /// Getting this wrong is silent: <c>SetUINT32</c> one slot late lands on
         /// <c>SetUINT64</c>, which accepts the call, writes a differently sized
         /// value under the key, and leaves a media type that looks filled in and
-        /// is refused with <c>MF_E_TOPO_CODEC_NOT_FOUND</c> — an error about
+        /// is refused with <c>MF_E_TOPO_CODEC_NOT_FOUND</c>, an error about
         /// codecs, for a mistake about arithmetic.
         /// </summary>
         [ComImport, Guid("44AE0FA8-EA31-4109-8D2E-4CAE4997C555"),
@@ -133,8 +133,8 @@ namespace ExplorerNative
             out IMFSourceReader reader);
 
         /// <summary>
-        /// Opaque on purpose. Nothing here calls a method on it — it is created
-        /// from an IStream and handed straight to the source reader — so the
+        /// Opaque on purpose. Nothing here calls a method on it, it is created
+        /// from an IStream and handed straight to the source reader, so the
         /// vtable never matters, which is the one kind of COM declaration that
         /// cannot be got wrong.
         /// </summary>
@@ -167,7 +167,7 @@ namespace ExplorerNative
         // Block alignment, average bytes per second and "all samples
         // independent" were here. They are all derivable from the rest, and
         // asking for them as well is what the source reader rejects as an
-        // over-specified type — see the three-step negotiation in Open. They are
+        // over-specified type, see the three-step negotiation in Open. They are
         // gone rather than commented out because a GUID sitting in a file is an
         // invitation to add it back to the media type.
         private static Guid MF_PD_DURATION = new("6C990D33-BB8E-477A-8598-0D5D96FCD88A");
@@ -216,7 +216,7 @@ namespace ExplorerNative
         /// Whether *this* decoder is holding one of those startups. Without it
         /// the balance is kept by hoping every instance is opened exactly once
         /// and disposed exactly once, and neither is something a caller can be
-        /// relied on for — a decoder disposed twice, or disposed having never
+        /// relied on for, a decoder disposed twice, or disposed having never
         /// been opened, each drives the count below what is really outstanding.
         /// </summary>
         private int _started;
@@ -248,7 +248,7 @@ namespace ExplorerNative
         private bool _finished;
 
         // What the reader was opened on and asked for, so that another can be
-        // opened the same way — see SeekTo.
+        // opened the same way, see SeekTo.
         private string _path = "";
         private System.Runtime.InteropServices.ComTypes.IStream? _external;
         private int _askedRate, _askedChannels;
@@ -293,7 +293,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Length in seconds, or 0 when the source will not say. The file's own
-        /// count when there is one — see <see cref="ExactSeek.Length"/> — and
+        /// count when there is one, see <see cref="ExactSeek.Length"/>, and
         /// Media Foundation's otherwise.
         /// </summary>
         public double Duration
@@ -311,7 +311,7 @@ namespace ExplorerNative
             {
                 // Never waited for. A read holds the lock for as long as the
                 // source takes, which on the Drive letter past the download is
-                // hundreds of milliseconds — and this is asked on the window's
+                // hundreds of milliseconds, and this is asked on the window's
                 // thread by every skip, pause and "what is playing". Busy, the
                 // answer is the one published by the last read or seek.
                 if (!Monitor.TryEnter(_gate)) return Volatile.Read(ref _lastPosition);
@@ -355,7 +355,7 @@ namespace ExplorerNative
         ///
         /// This is what makes moving to a device that mixes at another rate
         /// cheap. The source reader will re-negotiate its output type on demand,
-        /// so there is no second open, no re-parse and no network read — the same
+        /// so there is no second open, no re-parse and no network read, the same
         /// reader simply starts producing 44100 instead of 48000. The spill from
         /// the old format is dropped, because those samples belong to a rate the
         /// device is no longer playing at.
@@ -372,7 +372,7 @@ namespace ExplorerNative
                     // The clock is counted in frames of the rate being left, and
                     // the spill about to be dropped is audio the reader has
                     // already moved past. Both are folded into the base first, or
-                    // a virtual stream's clock — which nothing re-stamps — comes out
+                    // a virtual stream's clock, which nothing re-stamps, comes out
                     // of a rate change reading minutes wrong.
                     int oldRate = Math.Max(1, SampleRate);
                     int oldChannels = Math.Max(1, Channels);
@@ -434,7 +434,7 @@ namespace ExplorerNative
                 // refused outright when the name does not match anything
                 // registered. `.m4b` is exactly that: an audiobook is an
                 // ordinary MP4 full of AAC, `.mp4` and `.m4a` and `.aac` all
-                // have handlers, and `.m4b` has none — so the one extension
+                // have handlers, and `.m4b` has none, so the one extension
                 // audiobooks actually use was the one that would not open,
                 // while sharing every byte of its format with three that do.
                 //
@@ -469,7 +469,7 @@ namespace ExplorerNative
 
                 // AIFF, which nothing in Windows reads, as the WAV it amounts to.
                 // Tried by extension, and for anything Windows has no handler
-                // for — the content decides, not the name.
+                // for, the content decides, not the name.
                 var extension = Path.GetExtension(path);
                 if (IsAiffName(extension) || _local != null)
                     _aiff = AiffStream.TryOpen(path, stream);
@@ -532,8 +532,8 @@ namespace ExplorerNative
                 }
 
                 // The reader takes its own reference. Ours was left to the
-                // garbage collector, which kept the stream underneath — a whole
-                // download, for a Drive track — alive for however long that took.
+                // garbage collector, which kept the stream underneath, a whole
+                // download, for a Drive track, alive for however long that took.
                 try { hr = MFCreateSourceReaderFromByteStream(bytes, IntPtr.Zero, out reader); }
                 finally { try { Marshal.ReleaseComObject(bytes); } catch { } }
             }
@@ -556,7 +556,7 @@ namespace ExplorerNative
             // alignment, average bytes and "all samples independent" are all
             // derivable from the rest, and asking for them as well is what
             // turned a perfectly ordinary WAV into 0xC00D5212. So: try the
-            // full shape, then just the rate, then bare float — and believe
+            // full shape, then just the rate, then bare float, and believe
             // what comes back rather than what was asked for.
             hr = TryType(reader, _askedRate, _askedChannels);
             if (hr != 0) hr = TryType(reader, _askedRate, 0);
@@ -636,9 +636,9 @@ namespace ExplorerNative
         /// The grid matters because Windows' resampler lays its output grid from
         /// the first sample it is given; anywhere else and the audio after the
         /// seek is a fraction of a sample out from a straight decode. The frame
-        /// boundary matters because AAC — the one format here that stamps its
+        /// boundary matters because AAC, the one format here that stamps its
         /// landing truthfully but cannot land anywhere but the start of a
-        /// 1024-sample frame — lands on the frame the request falls in. Asking
+        /// 1024-sample frame, lands on the frame the request falls in. Asking
         /// for a frame start that is also a grid point is how it ends up on one.
         /// Uncompressed audio lands exactly where it is asked, so the same
         /// request serves it. The cost is up to three and a half seconds of run-up
@@ -655,7 +655,7 @@ namespace ExplorerNative
             double aligned = sample / (double)_nativeRate;
 
             // The run-up is read from the file, and on a download that has not
-            // got that far every byte of it is a network read — up to fourteen
+            // got that far every byte of it is a network read, up to fourteen
             // seconds of ALAC. A fraction of a sample is not worth that.
             if (_external is StreamingSource download && !download.Complete && seconds - aligned > 1.0)
                 return early;
@@ -747,7 +747,7 @@ namespace ExplorerNative
             // Once per instance, and matched exactly once in Dispose. An
             // unbalanced MFShutdown does not fail and does not report anything:
             // it takes Media Foundation down for the whole process, and the
-            // media engine still holding a track simply stops. Measured — a
+            // media engine still holding a track simply stops. Measured, a
             // speed key handed a track from here to the engine, this decoder was
             // disposed on the way past, and from that moment every track was
             // silent for the life of the process while the window went on saying
@@ -773,7 +773,7 @@ namespace ExplorerNative
         /// returns how many it managed. Fewer than asked means the file is done.
         ///
         /// Called on the render thread. It reads from the source, which for a
-        /// network file can block — the buffer ahead of it is what stops that
+        /// network file can block, the buffer ahead of it is what stops that
         /// being heard, exactly as the old streaming path did.
         /// </summary>
         public int Read(float[] destination, int frames)
@@ -902,8 +902,8 @@ namespace ExplorerNative
                 // The first sample after an open or a seek says where the reader
                 // is, and from there the clock counts frames. Only the first: the
                 // later timestamps agree with the count for every format but one,
-                // and that one — WMA, whose container keeps time to the
-                // millisecond — moved the clock by up to 44 samples at every
+                // and that one, WMA, whose container keeps time to the
+                // millisecond, moved the clock by up to 44 samples at every
                 // sample, and a seek's run-up was thrown away against the moved
                 // clock. Not on a virtual stream at all: there the reader counts
                 // from wherever the stream begins, and where that is was worked
@@ -934,7 +934,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Drops the part of the sample in hand that comes before
-        /// <see cref="_discardUntil"/>. The whole of it, if it ends there — the
+        /// <see cref="_discardUntil"/>. The whole of it, if it ends there, the
         /// read loop then simply fetches the next.
         /// </summary>
         private void Discard()
@@ -978,8 +978,8 @@ namespace ExplorerNative
         /// Moves to a position in seconds, to the sample. Anything buffered is
         /// dropped.
         ///
-        /// Media Foundation's seek starts wherever the format lets it — the
-        /// frame before, the seek point before, ten seconds before — and the
+        /// Media Foundation's seek starts wherever the format lets it, the
+        /// frame before, the seek point before, ten seconds before, and the
         /// part between there and the target is decoded and thrown away here.
         /// That relies on it stamping where it started, which FLAC and
         /// variable-bitrate MP3 do not do truthfully; for those,
@@ -1007,7 +1007,7 @@ namespace ExplorerNative
 
                     double request = SeekRequest(seconds);
 
-                    // Back on the file's own reader, if a seek had moved off it —
+                    // Back on the file's own reader, if a seek had moved off it,
                     // and a fresh one for anything whose run-up starts at the very
                     // beginning. Windows' decoders do not all restart the same way
                     // after a seek to zero as they start on open: WMA came back 15
@@ -1067,7 +1067,7 @@ namespace ExplorerNative
         /// <summary>
         /// After a seek Media Foundation refused: the reader is not trusted again.
         ///
-        /// It used to be kept, and the next read went into it — measured on the
+        /// It used to be kept, and the next read went into it, measured on the
         /// first 20KB of a variable-bitrate MP3 asked for a point past its real
         /// audio, that read never returned, and the pump thread with it. A fresh
         /// reader replaces it so that a later seek still works, and until one
@@ -1181,7 +1181,7 @@ namespace ExplorerNative
 
             // Only if this instance really took one, and only the first time it
             // is disposed. See EnsureStarted for what the unbalanced version
-            // costs — it is not a leak, it is the whole player going silent.
+            // costs, it is not a leak, it is the whole player going silent.
             if (Interlocked.Exchange(ref _started, 0) == 1)
             {
                 lock (StartupGate)

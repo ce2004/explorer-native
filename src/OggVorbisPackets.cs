@@ -13,7 +13,7 @@ namespace ExplorerNative
     /// reads: the length off the last page and a seek by bisection.
     ///
     /// **NVorbis's own container reader indexes every page of the file** the
-    /// first time anything asks for the length or a seek — measured at 290ms
+    /// first time anything asks for the length or a seek, measured at 290ms
     /// and 68MB allocated for an hour of audio, so seconds for a long recording
     /// and a whole-file network read on the Drive letter. This is the same
     /// fix as <see cref="OggOpusReader"/>, and NVorbis still does all of the
@@ -23,7 +23,7 @@ namespace ExplorerNative
     /// the decoder reads one packet of pre-roll, then one packet whose output
     /// contains the target, and skips into it by however far the returned
     /// granule position is short of the target. So the packet has to be found
-    /// by its own granule position, not just the page — see there.
+    /// by its own granule position, not just the page, see there.
     /// </summary>
     internal sealed class OggVorbisPackets : IPacketProvider
     {
@@ -89,7 +89,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// The identification header on the first page, then on to the page the
-        /// third header ends on. The audio starts after it — or on it, in a file
+        /// third header ends on. The audio starts after it, or on it, in a file
         /// that does not start its audio on a fresh page, which the header
         /// filter then covers.
         /// </summary>
@@ -127,7 +127,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// The granule position the stream starts at, when that is far from zero
-        /// — a capture begun part way through a broadcast carries the broadcast's
+        /// a capture begun part way through a broadcast carries the broadcast's
         /// count. Everything NVorbis is told is relative to it, and everything
         /// read off a page is absolute, so the two are converted here. Found on
         /// the first seek, because only then is NVorbis's own count of a packet
@@ -139,7 +139,7 @@ namespace ExplorerNative
         /// <summary>
         /// Below this the difference between a page's granule and the samples
         /// counted on it is the ordinary rounding of block boundaries, not a
-        /// stream that started late — and treating it as an offset would move
+        /// stream that started late, and treating it as an offset would move
         /// every seek of every ordinary file.
         ///
         /// One long block: the start is worked out from the page's own packet
@@ -161,8 +161,8 @@ namespace ExplorerNative
 
             if (ReadPage(out var packets, out var page, out _) && !page.Last && page.Granule >= 0)
             {
-                // The stream's first audio packet produces nothing — it has no
-                // predecessor to overlap — so it is left out of what the page
+                // The stream's first audio packet produces nothing, it has no
+                // predecessor to overlap, so it is left out of what the page
                 // accounts for, whatever count NVorbis gives it. And NVorbis
                 // ends the page where it ends it, which is past the granule
                 // when the page closes on a long block before a short one.
@@ -243,7 +243,7 @@ namespace ExplorerNative
                 // The granule position goes only where NVorbis needs it: on the
                 // last page, where it trims the end to it, and after lost sync,
                 // where it has to learn where it is again. Given on every page, a
-                // decode from the top learned its position from the first page —
+                // decode from the top learned its position from the first page,
                 // and a first page ending on a long block before a short one says
                 // a position 448 samples from where NVorbis's output really is.
                 // Measured: a straight decode then played 16 samples of padding
@@ -252,7 +252,7 @@ namespace ExplorerNative
                 // Not on the last page any more. NVorbis trims the last packet by
                 // however far the granule falls short of where it has counted to,
                 // and a damaged granule far enough short leaves the packet's end
-                // before its start — its read loop then spins for ever, the same
+                // before its start, its read loop then spins for ever, the same
                 // fault as the seek has. OggDecoder trims the end itself, to the
                 // same count, with nothing that can go below zero.
                 var last = packets[packets.Count - 1];
@@ -272,7 +272,7 @@ namespace ExplorerNative
         /// overlap with; reads a second, whose output starts at the returned
         /// granule position; and skips the difference between that and the
         /// target. So the second packet must be the one whose output contains
-        /// the target — it ends past it and starts at or before it — and the
+        /// the target, it ends past it and starts at or before it, and the
         /// first must be the one immediately before it, read whole. A page is
         /// not precise enough: its granule position only says where its *last*
         /// packet ends.
@@ -337,7 +337,7 @@ namespace ExplorerNative
         /// position of the page before the first one read, or -1.
         ///
         /// Each packet's end is worked back from its page's granule position
-        /// with the decoder's own count of what each packet produces — and then
+        /// with the decoder's own count of what each packet produces, and then
         /// moved to where NVorbis really ends it, which is not always where the
         /// format says. See <see cref="TrailingShift"/>.
         /// </summary>
@@ -407,7 +407,7 @@ namespace ExplorerNative
                         // file held open. In a sound file the two ends agree and
                         // this never applies. In a damaged one the page before
                         // can say an end tens of thousands of samples before
-                        // this page's — measured at 46,000 — and the packet is
+                        // this page's, measured at 46,000, and the packet is
                         // placed from its own page instead, which is where it is
                         // heard: never further in than it produces, never before
                         // the target's own packet.
@@ -447,7 +447,7 @@ namespace ExplorerNative
         /// What a packet produces, by NVorbis's count, gives it away: a short
         /// block always produces half a short block, and a long one half a long
         /// block, give or take that quarter-difference depending on its
-        /// neighbours — more when the one before is long and the one after short,
+        /// neighbours, more when the one before is long and the one after short,
         /// less the other way round, and neither when they match, in which case
         /// the packet before decides.
         /// </summary>

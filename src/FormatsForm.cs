@@ -49,8 +49,8 @@ namespace ExplorerNative
             foreach (var ext in supported) _list.Items.Add(ext, chosen.Contains(ext));
 
             // Anything already in the list that is not one of the built-in
-            // formats — added by hand to an older build — stays, checked, so
-            // pressing OK does not quietly drop it.
+            // formats, added by hand to an older build, stays, checked, so
+            // pressing OK does not silently drop it.
             foreach (var ext in chosen.Where(e => !supported.Contains(e, StringComparer.OrdinalIgnoreCase)))
                 _list.Items.Add(ext, true);
             if (_list.Items.Count > 0) _list.SelectedIndex = 0;

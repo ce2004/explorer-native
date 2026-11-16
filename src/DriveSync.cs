@@ -299,7 +299,7 @@ namespace ExplorerNative
     /// accent on its own.
     ///
     /// macOS writes "café" the second way and Windows the first, so a library
-    /// copied from a Mac had every accented name twice over — the PC's sent up
+    /// copied from a Mac had every accented name twice over, the PC's sent up
     /// beside Drive's, and Drive's brought down beside the PC's. The names are
     /// kept as each side spells them; only the comparing is normalised.
     /// </summary>

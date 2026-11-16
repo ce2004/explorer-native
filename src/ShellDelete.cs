@@ -9,12 +9,12 @@ using System.Threading;
 namespace ExplorerNative
 {
     /// <summary>
-    /// Sends something to the Recycle Bin, and never quietly anywhere else.
+    /// Sends something to the Recycle Bin, and never silently anywhere else.
     ///
     /// The VB helper this replaced asks the shell for no confirmation at all,
     /// and without confirmation the shell does not warn when a file cannot be
-    /// recycled — on a share, on most USB sticks, or when it is bigger than the
-    /// bin — it simply deletes it for good. The application had just asked
+    /// recycled, on a share, on most USB sticks, or when it is bigger than the
+    /// bin, it simply deletes it for good. The application had just asked
     /// "Really send it to the Recycle Bin?" and then announced "Deleted".
     ///
     /// FOF_WANTNUKEWARNING is the flag that brings the shell's own "this will be

@@ -12,7 +12,7 @@ namespace ExplorerNative
     ///
     /// This is a real native HMENU, so a screen reader reads it exactly as it
     /// reads the menu in File Explorer. Because this process is ARM64, only
-    /// ARM64-capable shell extensions load into it — which is precisely the
+    /// ARM64-capable shell extensions load into it, which is precisely the
     /// mismatch that broke the x64 file manager, avoided here by being native.
     /// </summary>
     public static class ShellContextMenu
@@ -165,7 +165,7 @@ namespace ExplorerNative
             /// <summary>
             /// It appeared and was closed without choosing anything. Not a
             /// failure, and not a reason to re-read the folder: it used to come
-            /// back as Shown, and the window refreshed — in search results that
+            /// back as Shown, and the window refreshed, in search results that
             /// was the whole search run again, announced.
             /// </summary>
             Dismissed,
@@ -196,7 +196,7 @@ namespace ExplorerNative
         /// The shell parses names the ordinary way, which strips a trailing dot
         /// or space: "report." comes back as its sibling "report", by the full
         /// path and by the parent's own parse alike. A Windows Delete chosen on
-        /// "report." would then act on "report" — a file nobody selected. So
+        /// "report." would then act on "report", a file nobody selected. So
         /// the menu is refused for these, and the application's own commands,
         /// which use the literal form, are the way to act on them.
         /// </summary>
@@ -219,8 +219,8 @@ namespace ExplorerNative
         /// How long this may spend turning a selection into something the shell
         /// will build a menu for, before giving up.
         ///
-        /// The work was two shell calls per selected item — SHParseDisplayName and
-        /// SHBindToParent — measured at between 1 and 8 milliseconds each, so
+        /// The work was two shell calls per selected item, SHParseDisplayName and
+        /// SHBindToParent, measured at between 1 and 8 milliseconds each, so
         /// three thousand selected files was seconds to twenty-four seconds of the
         /// window not responding. The parent is now bound once and each item is
         /// its name parsed by that folder, about 0.02ms, but an extension can
@@ -229,7 +229,7 @@ namespace ExplorerNative
         ///
         /// A time budget rather than a count, because the per-item cost is a
         /// property of the machine and of whatever shell extensions are installed
-        /// — a number of items that is instant here is a freeze somewhere else,
+        /// a number of items that is instant here is a freeze somewhere else,
         /// and the reverse. This bounds the freeze instead of guessing at it.
         ///
         /// And it abandons the whole menu rather than building one for the first
@@ -263,7 +263,7 @@ namespace ExplorerNative
             // One menu is bound to one folder: every item is looked up as a child
             // of the first one's parent. Search results span folders, and a
             // selection of notes.txt in folder A and todo.txt in folder B had
-            // Delete act on A's todo.txt — a file nobody had selected — if one
+            // Delete act on A's todo.txt, a file nobody had selected, if one
             // existed.
             var parent = ParentOf(paths[0]);
             for (int i = 1; i < paths.Count; i++)
@@ -288,7 +288,7 @@ namespace ExplorerNative
             // Kept so the wrappers can be released deterministically. Left to the
             // finaliser, a shell extension's COM object stays alive for however
             // long the next collection takes, and its DLL stays loaded in this
-            // process with it — one badly behaved extension then hangs around
+            // process with it, one badly behaved extension then hangs around
             // long after the menu it was for has gone.
             object? parentFolderRcw = null;
             object? contextMenuRcw = null;
@@ -319,8 +319,8 @@ namespace ExplorerNative
                     if (clock.ElapsedMilliseconds > budgetMilliseconds)
                         return MenuOutcome.TooSlow;
 
-                    // Every item or none. Skipping one that would not resolve — a
-                    // file renamed since the list loaded, a share that blinked —
+                    // Every item or none. Skipping one that would not resolve, a
+                    // file renamed since the list loaded, a share that blinked,
                     // built a menu for the rest, and a Delete from it acted on
                     // forty-nine of fifty with nothing said: the worse bug the
                     // budget note above already warns about.
@@ -330,7 +330,7 @@ namespace ExplorerNative
                         // name parsed by that folder: 0.02ms, against 1.12ms for
                         // parsing the whole path from the desktop down and
                         // binding the same parent again, every item. A name the
-                        // folder cannot take — a drive root has none — goes the
+                        // folder cannot take, a drive root has none, goes the
                         // long way.
                         var name = Path.GetFileName(paths[i].TrimEnd('\\', '/'));
                         IntPtr child = IntPtr.Zero;
@@ -430,7 +430,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Opens the standard Windows properties sheet for one item, on a thread
-        /// of its own in a single-threaded apartment — which is what the shell
+        /// of its own in a single-threaded apartment, which is what the shell
         /// requires of anything invoking a verb, because the verb goes through
         /// COM to whichever shell extension handles it. From the thread pool, a
         /// multi-threaded apartment, some extensions refused, which was heard as

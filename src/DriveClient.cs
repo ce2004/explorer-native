@@ -28,7 +28,7 @@ namespace ExplorerNative
         public bool IsFolder => MimeType == "application/vnd.google-apps.folder";
 
         /// <summary>
-        /// A Doc, Sheet or Slide. These have no byte size anywhere — not here and
+        /// A Doc, Sheet or Slide. These have no byte size anywhere, not here and
         /// not in Drive for desktop, which is where "it reports the size wrong"
         /// comes from. They are not files, they are documents that only exist
         /// inside Google, and the only honest size for them is none.
@@ -75,7 +75,7 @@ namespace ExplorerNative
         /// running long used to end the entire upload.
         ///
         /// Two minutes rather than none, because a request that really has died
-        /// still has to be given up on — and the retry around it, which is the
+        /// still has to be given up on, and the retry around it, which is the
         /// actual answer, needs something to be triggered by.
         /// </summary>
         private readonly HttpClient _slowMetadata;
@@ -85,7 +85,7 @@ namespace ExplorerNative
         /// ceiling and a retry on anything temporary.
         ///
         /// Creating a folder and listing one are small requests, and for a long
-        /// time they were the only part of an upload with no retry at all — so a
+        /// time they were the only part of an upload with no retry at all, so a
         /// single 502 while making a folder failed that folder *and* everything
         /// underneath it, and a slow listing ended the transfer outright. Both
         /// are the same shape as the file uploads next door and both get the
@@ -93,23 +93,23 @@ namespace ExplorerNative
         /// <see cref="RetryDelay(int, Random)"/> to space it out.
         ///
         /// <paramref name="build"/> rather than a request, because an
-        /// HttpRequestMessage cannot be sent twice — a retry that reuses one
+        /// HttpRequestMessage cannot be sent twice, a retry that reuses one
         /// fails on the reuse rather than on the thing it was retrying.
         /// </summary>
         /// <param name="landed">
-        /// For a request that makes something — a folder, an empty file, a copy.
+        /// For a request that makes something, a folder, an empty file, a copy.
         /// A request that timed out or came back 5xx may have been carried out
         /// all the same, with only the answer lost, and sending it again makes
         /// a second one: two folders of one name with the tree split between
         /// them. So before a resend, and before giving up, this is asked whether
-        /// the thing now exists — found by the tag the request carried, see
-        /// <see cref="MadeWithTag"/> — and its answer, the file as JSON, is
+        /// the thing now exists, found by the tag the request carried, see
+        /// <see cref="MadeWithTag"/>, and its answer, the file as JSON, is
         /// returned as though the request had succeeded.
         /// </param>
         /// <param name="interactive">
         /// For a request somebody is sitting in front of: a folder being opened,
         /// a filesystem callback holding up a listing. Everything above is right
-        /// for a transfer with its own window and wrong for these — two minutes
+        /// for a transfer with its own window and wrong for these, two minutes
         /// per attempt, six attempts, and an outage waited out for as long as it
         /// lasts is a frozen pane, or a callback that outlives Windows' patience.
         /// So: the fifteen-second client, <see cref="InteractiveAttempts"/>
@@ -320,7 +320,7 @@ namespace ExplorerNative
         /// <summary>
         /// Whether a create whose answer was lost happened: the file as JSON, or
         /// null when Drive says it is not there. When Drive will not say, it is
-        /// asked again; still unanswered, this throws — resending on "could not
+        /// asked again; still unanswered, this throws, resending on "could not
         /// ask" is how a folder came to be made twice.
         /// </summary>
         internal async Task<string?> AskWhetherLanded(
@@ -334,7 +334,7 @@ namespace ExplorerNative
                 catch (Exception ex)
                 {
                     // The network going away is waited out, as for the request
-                    // itself — a fifteen-second drop otherwise failed the create,
+                    // itself, a fifteen-second drop otherwise failed the create,
                     // and every file under a folder with it.
                     if (await WaitOutNetwork(ex, "checking what Google Drive already has", token))
                     {
@@ -435,7 +435,7 @@ namespace ExplorerNative
         /// One connection pool for every request to Google, whichever client it
         /// goes out on. Three handlers meant three pools: a listing could not
         /// reuse the connection a read had just warmed, and each paid its own TLS
-        /// handshake — a good part of the ~700ms a request costs. Static, so a
+        /// handshake, a good part of the ~700ms a request costs. Static, so a
         /// remount does not leave another pool behind.
         ///
         /// The idle and lifetime limits let a connection go before Google's
@@ -507,7 +507,7 @@ namespace ExplorerNative
                 var response = await (client ?? _http).SendAsync(request, completion, token);
                 Health.Succeeded();
 
-                // Refused a token that looked good — revoked, or let go early.
+                // Refused a token that looked good, revoked, or let go early.
                 // Forgotten, so the next request refreshes; and a request with no
                 // body, or a body held in memory (a trash, a move, a rename), is
                 // simply sent again, once, with the new one. One that streams a
@@ -538,7 +538,7 @@ namespace ExplorerNative
                 response = await Unpacked(response, token);
 
                 // 429 is the one throttling answer that needs nothing read out of
-                // the body — which matters, because the body of a ranged read is a
+                // the body, which matters, because the body of a ranged read is a
                 // stream the caller is about to consume. (Google also spells this
                 // as a 403 with reason "rateLimitExceeded"; that one is only
                 // visible from the payload, so it is deliberately not claimed
@@ -551,14 +551,14 @@ namespace ExplorerNative
             {
                 // We asked for this. A cancelled request says nothing about
                 // whether Google is reachable, and counting it towards going
-                // offline means the application's own tidying up — abandoning a
-                // download because the track changed — reads as the network
+                // offline means the application's own tidying up, abandoning a
+                // download because the track changed, reads as the network
                 // failing. Rethrown unchanged; only the health report is skipped.
                 throw;
             }
             catch (OperationCanceledException ex)
             {
-                // A *timeout*, wearing cancellation's clothes — and this line is
+                // A *timeout*, wearing cancellation's clothes, and this line is
                 // the whole of "the upload cancelled itself ten percent in".
                 //
                 // HttpClient reports its own Timeout by throwing
@@ -573,7 +573,7 @@ namespace ExplorerNative
                 // It gets worse the bigger the job, which is exactly backwards:
                 // more files means more folders to create and list, so more
                 // chances for one request to run long, and any *one* of them
-                // ends the whole upload. That is the reported bug — thousands of
+                // ends the whole upload. That is the reported bug, thousands of
                 // files, cancels part way, every time.
                 //
                 // Given a different type it becomes an ordinary failure: the one
@@ -595,8 +595,8 @@ namespace ExplorerNative
         /// <summary>
         /// Says that Google is throttling, at most once a minute.
         ///
-        /// Nothing here slows down in response — the retry that follows is
-        /// whatever the caller does — so the sentence says what happened and not
+        /// Nothing here slows down in response, the retry that follows is
+        /// whatever the caller does, so the sentence says what happened and not
         /// what is being done about it.
         /// </summary>
         /// <summary>
@@ -623,7 +623,7 @@ namespace ExplorerNative
         /// <summary>
         /// The id of the folder that lists the account's shared drives.
         ///
-        /// Not a Drive object — Drive has no folder that contains its shared
+        /// Not a Drive object, Drive has no folder that contains its shared
         /// drives; they are a separate list (`drives.list`). It stands in for
         /// one so the letter can show them the way drive.google.com does, beside
         /// My Drive's own folders, and every write refuses it by name.
@@ -636,7 +636,7 @@ namespace ExplorerNative
         /// A request URL with the one parameter every call now needs.
         ///
         /// Without `supportsAllDrives`, Drive answers 404 for anything that lives
-        /// in a shared drive — a read, a trash, a rename — as though the file did
+        /// in a shared drive, a read, a trash, a rename, as though the file did
         /// not exist. It costs nothing for My Drive, so it goes on everything.
         /// </summary>
         internal static string AllDrives(string url)
@@ -768,7 +768,7 @@ namespace ExplorerNative
         /// at the first page is worse than one that fails.
         ///
         /// The default limit is deliberately far above any real folder. It was
-        /// 1000 — one page — and an artists folder came back holding exactly a
+        /// 1000, one page, and an artists folder came back holding exactly a
         /// thousand names ending at "JZAC", with everything from K to Z simply
         /// absent. Nothing reported a problem: the folder listed, it just was not
         /// all there, and it looked for all the world like type-ahead failing to
@@ -783,7 +783,7 @@ namespace ExplorerNative
         /// than after the last page.
         ///
         /// <paramref name="interactive"/> is whether somebody is waiting on the
-        /// answer — see <see cref="SendWithRetry"/>. Left out, a listing with a
+        /// answer, see <see cref="SendWithRetry"/>. Left out, a listing with a
         /// <paramref name="label"/> to announce or an <paramref name="onPage"/>
         /// to show is one somebody is looking at, and is interactive; the upload,
         /// copy and folder-monitor callers pass neither and keep the patient
@@ -838,9 +838,9 @@ namespace ExplorerNative
                              (page != null ? $"&pageToken={Uri.EscapeDataString(page)}" : "");
 
                 // Retried, on the long client. A listing is the other half of
-                // what an upload spends its metadata time on — the destination
+                // what an upload spends its metadata time on, the destination
                 // has to be listed before anything can be said about what is
-                // already in it — and a folder holding several thousand files is
+                // already in it, and a folder holding several thousand files is
                 // several of these pages. One of them running past fifteen
                 // seconds used to end the entire transfer, reported as a
                 // cancellation nobody asked for. Unless somebody is waiting to
@@ -865,7 +865,7 @@ namespace ExplorerNative
                 {
                     seen++;
                     // size is absent for folders and for Google's own document
-                    // types, and absent is not zero — see DriveEntry.
+                    // types, and absent is not zero, see DriveEntry.
                     long size = f.TryGetProperty("size", out var s) && long.TryParse(s.GetString(), out var sv)
                         ? sv : -1;
 
@@ -900,7 +900,7 @@ namespace ExplorerNative
                 // A second page means over a thousand entries, and it is the only
                 // thing this layer knows for certain about how much longer the
                 // rest will take. It is also known *during* the listing, which is
-                // the only time saying "still fetching" is any use — measured, a
+                // the only time saying "still fetching" is any use, measured, a
                 // folder nobody has opened takes about 1.3s per page, and the
                 // artists folder here is three of them.
                 if (page != null && label != null && !saidSlow)
@@ -916,7 +916,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// The shared drives this account can see, each as a folder whose id is
-        /// the drive's — a shared drive's top folder has the same id as the drive.
+        /// the drive's, a shared drive's top folder has the same id as the drive.
         /// </summary>
         public async Task<List<DriveEntry>> ListSharedDrives(CancellationToken token, bool interactive = false)
         {
@@ -976,7 +976,7 @@ namespace ExplorerNative
         /// Asked rather than worked out. "root" is an alias Drive accepts in a
         /// query and never the id it puts in a `parents` array, so the two have
         /// to be joined up before a chain of parents can be recognised as
-        /// reaching the top — and the obvious way to infer it, looking for a
+        /// reaching the top, and the obvious way to infer it, looking for a
         /// parent that is not itself a folder in the listing, picks the wrong
         /// answer for any account with a folder shared into it, whose parent is
         /// equally absent. One request, and no guessing.
@@ -999,7 +999,7 @@ namespace ExplorerNative
         /// Files anywhere in the account whose name contains
         /// <paramref name="term"/>.
         ///
-        /// One request, however large the Drive — which is why a search of the
+        /// One request, however large the Drive, which is why a search of the
         /// letter goes to Google rather than walking placeholders. It is not
         /// scoped to a folder, because Drive's query language cannot express
         /// "or anything below it"; see <see cref="DriveSearch"/> for the half
@@ -1040,7 +1040,7 @@ namespace ExplorerNative
         /// A term as Drive's query language will take it.
         ///
         /// Both of these are ordinary in a file name and both end the string
-        /// early if they go through unescaped — an apostrophe closes the literal,
+        /// early if they go through unescaped, an apostrophe closes the literal,
         /// and a backslash escapes whatever follows it. A name with one in it is
         /// not an error case to reject, it is Tuesday: "don't go.flac" is on this
         /// very Drive.
@@ -1053,7 +1053,7 @@ namespace ExplorerNative
         /// fresh value per operation.
         ///
         /// Found by name and time instead, the lookup adopted whatever of that
-        /// name had been made in the last minute — the previous upload of the
+        /// name had been made in the last minute, the previous upload of the
         /// same take, which an overwrite then trashed, reporting success for an
         /// upload that never happened. App properties are private to this
         /// client and cost nothing to carry.
@@ -1084,7 +1084,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// What the signed-in account may do with an item, as Drive says —
+        /// What the signed-in account may do with an item, as Drive says,
         /// the owner's sharing settings and a shared drive's roles included.
         /// </summary>
         internal async Task<DriveRights> RightsOf(string fileId, CancellationToken token)
@@ -1159,8 +1159,8 @@ namespace ExplorerNative
         /// <summary>
         /// The file in <paramref name="parentId"/> made by the operation tagged
         /// <paramref name="tag"/>, as JSON with the fields asked for, or null when
-        /// Drive says there is none. Throws when it cannot say — a refused query,
-        /// or a search Drive reports as incomplete — because "not found" is the
+        /// Drive says there is none. Throws when it cannot say, a refused query,
+        /// or a search Drive reports as incomplete, because "not found" is the
         /// answer that sends the request again.
         /// </summary>
         internal async Task<string?> MadeWithTag(string tag, string parentId, string fields, CancellationToken token)
@@ -1169,7 +1169,7 @@ namespace ExplorerNative
                            $" and appProperties has {{ key='{OperationProperty}' and value='{EscapeQuery(tag)}' }}";
 
             // Scoped to the drive the folder is in. Across every drive the account
-            // can see — sixty-four here — Drive reports the search incomplete,
+            // can see, sixty-four here, Drive reports the search incomplete,
             // and an incomplete "not found" cannot be acted on.
             string? driveId = await DriveOf(parentId, token);
             string scope = driveId == null
@@ -1208,7 +1208,7 @@ namespace ExplorerNative
         /// folder somebody is waiting to see, neither of which a search wants,
         /// and it does not ask for parents.
         ///
-        /// My Drive, or one shared drive — never all of them at once. Measured
+        /// My Drive, or one shared drive, never all of them at once. Measured
         /// on an account with 64 shared drives: every folder across all drives
         /// was more than 50,000 rows and 158 seconds, against three seconds for My
         /// Drive's own. Scoped to the drive being searched, it costs what that
@@ -1281,7 +1281,7 @@ namespace ExplorerNative
         ///
         /// **And it was the one Drive call with no retry at all.** Every write
         /// has had `WorthRetrying` and `RetryDelay` around it since the upload
-        /// path was written — the argument being that a service which is right
+        /// path was written, the argument being that a service which is right
         /// almost all of the time still says 503 sometimes, and one request per
         /// file means one chance each. A hydration is a request per four
         /// megabytes of a file somebody is copying, which is far more chances
@@ -1299,8 +1299,8 @@ namespace ExplorerNative
         /// root until every callback in flight has come back.
         ///
         /// Written first as three attempts with the writes' delays, it made a
-        /// single read worth up to fifty seconds — three fifteen-second timeouts
-        /// with backoff between them — which is worse than the failure it was
+        /// single read worth up to fifty seconds, three fifteen-second timeouts
+        /// with backoff between them, which is worse than the failure it was
         /// added to prevent, and turns a Drive that has gone away into an
         /// application that will not close.
         ///
@@ -1455,7 +1455,7 @@ namespace ExplorerNative
         /// <summary>
         /// Short, and not the writes' exponential backoff. What is being waited
         /// out here is a single request that failed while the connection is
-        /// otherwise healthy — a 503 from one of Google's front ends, a socket
+        /// otherwise healthy, a 503 from one of Google's front ends, a socket
         /// that closed. That resolves in milliseconds or not at all, and the
         /// thirty-second ceiling the uploads use has nowhere to fit.
         /// </summary>
@@ -1469,7 +1469,7 @@ namespace ExplorerNative
         /// <summary>
         /// A range read that failed for a reason worth coming back for, wrapped
         /// so the retry above can tell it from a 404 on a file that has been
-        /// deleted — which no amount of asking again will fix.
+        /// deleted, which no amount of asking again will fix.
         /// </summary>
         private sealed class RetryableReadException : Exception
         {
@@ -1496,8 +1496,8 @@ namespace ExplorerNative
         /// How long one attempt may go without a byte arriving.
         ///
         /// The client's own timeout stops at the headers when the body is
-        /// streamed, so a response that started and then stalled — a connection
-        /// that went quiet part way through a four-megabyte chunk — waited on the
+        /// streamed, so a response that started and then stalled, a connection
+        /// that went quiet part way through a four-megabyte chunk, waited on the
         /// body for ever, holding a filesystem callback and everything reading
         /// behind it. This clock covers the body too.
         ///
@@ -1592,7 +1592,7 @@ namespace ExplorerNative
             // And a 200 to a request that asked for the *middle* of a file is
             // refused rather than read. The body then begins at byte zero, and
             // reading `length` bytes out of it hands back the head of the file as
-            // though it were the contents at `offset` — which is cached under
+            // though it were the contents at `offset`, which is cached under
             // that chunk index, served to Windows at that position, and written
             // into the middle of whatever is being copied. Silent, and wrong in
             // the one way nothing downstream can detect. At offset zero a 200 is

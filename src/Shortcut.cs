@@ -24,7 +24,7 @@ namespace ExplorerNative
         ///
         /// A bare letter is refused on purpose. RegisterHotKey takes the key away
         /// from every other application on the machine, so a global hotkey of "P"
-        /// means no program ever sees a P again — including this one. The media
+        /// means no program ever sees a P again, including this one. The media
         /// keys are the exception: they are already global by nature, and a
         /// keyboard that has them is a keyboard where taking them is the point.
         ///
@@ -49,7 +49,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Keys worth registering with no modifier at all — they exist for exactly
+        /// Keys worth registering with no modifier at all, they exist for exactly
         /// this and nothing types them.
         /// </summary>
         public static bool IsSelfContained(Keys key) => key switch
@@ -82,8 +82,8 @@ namespace ExplorerNative
         public string Spoken => IsAssigned ? ToString().Replace("+", " plus ") : "not set";
 
         /// <summary>
-        /// Reads a shortcut back. Anything unrecognised gives <see cref="None"/> —
-        /// a shortcut that is simply not registered — rather than a guess.
+        /// Reads a shortcut back. Anything unrecognised gives <see cref="None"/>,
+        /// a shortcut that is simply not registered, rather than a guess.
         /// </summary>
         public static Shortcut Parse(string? text)
         {
@@ -130,7 +130,7 @@ namespace ExplorerNative
             }
 
             // Enum.TryParse also accepts raw numbers and comma-separated lists,
-            // neither of which is a key name — "80" would silently become P.
+            // neither of which is a key name, "80" would silently become P.
             foreach (char c in part)
                 if (!char.IsLetterOrDigit(c)) return 0;
             if (char.IsDigit(part[0])) return 0;

@@ -13,7 +13,7 @@ namespace ExplorerNative
     /// on the PC's disk (Conner: "uploading should not use the PC's space").
     ///
     /// A resumable session opened without a length, then pieces as they are
-    /// ready — every piece but the last a multiple of 256 KiB, as Google
+    /// ready, every piece but the last a multiple of 256 KiB, as Google
     /// requires, the last one carrying the total. Each piece is held in memory
     /// only until Google confirms it; a connection that breaks part way is asked
     /// how much it kept, and the rest of the piece is sent again.
@@ -60,7 +60,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Sends <paramref name="count"/> bytes at <paramref name="offset"/> of a
-        /// session, and returns once Google holds all of them — or, when
+        /// session, and returns once Google holds all of them, or, when
         /// <paramref name="total"/> is given (the last piece), once the file is
         /// made, with what Drive now holds. Not now (5xx, 429, a dropped line)
         /// is waited out within <paramref name="token"/>; no is thrown.

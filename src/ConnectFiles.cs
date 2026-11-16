@@ -137,7 +137,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// A local path as the file system is to be asked about it. A name ending in a dot or a space, anywhere
-        /// in the path, is quietly trimmed by Windows, so "report." would be taken as "report" and a different
+        /// in the path, is silently trimmed by Windows, so "report." would be taken as "report" and a different
         /// file read, renamed or found missing; those paths go in the literal form. Every other path is
         /// returned as the same string, so <c>ReferenceEquals</c> says whether it changed.
         /// </summary>
@@ -895,7 +895,7 @@ namespace ExplorerNative
             var token = job.Token;
 
             // Out of the Drive letter the job is told what Drive has handed over, rather than waiting for
-            // robocopy's late whole-file lines — RoboCopyEngine.WithDownloads, as the window does.
+            // robocopy's late whole-file lines, RoboCopyEngine.WithDownloads, as the window does.
             using var fetches = fromDrive ? Drive.WatchFetches(paths) : null;
             long shown = 0;
             var rate = new RecentRate();

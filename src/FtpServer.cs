@@ -1243,7 +1243,7 @@ namespace ExplorerNative
             }
 
             // A fresh upload lands beside the target under another name and takes
-            // its place only when all of it is here. Carrying on a broken upload
+            // its place only when all of it is here. Continuing a broken upload
             // (REST) or adding to a file (APPE) has to write to the file itself.
             // Before any file is made: with no port asked for there is no
             // transfer, and APPE used to leave an empty file behind saying so.
@@ -1266,7 +1266,7 @@ namespace ExplorerNative
                 }
                 else if (startAt > 0)
                 {
-                    // Carrying on needs something to carry on from: OpenOrCreate
+                    // Continuing needs something to carry on from: OpenOrCreate
                     // made an empty file and then refused it for being too short.
                     file = new FileStream(local, FileMode.Open, FileAccess.Write, FileShare.Read, CopyBufferBytes);
                     if (startAt > file.Length)

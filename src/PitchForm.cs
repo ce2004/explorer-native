@@ -9,7 +9,7 @@ namespace ExplorerNative
     ///
     /// A list rather than a slider, which is the opposite of the choice
     /// <see cref="EqualiserForm"/> makes next door, and the difference is the
-    /// same one that decided it there. A slider is right for a *curve* — twenty
+    /// same one that decided it there. A slider is right for a *curve*, twenty
     /// bands whose shape relative to each other is the thing you are reading.
     /// This is one number, its useful values are named intervals rather than
     /// points on a scale, and a list says "3 semitones up" where a slider says
@@ -34,7 +34,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// <paramref name="apply"/> is handed the semitones and whether the
-        /// tempo follows, together, every time either changes — because the
+        /// tempo follows, together, every time either changes, because the
         /// audio path sets both from one place and a moment with one applied
         /// and not the other is a moment at the wrong speed.
         /// </summary>
@@ -85,7 +85,7 @@ namespace ExplorerNative
             tempoBox.AccessibleName = "Change the tempo with it";
             tempoBox.AccessibleDescription =
                 "Off, only the pitch moves and the track plays at the speed it was already set to. " +
-                "On, the two move together the way a tape machine or a turntable does — pitching " +
+                "On, the two move together the way a tape machine or a turntable does, pitching " +
                 "down also slows it down. Applies as you change it. Escape puts it back.";
             Controls.Add(tempoBox);
 

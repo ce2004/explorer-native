@@ -540,7 +540,7 @@ namespace ExplorerNative
     /// and everything else the window does to the folder on screen has to reach
     /// that folder too: the idle poll, Backspace, the fallback walk, the watcher,
     /// and New folder or New file inside it. Plus the drive list read again
-    /// quietly (Preferences saved) no longer reading its row over the message.
+    /// silently (Preferences saved) no longer reading its row over the message.
     ///
     /// MainForm is not in the suite, so the decisions are pinned from its
     /// source; the reason behind them is shown on a real folder.
@@ -893,7 +893,7 @@ namespace ExplorerNative
             Check("the tab behind is loaded only with two tabs", back >= 0 && twoTabs >= 0 && twoTabs > firstNav);
 
             var load = Body(main, "private async Task LoadTabAsync(");
-            Check("the tab behind loads quietly into its own pane",
+            Check("the tab behind loads silently into its own pane",
                 load.Contains("quiet: true", StringComparison.Ordinal) && load.Contains("onPane:", StringComparison.Ordinal));
 
             var capture = Body(main, "private void CaptureState()");

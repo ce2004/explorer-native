@@ -7,12 +7,12 @@ namespace ExplorerNative
 {
     /// <summary>
     /// Pulls a file through the operating system's cache so that the next
-    /// program to read it — the media engine — finds it already local.
+    /// program to read it, the media engine, finds it already local.
     ///
     /// This exists because of what a music library on a NAS actually costs.
     /// Measured against one over SMB: a track nobody has touched takes about
     /// 1.3 seconds from Enter to sound, and a seek into an uncached part of it
-    /// about two seconds. The bytes are not the problem — the round trips are,
+    /// about two seconds. The bytes are not the problem, the round trips are,
     /// and the first sixty-four kilobytes alone can take a second.
     ///
     /// Reading the first couple of megabytes ahead of time cuts the start to
@@ -35,7 +35,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// That a file is being warmed, as a catalogue id and a sentence. Null
-        /// changes nothing, and it is called on the worker doing the reading —
+        /// changes nothing, and it is called on the worker doing the reading,
         /// never on the thread that asked for it, which is the UI thread.
         /// </summary>
         public Action<string, string>? Notify { get; set; }
@@ -100,7 +100,7 @@ namespace ExplorerNative
         ///
         /// Both of those matter, and neither is style. This reads megabytes from
         /// a share, and it did it with a synchronous <c>Read</c> on a thread-pool
-        /// thread — which holds that thread for the whole of it and cannot see
+        /// thread, which holds that thread for the whole of it and cannot see
         /// the token until the read it is inside of returns. Arrowing through a
         /// folder of network tracks starts one of these per row rested on, so a
         /// row a second left a second's worth of blocked threads standing on top
@@ -108,8 +108,8 @@ namespace ExplorerNative
         /// pool grows by about one thread every half second when it runs out.
         ///
         /// Everything else the application does off the UI thread then queues
-        /// behind that — the next folder's enumeration, the idle availability
-        /// probe, a folder-size walk — which is felt as the window going slow
+        /// behind that, the next folder's enumeration, the idle availability
+        /// probe, a folder-size walk, which is felt as the window going slow
         /// while arrowing, a long way from anything to do with reading ahead.
         ///
         /// Asynchronous, the read releases the thread while the network answers
@@ -120,7 +120,7 @@ namespace ExplorerNative
         {
             try
             {
-                // On a local disk this buys nothing worth the reading — Windows
+                // On a local disk this buys nothing worth the reading, Windows
                 // is already fast there, and the file is competing with whatever
                 // else wants the disk.
                 if (remoteOnly && !LooksRemote(path)) return;
@@ -142,7 +142,7 @@ namespace ExplorerNative
                 // it is a round trip that the provider may answer slowly, refuse
                 // once, or simply lose. A single attempt that stalls means the
                 // warm-up silently does nothing, and the first anybody knows is
-                // pressing Enter and waiting the whole cold cost anyway — the
+                // pressing Enter and waiting the whole cold cost anyway, the
                 // exact failure this exists to prevent, and invisible, because a
                 // prefetch that achieved nothing looks identical to one that was
                 // never asked for.
@@ -150,7 +150,7 @@ namespace ExplorerNative
                 // So each pass has its own deadline. One that produces nothing
                 // within StartWithinMilliseconds is abandoned and started again
                 // rather than waited on, because a read that has not begun in
-                // that time is not slow, it is stuck — and the second attempt
+                // that time is not slow, it is stuck, and the second attempt
                 // usually lands immediately, since the provider has by then done
                 // the work the first one triggered.
                 for (int attempt = 0; attempt < Attempts && !token.IsCancellationRequested; attempt++)
@@ -167,7 +167,7 @@ namespace ExplorerNative
             catch
             {
                 // A prefetch that fails has cost nothing. The file may have gone,
-                // the share may be down, or it may simply be locked — and in
+                // the share may be down, or it may simply be locked, and in
                 // every one of those cases playing it is the thing that should
                 // report the problem, not warming it up.
             }
@@ -176,9 +176,9 @@ namespace ExplorerNative
         /// <summary>
         /// How many times the head of a file is asked for before giving up.
         ///
-        /// Three, which is enough for the case this is for — a cloud provider
-        /// that answers the second ask because the first one woke it up — and
-        /// few enough that a file which genuinely cannot be read is not being
+        /// Three, which is enough for the case this is for, a cloud provider
+        /// that answers the second ask because the first one woke it up, and
+        /// few enough that a file which really cannot be read is not being
         /// hammered on behalf of somebody who has merely rested the cursor.
         /// </summary>
         private const int Attempts = 3;
@@ -206,7 +206,7 @@ namespace ExplorerNative
         {
             // A deadline of its own, linked to the caller's so moving off the row
             // still stops everything immediately. Only the *first* read is under
-            // it — see below.
+            // it, see below.
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(token);
             deadline.CancelAfter(StartWithinMilliseconds);
 
@@ -252,7 +252,7 @@ namespace ExplorerNative
         }
 
         // What Windows marks a file with when its contents are not really here.
-        // Cloud drives — OneDrive, Google Drive, Dropbox — mount as an ordinary
+        // Cloud drives, OneDrive, Google Drive, Dropbox, mount as an ordinary
         // drive letter and report themselves as fixed disks, so the drive type
         // alone says "local" about a file that is actually across the internet.
         // These attributes are how such a file admits it.

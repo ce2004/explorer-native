@@ -27,7 +27,7 @@ namespace ExplorerNative
         /// How long a cached size may be trusted, however quiet the folder looks.
         ///
         /// The stamp check below is not the staleness test it was written as. A
-        /// directory's last-write time changes when its *own* entries change —
+        /// directory's last-write time changes when its *own* entries change,
         /// a file added, removed or renamed directly inside it. It does not move
         /// when something deep in a subtree grows, so a folder measured once and
         /// then filled up two levels down answered with the old number for the
@@ -36,7 +36,7 @@ namespace ExplorerNative
         /// Re-walking to find out whether a walk is needed defeats the cache, so
         /// the two are used together: the stamp catches a direct change straight
         /// away and cheaply, and this puts a ceiling on how long a deep one can
-        /// hide. Generous, because the walks this avoids are the expensive ones —
+        /// hide. Generous, because the walks this avoids are the expensive ones,
         /// arrowing around with automatic sizes on re-asks constantly.
         /// </summary>
         public const int CacheSeconds = 300;
@@ -61,7 +61,7 @@ namespace ExplorerNative
         /// the only values that ever changed the answer were the ones that made
         /// it wrong: a folder measured to depth three reports a number that is
         /// not its size, and nothing in "14.2 GB" says so. The timeout is the
-        /// honest bound — it limits the work without misreporting the result —
+        /// honest bound, it limits the work without misreporting the result,
         /// and Complete says when one was hit.
         ///
         /// Still settable, because the walk's own bounding has to be testable
@@ -179,7 +179,7 @@ namespace ExplorerNative
             try
             {
                 // Catches a change to this folder's own entries. It does not
-                // catch one further down — see CacheSeconds.
+                // catch one further down, see CacheSeconds.
                 if (Directory.GetLastWriteTimeUtc(NameRules.ExactPath(path)) != entry.Stamp) return false;
             }
             catch
@@ -388,7 +388,7 @@ namespace ExplorerNative
 
                 // The attributes and the length come straight out of the
                 // directory scan that found the entry. The old shape asked the
-                // filesystem again for each of those — three round trips per file
+                // filesystem again for each of those, three round trips per file
                 // where one will do, which is the whole cost of this walk on a
                 // network share. And nothing is made of a file but its length:
                 // a FileInfo per file, two strings and an object, was the rest
@@ -396,7 +396,7 @@ namespace ExplorerNative
                 IEnumerable<Seen> entries;
                 try
                 {
-                    // Exact: a folder called "Backup." read plainly is "Backup",
+                    // Exact: a folder called "Backup." read clearly is "Backup",
                     // so it measured the sibling's files, or nothing at all.
                     entries = new System.IO.Enumeration.FileSystemEnumerable<Seen>(NameRules.ExactPath(current),
                         static (ref System.IO.Enumeration.FileSystemEntry entry) => Look(ref entry), WalkOptions);

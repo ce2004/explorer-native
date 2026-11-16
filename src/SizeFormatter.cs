@@ -4,9 +4,9 @@ namespace ExplorerNative
 {
     public enum SizeUnitStyle
     {
-        /// <summary>"1.5 megabytes" — spoken cleanly by a screen reader.</summary>
+        /// <summary>"1.5 megabytes", spoken cleanly by a screen reader.</summary>
         FullWords,
-        /// <summary>"1.5 MB" — compact, but read as letters.</summary>
+        /// <summary>"1.5 MB", compact, but read as letters.</summary>
         Abbreviated
     }
 
@@ -48,7 +48,7 @@ namespace ExplorerNative
 
             // Rounding can reach the unit above the one it was measured in.
             // 1,048,570 bytes is 1023.99 kilobytes, and to one decimal place that
-            // is "1,024 kilobytes" — the ladder reading out its own overflow, on
+            // is "1,024 kilobytes", the ladder reading out its own overflow, on
             // a row a screen reader speaks. Step up once and round again; the
             // loop above already left size below 1024, so this cannot cascade.
             if (rounded >= 1024 && unit < FullPlural.Length - 1)

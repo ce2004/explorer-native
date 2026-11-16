@@ -492,7 +492,7 @@ namespace ExplorerNative
         /// <summary>
         /// An edit on the PC updates Drive's file in place. When that file had
         /// gone (404) by the time the bytes went, a new file was sent instead,
-        /// plainly: an answer lost on the way back then failed the file (Drive
+        /// clearly: an answer lost on the way back then failed the file (Drive
         /// would not say whether it had landed), or could leave it twice. It is
         /// sent once now, as every new file is: Drive is asked again, and it goes.
         /// </summary>
@@ -1421,7 +1421,7 @@ namespace ExplorerNative
         /// <summary>
         /// Bug 5: the sync window saves the person's one change onto the pairs
         /// as the monitor has them, so Pause all from the tray, or the sync's own
-        /// pause, made while the window is open is never quietly undone.
+        /// pause, made while the window is open is never silently undone.
         /// </summary>
         private static void WindowSavesOntoLivePairs(string sandbox)
         {

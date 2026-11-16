@@ -15,14 +15,14 @@ namespace ExplorerNative
     /// each one reads out with its label.
     ///
     /// Each line is a text box that reports itself as static text. It has to be a
-    /// real control to be reachable with Tab at all — a Label cannot take focus —
+    /// real control to be reachable with Tab at all, a Label cannot take focus,
     /// but nothing here is editable, and a read-only edit announces "edit, read
     /// only" before it says the number anybody came for.
     ///
     /// It is not modal, and that is the whole point of it now.
     ///
     /// It used to be. A paste put this window up with ShowDialog and the file
-    /// manager was gone until the copy finished — which for forty gigabytes to
+    /// manager was gone until the copy finished, which for forty gigabytes to
     /// Google Drive is most of an afternoon of not being able to look at a
     /// folder, play a track, or start a second copy. Nothing about the transfer
     /// ever needed that: it runs on its own thread and reports through a
@@ -30,7 +30,7 @@ namespace ExplorerNative
     /// main window.
     ///
     /// So it is a top-level window of its own, in the taskbar and in Alt+Tab,
-    /// one per transfer. Unowned deliberately — an owned form is kept out of
+    /// one per transfer. Unowned deliberately, an owned form is kept out of
     /// Alt+Tab by Windows, which would make a window you can leave but not come
     /// back to. Cascaded, because several of these opening in the same place is
     /// one window as far as anybody can tell.
@@ -71,8 +71,8 @@ namespace ExplorerNative
         /// Set once Cancel has been pressed, so the ticks still arriving behind it
         /// do not put "Working" back.
         ///
-        /// Cancelling is not instant — an upload has to finish or abandon whatever
-        /// requests are in the air — and every one of those reported its progress
+        /// Cancelling is not instant, an upload has to finish or abandon whatever
+        /// requests are in the air, and every one of those reported its progress
         /// afterwards, overwriting the one word that said the button had been
         /// heard. Pressing Cancel and watching the dialog go straight back to
         /// "Working" reads as a button that did nothing, which is the moment
@@ -83,8 +83,8 @@ namespace ExplorerNative
         /// <summary>
         /// A report that arrived before there was a window to put it in.
         ///
-        /// The transfer starts before ShowDialog does — deliberately, so nothing
-        /// waits on a window — and its first report is the one carrying the totals
+        /// The transfer starts before ShowDialog does, deliberately, so nothing
+        /// waits on a window, and its first report is the one carrying the totals
         /// the whole dialog is about. Dropped, the dialog opens reading "Starting"
         /// and "calculating" until the second one arrives, which for an upload is
         /// a Drive round trip away.
@@ -164,7 +164,7 @@ namespace ExplorerNative
             CancelButton = cancel;
 
             // CancelButton stamps DialogResult.Cancel onto the button it is
-            // given, and this window is not modal — so a press of Escape would
+            // given, and this window is not modal, so a press of Escape would
             // be setting a dialog result nothing is waiting for. Escape means
             // "stop the transfer" here, which the click handler above does, and
             // the window then stays up saying "Cancelling" until it really has.
@@ -175,7 +175,7 @@ namespace ExplorerNative
 
             // Cascaded from the middle of the screen. Several transfers open
             // several of these, and CenterParent would put every one of them in
-            // exactly the same place — which looks, and reads through a taskbar,
+            // exactly the same place, which looks, and reads through a taskbar,
             // like one window.
             StartPosition = FormStartPosition.Manual;
             var area = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1280, 800);
@@ -306,7 +306,7 @@ namespace ExplorerNative
         ///
         /// The button is disabled on the way past, because cancelling is not
         /// instant and a button that still looks pressable reads as one that did
-        /// nothing — which is the moment somebody presses it again.
+        /// nothing, which is the moment somebody presses it again.
         /// </summary>
         private void RequestCancel()
         {
@@ -359,8 +359,8 @@ namespace ExplorerNative
         /// Grows the window until every field is actually on it.
         ///
         /// The height was a fixed 340 pixels. That fits seven rows and a button
-        /// at 100% scaling and does not at 150%, where the last row — "Time
-        /// remaining" — was covered by the Cancel button. It was still built,
+        /// at 100% scaling and does not at 150%, where the last row, "Time
+        /// remaining", was covered by the Cancel button. It was still built,
         /// still updated on every tick and still reachable with Tab, so a screen
         /// reader read it out perfectly while nobody looking at the window could
         /// see it: the one combination that makes a missing control hard to
@@ -422,7 +422,7 @@ namespace ExplorerNative
             // And it is announced as text, not as a control you might type in.
             //
             // A read-only TextBox reports itself as an edit field, so every one of
-            // these read as "Progress, edit, read only, 40 percent" — three words
+            // these read as "Progress, edit, read only, 40 percent", three words
             // of furniture before the number, on a dialog whose whole purpose is
             // to be listened to while something else is happening. Nothing here
             // is editable and none of it should claim to be.

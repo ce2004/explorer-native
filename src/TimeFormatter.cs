@@ -81,7 +81,7 @@ namespace ExplorerNative
         {
             if (when > now.AddMinutes(5))
             {
-                // A file genuinely stamped well ahead of us.
+                // A file really stamped well ahead of us.
                 return "in the future";
             }
             // A few seconds or minutes ahead is clock skew on a share or FAT's

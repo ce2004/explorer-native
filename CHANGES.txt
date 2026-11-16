@@ -7,7 +7,7 @@ Bug fixed: when your Apple Music sign-in expired, lists and songs failed without
 Bug fixed: the SMB server could only be reached over IPv4, so a device that found this PC by its IPv6 address could not connect. It now listens on IPv6 too, like the FTP and SFTP servers.
 Bug fixed: if something unexpected went wrong while refreshing, deleting, opening a folder from another program, checking for updates, or playing the next song of an Apple Music station, Explorer Native could close. It now keeps running and notes the error.
 Bug fixed: pressing OK in the Compress window with a slow drive as the place to save could freeze the window for up to two seconds.
-Changed: the server pages now say plainly that each server listens on every network this PC joins, and that allowing it through Windows Firewall opens it to the internet too if this PC has its own internet address.
+Changed: the server pages now say clearly that each server listens on every network this PC joins, and that allowing it through Windows Firewall opens it to the internet too if this PC has its own internet address.
 Changed: every release is now tested before it is published, so a build that fails its tests never reaches Check for updates.
 
 7.0.1
@@ -97,7 +97,7 @@ Bug fixed: pressing Cancel just as the WebView2 download finished still installe
 Bug fixed: in folder sync, when a file was deleted on Google Drive and a folder had just taken its name on the PC, that folder could have been deleted. Sync now only ever deletes the file.
 
 5.6.2
-Changed: some spoken messages and older changelog entries are worded more plainly, such as "Back online, picking up where it stopped" when the internet comes back.
+Changed: some spoken messages and older changelog entries are worded more clearly, such as "Back online, picking up where it stopped" when the internet comes back.
 
 5.6.1
 New feature: if you update or restart Explorer Native while it is copying, moving or emptying the Google Drive trash, it now asks whether to finish it after the restart, instead of only offering to abandon it. Say yes and it picks up where it stopped, filling in only what is missing. If a folder is on a network share, a USB drive or Google Drive that takes a moment to come back, it waits up to five minutes for it.
@@ -165,7 +165,7 @@ New feature: you can now see everything that is copying, moving, compressing, ex
 New feature: you can now pause a copy, a move or a Google Drive upload and finish it later. Press P or the Pause button in its progress window, and press it again to resume. Nothing already copied is sent again.
 New feature: you can now search by size, date and kind. Press F1 and add words like size>100mb, modified:today, modified:7d, modified:2025 or kind:audio to what you type. They work in Google Drive too.
 New feature: you can now filter the folder you're in as you type. Press Ctrl+F (or Go, Filter this folder) and type. The list narrows as you go and tells you how many items it's showing. Press Enter to keep the filter, or Escape to see everything again.
-New feature: you can now open password-protected zip and 7z archives. Explorer Native asks for the password once, tells you plainly if it is wrong, and remembers it until you quit.
+New feature: you can now open password-protected zip and 7z archives. Explorer Native asks for the password once, tells you clearly if it is wrong, and remembers it until you quit.
 New feature: you can now check that an archive is not damaged. Press Shift+F10 on it and choose Test archive (Alt+A). Explorer Native reads every file without writing anything, then tells you whether they are all intact and lists any that are bad.
 New feature: you can now play a whole Apple Music album, playlist or artist without opening it. Press Shift+F10 on its row and choose Play all, Shuffle all or Play all next.
 New feature: you can now read the lyrics of the Apple Music song that is playing. Choose Lyrics in the Audio menu, or set a shortcut for it in Preferences, and read them line by line. Press Escape to close.
@@ -309,10 +309,10 @@ Bug fixed: if you extracted a damaged .tar.xz, .tar.bz2 or .7z with more than ab
 Bug fixed: if you compressed a junction or linked folder to .7z, .tar.xz or .tar.bz2, you got an archive holding only an empty link, and it still said Created. Now you're told it can't be done, and that zip or .tar.gz will take what the link leads to.
 Bug fixed: if you opened or extracted a password-protected .7z that also hides its file names, you were told it was damaged. Now you're told it's protected with a password.
 Bug fixed: if you extracted a .tar.xz or .7z with symbolic links in it, each link was reported as damage, and empty files could land where the links should be. Now each one is named as a link that wasn't extracted, and nothing empty is left behind.
-Bug fixed: if a .7z, .tar.xz or .tar.bz2 had two files with the same name, one of them was quietly left out. Now you're told how many repeated a name, and the first of each is kept.
-Bug fixed: if a .7z, .tar.xz or .tar.bz2 held names Windows can't use, like CON or a name ending in a dot, they quietly came out under new names. Now each one is refused and named, the same as zip and tar already do.
-Bug fixed: if you used Extract here on several archives at once, or started a second Extract here into the same folder before the first finished, files with the same names quietly replaced each other. Now they go in one after another, and your setting for name clashes is used.
-Bug fixed: if you opened a 7z or rar while your C drive was nearly full, some files were quietly missing from the list, and the archive could be called damaged for the rest of the session. Now it tells you only part of it is shown and why, and tries again the next time.
+Bug fixed: if a .7z, .tar.xz or .tar.bz2 had two files with the same name, one of them was silently left out. Now you're told how many repeated a name, and the first of each is kept.
+Bug fixed: if a .7z, .tar.xz or .tar.bz2 held names Windows can't use, like CON or a name ending in a dot, they silently came out under new names. Now each one is refused and named, the same as zip and tar already do.
+Bug fixed: if you used Extract here on several archives at once, or started a second Extract here into the same folder before the first finished, files with the same names silently replaced each other. Now they go in one after another, and your setting for name clashes is used.
+Bug fixed: if you opened a 7z or rar while your C drive was nearly full, some files were silently missing from the list, and the archive could be called damaged for the rest of the session. Now it tells you only part of it is shown and why, and tries again the next time.
 Bug fixed: a backup made with GNU tar's incremental option showed its folders as small files with nothing inside. Now the folders open normally.
 Bug fixed: if a network share dropped or a USB disk was pulled while you were opening or extracting a tar or tar.gz, Explorer Native said the archive was damaged. Now it says the archive could not be read and why, so you don't throw away a good backup.
 Bug fixed: opening one small file inside a big tar read the whole archive first, which could take minutes over a network share. Now it skips straight to the file you asked for.
@@ -320,7 +320,7 @@ Bug fixed: moving a folder from one place to another on the same network share c
 Bug fixed: if you changed the default app for a file type while Explorer Native was running, it kept opening those files in the old app until you restarted it. Now it uses the new app within half a minute.
 Bug fixed: if you were on the drive list and plugged in or ejected a USB stick, or Google Drive went offline and came back, the list didn't change until you pressed F5. Now it updates by itself and your cursor stays where it was.
 Bug fixed: if a network folder or your NAS share dropped for a moment, for example after sleep, new, renamed and deleted files in it stopped showing up until you left the folder. Now it starts watching the folder again by itself.
-Bug fixed: when the app started, it loaded the second tab first, read its row aloud, and kept the window empty until that tab was ready, even with two tabs turned off. Now the tab you were on loads first and is read, and the other loads quietly behind it.
+Bug fixed: when the app started, it loaded the second tab first, read its row aloud, and kept the window empty until that tab was ready, even with two tabs turned off. Now the tab you were on loads first and is read, and the other loads silently behind it.
 Bug fixed: if you switched to a tab showing an empty folder, This folder is empty cut off the tab announcement. Now you hear the tab in full first. In Apple Music it says This list is empty.
 Bug fixed: if you were selecting files with Shift and arrows and a file arrived or vanished above them, the next Shift+arrow picked up a file you hadn't chosen. Now the selection continues from the file you started on.
 Bug fixed: if you renamed or deleted something in search results and then pressed Escape, it said Search stopped and left you on out-of-date results. Now Escape takes you out of the results. Deleting or renaming two results quickly no longer leaves the second one behind.
@@ -430,7 +430,7 @@ Bug fixed: if you played a song from a network share inside a folder whose name 
 Bug fixed: if you played a big song from a network share and then changed track or stopped, the app kept holding up to a gigabyte of memory. Now that memory goes back to Windows soon after.
 Bug fixed: if you played a CD track with a damaged or unreadable stretch and then skipped back, you could hear the wrong part of the track or silence. Now it reads the right part of the disc again.
 Bug fixed: if an Ogg or Opus file had a tag added in front of it by a tagging or download program, it would not play at all. Now it plays normally and seeking works.
-Bug fixed: if you ran two copies or moves at once into the same folder and both picked the same free name, one could quietly replace the other, and with a move the original was then deleted. This could also happen with Fill gaps or Skip. Now the second file gets its own number when you chose to keep both, is skipped when you chose Fill gaps or Skip, and is only replaced when you chose Replace.
+Bug fixed: if you ran two copies or moves at once into the same folder and both picked the same free name, one could silently replace the other, and with a move the original was then deleted. This could also happen with Fill gaps or Skip. Now the second file gets its own number when you chose to keep both, is skipped when you chose Fill gaps or Skip, and is only replaced when you chose Replace.
 Bug fixed: if you moved a file out of a folder you are not allowed to delete from, the error said the destination could not be found. Now it says access was denied.
 Bug fixed: if you pasted a folder into one of its own subfolders along with other items, nothing at all was copied and you heard that one item failed. Now that one folder is refused and everything else in the paste is copied.
 Bug fixed: if folder sizes were on Automatic and a busy folder like AppData or the whole C drive was on screen, its size was measured again every few seconds, so the disk and processor never rested. Now a big folder that keeps changing is measured again only after a pause in proportion to how long it took to measure, and with sizes set to on demand the changes are ignored.
@@ -439,7 +439,7 @@ Bug fixed: if you changed an audio shortcut in Preferences, the Audio menu kept 
 Bug fixed: if you started a copy or move while an update was downloading, the installer closed the app part way through it without asking. Now it asks again before installing, and you can say no.
 Bug fixed: if you closed the window on a screen to the left of or above your main one, it always opened in the middle of the main screen next time. Now it opens where you left it.
 Bug fixed: if speech was turned off, switching tabs left the old message in the status bar and showed no Windows notification. Now the status bar and notification always say which tab you are on.
-Bug fixed: if you selected all of a very large folder, over 100,000 files, and the folder then refreshed or was re-sorted, about half the selection was quietly dropped and the window could freeze, so the next delete or copy acted on only part of what you chose. Now the whole selection is kept, instantly.
+Bug fixed: if you selected all of a very large folder, over 100,000 files, and the folder then refreshed or was re-sorted, about half the selection was silently dropped and the window could freeze, so the next delete or copy acted on only part of what you chose. Now the whole selection is kept, instantly.
 Bug fixed: if you pressed next or previous track while the playing track's folder was still loading, you could hear that it was the last audio file, or that the track was no longer in its folder, when there were more tracks. Now it only uses the folder's list once it has fully loaded.
 Bug fixed: if you opened a slow folder and started typing a name straight away, the cursor jumped to a file in the folder you had just left, or you heard nothing starts with that letter. Now your typing waits for the new folder and lands on the right file there.
 Bug fixed: if you backed out of a folder on a slow drive and typed a name before the list appeared, the cursor went back to the folder you came from instead of the name you typed. Now the name you typed wins.
@@ -450,7 +450,7 @@ Bug fixed: if you selected several files in a Google Drive folder and chose Extr
 Bug fixed: if you extracted two archives with the same name at once, such as photos.zip and photos.7z, both went into the same new folder and their files got mixed. Now each one gets its own folder.
 Bug fixed: if you extracted several archives into the same folder and files already existed, several replace-or-keep questions opened on top of each other and you could not tell which archive each was about. Now they come one at a time and each names its archive.
 Bug fixed: if you pressed Shift+Enter on a search result to open it in its own app, it went to the file's folder instead. Now Shift+Enter opens the file, and Enter still takes you to where it is.
-Bug fixed: if you edited an Apple Lossless m4a file and saved it, it was quietly saved as lower-quality AAC, and replacing the original threw the lossless version away. Now the editor asks you which format to save in, and it never swaps a lossless original for a lossy copy.
+Bug fixed: if you edited an Apple Lossless m4a file and saved it, it was silently saved as lower-quality AAC, and replacing the original threw the lossless version away. Now the editor asks you which format to save in, and it never swaps a lossless original for a lossy copy.
 Bug fixed: if you typed a year of 0 in the tag editor, it said Tags saved but the year came back blank, and a track number that was too big got a message that didn't say what was wrong. Now it tells you the year must be from 1 to 9999 and the track number from 1 to 99999.
 Bug fixed: in the audio editor, if you changed the volume, normalised, undid or redid while the audio was playing, playback jumped back to where you first pressed Space, and a volume change of 0 stopped playback for good. Now playback continues from where you were, and an edit that changes nothing leaves playback alone.
 Bug fixed: in the audio editor, if you pressed Space twice quickly, or an arrow key or a mark key just after starting playback, the editor said 0 seconds, lost your place, and kept playing when it said it had paused. Now those keys act from where you really are, and a quick pause really pauses.
@@ -473,7 +473,7 @@ Bug fixed: if you set a shortcut with Page Down, Page Up, Enter, Caps Lock or a 
 Bug fixed: if you had Explorer Native open in a second Remote Desktop session and installed an update or used Help, Check for updates, the installer waited on that other copy and then said the old copy was still being held by Windows. Now it only waits for the copy in your own session, so the update finishes cleanly and tells you the right thing.
 Bug fixed: if a script or scheduled task read a log with the quiet option, a window still popped up on screen for up to a minute. Now the quiet option keeps that window away.
 Bug fixed: if an older copy of Explorer Native was still running, for example in another Windows session, starting the new version could delete part of the older copy's files, and Apple Music in that copy could then fail to start. Now a copy that is still running keeps its files, and they are cleared once it has closed.
-Bug fixed: if you picked a window shortcut that can't be used, such as Control+C, a letter with no Control or Alt, or a key an audio shortcut already uses, and pressed OK, Preferences closed and said it was saved, but your new shortcut was quietly thrown away. Now a message tells you why, and Preferences stays open on the Hotkey page so you can pick another key.
+Bug fixed: if you picked a window shortcut that can't be used, such as Control+C, a letter with no Control or Alt, or a key an audio shortcut already uses, and pressed OK, Preferences closed and said it was saved, but your new shortcut was silently thrown away. Now a message tells you why, and Preferences stays open on the Hotkey page so you can pick another key.
 Bug fixed: the Apple Music page said your sign-in is never put in a settings export, but it is. Now the page says the export includes it, so you know to keep exported files private.
 Bug fixed: if you typed a new web app port, pressed Connect Google Drive or OK and got stopped by another message, then put the old port back and pressed OK, the new port was saved anyway. Now the port that's saved is the one shown in the box.
 Bug fixed: if you saved a file to a network drive whose clock runs a little fast, or to a USB stick that rounds the time up, NVDA said the file was modified in the future. Now it says today.
@@ -512,13 +512,13 @@ Bug fixed: copying a folder to Google Drive with a folder inside it that Windows
 Bug fixed: copying a file that was open in another program to Google Drive failed with a long Windows message. Now it tells you another program has it open, and to close it and copy it again.
 Bug fixed: while Google Drive was busy, an upload kept saying "Retrying" with the file name and "Google Drive is temporarily unavailable", and gave up on the file after about half a minute. Now it says it once per file and waits patiently, up to ten minutes, for Google to be ready again.
 Bug fixed: if you synced a Resilio Sync folder, the sync ran twice every ten minutes with nothing to do, because Resilio touches its hidden .sync folder. Now changes to things the sync leaves out, like hidden files, your skip list and partial downloads, don't start a sync.
-Bug fixed: if a synced file changed on Google Drive while you had it open in another program, every sync said it could not sync, access denied, until you closed it. Now it waits quietly, the folder's status says the file is open in another program, and it syncs as soon as that program lets go.
+Bug fixed: if a synced file changed on Google Drive while you had it open in another program, every sync said it could not sync, access denied, until you closed it. Now it waits silently, the folder's status says the file is open in another program, and it syncs as soon as that program lets go.
 Bug fixed: if you edited a lot of small files at once, sync history listed each one as Uploaded, as if it were new. Now they show as Updated in Drive.
 
 4.2.0
 New: searching (F1) is smarter. Type words in any order, like greedy tate, and capitals and accents don't matter. A word can also be the name of a folder the file is in, so tate greedy finds greedy.flac in your Tate McRae folder. Quotes keep words together, a star stands for anything (a star followed by .flac finds every FLAC file), and a minus sign leaves things out, like love -remix. It works the same on your PC and in Google Drive.
 New: Help, Keyboard shortcuts (Ctrl+F1) lists every key built into Explorer Native, from new folder to search. Arrow through it, and Ctrl+Down and Ctrl+Up jump between sections.
-Bug fixed: when files appeared or changed in the folder you were in, NVDA read the file you were on again every single time. Now the list updates quietly and stays on your file.
+Bug fixed: when files appeared or changed in the folder you were in, NVDA read the file you were on again every single time. Now the list updates silently and stays on your file.
 Bug fixed: if you pressed F1 to search a big folder, Escape couldn't stop it until it finished. Now Escape stops it straight away.
 Bug fixed: if you went into another folder while a search was still running, that folder could end up called "Results for" whatever you searched, and F5 searched again instead of refreshing it.
 Bug fixed: renaming, deleting or making a folder in search results jumped you back to the top and made you wait for the whole search again before telling you it was done. Now it tells you at once and keeps your place.
@@ -583,7 +583,7 @@ Bug fixed: turning the volume down while Apple Music was muted saved the volume 
 Bug fixed: the Search folder in Apple Music kept showing the searches from the first time you opened it.
 Bug fixed: in a playlist that has a music video in it, songs could show and play twice.
 Bug fixed: an empty Apple Music playlist couldn't be opened.
-Bug fixed: when two songs in a list had the same name, a refresh could quietly move the cursor, or what was playing, to the other one.
+Bug fixed: when two songs in a list had the same name, a refresh could silently move the cursor, or what was playing, to the other one.
 Bug fixed: when a song you were on was removed from a playlist on another device, the cursor could be left on no row at all.
 Bug fixed: a name with an ampersand in it, like R&B or Simon & Garfunkel, lost the ampersand in the menus.
 Bug fixed: after using a menu to go somewhere, like Go, Up one level, NVDA called the list by the folder you had just left. It now says the one you are in.
@@ -613,7 +613,7 @@ Bug fixed: when an Apple Music song ended, the next one could be skipped. It now
 Bug fixed: holding the skip keys in an Apple Music song stayed in the same place. It now moves through the song, and says where it lands, like it does for files.
 Bug fixed: after using a menu, NVDA could call the list by the name of a folder you had left long before. It now says the one you are in.
 Changed: Apple Music plays at your usual volume, and turning it up or down while Apple Music plays is the volume your files play at too. Mute goes back to the volume you had. The Audio menu shows what Apple Music is playing.
-Changed: lists you have already opened in Apple Music still open straight away, and are then quietly checked with Apple, so a song added to a playlist on your phone shows up without you doing anything and without anything being read out. F5 checks straight away.
+Changed: lists you have already opened in Apple Music still open straight away, and are then silently checked with Apple, so a song added to a playlist on your phone shows up without you doing anything and without anything being read out. F5 checks straight away.
 Changed: the menus in Apple Music only offer what works there. Copy, Properties and folder size say they are not available instead of failing, and Song properties tells you the song's artist, album, length and year.
 Changed: the window title, the path and Announce current folder say Apple Music, not a made-up path, and Ctrl+L can take you to an Apple Music list. Leaving Explorer Native in Apple Music brings you back to the Apple Music row in the drives list next time.
 Changed: Apple Music's player now deletes everything it used as soon as you quit, instead of leaving it in your temporary folder until the next start.
@@ -841,7 +841,7 @@ New: Help, Changelog opens at once and works offline. It is one list, with a Ver
 Bug fixed: if a firewall, antivirus or a wrong clock stopped Check for updates or Google Drive from going online, the message only said it could not be reached. It now says what is blocking it and what to check.
 Bug fixed: a slow internet connection could never finish downloading an update, because it gave up after five minutes. It now keeps going as long as the download is moving.
 Bug fixed: setting up Google Drive with a new Google Cloud project, where the Drive API is not switched on yet, read out a long block of code. It now tells you how to switch the Drive API on.
-Bug fixed: pressing OK in Preferences ran your search again, re-read an open archive or Google Drive folder, and talked over Preferences saved. It now updates the list quietly.
+Bug fixed: pressing OK in Preferences ran your search again, re-read an open archive or Google Drive folder, and talked over Preferences saved. It now updates the list silently.
 Bug fixed: Deleting, Deleted on both sides and Created file could not be turned off on their own. They are now in Choose what is spoken.
 Bug fixed: making a new folder or file next to a file or folder of the same name could give it a broken number, such as Mix v1 (2).0. It now becomes Mix v1.0 (2).
 Bug fixed: in the audio editor, if replacing the original failed partway, the edited audio could be left under a hidden name with nothing in the original's place. It is now saved as the edited copy and you are told the original is in the Recycle Bin. A failed save no longer leaves a hidden file behind either.
@@ -1019,7 +1019,7 @@ The Audio page in Preferences says how many audio actions there are, instead of 
 Sort by in Preferences no longer offers Type, since there is no Type column.
 Extracting a tar.gz into a new folder, and extracting any 7z, tar.xz, tar.bz2, tar.zst or rar, is about twice as fast.
 Bug fixed: if one file in a 7z or similar archive had an unusual name, nothing extracted at all. Now everything else extracts and you're told which file was skipped.
-Bug fixed: files in a 7z or similar archive with names Windows can't use, such as ones with a question mark or a colon, were quietly extracted under a different name. Now they're left out and you're told their names.
+Bug fixed: files in a 7z or similar archive with names Windows can't use, such as ones with a question mark or a colon, were silently extracted under a different name. Now they're left out and you're told their names.
 Bug fixed: if a 7z, tar.xz, tar.bz2 or tar.zst held two files with the same name, one was lost without a word. Now the first one is kept, as with zip and tar, and you're told.
 Bug fixed: one shortcut in a tar.xz could stop its last file from extracting, and with Replace chosen, nothing was replaced. Now everything else extracts normally.
 Bug fixed: a cut-off .gz file extracted as half a file and said it worked. Now you're told the file is damaged.
@@ -1079,7 +1079,7 @@ New feature: Port, on the Web app page in Preferences. If another program needs 
 New feature: Copy link is always on the Web app page once there is a link. If the web app is off, it tells you to turn it on first.
 The tray menu has a Web app item that takes you straight to the Web app page, where the link and the pairing code are.
 The web app's clipboard shows what is on the PC clipboard right now, or says it is empty. It no longer keeps a history of past copies, on the PC or anywhere else.
-If the PC can't be reached, the web app says so plainly and gives you a Retry button, instead of sitting there.
+If the PC can't be reached, the web app says so clearly and gives you a Retry button, instead of sitting there.
 If your connection drops, uploads, copies and playback start again by themselves when it comes back.
 Bug fixed: if Tailscale stopped while you were using the web app, some screens waited for ever. Now they tell you what is wrong.
 Bug fixed: if the port the web app used was taken by another program while the PC was off, the web app didn't start. Now it moves back to the usual port and tells you.

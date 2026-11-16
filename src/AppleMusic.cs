@@ -669,7 +669,7 @@ namespace ExplorerNative
                 // A song (or album) keeps the path it had in this folder's last
                 // listing. Handed out afresh, two songs of one name swapped " (2)"
                 // when another was added, and the cursor, play-on and "what is
-                // playing" quietly moved to the other song.
+                // playing" silently moved to the other song.
                 var kept = new string?[items.Count];
                 if (taken == null && Listings.TryGetValue(folder, out var before))
                 {
@@ -836,7 +836,7 @@ namespace ExplorerNative
         /// Asks Apple which songs in a folder (and, for a search, its kinds) are
         /// favorited, after the rows are already showing, then renames the rows
         /// that changed and raises <see cref="Grew"/> so they are put on screen
-        /// quietly. A failure here costs only the word "favorited".
+        /// silently. A failure here costs only the word "favorited".
         /// </summary>
         private static async Task RateAsync(string folder)
         {

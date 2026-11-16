@@ -238,7 +238,7 @@ namespace ExplorerNative
         /// another program (a book being listened to). The download could not
         /// go over it, and that counted as a failure on every pass: "could not
         /// sync", in Windows' words, said aloud, until the program let go. It
-        /// waits instead, says so quietly in the pair's status, and comes down
+        /// waits instead, says so silently in the pair's status, and comes down
         /// once the file is free.
         /// </summary>
         private static async Task OpenFileWaitsTests(string sandbox)

@@ -19,8 +19,8 @@ namespace ExplorerNative
         /// <summary>
         /// What to call the application in a dialog raised from here.
         ///
-        /// The two callers below — <see cref="Deliver"/> for the command-line
-        /// flags and <see cref="ReportCrash"/> — have no Settings to hand: one
+        /// The two callers below, <see cref="Deliver"/> for the command-line
+        /// flags and <see cref="ReportCrash"/>, have no Settings to hand: one
         /// runs before the settings are loaded and the other runs when things
         /// have already gone wrong, possibly during startup. So the configured
         /// name is remembered as it goes past instead, and this falls back to the
@@ -52,7 +52,7 @@ namespace ExplorerNative
             // **Only** for a command-line run, and this is not a nicety. It used
             // to happen on every launch, and a file manager that attaches itself
             // to whatever console started it then holds that console for as long
-            // as it runs — which, for the copy the installer starts, is for ever.
+            // as it runs, which, for the copy the installer starts, is for ever.
             // The terminal it was installed from froze and had to be closed, over
             // and over, and closing it sent the console's close event to the file
             // manager as well. A GUI application has no business in a console it
@@ -138,7 +138,7 @@ namespace ExplorerNative
                 if (HandOffToRunningInstance(args, allowWindow: !isRestart)) return;
 
                 // Nobody answered and there was no window to raise, which means
-                // the copy holding the lock is on its way out — it stops
+                // the copy holding the lock is on its way out, it stops
                 // answering the pipe as soon as quitting begins, and lets the
                 // lock go at the very end. Waiting a few seconds for it turns
                 // "the folder I double-clicked opened nothing" into "the folder
@@ -157,7 +157,7 @@ namespace ExplorerNative
                     try { acquired = mutex.WaitOne(TimeSpan.FromMilliseconds(500)); }
                     catch (AbandonedMutexException) { acquired = true; }
                     // The pipe only: a window found now may belong to a copy that
-                    // is closing — a transfer window stays up through teardown —
+                    // is closing, a transfer window stays up through teardown,
                     // and raising it is not handing the folder over.
                     if (!acquired && SingleInstance.SendToRunningInstance(
                             FirstPathArgument(args) ?? SingleInstance.ShowCommand)) return;
@@ -192,7 +192,7 @@ namespace ExplorerNative
         /// Once this app is the default handler for folders, this is the path most
         /// launches take: the shell starts a fresh copy for every folder opened.
         /// The old code only looked for a window by title, which finds nothing at
-        /// all when the running instance is sitting in the tray with no window —
+        /// all when the running instance is sitting in the tray with no window,
         /// so the folder was silently dropped and nothing happened.
         /// </summary>
         /// <summary>
@@ -205,7 +205,7 @@ namespace ExplorerNative
             if (SingleInstance.SendToRunningInstance(folder ?? SingleInstance.ShowCommand)) return true;
             if (!allowWindow) return false;
 
-            // The pipe was not answered — an older build, an instance still
+            // The pipe was not answered, an older build, an instance still
             // starting up, or one already shutting down. Fall back to raising its
             // window.
             var existing = FindRunningInstanceWindow();
@@ -224,7 +224,7 @@ namespace ExplorerNative
         /// than by window title.
         ///
         /// The title is a setting now, so looking one up by name was a fallback
-        /// that stopped working the moment anybody renamed their window — which is
+        /// that stopped working the moment anybody renamed their window, which is
         /// to say, a fallback that worked only when it was least likely to be
         /// needed. The process identity does not change.
         /// </summary>
@@ -250,7 +250,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// The switches that do their work and exit without a window — the only
+        /// The switches that do their work and exit without a window, the only
         /// runs that are allowed to borrow a console.
         /// </summary>
         internal static readonly string[] CommandLineSwitches = LaunchArguments.CommandLineSwitches;
@@ -350,7 +350,7 @@ namespace ExplorerNative
                     {
                         // The registry names one path for every folder on the
                         // machine, and before anything is installed that path is
-                        // this process — a build output the next rebuild replaces
+                        // this process, a build output the next rebuild replaces
                         // and the next clean deletes. Install first, as ticking
                         // the box in Preferences does.
                         if (!AppInstall.IsInstalled)
@@ -419,7 +419,7 @@ namespace ExplorerNative
             //
             // The install used to send <exit> down the single-instance pipe and
             // wait, because a running image cannot be overwritten. That made a
-            // file copy depend on inter-process co-operation — and therefore on
+            // file copy depend on inter-process co-operation, and therefore on
             // the very thing that had already gone wrong the day it mattered:
             // four instances were running with no pipe server among them, the
             // pipe went unanswered, "nobody answered" was read as "nothing is
@@ -459,7 +459,7 @@ namespace ExplorerNative
             // settings straight back over these.
             //
             // It loaded them at startup and saves them again on the way out, and
-            // the way out is the very next thing this method asks it to do — so
+            // the way out is the very next thing this method asks it to do, so
             // `--install` registered the folder takeover, wrote
             // SetAsDefaultFileExplorer true, and then had it set back to false by
             // the instance standing down. The copy started immediately afterwards
@@ -468,7 +468,7 @@ namespace ExplorerNative
             // command-line flag that edits settings already sends this.
             TellRunningInstanceSettingsChanged();
 
-            // Said plainly, including the part that is not finished.
+            // Said clearly, including the part that is not finished.
             //
             // An install that reports success while the application somebody is
             // looking at is still the previous build is the exact shape of "a
@@ -485,8 +485,8 @@ namespace ExplorerNative
             {
                 // It could not be overwritten, so it was renamed aside and a
                 // live process is still executing the old file. Ask that process
-                // to stand down — politely, so it saves its state and unmounts
-                // Google Drive — and start the new one in its place. This is the
+                // to stand down, politely, so it saves its state and unmounts
+                // Google Drive, and start the new one in its place. This is the
                 // *nice to have* now rather than the thing the install rests on:
                 // if nobody answers, the install has still happened.
                 old = AskRunningInstanceToExit(out agreedToGo);
@@ -497,8 +497,8 @@ namespace ExplorerNative
                         "\nThe copy that was running has been restarted on the new build.",
                     StandDown.LetGo =>
                         "\nThe copy that was running has stood down and the new build has been " +
-                        "started. The old process has not finished exiting — Windows is still " +
-                        "holding it — but it no longer holds anything the new one needs.",
+                        "started. The old process has not finished exiting, Windows is still " +
+                        "holding it, but it no longer holds anything the new one needs.",
                     _ when agreedToGo =>
                         "\nThe copy that was running is still closing. The new build will start " +
                         "as soon as it has gone.",
@@ -511,7 +511,7 @@ namespace ExplorerNative
             // Start the copy that was just installed, so whoever ran this ends up
             // running the thing the registry now names rather than the build they
             // invoked. While the old copy still holds the single-instance lock a
-            // plain launch would only hand its request to that copy — so a copy
+            // plain launch would only hand its request to that copy, so a copy
             // that agreed to go and is taking its time gets a successor started
             // with --restart, which waits for the lock instead. Without it an
             // update that outlasted the wait left nothing running at all, and
@@ -524,7 +524,7 @@ namespace ExplorerNative
                     // one: no console, no standard handles. With UseShellExecute
                     // false it inherited both, and an installer run from a
                     // terminal left the file manager holding that terminal's
-                    // output pipe open for as long as it ran — so whatever was
+                    // output pipe open for as long as it ran, so whatever was
                     // waiting on the terminal waited for ever.
                     if (old == StandDown.StillRunning)
                         Process.Start(new ProcessStartInfo(result.ExePath, "--restart") { UseShellExecute = true });
@@ -548,15 +548,15 @@ namespace ExplorerNative
         /// How long to wait for a running instance to let go of its own files.
         ///
         /// Four seconds, and it was not enough. The installed copy is a
-        /// self-contained single file — around a hundred and sixty megabytes the
-        /// host has memory-mapped — and on the way out it takes Google Drive
+        /// self-contained single file, around a hundred and sixty megabytes the
+        /// host has memory-mapped, and on the way out it takes Google Drive
         /// down with it: clearing the sync root's placeholders, disconnecting the
         /// provider, removing the drive letter. None of that is instant, and the
         /// wait expired in the middle of it.
         ///
         /// What made it worth finding was the message that followed.
         /// <c>AppInstall</c> saw the executable still locked and said
-        /// "ExplorerNative.exe is in use. Close Explorer Native and try again" —
+        /// "ExplorerNative.exe is in use. Close Explorer Native and try again",
         /// which is wrong twice over: the install had just asked it to close, and
         /// it was in the act of closing. Following that instruction does nothing,
         /// because there is nothing left to close by the time anyone reads it.
@@ -571,7 +571,7 @@ namespace ExplorerNative
 
             /// <summary>
             /// The single-instance lock is free, so a new launch becomes the
-            /// application — but a process is still there, not finished exiting.
+            /// application, but a process is still there, not finished exiting.
             /// </summary>
             LetGo,
 
@@ -594,8 +594,8 @@ namespace ExplorerNative
         /// renamed the old binary aside: the old process holds the *retired*
         /// file, the path is the new one, and the probe succeeded on its first
         /// try. So the report said "has been restarted" about a copy that was
-        /// still there — measured, the old process alive beside the new one
-        /// with its runtime gone and four threads parked in the kernel — and
+        /// still there, measured, the old process alive beside the new one
+        /// with its runtime gone and four threads parked in the kernel, and
         /// the new launch raced a lock the old one might not yet have released,
         /// which ends with the launch handing its request to a dying process
         /// and nothing running at all.
@@ -603,7 +603,7 @@ namespace ExplorerNative
         /// The two questions are separate now. Whether the processes have gone
         /// is what the report says; whether the single-instance lock is free is
         /// what decides if starting the new one makes it the application. A
-        /// process can finish the second long before the first — Windows keeps
+        /// process can finish the second long before the first, Windows keeps
         /// a process that still has I/O out, and one waiting on a cloud file
         /// can have it out for a minute.
         /// </summary>
@@ -635,7 +635,7 @@ namespace ExplorerNative
 
             try
             {
-                // Nobody listening is not "nothing running" — the incident this
+                // Nobody listening is not "nothing running", the incident this
                 // installer was redesigned around was four copies with no pipe
                 // server among them. Only an answered request is worth waiting on.
                 try { asked = SingleInstance.SendToRunningInstance(SingleInstance.ExitCommand); }
@@ -730,7 +730,7 @@ namespace ExplorerNative
                     written.Add(target);
                 }
 
-                // Both halves reported. A build that quietly shipped without one
+                // Both halves reported. A build that silently shipped without one
                 // of these is exactly the thing this switch exists to make
                 // checkable, so saying only what worked would defeat it.
                 var said = written.Count == 0
@@ -752,8 +752,8 @@ namespace ExplorerNative
         /// It closes itself because the alternative cost three minutes and told
         /// nobody anything. A MessageBox waits for a person; an install is
         /// overwhelmingly started by a script, and on a machine where nobody is
-        /// looking at the screen — a remote session, a locked workstation, a
-        /// build step — that wait is unbounded. The caller sat out its own
+        /// looking at the screen, a remote session, a locked workstation, a
+        /// build step, that wait is unbounded. The caller sat out its own
         /// timeout, killed the process, and had no idea whether the install had
         /// worked, because the only report was behind a button nobody could
         /// press.
@@ -777,7 +777,7 @@ namespace ExplorerNative
         /// <summary>
         /// Borrows the console of whatever started this, if there was one.
         ///
-        /// A WinExe has no console of its own — that is what makes it a WinExe —
+        /// A WinExe has no console of its own, that is what makes it a WinExe,
         /// but when it is launched from PowerShell or cmd there is one right
         /// there belonging to the parent, and writing to it is what every other
         /// command-line tool does. .NET has already decided its standard output
@@ -842,8 +842,8 @@ namespace ExplorerNative
         /// </summary>
         /// <summary>
         /// The settings, for a command-line change, and whether they were read.
-        /// When the file is there and could not be read — held by another
-        /// program, or damaged, in which case a copy was kept beside it — that
+        /// When the file is there and could not be read, held by another
+        /// program, or damaged, in which case a copy was kept beside it, that
         /// has been said, and nothing may be saved: the defaults would go over
         /// every setting in it, and the running copy would take them on too.
         /// </summary>
@@ -853,8 +853,8 @@ namespace ExplorerNative
             readable = !failed;
             if (failed)
                 Fail("Could not read the settings",
-                    "settings.json is there and could not be read — another program may have it open, " +
-                    "or it is damaged and a copy was kept beside it — so the settings were not changed.");
+                    "settings.json is there and could not be read, another program may have it open, " +
+                    "or it is damaged and a copy was kept beside it, so the settings were not changed.");
             return settings;
         }
 
@@ -866,7 +866,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// The log always, the console when there is one, and a dialog only when
-        /// there is neither — and even then, not for ever.
+        /// there is neither, and even then, not for ever.
         ///
         /// The order matters. The log is written first because it is the one
         /// that cannot fail to reach anybody; the dialog is last because it is
@@ -899,7 +899,7 @@ namespace ExplorerNative
         /// Built by hand rather than with MessageBox because MessageBox has no
         /// way to be dismissed by anything except a person, and that is the
         /// property being removed. The text is in a read-only box reporting
-        /// itself as static text — the same arrangement ProgressForm uses — so a
+        /// itself as static text, the same arrangement ProgressForm uses, so a
         /// screen reader reads the sentence rather than announcing an edit
         /// field, and so it can be selected and copied.
         /// </summary>
@@ -909,7 +909,7 @@ namespace ExplorerNative
             {
                 using var form = new Form
                 {
-                    Text = $"{DisplayTitle} — {title}",
+                    Text = $"{DisplayTitle} - {title}",
                     FormBorderStyle = FormBorderStyle.FixedDialog,
                     StartPosition = FormStartPosition.CenterScreen,
                     MinimizeBox = false,
@@ -968,7 +968,7 @@ namespace ExplorerNative
         ///
         /// It loaded its settings at startup and writes them back on exit, so
         /// without this the change made here is overwritten the moment the user
-        /// closes the window — and the next launch reconciles the registry
+        /// closes the window, and the next launch reconciles the registry
         /// against the stale value, undoing the registration as well.
         /// </summary>
         private static void TellRunningInstanceSettingsChanged() =>
@@ -1143,7 +1143,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Hands a file to the audio player, which the tray owns because it has to
-        /// outlive the window — the whole point of it is that there is no window.
+        /// outlive the window, the whole point of it is that there is no window.
         /// False when the player will not take it and the file should be opened
         /// the ordinary way.
         /// </summary>
@@ -1186,7 +1186,7 @@ namespace ExplorerNative
 
         // The three audio diagnostics the Preferences page prints used to be
         // static properties here, and reading them was the only thing that page
-        // needed this file for — which meant the self-test could not compile
+        // needed this file for, which meant the self-test could not compile
         // SettingsForm at all, because this file owns Main. They are delegates on
         // AudioReport now, filled in below, and the page has no idea the entry
         // point exists.
@@ -1251,7 +1251,7 @@ namespace ExplorerNative
             // listing and a delete of a hundred and sixty megabytes and neither
             // belongs in front of somebody waiting for a folder to open. Nothing
             // depends on it: the file is harmless where it is, and this is only
-            // the moment it is most likely to be deletable — whatever was running
+            // the moment it is most likely to be deletable, whatever was running
             // from it has, by definition, been restarted.
             System.Threading.Tasks.Task.Run(() =>
             {
@@ -1299,8 +1299,8 @@ namespace ExplorerNative
         /// Pushes edited preferences everywhere they need to take effect, and
         /// says whether the file was actually written.
         ///
-        /// The settings still apply to the running session either way — a failed
-        /// write costs the change on the next launch, not this one — so the
+        /// The settings still apply to the running session either way, a failed
+        /// write costs the change on the next launch, not this one, so the
         /// return value is about what to tell somebody, not about what to do.
         /// </summary>
         public static bool ApplySettings(Settings settings)

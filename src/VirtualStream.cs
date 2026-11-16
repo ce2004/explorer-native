@@ -11,7 +11,7 @@ namespace ExplorerNative
     /// at a frame whose place in the file is known exactly.
     ///
     /// Nothing is copied but the header. The rest is read from the file as it
-    /// is asked for, by position — so this never moves the read position of
+    /// is asked for, by position, so this never moves the read position of
     /// the <see cref="StreamingSource"/> underneath, which is still the decoder
     /// that was playing a moment ago as far as it is concerned.
     ///

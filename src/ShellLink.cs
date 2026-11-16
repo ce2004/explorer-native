@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 namespace ExplorerNative
 {
     /// <summary>
-    /// Windows shortcuts — the `.lnk` files — written and read through the
+    /// Windows shortcuts, the `.lnk` files, written and read through the
     /// shell's own <c>IShellLink</c>.
     ///
     /// Called ShellLink and not Shortcut because <see cref="ExplorerNative.Shortcut"/>
@@ -18,7 +18,7 @@ namespace ExplorerNative
     /// context will eventually get it wrong.
     ///
     /// **The format is not written by hand.** A `.lnk` is a documented binary
-    /// structure and it would be perfectly possible to emit one — and it would be
+    /// structure and it would be perfectly possible to emit one, and it would be
     /// wrong the first time somebody made a shortcut to a UNC path, a junction,
     /// or a folder on a removable drive, because what the shell stores is not the
     /// path but a list of ways of finding the thing again. `CoCreateInstance` of
@@ -27,7 +27,7 @@ namespace ExplorerNative
     ///
     /// **Everything here runs on a thread of its own, and that thread is STA.**
     /// `ShellLink`'s in-process server is registered `ThreadingModel=Apartment`,
-    /// so creating one from a thread-pool thread — which .NET leaves in the MTA —
+    /// so creating one from a thread-pool thread, which .NET leaves in the MTA,
     /// gets a proxy to an object living in some host apartment, and every call
     /// after it is a marshalled round trip. More to the point, `IPersistFile.Save`
     /// writes a file, and it may be writing it to a share that has gone to sleep;
@@ -39,7 +39,7 @@ namespace ExplorerNative
         /// <summary>
         /// What Windows adds to the name it is making a shortcut *to*.
         ///
-        /// The whole of the original name is kept, extension and all —
+        /// The whole of the original name is kept, extension and all,
         /// "notes.txt - Shortcut.lnk", not "notes - Shortcut.lnk". Explorer's
         /// answer depends on whether the machine is hiding known extensions;
         /// this list never hides one, so the name the shortcut is built from is
@@ -105,7 +105,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// What a shortcut to <paramref name="targetPath"/> is called — the file
+        /// What a shortcut to <paramref name="targetPath"/> is called, the file
         /// name only, with no folder in front of it.
         ///
         /// Pure, and public, so the naming can be tested without writing
@@ -118,7 +118,7 @@ namespace ExplorerNative
             var name = Path.GetFileName(targetPath.TrimEnd(
                 Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
 
-            // A drive root has no file name — "C:\" trims to "C:" and
+            // A drive root has no file name, "C:\" trims to "C:" and
             // GetFileName says nothing at all. Its own text is the only name it
             // has, and the colon cannot go into a file name.
             if (string.IsNullOrEmpty(name))
@@ -135,8 +135,8 @@ namespace ExplorerNative
         /// <paramref name="targetPath"/>, on an STA thread of its own.
         ///
         /// Faults rather than returning a flag: everything that can go wrong here
-        /// — a folder that is read-only, a path too long for the shell, a target
-        /// on a share that has gone — is an `HRESULT` turned into an exception on
+        /// a folder that is read-only, a path too long for the shell, a target
+        /// on a share that has gone, is an `HRESULT` turned into an exception on
         /// the way out of the interface, and the caller has a message to say and
         /// a sentence to say it in.
         /// </summary>
@@ -145,7 +145,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Reads back what a shortcut points at, or an empty string if it points
-        /// at nothing a path can describe — a control panel page, say.
+        /// at nothing a path can describe, a control panel page, say.
         ///
         /// Only the suite calls this. It is here because a shortcut that is
         /// written and never read is a file nobody has checked the inside of, and
@@ -173,14 +173,14 @@ namespace ExplorerNative
                 // What Explorer sets, and for the same reason: a program started
                 // from the shortcut should start where the thing it points at lives,
                 // not wherever the shortcut happens to be sitting. A target with no
-                // parent — a drive root — gets none, rather than an empty string the
+                // parent, a drive root, gets none, rather than an empty string the
                 // shell would have to interpret.
                 var parent = Path.GetDirectoryName(targetPath.TrimEnd(
                     Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
                 if (!string.IsNullOrEmpty(parent)) link.SetWorkingDirectory(parent);
 
                 // Exact, so a shortcut made inside "Backup." is written there and
-                // not into "Backup" — or refused, when there is no "Backup".
+                // not into "Backup", or refused, when there is no "Backup".
                 ((IPersistFile)link).Save(NameRules.ExactPath(linkPath), true);
             }
             finally
@@ -218,7 +218,7 @@ namespace ExplorerNative
 
         /// <summary>
         /// Runs one piece of work on a short-lived STA thread and hands back its
-        /// result — or rethrows what it threw, with the original stack, because
+        /// result, or rethrows what it threw, with the original stack, because
         /// the whole value of the exceptions above is the message inside them.
         /// </summary>
         private static Task<T> OnStaThread<T>(Func<T> work)

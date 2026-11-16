@@ -96,7 +96,7 @@ namespace ExplorerNative
             Suspended?.Invoke();
         }
 
-        /// <summary>Claims back what <see cref="Suspend"/> let go, quietly.</summary>
+        /// <summary>Claims back what <see cref="Suspend"/> let go, silently.</summary>
         public void Resume()
         {
             if (Environment.CurrentManagedThreadId != _thread) return;
@@ -173,13 +173,13 @@ namespace ExplorerNative
 
         /// <summary>
         /// Claims one combination. Returns false if it is unregisterable or
-        /// already taken — by another application, or by one of ours.
+        /// already taken, by another application, or by one of ours.
         ///
         /// Always MOD_NOREPEAT: one press, one message. Windows will repeat a
         /// held hotkey by itself, but only at the keyboard's typing rate, which
         /// is slow to start and slow to run. Anything that should repeat while
         /// held is driven by <see cref="HoldRepeat"/> instead, at whatever rate
-        /// the preferences ask for — and the two together would double every
+        /// the preferences ask for, and the two together would double every
         /// press.
         /// </summary>
         public bool Register(int id, Shortcut shortcut)

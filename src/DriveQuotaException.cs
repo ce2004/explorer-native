@@ -7,16 +7,16 @@ namespace ExplorerNative
     /// the account's daily limit, or its storage being full.
     ///
     /// A type of its own because it is the one Drive failure that must stop the
-    /// whole transfer rather than one file. Everything else the upload meets —
-    /// a 502, a dropped connection, a slow listing — is per-file and per-moment,
+    /// whole transfer rather than one file. Everything else the upload meets,
+    /// a 502, a dropped connection, a slow listing, is per-file and per-moment,
     /// and the right answer is to retry it and carry on with the other nine
-    /// hundred. These two are neither. Retrying is pointless, and carrying on
+    /// hundred. These two are neither. Retrying is pointless, and continuing
     /// means nine hundred identical failures scrolling past the one sentence
     /// that explains all of them.
     ///
     /// So it is thrown out of the file that met it, through
     /// <see cref="DriveUpload.UploadOne"/>, which lets it past on purpose, and
-    /// out of the parallel loop — which abandons the remaining files, correctly,
+    /// out of the parallel loop, which abandons the remaining files, correctly,
     /// for the only case where abandoning them is right.
     ///
     /// Nothing is lost by stopping. The paste can be repeated tomorrow with
@@ -28,7 +28,7 @@ namespace ExplorerNative
         public string Reason { get; }
 
         /// <summary>
-        /// True when waiting will fix it — a daily limit resets, where a full
+        /// True when waiting will fix it, a daily limit resets, where a full
         /// account does not fix itself at all.
         /// </summary>
         public bool ResetsOnItsOwn { get; }

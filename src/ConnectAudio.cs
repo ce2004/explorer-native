@@ -98,8 +98,8 @@ namespace ExplorerNative
     /// audio of a video, 24-bit at the file's own rate, stereo at most.
     ///
     /// The header states the whole length up front, from the decoder's duration, so AVPlayer sees an ordinary
-    /// seekable file. A byte range maps to a sample frame and the decoder is seeked there — its seeks are the
-    /// player's sample-exact ones (<see cref="ExactSeek"/>) — so a scrub lands on the same samples a straight
+    /// seekable file. A byte range maps to a sample frame and the decoder is seeked there, its seeks are the
+    /// player's sample-exact ones (<see cref="ExactSeek"/>), so a scrub lands on the same samples a straight
     /// decode would have. A decoder that ends early is padded with silence; one that runs long is cut.
     /// </summary>
     internal sealed class ConnectAudio : IDisposable

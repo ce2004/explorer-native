@@ -853,7 +853,7 @@ namespace ExplorerNative
         /// The sign-in changed in Preferences (a new cookies.txt, another account,
         /// or forgotten). The page holds the old token for as long as it lives,
         /// so after "Load a new cookies.txt" every play still failed the same way.
-        /// The page is closed, quietly, and the next play or Warm builds one with
+        /// The page is closed, silently, and the next play or Warm builds one with
         /// the new token.
         /// </summary>
         public static void SignInChanged()
@@ -1097,7 +1097,7 @@ namespace ExplorerNative
             // Only a song that played: one Apple won't play is skipped, not tried for ever.
             if (Repeat == RepeatMode.One && Volatile.Read(ref _startedGen) == Volatile.Read(ref _generation))
             {
-                // The same song again, quietly: nothing about the list moves.
+                // The same song again, silently: nothing about the list moves.
                 try { Start(path, AppleMusic.CatalogIdForPlaying(path), AppleMusic.SpokenName(path) ?? Path.GetFileName(path), -1, 0, false, StartKind.Restarted); }
                 catch (AppleMusicException ex) { EndOfList(); Say?.Invoke("applemusic.failed", ex.Message); }
                 return;
@@ -1159,7 +1159,7 @@ namespace ExplorerNative
         }
 
         /// <summary>
-        /// Nothing more to play: like Stop, but quietly, so Play next or Enter
+        /// Nothing more to play: like Stop, but silently, so Play next or Enter
         /// starts a song at once (Play next said "plays next" and nothing came),
         /// and the idle player can close.
         /// </summary>
