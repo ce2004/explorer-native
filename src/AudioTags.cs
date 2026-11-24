@@ -191,7 +191,7 @@ namespace ExplorerNative
                     }
 
                     Raise("audiofile.tags", artist == null ? title : $"{title} by {artist}");
-                    return artist == null ? title : artist + " - " + title;
+                    return artist == null ? title : artist + ", " + title;
                 }
                 finally { Release(store); }
             }

@@ -31,7 +31,9 @@ namespace ExplorerNative
             StrengthPercent = Math.Clamp(StrengthPercent, 0, 100),
             TailMilliseconds = Math.Clamp(TailMilliseconds, 200, 10_000),
             LevelDecibels = Math.Clamp(LevelDecibels, -12, 30),
-            OriginalDecibels = OriginalDecibels <= Ambience.OffDecibels ? Ambience.OffDecibels : Math.Clamp(OriginalDecibels, -60, 0),
+            // Down to the off value itself: anything quieter than that is off,
+            // anything louder is kept as it was saved.
+            OriginalDecibels = Math.Clamp(OriginalDecibels, Ambience.OffDecibels, 0),
         };
 
         public static AmbienceSettings From(Settings s) => new AmbienceSettings
