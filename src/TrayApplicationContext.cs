@@ -1445,7 +1445,8 @@ namespace ExplorerNative
             // for the whole of a dialog, that mark swallowed everything the player
             // said in the meantime but the last.
             if (action is AudioAction.SpeedDialog or AudioAction.DeviceDialog or AudioAction.LimiterDialog
-                or AudioAction.EqualiserDialog or AudioAction.PitchDialog or AudioAction.SilenceDialog or AudioAction.UpNext)
+                or AudioAction.EqualiserDialog or AudioAction.PitchDialog or AudioAction.SilenceDialog or AudioAction.UpNext
+                or AudioAction.AmbienceDialog)
             {
                 if (_audioDialogOpen) return;
                 if (_form?.PreferencesOpen == true)
@@ -1560,6 +1561,7 @@ namespace ExplorerNative
                     AudioAction.EqualiserDialog => ShowEqualiserDialog(),
                     AudioAction.PitchDialog => ShowPitchDialog(),
                     AudioAction.SilenceDialog => ShowSilenceDialog(),
+                    AudioAction.AmbienceDialog => ShowAmbienceDialog(),
                     _ => "",
                 };
                 if (m.Length == 0) return;
@@ -1637,6 +1639,7 @@ namespace ExplorerNative
                 AudioAction.EqualiserDialog => ShowEqualiserDialog(),
                 AudioAction.PitchDialog => ShowPitchDialog(),
                 AudioAction.SilenceDialog => ShowSilenceDialog(),
+                AudioAction.AmbienceDialog => ShowAmbienceDialog(),
                 _ => "",
             };
 
@@ -1751,7 +1754,37 @@ namespace ExplorerNative
                 _audio.LimiterAttackMicroseconds / 1_000_000.0, _audio.LimiterReleaseMilliseconds / 1000.0,
                 _audio.SilenceReduction, _audio.SilenceThresholdDecibels, _audio.SilenceMinimumMilliseconds,
                 _audio.SilenceLeaveMilliseconds, _audio.SilenceFadeOutMilliseconds, _audio.SilenceFadeInMilliseconds,
-                _audio.FadeInMilliseconds, _audio.FadeOutMilliseconds));
+                _audio.FadeInMilliseconds, _audio.FadeOutMilliseconds,
+                _audio.Ambience ? _audio.AmbienceSettings : null));
+        }
+
+        /// <summary>
+        /// Opens the ambience isolator, whose controls land on the sound as they
+        /// move. Opens showing what it is set to and switches nothing on; the
+        /// switch is in the dialog.
+        /// </summary>
+        private string ShowAmbienceDialog()
+        {
+            using var dialog = new AmbienceForm(_audio.AmbienceSettings, _audio.Ambience, (chosen, on) =>
+            {
+                _audio.AmbienceSettings = chosen;
+                _audio.Ambience = on;
+                PushAppleEffects();
+            });
+
+            var answer = _form is { IsDisposed: false, Visible: true }
+                ? dialog.ShowDialog(_form)
+                : dialog.ShowDialog();
+
+            if (answer == DialogResult.OK)
+            {
+                _settings.AudioAmbience = _audio.Ambience;
+                _audio.AmbienceSettings.WriteTo(_settings);
+                _settings.Save();
+            }
+
+            _form?.RestoreListFocusExternally();
+            return "";
         }
 
         /// <summary>
@@ -2238,6 +2271,8 @@ namespace ExplorerNative
             _audio.LimiterCeilingPercent = _settings.AudioLimiterCeilingPercent;
             _audio.Equaliser = _settings.AudioEqualiser;
             _audio.EqualiserGains = _settings.AudioEqualiserBands;
+            _audio.Ambience = _settings.AudioAmbience;
+            _audio.AmbienceSettings = AmbienceSettings.From(_settings);
             _audio.SilenceThresholdDecibels = _settings.AudioSilenceThresholdDecibels;
             _audio.SilenceMinimumMilliseconds = _settings.AudioSilenceMinimumMilliseconds;
             _audio.SilenceLeaveMilliseconds = _settings.AudioSilenceLeaveMilliseconds;

@@ -591,6 +591,19 @@ namespace ExplorerNative
             lock (_swapGate) _renderer.Equaliser[band] = decibels;
         }
 
+        /// <summary>The ambience isolator, forwarded like the equaliser.</summary>
+        public bool AmbienceOn
+        {
+            get => _renderer.Ambience.Enabled;
+            set { lock (_swapGate) _renderer.Ambience.Enabled = value; }
+        }
+
+        public AmbienceSettings AmbienceSettings
+        {
+            get => _renderer.Ambience.Settings;
+            set { lock (_swapGate) _renderer.Ambience.Settings = value; }
+        }
+
         /// <summary>
         /// Silence reduction's five controls and its switch.
         ///
@@ -1722,6 +1735,8 @@ namespace ExplorerNative
             // somebody's music.
             fresh.Equaliser.Enabled = old.Equaliser.Enabled;
             fresh.Equaliser.SetGains(old.Equaliser.Gains());
+            fresh.Ambience.Enabled = old.Ambience.Enabled;
+            fresh.Ambience.Settings = old.Ambience.Settings;
 
             // Opened suspended, so its render thread never calls Fill while the
             // old device is still the one playing. The open can take ten seconds
@@ -1795,6 +1810,8 @@ namespace ExplorerNative
                 fresh.LimitReleaseSeconds = old.LimitReleaseSeconds;
                 fresh.Equaliser.Enabled = old.Equaliser.Enabled;
                 fresh.Equaliser.SetGains(old.Equaliser.Gains());
+                fresh.Ambience.Enabled = old.Ambience.Enabled;
+                fresh.Ambience.Settings = old.Ambience.Settings;
 
                 // Raised for the handover only, now that the new device is open.
                 // Fill answers silence while it is up, because between here and

@@ -35,6 +35,7 @@ namespace ExplorerNative
         ToggleShuffle,
         UpNext,
         Lyrics,
+        AmbienceDialog,
     }
 
     /// <summary>
@@ -404,6 +405,14 @@ namespace ExplorerNative
             new AudioActionInfo(AudioAction.SilenceDialog, "Silence reduction", false,
                 s => s.AudioSilenceDialogShortcut, (s, v) => s.AudioSilenceDialogShortcut = v)
                 { NotificationId = "audio.silence.dialog", MenuText = "Silence r&eduction…" },
+
+            // Only the room: the recording's ambience with the performance taken
+            // out. Z, because every letter of "ambience" and every other common
+            // one was already an access key in this menu; J, X and Z were left,
+            // and X is Apple Music's Up next.
+            new AudioActionInfo(AudioAction.AmbienceDialog, "Ambience, hear only the room", false,
+                s => s.AudioAmbienceDialogShortcut, (s, v) => s.AudioAmbienceDialogShortcut = v)
+                { NotificationId = "audio.ambience.dialog", MenuText = "Ambience (&Z)…" },
         };
 
         /// <summary>The two Audio menu entries that are not shortcut actions.</summary>

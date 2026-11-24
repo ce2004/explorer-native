@@ -1427,6 +1427,7 @@ namespace ExplorerNative
         private ToolStripMenuItem _limiterItem = null!;
         private ToolStripMenuItem _equaliserItem = null!;
         private ToolStripMenuItem _silenceItem = null!;
+        private ToolStripMenuItem _ambienceItem = null!;
         private ToolStripMenuItem _pitchItem = null!;
         private ToolStripMenuItem _speedItem = null!;
         private ToolStripMenuItem _nowPlayingItem = null!;
@@ -1512,6 +1513,10 @@ namespace ExplorerNative
             // does something.
             _silenceItem = AudioItem(AudioAction.SilenceDialog);
             audio.DropDownItems.Add(_silenceItem);
+
+            // Only the room, ticked while it is on, its switch inside the dialog.
+            _ambienceItem = AudioItem(AudioAction.AmbienceDialog);
+            audio.DropDownItems.Add(_ambienceItem);
 
             audio.DropDownItems.Add(_repeatItem);
 
@@ -1619,6 +1624,7 @@ namespace ExplorerNative
             _limiterItem.Checked = _settings.AudioLimiter;
             _equaliserItem.Checked = _settings.AudioEqualiser;
             _silenceItem.Checked = _settings.AudioSilenceReduction;
+            _ambienceItem.Checked = _settings.AudioAmbience;
 
             // Ticked when the pitch is anywhere but normal. There is no switch
             // to report, zero semitones *is* off, so the tick answers "is

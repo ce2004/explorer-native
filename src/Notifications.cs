@@ -177,6 +177,7 @@ namespace ExplorerNative
             Live("audio.equaliser.dialog", "Equaliser window opened", AudioTransport, Off, "Equaliser"),
             Live("audio.pitch.dialog", "Pitch window opened", AudioTransport, Off, "Pitch"),
             Live("audio.silence.dialog", "Silence reduction window opened", AudioTransport, Off, "Silence reduction"),
+            Live("audio.ambience.dialog", "Ambience window opened", AudioTransport, Off, "Ambience"),
             Live("audio.device.changed", "Output device changed", AudioTransport, Bar, "Playing through {0}", "Headphones"),
             Live("audio.device.failed", "Could not use that device", AudioTransport, Loud, "Could not play through {0}", "Headphones"),
 

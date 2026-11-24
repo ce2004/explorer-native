@@ -401,6 +401,31 @@ namespace ExplorerNative
         public string AudioEqualiserDialogShortcut { get; set; } = "";
 
         /// <summary>
+        /// Whether the player plays only the ambience of a recording: the room,
+        /// the reverb and the space, with the voices and instruments taken out.
+        /// See <see cref="Ambience"/>.
+        /// </summary>
+        public bool AudioAmbience { get; set; }
+
+        /// <summary>0 both tests, 1 stereo only, 2 tail only.</summary>
+        public int AudioAmbienceMethod { get; set; }
+
+        /// <summary>How hard the direct sound is pushed out, 0 to 100.</summary>
+        public int AudioAmbienceStrengthPercent { get; set; } = 50;
+
+        /// <summary>How long the recording's reverb is expected to ring.</summary>
+        public int AudioAmbienceTailMilliseconds { get; set; } = 1500;
+
+        /// <summary>Make-up gain on the ambience, in decibels.</summary>
+        public int AudioAmbienceLevelDecibels { get; set; } = 6;
+
+        /// <summary>The original mixed back in, in decibels; -100 is none.</summary>
+        public int AudioAmbienceOriginalDecibels { get; set; } = Ambience.OffDecibels;
+
+        /// <summary>Opens the ambience controls, to be set while listening.</summary>
+        public string AudioAmbienceDialogShortcut { get; set; } = "";
+
+        /// <summary>
         /// How far the pitch is shifted, in semitones. Twelve is an octave.
         /// Zero is the recording's own pitch, which is a true bypass.
         /// </summary>
@@ -1484,6 +1509,9 @@ namespace ExplorerNative
                         -Equaliser.MaximumDecibels, Equaliser.MaximumDecibels)
                     : 0;
             AudioEqualiserBands = bands;
+
+            // The ambience isolator, through the same bounds the engine keeps.
+            AmbienceSettings.From(this).WriteTo(this);
 
             // Silence reduction. Each bound is the point past which the
             // number stops describing the thing it is named after, a threshold

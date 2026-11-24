@@ -1,3 +1,6 @@
+7.2.0
+New: Ambience, on the Audio menu (Alt, A, Z). It plays only the room of a recording, the reverb, the space and the audience, with the voices and instruments taken out. You can choose how it finds the room, how strong it is, how long the recording's reverb rings, how loud it plays, and how much of the original to mix back in. Every list changes the sound as you arrow through it, and it works on Apple Music too.
+
 7.1.0
 New: Explorer Native now talks to JAWS, Narrator and other screen readers when NVDA isn't running, or while NVDA is restarting. With NVDA running, nothing changes.
 New: ExplorerNative --do bug-report writes one text file on your desktop to send with a bug report: the version, your Windows build, your settings and the last lines of the logs. Passwords, keys, sign-ins and email addresses are taken out. It works even when Explorer Native is stuck or has closed.

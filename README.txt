@@ -158,6 +158,10 @@ Silence reduction works too, with one difference: a file has its silences cut
 out, while in Apple Music a silence is played through at four times the speed
 until the sound comes back.
 
+Ambience, on the Audio menu, plays only the room of a recording: the reverb,
+the space and the audience, with the voices and instruments taken out. It
+works on your own files and on Apple Music.
+
 
 Internet radio and live streams
 

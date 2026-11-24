@@ -1051,6 +1051,8 @@ namespace ExplorerNative
                     clashes.AddRange(Clashes("Silence reduction", silence));
                 using (var limiter = new LimiterForm(500, 250, 90, false, true, (_, _, _, _, _) => { }))
                     clashes.AddRange(Clashes("Limiter", limiter));
+                using (var ambience = new AmbienceForm(new AmbienceSettings(), true, (_, _) => { }))
+                    clashes.AddRange(Clashes("Ambience", ambience));
 
                 // The behaviour itself: Alt+O from a slider presses OK and
                 // leaves the equaliser on.
@@ -2075,6 +2077,111 @@ namespace ExplorerNative
         {
             var clock = Stopwatch.StartNew();
             while (clock.ElapsedMilliseconds < milliseconds && !condition()) Thread.Sleep(25);
+        }
+    }
+    /// <summary>
+    /// The ambience isolator: off is a bypass, centred direct sound goes,
+    /// diffuse sound stays, a decaying tail stays, and nothing runs away.
+    /// </summary>
+    internal static class AmbienceTests
+    {
+        private static Action<string, bool, string?> _check = null!;
+        private static void Check(string what, bool ok, string? detail = null) => _check(what, ok, detail);
+
+        public static void RunAll(Action<string, bool, string?> check, Action<string, string, string> equal)
+        {
+            _check = check;
+            Console.WriteLine("Ambience isolator:");
+            const int rate = 48000;
+
+            // Off: the samples come out exactly as they went in.
+            {
+                var a = new Ambience();
+                var buffer = Noise(rate, 1, correlated: true, seed: 1);
+                var copy = (float[])buffer.Clone();
+                a.Process(buffer, buffer.Length, 2, rate);
+                bool same = true;
+                for (int i = 0; i < buffer.Length; i++) if (buffer[i] != copy[i]) { same = false; break; }
+                Check("off is a bypass, bit for bit", same);
+            }
+
+            // The same noise in both channels is direct sound: the stereo test removes it.
+            double centred = Ratio(new AmbienceSettings { Method = 1, LevelDecibels = 0 }, Noise(rate, 3, correlated: true, seed: 2), rate);
+            Check("a sound in the middle is taken out by the stereo test", centred < 0.01, centred.ToString("0.0000"));
+
+            // Unrelated noise in each channel is diffuse: the stereo test keeps most of it.
+            double diffuse = Ratio(new AmbienceSettings { Method = 1, LevelDecibels = 0 }, Noise(rate, 3, correlated: false, seed: 3), rate);
+            Check("a diffuse sound is kept by the stereo test", diffuse > 0.3, diffuse.ToString("0.0000"));
+
+            // A steady sound has no tail; a decaying one is all tail.
+            var steady = Noise(rate, 3, correlated: false, seed: 4);
+            var decaying = Noise(rate, 3, correlated: false, seed: 4);
+            for (int f = 0; f < decaying.Length / 2; f++)
+            {
+                double t = (f % (rate / 2)) / (double)rate;
+                float env = (float)Math.Exp(-3 * Math.Log(10) * t / 1.5);
+                decaying[2 * f] *= env; decaying[2 * f + 1] *= env;
+            }
+            var tail = new AmbienceSettings { Method = 2, LevelDecibels = 0, TailMilliseconds = 1500 };
+            double steadyKept = Ratio(tail, steady, rate), tailKept = Ratio(tail, decaying, rate);
+            Check("the tail test keeps a decaying sound more than a steady one", tailKept > steadyKept * 1.5,
+                tailKept.ToString("0.000") + " against " + steadyKept.ToString("0.000"));
+
+            // Mono into both tests: the tail test takes over instead of silence.
+            double mono = Ratio(new AmbienceSettings { LevelDecibels = 0 }, decaying.Select((v, i) => decaying[i - i % 2]).ToArray(), rate);
+            Check("a mono recording still gives an ambience with both tests", mono > 0.01, mono.ToString("0.0000"));
+
+            // Hard settings, long run, loud input: finite and bounded.
+            {
+                var a = new Ambience { Enabled = true, Settings = new AmbienceSettings { StrengthPercent = 0, LevelDecibels = 30, OriginalDecibels = 0 } };
+                bool finite = true; float peak = 0;
+                for (int block = 0; block < 400; block++)
+                {
+                    var b = Noise(rate / 100, 1, correlated: block % 2 == 0, seed: 10 + block, frames: 480);
+                    for (int i = 0; i < b.Length; i++) b[i] *= 4;
+                    a.Process(b, b.Length, 2, rate);
+                    foreach (var v in b) { if (!float.IsFinite(v)) finite = false; peak = Math.Max(peak, Math.Abs(v)); }
+                }
+                Check("the output stays finite and bounded at the extremes", finite && peak < 1000, peak.ToString("0.0"));
+            }
+
+            // Every saved setting is on a list in the dialog.
+            var d = new AmbienceSettings();
+            Check("the defaults are on the dialog's lists",
+                Ambience.StrengthLadder.Contains(d.StrengthPercent) && Ambience.TailLadder.Contains(d.TailMilliseconds) &&
+                Ambience.LevelLadder.Contains(d.LevelDecibels) && Ambience.OriginalLadder.Contains(d.OriginalDecibels));
+        }
+
+        /// <summary>Output power over input power, past the first second (the stats settle).</summary>
+        private static double Ratio(AmbienceSettings settings, float[] input, int rate)
+        {
+            var a = new Ambience { Enabled = true, Settings = settings };
+            var buffer = (float[])input.Clone();
+            for (int at = 0; at < buffer.Length; at += 960)
+            {
+                int n = Math.Min(960, buffer.Length - at);
+                var block = new float[n];
+                Array.Copy(buffer, at, block, 0, n);
+                a.Process(block, n, 2, rate);
+                Array.Copy(block, 0, buffer, at, n);
+            }
+            double pin = 0, pout = 0;
+            for (int i = 2 * rate; i < buffer.Length; i++) { pin += input[i] * (double)input[i]; pout += buffer[i] * (double)buffer[i]; }
+            return pout / Math.Max(1e-12, pin);
+        }
+
+        private static float[] Noise(int rate, int seconds, bool correlated, int seed, int frames = 0)
+        {
+            var random = new Random(seed);
+            int count = frames > 0 ? frames : rate * seconds;
+            var b = new float[count * 2];
+            for (int f = 0; f < count; f++)
+            {
+                float l = (float)(random.NextDouble() * 0.5 - 0.25);
+                float r = correlated ? l : (float)(random.NextDouble() * 0.5 - 0.25);
+                b[2 * f] = l; b[2 * f + 1] = r;
+            }
+            return b;
         }
     }
 }

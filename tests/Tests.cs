@@ -222,6 +222,14 @@ namespace ExplorerNative
                 return _failed == 0 ? 0 : 1;
             }
 
+            if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "ambience")
+            {
+                await Guard("AmbienceTests", () => { AmbienceTests.RunAll(Check, Equal); return Task.CompletedTask; });
+                ShortcutTests();    // the Audio menu's access keys, which the new entry had to fit into
+                Console.WriteLine($"\n{_passed} passed, {_failed} failed");
+                return _failed == 0 ? 0 : 1;
+            }
+
             if (Environment.GetEnvironmentVariable("EXPLORERNATIVE_SELFTEST_ONLY") == "playback")
             {
                 await Guard("AudioFixTests", () => { AudioFixTests.RunAll(Check, Equal); return Task.CompletedTask; });
@@ -797,6 +805,7 @@ namespace ExplorerNative
             await Guard("Sweep308DecoderTests", () => { Sweep308DecoderTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("Sweep308WebTests", () => Sweep308WebTests.RunAll(Check, Equal));
             await Guard("Sweep308PlaybackTests", () => { Sweep308PlaybackTests.RunAll(Check, Equal); return Task.CompletedTask; });
+            await Guard("AmbienceTests", () => { AmbienceTests.RunAll(Check, Equal); return Task.CompletedTask; });
             await Guard("Sweep308MountTests", () => Sweep308MountTests.RunAll(Check, Equal));
             await Guard("Sweep308MainFormTests", () => { Sweep308MainFormTests.RunAll(Check); return Task.CompletedTask; });
             await Guard("Sweep308SyncTests", () => Sweep308SyncTests.RunAll(Check, Equal));

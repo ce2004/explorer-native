@@ -619,6 +619,30 @@ namespace ExplorerNative
         private readonly int[] _bandGains = new int[ExplorerNative.Equaliser.BandCount];
 
         /// <summary>
+        /// The ambience isolator: whether it is on, and how it is set. Held here
+        /// as well as pushed down, because the renderer is rebuilt for every track.
+        /// </summary>
+        public bool Ambience
+        {
+            get => _ambience;
+            set { _ambience = value; if (_direct is { } direct) direct.AmbienceOn = value; }
+        }
+
+        private bool _ambience;
+
+        public AmbienceSettings AmbienceSettings
+        {
+            get => _ambienceSettings;
+            set
+            {
+                _ambienceSettings = (value ?? new AmbienceSettings()).Clamped();
+                if (_direct is { } direct) direct.AmbienceSettings = _ambienceSettings;
+            }
+        }
+
+        private AmbienceSettings _ambienceSettings = new();
+
+        /// <summary>
         /// Silence reduction: whether it is in the path, and the five numbers
         /// that shape it.
         ///
@@ -1246,6 +1270,8 @@ namespace ExplorerNative
                 Gain = _muted || FadeInMilliseconds > 0 ? 0f : DirectGain(_volumePercent, Curve),
                 EqualiserOn = _equaliser,
                 EqualiserGains = _bandGains,
+                AmbienceOn = _ambience,
+                AmbienceSettings = _ambienceSettings,
                 SilenceOn = _silenceOn,
                 SilenceThresholdDecibels = _silenceThresholdDecibels,
                 SilenceMinimumMilliseconds = _silenceMinimumMilliseconds,
@@ -1397,6 +1423,8 @@ namespace ExplorerNative
             direct.Gain = _muted || FadeInMilliseconds > 0 ? 0f : DirectGain(_volumePercent, Curve);
             direct.EqualiserOn = _equaliser;
             direct.EqualiserGains = _bandGains;
+            direct.AmbienceOn = _ambience;
+            direct.AmbienceSettings = _ambienceSettings;
             direct.SilenceOn = _silenceOn;
             direct.SilenceThresholdDecibels = _silenceThresholdDecibels;
             direct.SilenceMinimumMilliseconds = _silenceMinimumMilliseconds;

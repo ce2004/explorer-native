@@ -712,6 +712,13 @@ namespace ExplorerNative
         /// </summary>
         public Equaliser Equaliser { get; } = new();
 
+        /// <summary>
+        /// Only the room: takes the performance out and leaves the ambience.
+        /// After the limiter and before the equaliser, so the tone controls
+        /// shape what is left.
+        /// </summary>
+        public Ambience Ambience { get; } = new();
+
         // ---- lifetime -------------------------------------------------------
 
         /// <summary>
@@ -1331,6 +1338,7 @@ namespace ExplorerNative
             // The tone controls, after the gain and after the limiter. See
             // Equaliser: putting them in front means the compressor answers back
             // to every band that is raised.
+            Ambience.Process(buffer, count, channels, rate);
             Equaliser.Process(buffer, count, channels, rate);
 
             // And the meter reads what actually leaves, which is why it is a pass
