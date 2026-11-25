@@ -407,14 +407,12 @@ namespace ExplorerNative
         /// </summary>
         public bool AudioAmbience { get; set; }
 
-        /// <summary>0 both tests, 1 stereo only, 2 tail only.</summary>
-        public int AudioAmbienceMethod { get; set; }
-
-        /// <summary>How hard the direct sound is pushed out, 0 to 100.</summary>
-        public int AudioAmbienceStrengthPercent { get; set; } = 50;
-
-        /// <summary>How long the recording's reverb is expected to ring.</summary>
-        public int AudioAmbienceTailMilliseconds { get; set; } = 1500;
+        /// <summary>
+        /// How much of the voice the model takes out, 0 to 100 (7.3.0). A new
+        /// name, not 7.2.0's AudioAmbienceStrengthPercent: that one meant
+        /// something else and its saved 50 would leave half the voice in.
+        /// </summary>
+        public int AudioAmbienceRemovalPercent { get; set; } = 100;
 
         /// <summary>Make-up gain on the ambience, in decibels.</summary>
         public int AudioAmbienceLevelDecibels { get; set; } = 6;
@@ -1510,8 +1508,9 @@ namespace ExplorerNative
                     : 0;
             AudioEqualiserBands = bands;
 
-            // The ambience isolator, through the same bounds the engine keeps.
-            AmbienceSettings.From(this).WriteTo(this);
+            // The ambience isolator is not rewritten here: AmbienceSettings.From
+            // clamps on the way in, and loading never changes a saved value
+            // (7.3.0: a saved 101 came back as 100).
 
             // Silence reduction. Each bound is the point past which the
             // number stops describing the thing it is named after, a threshold

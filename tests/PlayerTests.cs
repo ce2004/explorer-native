@@ -2080,8 +2080,10 @@ namespace ExplorerNative
         }
     }
     /// <summary>
-    /// The ambience isolator: off is a bypass, centred direct sound goes,
-    /// diffuse sound stays, a decaying tail stays, and nothing runs away.
+    /// The ambience isolator (7.3.0, DeepFilterNet): off is a bypass, the model
+    /// loads, with nothing taken out it is the recording exactly (delayed), at
+    /// 48 and at 44.1 kilohertz, a voice is taken out and noise is kept, the
+    /// extremes stay bounded, and it runs many times faster than real time.
     /// </summary>
     internal static class AmbienceTests
     {
@@ -2097,7 +2099,7 @@ namespace ExplorerNative
             // Off: the samples come out exactly as they went in.
             {
                 var a = new Ambience();
-                var buffer = Noise(rate, 1, correlated: true, seed: 1);
+                var buffer = Noise(rate, 1, seed: 1);
                 var copy = (float[])buffer.Clone();
                 a.Process(buffer, buffer.Length, 2, rate);
                 bool same = true;
@@ -2105,81 +2107,234 @@ namespace ExplorerNative
                 Check("off is a bypass, bit for bit", same);
             }
 
-            // The same noise in both channels is direct sound: the stereo test removes it.
-            double centred = Ratio(new AmbienceSettings { Method = 1, LevelDecibels = 0 }, Noise(rate, 3, correlated: true, seed: 2), rate);
-            Check("a sound in the middle is taken out by the stereo test", centred < 0.01, centred.ToString("0.0000"));
+            var started = Stopwatch.StartNew();
+            bool ready = VoiceModel.WaitReady(60_000);
+            Check("the voice model loads", ready, (Ambience.Unavailable ?? "") + " in " + started.ElapsedMilliseconds + " ms");
+            if (!ready) return;
+            using (var probe = VoiceModel.Create())
+                Check("it runs at 48 kilohertz in 480-sample frames", probe != null && probe.SampleRate == 48000 && probe.FrameLength == 480,
+                    probe == null ? "no model" : probe.SampleRate + " Hz, " + probe.FrameLength);
 
-            // Unrelated noise in each channel is diffuse: the stereo test keeps most of it.
-            double diffuse = Ratio(new AmbienceSettings { Method = 1, LevelDecibels = 0 }, Noise(rate, 3, correlated: false, seed: 3), rate);
-            Check("a diffuse sound is kept by the stereo test", diffuse > 0.3, diffuse.ToString("0.0000"));
-
-            // A steady sound has no tail; a decaying one is all tail.
-            var steady = Noise(rate, 3, correlated: false, seed: 4);
-            var decaying = Noise(rate, 3, correlated: false, seed: 4);
-            for (int f = 0; f < decaying.Length / 2; f++)
+            // Nothing taken out, nothing added: the recording itself, delayed.
+            var keepAll = new AmbienceSettings { RemovalPercent = 0, LevelDecibels = 0 };
+            // Measured tone by tone, so the resampled path's fraction of a
+            // sample of delay (30.7 samples at 44.1) does not count as error.
+            foreach (int r in new[] { 48000, 44100 })
             {
-                double t = (f % (rate / 2)) / (double)rate;
-                float env = (float)Math.Exp(-3 * Math.Log(10) * t / 1.5);
-                decaying[2 * f] *= env; decaying[2 * f + 1] *= env;
+                var output = Run(keepAll, Tones(r, 3), r);
+                var (worstLevel, residue) = MeasureTones(output, r);
+                Check("with nothing removed it is the recording, at " + r + " Hz",
+                    worstLevel < 0.02 && residue < 0.001,
+                    "levels within " + (worstLevel * 100).ToString("0.00") + " percent, anything else " + Decibels(residue));
             }
-            var tail = new AmbienceSettings { Method = 2, LevelDecibels = 0, TailMilliseconds = 1500 };
-            double steadyKept = Ratio(tail, steady, rate), tailKept = Ratio(tail, decaying, rate);
-            Check("the tail test keeps a decaying sound more than a steady one", tailKept > steadyKept * 1.5,
-                tailKept.ToString("0.000") + " against " + steadyKept.ToString("0.000"));
 
-            // Mono into both tests: the tail test takes over instead of silence.
-            double mono = Ratio(new AmbienceSettings { LevelDecibels = 0 }, decaying.Select((v, i) => decaying[i - i % 2]).ToArray(), rate);
-            Check("a mono recording still gives an ambience with both tests", mono > 0.01, mono.ToString("0.0000"));
-
-            // Hard settings, long run, loud input: finite and bounded.
+            // A real voice (Windows' own, spoken into a file) in a noisy room:
+            // most of the voice goes, the room stays.
             {
-                var a = new Ambience { Enabled = true, Settings = new AmbienceSettings { StrengthPercent = 0, LevelDecibels = 30, OriginalDecibels = 0 } };
-                bool finite = true; float peak = 0;
-                for (int block = 0; block < 400; block++)
+                var voice = Speech(rate, 6);
+                Check("Windows can speak a test sentence", voice != null);
+                if (voice != null)
                 {
-                    var b = Noise(rate / 100, 1, correlated: block % 2 == 0, seed: 10 + block, frames: 480);
+                    var noise = Noise(rate, 6, seed: 2, level: 0.02f);
+                    var mixed = new float[noise.Length];
+                    for (int i = 0; i < mixed.Length; i++) mixed[i] = noise[i] + voice[i];
+                    var all = new AmbienceSettings { RemovalPercent = 100, LevelDecibels = 0 };
+
+                    double voiceIn = Power(voice, rate), noiseIn = Power(noise, rate);
+                    double mixedOut = Power(Run(all, mixed, rate), rate);
+                    double noiseOut = Power(Run(all, noise, rate), rate);
+                    Check("a voice is taken out", mixedOut < 0.1 * (voiceIn + noiseIn),
+                        "left " + Decibels(mixedOut / (voiceIn + noiseIn)) + "; the voice was " + Decibels(voiceIn / noiseIn) + " over the noise");
+                    Check("noise on its own is kept", noiseOut > 0.3 * noiseIn, "kept " + Decibels(noiseOut / noiseIn));
+                }
+            }
+
+            // Hard settings, loud input: finite and bounded.
+            {
+                var a = new Ambience { Enabled = true, Settings = new AmbienceSettings { RemovalPercent = 100, LevelDecibels = 30, OriginalDecibels = 0 } };
+                bool finite = true; float peak = 0;
+                for (int block = 0; block < 300; block++)
+                {
+                    var b = Noise(rate, 0, seed: 10 + block, frames: 480);
                     for (int i = 0; i < b.Length; i++) b[i] *= 4;
                     a.Process(b, b.Length, 2, rate);
                     foreach (var v in b) { if (!float.IsFinite(v)) finite = false; peak = Math.Max(peak, Math.Abs(v)); }
                 }
+                Finish(a, rate);
                 Check("the output stays finite and bounded at the extremes", finite && peak < 1000, peak.ToString("0.0"));
+            }
+
+            // Fast enough to run on the render thread with room to spare.
+            {
+                var input = Noise(rate, 10, seed: 5, level: 0.1f);
+                var timer = Stopwatch.StartNew();
+                Run(new AmbienceSettings(), input, rate);
+                double factor = timer.Elapsed.TotalSeconds / 10.0;
+                // Alone on this server it is under a third; inside the full suite,
+                // with everything else running, 0.44 was measured. Real time is 1.
+                Check("stereo runs well inside real time", factor < 0.75, factor.ToString("0.000") + " of real time");
             }
 
             // Every saved setting is on a list in the dialog.
             var d = new AmbienceSettings();
             Check("the defaults are on the dialog's lists",
-                Ambience.StrengthLadder.Contains(d.StrengthPercent) && Ambience.TailLadder.Contains(d.TailMilliseconds) &&
+                Ambience.RemovalLadder.Contains(d.RemovalPercent) &&
                 Ambience.LevelLadder.Contains(d.LevelDecibels) && Ambience.OriginalLadder.Contains(d.OriginalDecibels));
         }
 
-        /// <summary>Output power over input power, past the first second (the stats settle).</summary>
-        private static double Ratio(AmbienceSettings settings, float[] input, int rate)
+        /// <summary>Stereo in, stereo out, in 10-millisecond blocks, then off so its models go back.</summary>
+        private static float[] Run(AmbienceSettings settings, float[] input, int rate)
         {
+            VoiceModel.WaitReady(60_000);
             var a = new Ambience { Enabled = true, Settings = settings };
             var buffer = (float[])input.Clone();
-            for (int at = 0; at < buffer.Length; at += 960)
+            int block = rate / 100 * 2;
+            for (int at = 0; at < buffer.Length; at += block)
             {
-                int n = Math.Min(960, buffer.Length - at);
-                var block = new float[n];
-                Array.Copy(buffer, at, block, 0, n);
-                a.Process(block, n, 2, rate);
-                Array.Copy(block, 0, buffer, at, n);
+                int n = Math.Min(block, buffer.Length - at);
+                var b = new float[n];
+                Array.Copy(buffer, at, b, 0, n);
+                a.Process(b, n, 2, rate);
+                Array.Copy(b, 0, buffer, at, n);
             }
-            double pin = 0, pout = 0;
-            for (int i = 2 * rate; i < buffer.Length; i++) { pin += input[i] * (double)input[i]; pout += buffer[i] * (double)buffer[i]; }
-            return pout / Math.Max(1e-12, pin);
+            Finish(a, rate);
+            return buffer;
         }
 
-        private static float[] Noise(int rate, int seconds, bool correlated, int seed, int frames = 0)
+        private static void Finish(Ambience a, int rate)
+        {
+            a.Enabled = false;
+            for (int i = 0; i < 3; i++) a.Process(new float[rate / 10 * 2], rate / 10 * 2, 2, rate);
+        }
+
+        private static readonly double[] ToneHertz = { 220, 523, 1250, 3100, 7400 };
+        private const double ToneLevel = 0.05;
+
+        /// <summary>
+        /// Over one second (a whole number of cycles of every tone), each tone's
+        /// level against what went in, the worst of them as a fraction, and the
+        /// power left once the tones are taken out, against the whole.
+        /// </summary>
+        private static (double worstLevel, double residue) MeasureTones(float[] output, int rate)
+        {
+            int start = rate * 3 / 2;
+            double worst = 0, rest = 0, all = 0;
+            for (int c = 0; c < 2; c++)
+            {
+                var fitted = new double[rate];
+                foreach (double hz in ToneHertz)
+                {
+                    double a = 0, b = 0;
+                    for (int i = 0; i < rate; i++)
+                    {
+                        double w = 2 * Math.PI * hz * i / rate, y = output[2 * (start + i) + c];
+                        a += y * Math.Sin(w); b += y * Math.Cos(w);
+                    }
+                    a *= 2.0 / rate; b *= 2.0 / rate;
+                    worst = Math.Max(worst, Math.Abs(Math.Sqrt(a * a + b * b) / ToneLevel - 1));
+                    for (int i = 0; i < rate; i++)
+                    {
+                        double w = 2 * Math.PI * hz * i / rate;
+                        fitted[i] += a * Math.Sin(w) + b * Math.Cos(w);
+                    }
+                }
+                for (int i = 0; i < rate; i++)
+                {
+                    double y = output[2 * (start + i) + c];
+                    rest += (y - fitted[i]) * (y - fitted[i]); all += y * y;
+                }
+            }
+            return (worst, rest / Math.Max(1e-12, all));
+        }
+
+        /// <summary>
+        /// Windows' own voice, through SAPI into a 48 kHz file, as stereo at
+        /// the given rate (only 48000 is asked for), repeated to the length.
+        /// Null when this machine has no voice.
+        /// </summary>
+        private static float[]? Speech(int rate, int seconds)
+        {
+            string path = Path.Combine(Path.GetTempPath(), "en-ambience-" + Guid.NewGuid().ToString("N") + ".wav");
+            try
+            {
+                var voiceType = Type.GetTypeFromProgID("SAPI.SpVoice");
+                var streamType = Type.GetTypeFromProgID("SAPI.SpFileStream");
+                if (voiceType == null || streamType == null) return null;
+                dynamic voice = Activator.CreateInstance(voiceType)!;
+                dynamic stream = Activator.CreateInstance(streamType)!;
+                dynamic format = stream.Format;
+                format.Type = 38; // SAFT48kHz16BitMono (39 is stereo)
+                stream.Format = format;
+                stream.Open(path, 3, false); // SSFMCreateForWrite
+                voice.AudioOutputStream = stream;
+                voice.Speak("The quick brown fox jumps over the lazy dog. She sells sea shells by the sea shore, " +
+                            "and the shells she sells are surely sea shells. Peter Piper picked a peck of pickled peppers.", 0);
+                stream.Close();
+                Marshal.FinalReleaseComObject(stream);
+                Marshal.FinalReleaseComObject(voice);
+
+                var bytes = File.ReadAllBytes(path);
+                int at = 12, data = -1, length = 0;
+                while (at + 8 <= bytes.Length)
+                {
+                    string id = Encoding.ASCII.GetString(bytes, at, 4);
+                    int size = BitConverter.ToInt32(bytes, at + 4);
+                    if (id == "data") { data = at + 8; length = Math.Min(size, bytes.Length - data); break; }
+                    at += 8 + size + (size & 1);
+                }
+                if (data < 0 || length < 2 * rate) return null;
+                int samples = length / 2, frames = rate * seconds;
+                var b = new float[frames * 2];
+                for (int f = 0; f < frames; f++)
+                {
+                    float v = BitConverter.ToInt16(bytes, data + 2 * (f % samples)) / 32768f;
+                    b[2 * f] = v; b[2 * f + 1] = v;
+                }
+                return b;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("    (no speech: " + ex.Message + ")");
+                return null;
+            }
+            finally
+            {
+                try { File.Delete(path); } catch { }
+            }
+        }
+
+        private static double Power(float[] b, int rate)
+        {
+            double p = 0;
+            for (int i = 2 * rate; i < b.Length; i++) p += b[i] * (double)b[i];
+            return p;
+        }
+
+        private static string Decibels(double ratio) => (10 * Math.Log10(Math.Max(1e-12, ratio))).ToString("0.0") + " dB";
+
+        private static float[] Noise(int rate, int seconds, int seed, int frames = 0, float level = 0.25f)
         {
             var random = new Random(seed);
             int count = frames > 0 ? frames : rate * seconds;
             var b = new float[count * 2];
-            for (int f = 0; f < count; f++)
+            for (int i = 0; i < b.Length; i++) b[i] = (float)((random.NextDouble() * 2 - 1) * level);
+            return b;
+        }
+
+        /// <summary>A handful of steady tones, well inside both rates' bands.</summary>
+        private static float[] Tones(int rate, int seconds)
+        {
+            var b = new float[rate * seconds * 2];
+            double[] hz = ToneHertz;
+            for (int f = 0; f < rate * seconds; f++)
             {
-                float l = (float)(random.NextDouble() * 0.5 - 0.25);
-                float r = correlated ? l : (float)(random.NextDouble() * 0.5 - 0.25);
-                b[2 * f] = l; b[2 * f + 1] = r;
+                double l = 0, r = 0;
+                for (int k = 0; k < hz.Length; k++)
+                {
+                    l += ToneLevel * Math.Sin(2 * Math.PI * hz[k] * f / rate + k);
+                    r += ToneLevel * Math.Sin(2 * Math.PI * hz[k] * f / rate + 2 * k);
+                }
+                b[2 * f] = (float)l; b[2 * f + 1] = (float)r;
             }
             return b;
         }

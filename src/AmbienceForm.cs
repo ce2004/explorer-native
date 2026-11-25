@@ -32,21 +32,30 @@ namespace ExplorerNative
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MinimizeBox = false;
             MaximizeBox = false;
-            ClientSize = new Size(520, 330);
+            ClientSize = new Size(520, 260);
 
-            var method = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(150, 16), Width = 350 };
-            foreach (var name in Ambience.MethodNames) method.Items.Add(name);
-            method.SelectedIndex = Chosen.Method;
-            AddLabelled("&Method:", 16, method,
-                "How the ambience is found. Both tests is the best on stereo music, and on a mono recording it uses the tail test by itself.");
+            int top = 16;
+            if (Ambience.Unavailable is { } why)
+            {
+                // Said first, where the cursor lands, rather than a box that does nothing.
+                var note = new TextBox
+                {
+                    ReadOnly = true,
+                    BorderStyle = BorderStyle.None,
+                    Location = new Point(14, top),
+                    Width = 486,
+                    Text = "Ambience cannot run: " + why + ".",
+                    AccessibleName = "Problem",
+                };
+                Controls.Add(note);
+                top += 34;
+            }
 
-            var strength = AddRow("&Strength:", 54, Ambience.StrengthLadder, Ambience.DescribeStrength, Chosen.StrengthPercent,
-                "How hard the direct sound is pushed out.");
-            var tail = AddRow("&Tail length:", 92, Ambience.TailLadder, Ambience.DescribeTail, Chosen.TailMilliseconds,
-                "How long the recording's reverb rings. Longer keeps more of what follows each note.");
-            var level = AddRow("&Level:", 130, Ambience.LevelLadder, Ambience.DescribeLevel, Chosen.LevelDecibels,
-                "How loud the ambience is played. It is always much quieter than the music it came from.");
-            var original = AddRow("O&riginal mixed in:", 168, Ambience.OriginalLadder, Ambience.DescribeLevel, Chosen.OriginalDecibels,
+            var removal = AddRow("&Voice removed:", top, Ambience.RemovalLadder, Ambience.DescribeRemoval, Chosen.RemovalPercent,
+                "How much of the voice the model takes out. All of it leaves only the ambience.");
+            var level = AddRow("&Level:", top + 38, Ambience.LevelLadder, Ambience.DescribeLevel, Chosen.LevelDecibels,
+                "How loud the ambience is played. It is always quieter than the recording it came from.");
+            var original = AddRow("O&riginal mixed in:", top + 76, Ambience.OriginalLadder, Ambience.DescribeLevel, Chosen.OriginalDecibels,
                 "How much of the untouched recording is mixed back in. Off means you hear only the ambience.");
 
             var onBox = new SpokenCheckBox
@@ -54,12 +63,12 @@ namespace ExplorerNative
                 Text = "&Ambience on",
                 Checked = on,
                 AutoSize = true,
-                Location = new Point(150, 208),
+                Location = new Point(150, top + 116),
             };
             onBox.AccessibleName = "Ambience on";
             onBox.AccessibleDescription =
-                "Plays only the ambience of the recording: the room, the reverb and the space, with the " +
-                "voices and instruments taken out. Applies as you change it. Escape puts it back.";
+                "Plays only the ambience of the recording: the room, the reverb, the noise and the space, " +
+                "with the voice taken out by a neural network. Applies as you change it. Escape puts it back.";
             Controls.Add(onBox);
 
             bool loading = false;
@@ -69,9 +78,7 @@ namespace ExplorerNative
                 if (loading) return;
                 Chosen = new AmbienceSettings
                 {
-                    Method = Math.Max(0, method.SelectedIndex),
-                    StrengthPercent = Pick(strength, Ambience.StrengthLadder, Chosen.StrengthPercent),
-                    TailMilliseconds = Pick(tail, Ambience.TailLadder, Chosen.TailMilliseconds),
+                    RemovalPercent = Pick(removal, Ambience.RemovalLadder, Chosen.RemovalPercent),
                     LevelDecibels = Pick(level, Ambience.LevelLadder, Chosen.LevelDecibels),
                     OriginalDecibels = Pick(original, Ambience.OriginalLadder, Chosen.OriginalDecibels),
                 }.Clamped();
@@ -79,29 +86,26 @@ namespace ExplorerNative
                 _apply(Chosen, AmbienceOn);
             }
 
-            method.SelectedIndexChanged += (_, _) => Changed();
-            strength.SelectedIndexChanged += (_, _) => Changed();
-            tail.SelectedIndexChanged += (_, _) => Changed();
+            removal.SelectedIndexChanged += (_, _) => Changed();
             level.SelectedIndexChanged += (_, _) => Changed();
             original.SelectedIndexChanged += (_, _) => Changed();
             onBox.CheckedChanged += (_, _) => Changed();
 
-            var reset = new Button { Text = "&Defaults", Location = new Point(230, 270), AutoSize = true };
+            int buttons = top + 156;
+            var reset = new Button { Text = "&Defaults", Location = new Point(230, buttons), AutoSize = true };
             reset.Click += (_, _) =>
             {
                 var d = new AmbienceSettings();
                 loading = true;
-                method.SelectedIndex = d.Method;
-                Select(strength, Ambience.StrengthLadder, d.StrengthPercent);
-                Select(tail, Ambience.TailLadder, d.TailMilliseconds);
+                Select(removal, Ambience.RemovalLadder, d.RemovalPercent);
                 Select(level, Ambience.LevelLadder, d.LevelDecibels);
                 Select(original, Ambience.OriginalLadder, d.OriginalDecibels);
                 loading = false;
                 Changed();
             };
 
-            var ok = new Button { Text = "&OK", DialogResult = DialogResult.OK, Location = new Point(330, 270), AutoSize = true };
-            var cancel = new Button { Text = "&Cancel", DialogResult = DialogResult.Cancel, Location = new Point(420, 270), AutoSize = true };
+            var ok = new Button { Text = "&OK", DialogResult = DialogResult.OK, Location = new Point(330, buttons), AutoSize = true };
+            var cancel = new Button { Text = "&Cancel", DialogResult = DialogResult.Cancel, Location = new Point(420, buttons), AutoSize = true };
             ok.Click += (_, _) => _keep = true;
             AcceptButton = ok;
             CancelButton = cancel;
@@ -109,7 +113,7 @@ namespace ExplorerNative
             Controls.Add(ok);
             Controls.Add(cancel);
 
-            Shown += (_, _) => method.Focus();
+            Shown += (_, _) => removal.Focus();
         }
 
         protected override void OnLoad(EventArgs e)
@@ -119,20 +123,15 @@ namespace ExplorerNative
             ClientSize = new Size(Math.Max(ClientSize.Width, wanted.Width), Math.Max(ClientSize.Height, wanted.Height));
         }
 
-        private void AddLabelled(string label, int top, ComboBox box, string help)
-        {
-            box.AccessibleName = label.Replace("&", "").TrimEnd(':');
-            box.AccessibleDescription = help + " Escape puts it back.";
-            Controls.Add(new Label { Text = label, AutoSize = true, Location = new Point(14, top + 4) });
-            Controls.Add(box);
-        }
-
         private ComboBox AddRow(string label, int top, int[] ladder, Func<int, string> describe, int current, string help)
         {
             var box = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Location = new Point(150, top), Width = 350 };
             foreach (int value in ladder) box.Items.Add(describe(value));
             Select(box, ladder, current);
-            AddLabelled(label, top, box, help + " Arrow up and down; it applies as you go.");
+            box.AccessibleName = label.Replace("&", "").TrimEnd(':');
+            box.AccessibleDescription = help + " Arrow up and down; it applies as you go. Escape puts it back.";
+            Controls.Add(new Label { Text = label, AutoSize = true, Location = new Point(14, top + 4) });
+            Controls.Add(box);
             return box;
         }
 

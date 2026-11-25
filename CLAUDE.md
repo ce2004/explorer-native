@@ -1,6 +1,6 @@
 # Explorer Native
 
-Keyboard- and NVDA-first file manager for Windows (ARM64 + x64). WinForms, .NET 10 (`net10.0-windows` since 3.1.0). Two goals settle every argument: be fast, and read well under NVDA. The only packages are Concentus and NVorbis (pure IL, for Ogg/Opus), WebView2 (Apple Music) and SMBLibrary with SMBLibrary.Win32 (pure IL, LGPL, the SMB server, 7.0.0). Add no others. The one bundled program is 7-Zip's 7za.exe (4.2.1, see docs\archives.md), and the one bundled library besides the NVDA client is libopus (opus.dll, 6.1.0, see docs\audio-convert-edit.md).
+Keyboard- and NVDA-first file manager for Windows (ARM64 + x64). WinForms, .NET 10 (`net10.0-windows` since 3.1.0). Two goals settle every argument: be fast, and read well under NVDA. The only packages are Concentus and NVorbis (pure IL, for Ogg/Opus), WebView2 (Apple Music) and SMBLibrary with SMBLibrary.Win32 (pure IL, LGPL, the SMB server, 7.0.0). Add no others. The one bundled program is 7-Zip's 7za.exe (4.2.1, see docs\archives.md), and the bundled libraries besides the NVDA client are libopus (opus.dll, 6.1.0, see docs\audio-convert-edit.md) and DeepFilterNet 3 (deepfilter.dll, 7.3.0, the Ambience voice model, built from Rust; how, in docs\audio-player.md).
 
 ## Where the rest is (read the doc for the area you touch, before changing it)
 

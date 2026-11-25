@@ -1754,8 +1754,7 @@ namespace ExplorerNative
                 _audio.LimiterAttackMicroseconds / 1_000_000.0, _audio.LimiterReleaseMilliseconds / 1000.0,
                 _audio.SilenceReduction, _audio.SilenceThresholdDecibels, _audio.SilenceMinimumMilliseconds,
                 _audio.SilenceLeaveMilliseconds, _audio.SilenceFadeOutMilliseconds, _audio.SilenceFadeInMilliseconds,
-                _audio.FadeInMilliseconds, _audio.FadeOutMilliseconds,
-                _audio.Ambience ? _audio.AmbienceSettings : null));
+                _audio.FadeInMilliseconds, _audio.FadeOutMilliseconds));
         }
 
         /// <summary>
@@ -1769,7 +1768,6 @@ namespace ExplorerNative
             {
                 _audio.AmbienceSettings = chosen;
                 _audio.Ambience = on;
-                PushAppleEffects();
             });
 
             var answer = _form is { IsDisposed: false, Visible: true }

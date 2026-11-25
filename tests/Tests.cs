@@ -226,6 +226,8 @@ namespace ExplorerNative
             {
                 await Guard("AmbienceTests", () => { AmbienceTests.RunAll(Check, Equal); return Task.CompletedTask; });
                 ShortcutTests();    // the Audio menu's access keys, which the new entry had to fit into
+                SettingsRoundTripTests();        // its settings load back exactly as saved
+                UpdatesNeverChangeSettingsTests();
                 Console.WriteLine($"\n{_passed} passed, {_failed} failed");
                 return _failed == 0 ? 0 : 1;
             }

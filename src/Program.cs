@@ -710,6 +710,7 @@ namespace ExplorerNative
             "7-Zip-LICENSE.txt",
             "Opus-LICENSE.txt",
             "SMBLibrary-LICENSE.txt",
+            "DeepFilterNet-LICENSE.txt",
         };
 
         private static void WriteLicenceBeside()

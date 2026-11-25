@@ -990,8 +990,7 @@ namespace ExplorerNative
             bool Limiter, bool LimiterWholeRange, double LimiterCeiling, double LimiterAttackSeconds, double LimiterReleaseSeconds,
             bool Silence, int SilenceThresholdDecibels, int SilenceMinimumMilliseconds, int SilenceLeaveMilliseconds,
             int SilenceFadeOutMilliseconds, int SilenceFadeInMilliseconds,
-            int FadeInMilliseconds, int FadeOutMilliseconds,
-            AmbienceSettings? Ambience = null);
+            int FadeInMilliseconds, int FadeOutMilliseconds);
 
         private static string? _effectsJson;
 
@@ -1011,12 +1010,6 @@ namespace ExplorerNative
                 silOn = e.Silence, silThresh = e.SilenceThresholdDecibels, silMin = e.SilenceMinimumMilliseconds,
                 silLeave = e.SilenceLeaveMilliseconds, silOut = e.SilenceFadeOutMilliseconds, silIn = e.SilenceFadeInMilliseconds,
                 fadeIn = e.FadeInMilliseconds, fadeOut = e.FadeOutMilliseconds,
-                ambOn = e.Ambience != null,
-                ambMethod = e.Ambience?.Method ?? 0,
-                ambStrength = e.Ambience?.StrengthPercent ?? 50,
-                ambTail = e.Ambience?.TailMilliseconds ?? 1500,
-                ambLevel = e.Ambience?.LevelDecibels ?? 6,
-                ambOriginal = e.Ambience?.OriginalDecibels ?? ExplorerNative.Ambience.OffDecibels,
             });
             lock (Gate)
             {
@@ -1943,154 +1936,9 @@ class Resamp {
     return made;
   }
 }
-// Only the room (Ambience.cs): the recording's ambience, with the performance taken out.
-const AN = 2048, AHOP = 512, ABINS = AN / 2 + 1, AHIST = 32, AEPS = 1e-12;
-class Amb {
-  constructor() {
-    this.w = new Float64Array(AN);
-    for (let n = 0; n < AN; n++) this.w[n] = Math.sqrt(0.5 - 0.5 * Math.cos(2 * Math.PI * n / AN));
-    this.rev = new Int32Array(AN);
-    let bits = 0; while ((1 << bits) < AN) bits++;
-    for (let i = 0; i < AN; i++) { let x = i, y = 0; for (let b = 0; b < bits; b++) { y = (y << 1) | (x & 1); x >>= 1; } this.rev[i] = y; }
-    this.tc = new Float64Array(AN / 2); this.ts = new Float64Array(AN / 2);
-    for (let i = 0; i < AN / 2; i++) { this.tc[i] = Math.cos(2 * Math.PI * i / AN); this.ts[i] = Math.sin(2 * Math.PI * i / AN); }
-    this.inL = new Float32Array(AN); this.inR = new Float32Array(AN);
-    this.accL = new Float64Array(AN); this.accR = new Float64Array(AN);
-    this.dryL = new Float64Array(AN); this.dryR = new Float64Array(AN);
-    this.qAL = new Float32Array(AHOP); this.qAR = new Float32Array(AHOP);
-    this.qDL = new Float32Array(AHOP); this.qDR = new Float32Array(AHOP);
-    this.re = new Float64Array(AN); this.im = new Float64Array(AN);
-    this.pll = new Float64Array(ABINS); this.prr = new Float64Array(ABINS);
-    this.pre = new Float64Array(ABINS); this.pim = new Float64Array(ABINS);
-    this.pow = new Float64Array(ABINS); this.hist = new Float64Array(ABINS * AHIST);
-    this.rawL = new Float64Array(ABINS); this.rawR = new Float64Array(ABINS);
-    this.gL = new Float64Array(ABINS); this.gR = new Float64Array(ABINS);
-    this.reset();
-  }
-  reset() {
-    for (const a of [this.inL, this.inR, this.accL, this.accR, this.dryL, this.dryR, this.qAL, this.qAR, this.qDL, this.qDR,
-                     this.pll, this.prr, this.pre, this.pim, this.pow, this.hist, this.gL, this.gR]) a.fill(0);
-    this.fill = 0; this.hAt = 0; this.stereo = 0.05; this.fade = 0; this.primed = false; this.level = 1; this.orig = 0;
-  }
-  fft(inverse) {
-    const re = this.re, im = this.im, rev = this.rev;
-    for (let i = 0; i < AN; i++) {
-      const j = rev[i];
-      if (j > i) { let t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
-    }
-    const sign = inverse ? 1 : -1;
-    for (let size = 2; size <= AN; size <<= 1) {
-      const half = size >> 1, step = AN / size;
-      for (let start = 0; start < AN; start += size) {
-        for (let j = 0; j < half; j++) {
-          const wr = this.tc[j * step], wi = sign * this.ts[j * step], a = start + j, b = a + half;
-          const tr = re[b] * wr - im[b] * wi, ti = re[b] * wi + im[b] * wr;
-          re[b] = re[a] - tr; im[b] = im[a] - ti; re[a] += tr; im[a] += ti;
-        }
-      }
-    }
-  }
-  frame(p) {
-    const w = this.w, re = this.re, im = this.im;
-    for (let n = 0; n < AN; n++) { re[n] = this.inL[n] * w[n]; im[n] = this.inR[n] * w[n]; }
-    this.fft(false);
-    const hop = AHOP / sampleRate, stat = Math.exp(-hop / 0.08), quick = Math.exp(-hop / 0.02);
-    const delay = Math.min(AHIST - 1, Math.max(1, Math.round(0.05 / hop)));
-    const tail = Math.min(10000, Math.max(200, p.ambTail || 1500)) / 1000;
-    const expected = Math.exp(-2 * (3 * Math.log(10) / tail) * delay * hop);
-    const power = 0.35 + 1.65 * Math.min(100, Math.max(0, p.ambStrength)) / 100;
-    const mono = Math.min(1, Math.max(0, (this.stereo - 0.002) / 0.008));
-    const writeRow = this.hAt, readRow = (this.hAt - delay + AHIST) % AHIST, binHz = sampleRate / AN;
-    for (let k = 0; k < ABINS; k++) {
-      const m = (AN - k) & (AN - 1);
-      const lr = 0.5 * (re[k] + re[m]), li = 0.5 * (im[k] - im[m]), rr = 0.5 * (im[k] + im[m]), ri = -0.5 * (re[k] - re[m]);
-      const pl = lr * lr + li * li, pr = rr * rr + ri * ri;
-      this.pll[k] = stat * this.pll[k] + (1 - stat) * pl;
-      this.prr[k] = stat * this.prr[k] + (1 - stat) * pr;
-      this.pre[k] = stat * this.pre[k] + (1 - stat) * (lr * rr + li * ri);
-      this.pim[k] = stat * this.pim[k] + (1 - stat) * (li * rr - lr * ri);
-      this.pow[k] = quick * this.pow[k] + (1 - quick) * (pl + pr);
-    }
-    let sumMin = 0, sumMean = 0;
-    for (let k = 0; k < ABINS; k++) {
-      let a = 0, b = 0, cr = 0, ci = 0;
-      for (let j = Math.max(0, k - 2); j <= Math.min(ABINS - 1, k + 2); j++) { a += this.pll[j]; b += this.prr[j]; cr += this.pre[j]; ci += this.pim[j]; }
-      const mean = 0.5 * (a + b), half = 0.5 * (a - b), least = Math.max(0, mean - Math.sqrt(half * half + cr * cr + ci * ci));
-      const sL = Math.sqrt(Math.min(1, least / (a + AEPS))), sR = Math.sqrt(Math.min(1, least / (b + AEPS)));
-      sumMin += least; sumMean += mean;
-      const now = this.pow[k], was = this.hist[readRow * ABINS + k];
-      this.hist[writeRow * ABINS + k] = now;
-      const ratio = was > AEPS ? now / was : (now > AEPS ? 10 : 1);
-      const t = Math.sqrt(Math.min(1, Math.max(0, (1 - ratio) / (1 - expected))));
-      let gl, gr;
-      if (p.ambMethod === 1) { gl = sL; gr = sR; }
-      else if (p.ambMethod === 2) { gl = gr = t; }
-      else {
-        const sw = mono * Math.min(1, Math.max(0, (k * binHz - 150) / 150));
-        gl = sw * sL * t + (1 - sw) * t; gr = sw * sR * t + (1 - sw) * t;
-      }
-      const edge = k === 0 || k === ABINS - 1;
-      this.rawL[k] = edge ? 0 : Math.pow(gl, power);
-      this.rawR[k] = edge ? 0 : Math.pow(gr, power);
-    }
-    this.hAt = (this.hAt + 1) % AHIST;
-    this.stereo = 0.9 * this.stereo + 0.1 * (sumMin / (sumMean + AEPS));
-    const rise = 1 - Math.exp(-hop / 0.06), floor = 0.0316, rl = this.rawL, rrw = this.rawR;
-    for (let k = 0; k < ABINS; k++) {
-      const kl = k > 0 ? k - 1 : k, kh = k < ABINS - 1 ? k + 1 : k;
-      const l = Math.max(floor, rl[k] * 0.5 + rl[kl] * 0.25 + rl[kh] * 0.25);
-      const r = Math.max(floor, rrw[k] * 0.5 + rrw[kl] * 0.25 + rrw[kh] * 0.25);
-      this.gL[k] = l < this.gL[k] ? l : this.gL[k] + (l - this.gL[k]) * rise;
-      this.gR[k] = r < this.gR[k] ? r : this.gR[k] + (r - this.gR[k]) * rise;
-      if (!isFinite(this.gL[k])) this.gL[k] = 0;
-      if (!isFinite(this.gR[k])) this.gR[k] = 0;
-    }
-    for (let k = 0; k < ABINS; k++) {
-      const m = (AN - k) & (AN - 1), gl = this.gL[k], gr = this.gR[k];
-      const lr = 0.5 * (re[k] + re[m]) * gl, li = 0.5 * (im[k] - im[m]) * gl;
-      const rr = 0.5 * (im[k] + im[m]) * gr, ri = -0.5 * (re[k] - re[m]) * gr;
-      re[k] = lr - ri; im[k] = li + rr;
-      if (m !== k) { re[m] = lr + ri; im[m] = rr - li; }
-    }
-    this.fft(true);
-    for (let n = 0; n < AN; n++) {
-      const ws = w[n] * 0.5 / AN, ww = w[n] * w[n] * 0.5;
-      this.accL[n] += re[n] * ws; this.accR[n] += im[n] * ws;
-      this.dryL[n] += this.inL[n] * ww; this.dryR[n] += this.inR[n] * ww;
-    }
-    const fin = v => isFinite(v) ? v : 0;
-    for (let i = 0; i < AHOP; i++) {
-      this.qAL[i] = fin(this.accL[i]); this.qAR[i] = fin(this.accR[i]);
-      this.qDL[i] = fin(this.dryL[i]); this.qDR[i] = fin(this.dryR[i]);
-    }
-    for (const a of [this.accL, this.accR, this.dryL, this.dryR]) { a.copyWithin(0, AHOP); a.fill(0, AN - AHOP); }
-    this.inL.copyWithin(0, AHOP); this.inR.copyWithin(0, AHOP);
-  }
-  process(io, n, p) {
-    const on = !!p.ambOn;
-    if (!on && this.fade <= 0) { if (this.primed) this.reset(); return; }
-    const levelT = Math.pow(10, (p.ambLevel || 0) / 20), origT = p.ambOriginal <= -100 ? 0 : Math.pow(10, p.ambOriginal / 20);
-    if (!this.primed) { this.level = levelT; this.orig = origT; this.primed = true; }
-    const sm = 1 - Math.exp(-1 / (0.01 * sampleRate)), fadeStep = 1 / (0.03 * sampleRate);
-    for (let f = 0; f < n; f++) {
-      const l = io[f * CH], r = io[f * CH + 1];
-      this.level += (levelT - this.level) * sm;
-      this.orig += (origT - this.orig) * sm;
-      this.fade = on ? Math.min(1, this.fade + fadeStep) : Math.max(0, this.fade - fadeStep);
-      const oL = this.qAL[this.fill] * this.level + this.qDL[this.fill] * this.orig;
-      const oR = this.qAR[this.fill] * this.level + this.qDR[this.fill] * this.orig;
-      this.inL[AN - AHOP + this.fill] = l; this.inR[AN - AHOP + this.fill] = r;
-      if (++this.fill === AHOP) { this.fill = 0; this.frame(p); }
-      const keep = 1 - this.fade;
-      io[f * CH] = l * keep + this.fade * oL;
-      io[f * CH + 1] = r * keep + this.fade * oR;
-    }
-  }
-}
 class Fx extends AudioWorkletProcessor {
   constructor() {
     super();
-    this.amb = new Amb();
     this.p = { gain: 1, pitch: 1, tempo: 1, eqOn: false, eq: [], limOn: false, limWhole: false, limCeil: 0.9,
                limAttack: 0.0005, limRelease: 0.25, silOn: false, silThresh: -48, silMin: 400, silLeave: 150, silOut: 20, silIn: 20 };
     this.io = new Float32Array(128 * CH);
@@ -2205,7 +2053,6 @@ class Fx extends AudioWorkletProcessor {
     }
     this.env = env; this.boost = boost;
 
-    this.amb.process(io, n, p);
     this.equalise(io, n);
 
     // Fades, and the gate that closes over a silence being run through.
@@ -2355,8 +2202,7 @@ let stepping = null, replacing = 0;
 // was heard that much late by anyone listening above 100 percent.
 let eff = { speed: 1, pitch: 1, pitchTempo: false, eqOn: false, eq: [], limOn: false, limWhole: false,
             limCeil: 0.9, limAttack: 0.0005, limRelease: 0.25, silOn: false, silThresh: -48, silMin: 400,
-            silLeave: 150, silOut: 20, silIn: 20, fadeIn: 0, fadeOut: 0,
-            ambOn: false, ambMethod: 0, ambStrength: 50, ambTail: 1500, ambLevel: 6, ambOriginal: -100 };
+            silLeave: 150, silOut: 20, silIn: 20, fadeIn: 0, fadeOut: 0 };
 let fxContext = null, fxNode = null, fxMaking = null, skipping = false, settling = false;
 const wired = new WeakSet(), rated = new WeakSet();
 // How fast a silence is run through. Chromium plays no sound above 4 times,
@@ -2370,7 +2216,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 function fxPitch() { return eff.pitchTempo && eff.speed === 1 ? 1 : eff.pitch; }
 function tempo() { return Math.min(16, Math.max(0.0625, eff.speed * (eff.pitchTempo ? eff.pitch : 1))); }
 function fxWanted() {
-  return (wantVolume !== null && wantVolume > 1) || eff.eqOn || eff.limOn || eff.silOn || eff.ambOn ||
+  return (wantVolume !== null && wantVolume > 1) || eff.eqOn || eff.limOn || eff.silOn ||
          eff.fadeIn > 0 || eff.fadeOut > 0 || fxPitch() !== 1;
 }
 async function makeFx() {
@@ -2404,9 +2250,7 @@ function pushFx() {
   fxNode.port.postMessage({ set: { gain: wantVolume === null ? 1 : wantVolume, pitch: fxPitch(), tempo: tempo(),
     eqOn: eff.eqOn, eq: eff.eq, limOn: eff.limOn, limWhole: eff.limWhole, limCeil: eff.limCeil,
     limAttack: eff.limAttack, limRelease: eff.limRelease, silOn: eff.silOn, silThresh: eff.silThresh,
-    silMin: eff.silMin, silLeave: eff.silLeave, silOut: eff.silOut, silIn: eff.silIn,
-    ambOn: eff.ambOn, ambMethod: eff.ambMethod, ambStrength: eff.ambStrength, ambTail: eff.ambTail,
-    ambLevel: eff.ambLevel, ambOriginal: eff.ambOriginal } });
+    silMin: eff.silMin, silLeave: eff.silLeave, silOut: eff.silOut, silIn: eff.silIn } });
 }
 function fxFade(to, ms) { if (fxNode) fxNode.port.postMessage({ fade: { to, ms } }); }
 function fxCalm() { skipping = false; if (fxNode) fxNode.port.postMessage({ calm: true }); }

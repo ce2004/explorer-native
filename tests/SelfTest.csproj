@@ -248,6 +248,8 @@
     <EmbeddedResource Include="..\CHANGES.txt" LogicalName="CHANGES.txt" />
     <None Include="..\native\win-arm64\opus.dll" Link="opus.dll" CopyToOutputDirectory="PreserveNewest" Condition="'$(RuntimeIdentifier)' == 'win-arm64'" />
     <None Include="..\native\win-x64\opus.dll" Link="opus.dll" CopyToOutputDirectory="PreserveNewest" Condition="'$(RuntimeIdentifier)' == 'win-x64'" />
+    <None Include="..\native\win-arm64\deepfilter.dll" Link="deepfilter.dll" CopyToOutputDirectory="PreserveNewest" Condition="'$(RuntimeIdentifier)' == 'win-arm64'" />
+    <None Include="..\native\win-x64\deepfilter.dll" Link="deepfilter.dll" CopyToOutputDirectory="PreserveNewest" Condition="'$(RuntimeIdentifier)' == 'win-x64'" />
     <EmbeddedResource Include="..\native\win-arm64\7za.exe" LogicalName="7za.exe" Condition="'$(RuntimeIdentifier)' == 'win-arm64'" />
     <EmbeddedResource Include="..\native\win-x64\7za.exe" LogicalName="7za.exe" Condition="'$(RuntimeIdentifier)' == 'win-x64'" />
   </ItemGroup>

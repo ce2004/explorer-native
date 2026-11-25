@@ -12,7 +12,7 @@
     <!-- ARM64 by default; "dotnet publish -r win-x64" builds the x64 copy.
          Release builds stamp Version from the git tag (see .github\workflows). -->
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == ''">win-arm64</RuntimeIdentifier>
-    <Version>7.2.0</Version>
+    <Version>7.3.0</Version>
     <!-- .NET 9+ checks properties for the forms designer, which nothing here uses. -->
     <NoWarn>$(NoWarn);WFO1000</NoWarn>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
@@ -180,6 +180,21 @@
     </None>
     <EmbeddedResource Include="native\Opus-LICENSE.txt">
       <LogicalName>Opus-LICENSE.txt</LogicalName>
+    </EmbeddedResource>
+    <!-- DeepFilterNet 3 (Hendrik Schroeter, MIT/Apache), the voice model the
+         ambience isolator runs (7.3.0), with the model built in. Built from
+         github.com/Rikorose/DeepFilterNet libDF with a static runtime and the
+         en_ entry points added; how, in docs\audio-player.md. -->
+    <None Include="native\win-arm64\deepfilter.dll" Condition="'$(RuntimeIdentifier)' == 'win-arm64'">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>deepfilter.dll</Link>
+    </None>
+    <None Include="native\win-x64\deepfilter.dll" Condition="'$(RuntimeIdentifier)' == 'win-x64'">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <Link>deepfilter.dll</Link>
+    </None>
+    <EmbeddedResource Include="native\DeepFilterNet-LICENSE.txt">
+      <LogicalName>DeepFilterNet-LICENSE.txt</LogicalName>
     </EmbeddedResource>
     <EmbeddedResource Include="native\7-Zip-LICENSE.txt">
       <LogicalName>7-Zip-LICENSE.txt</LogicalName>

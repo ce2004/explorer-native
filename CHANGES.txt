@@ -1,3 +1,7 @@
+7.3.0
+Changed: Ambience now uses a neural network, DeepFilterNet, running on your own computer, the way Waves Clarity Vx does it. It finds the voice and plays everything else, so you hear the room, the reverb and the noise around the voice. The dialog has three lists now: how much of the voice to take out, how loud the ambience plays, and how much of the original to mix back in. It is at its best on spoken and sung recordings. In a full music mix it takes out the voice and leaves the instruments.
+Changed: Ambience no longer works on Apple Music. The new model can't run inside the Apple Music player, and the old way didn't sound good.
+
 7.2.0
 New: Ambience, on the Audio menu (Alt, A, Z). It plays only the room of a recording, the reverb, the space and the audience, with the voices and instruments taken out. You can choose how it finds the room, how strong it is, how long the recording's reverb rings, how loud it plays, and how much of the original to mix back in. Every list changes the sound as you arrow through it, and it works on Apple Music too.
 
