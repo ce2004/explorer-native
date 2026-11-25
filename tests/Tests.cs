@@ -228,6 +228,7 @@ namespace ExplorerNative
                 ShortcutTests();    // the Audio menu's access keys, which the new entry had to fit into
                 SettingsRoundTripTests();        // its settings load back exactly as saved
                 UpdatesNeverChangeSettingsTests();
+                ConfigIntegrityTests();          // and every number in them is kept in range
                 Console.WriteLine($"\n{_passed} passed, {_failed} failed");
                 return _failed == 0 ? 0 : 1;
             }
@@ -6149,6 +6150,7 @@ namespace ExplorerNative
             nameof(Settings.WindowX) => 120,
             nameof(Settings.WindowY) => 80,
             nameof(Settings.ActiveTab) => 1,
+            nameof(Settings.AudioAmbienceRemovalPercent) => 90, // its default is the top of its range
             _ => current + 1,
         };
 

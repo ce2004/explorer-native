@@ -1508,9 +1508,8 @@ namespace ExplorerNative
                     : 0;
             AudioEqualiserBands = bands;
 
-            // The ambience isolator is not rewritten here: AmbienceSettings.From
-            // clamps on the way in, and loading never changes a saved value
-            // (7.3.0: a saved 101 came back as 100).
+            // The ambience isolator, through the same bounds the engine keeps.
+            AmbienceSettings.From(this).WriteTo(this);
 
             // Silence reduction. Each bound is the point past which the
             // number stops describing the thing it is named after, a threshold
