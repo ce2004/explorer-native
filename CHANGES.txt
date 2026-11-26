@@ -1,3 +1,6 @@
+7.3.1
+Bug fixed: with Ambience on, you could still hear the voice. Ambience now looks at the sound in much finer detail, and keeps the voice out through its echo too, so far less of it gets through. In testing, the voice that was left dropped from about a fifth of its loudness to about a hundredth.
+
 7.3.0
 Changed: Ambience now uses a neural network, DeepFilterNet, running on your own computer, the way Waves Clarity Vx does it. It finds the voice and plays everything else, so you hear the room, the reverb and the noise around the voice. The dialog has three lists now: how much of the voice to take out, how loud the ambience plays, and how much of the original to mix back in. It is at its best on spoken and sung recordings. In a full music mix it takes out the voice and leaves the instruments.
 Changed: Ambience no longer works on Apple Music. The new model can't run inside the Apple Music player, and the old way didn't sound good.

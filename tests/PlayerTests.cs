@@ -2146,6 +2146,21 @@ namespace ExplorerNative
                     Check("a voice is taken out", mixedOut < 0.1 * (voiceIn + noiseIn),
                         "left " + Decibels(mixedOut / (voiceIn + noiseIn)) + "; the voice was " + Decibels(voiceIn / noiseIn) + " over the noise");
                     Check("noise on its own is kept", noiseOut > 0.3 * noiseIn, "kept " + Decibels(noiseOut / noiseIn));
+
+                    // The mask's arithmetic assumes the model is exactly this far behind.
+                    int lag = ModelLag(rate);
+                    Check("the model's voice lines up with the recording", lag == VoiceMask.ModelDelay, lag + " samples");
+
+                    // The voice with a room's echo on it, over a room's hum and
+                    // hiss: how much of each comes out, measured by giving each
+                    // part on its own the gains the mix was given.
+                    var dry = new float[voice.Length / 2];
+                    for (int i = 0; i < dry.Length; i++) dry[i] = voice[2 * i];
+                    var (voiceLeft, roomKept) = Separate(Reverberant(dry, rate), Room(dry, rate), 1f);
+                    Check("the voice in a room is gone", voiceLeft < -35,
+                        "voice " + voiceLeft.ToString("0.0") + " dB, room " + roomKept.ToString("0.0") + " dB");
+                    Check("the room is kept", roomKept > -6, roomKept.ToString("0.0") + " dB");
+
                 }
             }
 
@@ -2180,6 +2195,112 @@ namespace ExplorerNative
             Check("the defaults are on the dialog's lists",
                 Ambience.RemovalLadder.Contains(d.RemovalPercent) &&
                 Ambience.LevelLadder.Contains(d.LevelDecibels) && Ambience.OriginalLadder.Contains(d.OriginalDecibels));
+        }
+
+        /// <summary>The model's output against its input, with nothing taken out: the delay that lines them up best.</summary>
+        private static int ModelLag(int rate)
+        {
+            using var model = VoiceModel.Create()!;
+            var random = new Random(7);
+            int n = rate * 2;
+            var input = new float[n];
+            for (int i = 0; i < n; i++) input[i] = (float)(random.NextDouble() * 2 - 1) * 0.1f;
+            var output = new float[n];
+            var a = new float[model.FrameLength]; var b = new float[model.FrameLength];
+            for (int at = 0; at + a.Length <= n; at += a.Length)
+            {
+                Array.Copy(input, at, a, 0, a.Length);
+                model.Process(a, b, 1, 0);
+                Array.Copy(b, 0, output, at, b.Length);
+            }
+            int best = -1; double bestSum = double.MinValue;
+            for (int lag = 0; lag < 4000; lag++)
+            {
+                double sum = 0;
+                for (int i = rate / 2; i < n - 4000; i++) sum += input[i] * (double)output[i + lag];
+                if (sum > bestSum) { bestSum = sum; best = lag; }
+            }
+            return best;
+        }
+
+        /// <summary>
+        /// Voice and room mixed, the mix through the model and the mask, and
+        /// each part on its own given the same gains: how much of each is left,
+        /// in decibels. Mono at 48 kilohertz.
+        /// </summary>
+        private static (double voice, double room) Separate(float[] voice, float[] room, float removal)
+        {
+            using var model = VoiceModel.Create()!;
+            var mask = new VoiceMask(3);
+            mask.Set(removal, 1, 0);
+            int n = voice.Length, frame = model.FrameLength;
+            var delayV = new SampleQueue(n + 4096); var delayR = new SampleQueue(n + 4096);
+            for (int i = 0; i < VoiceMask.ModelDelay; i++) { delayV.Enqueue(0); delayR.Enqueue(0); }
+            var outs = new[] { new SampleQueue(n + 4096), new SampleQueue(n + 4096), new SampleQueue(n + 4096) };
+            var a = new float[frame]; var b = new float[frame]; var others = new float[2];
+            for (int at = 0; at + frame <= n; at += frame)
+            {
+                for (int i = 0; i < frame; i++)
+                {
+                    a[i] = voice[at + i] + room[at + i];
+                    delayV.Enqueue(voice[at + i]); delayR.Enqueue(room[at + i]);
+                }
+                model.Process(a, b, 0, 1);
+                for (int i = 0; i < frame; i++)
+                {
+                    others[0] = delayV.Dequeue(); others[1] = delayR.Dequeue();
+                    mask.Push(others[0] + others[1], b[i], others, outs);
+                }
+            }
+            int skip = 48000 * 2;
+            double Level(SampleQueue q, float[] source)
+            {
+                double pOut = 0, pIn = 0; int i = 0;
+                while (q.Count > 0)
+                {
+                    float y = q.Dequeue();
+                    if (i >= skip) pOut += y * (double)y;
+                    i++;
+                }
+                for (int k = skip; k < i && k < source.Length; k++) pIn += source[k] * (double)source[k];
+                return 10 * Math.Log10(Math.Max(1e-20, pOut) / Math.Max(1e-20, pIn));
+            }
+            outs[0].Clear();
+            return (Level(outs[1], voice), Level(outs[2], room));
+        }
+
+        /// <summary>A voice in a room: the dry voice plus two thousand echoes dying away over 600 milliseconds.</summary>
+        private static float[] Reverberant(float[] dry, int rate)
+        {
+            var random = new Random(11);
+            var wet = (float[])dry.Clone();
+            for (int t = 0; t < 2000; t++)
+            {
+                double seconds = 0.005 + random.NextDouble() * 0.595;
+                int d = (int)(seconds * rate);
+                float g = (float)(0.054 * Math.Exp(-13.8 * seconds) * (random.Next(2) * 2 - 1));
+                for (int i = d; i < wet.Length; i++) wet[i] += g * dry[i - d];
+            }
+            return wet;
+        }
+
+        /// <summary>A room under the voice: soft hiss leaning to the low end and a mains hum, 15 decibels under it.</summary>
+        private static float[] Room(float[] voice, int rate)
+        {
+            var random = new Random(12);
+            var room = new float[voice.Length];
+            double low = 0, mid = 0;
+            for (int i = 0; i < room.Length; i++)
+            {
+                double w = random.NextDouble() * 2 - 1;
+                low += 0.02 * (w - low); mid += 0.2 * (w - mid);
+                room[i] = (float)(3 * low + mid + 0.3 * w + 0.2 * Math.Sin(2 * Math.PI * 60 * i / rate) + 0.1 * Math.Sin(2 * Math.PI * 180 * i / rate));
+            }
+            double pv = 0, pr = 0;
+            for (int i = 0; i < room.Length; i++) { pv += voice[i] * (double)voice[i]; pr += room[i] * (double)room[i]; }
+            float scale = (float)Math.Sqrt(pv / pr / Math.Pow(10, 1.5));
+            for (int i = 0; i < room.Length; i++) room[i] *= scale;
+            return room;
         }
 
         /// <summary>Stereo in, stereo out, in 10-millisecond blocks, then off so its models go back.</summary>

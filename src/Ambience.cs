@@ -56,11 +56,10 @@ namespace ExplorerNative
     /// 7.3.0 it is a neural network, the way Waves' Clarity Vx DeReverb Pro's
     /// "difference" output does it: DeepFilterNet 3 (Schröter et al., MIT and
     /// Apache, native\deepfilter.dll, built from github.com/Rikorose/DeepFilterNet
-    /// with the model inside it) finds the voice, and what is played is the
-    /// recording with that voice subtracted. The subtraction happens inside the
-    /// library on the same spectral frame the model judged, before the inverse
-    /// transform, so the two line up exactly and no delay has to be guessed here
-    /// (the en_ functions added to its C interface, see docs\audio-player.md).
+    /// with the model inside it) finds the voice. In 7.3.0 what played was the
+    /// recording with the model's voice subtracted, and the voice could still
+    /// be heard; from 7.3.1 the model's voice estimate drives a finer mask on
+    /// the recording (<see cref="VoiceMask"/>), which leaves far less of it.
     ///
     /// The model runs at 48 kilohertz in frames of 480 samples, one model per
     /// channel so the stereo image survives. At any other device rate each
@@ -139,8 +138,7 @@ namespace ExplorerNative
             var s = Settings;
             double level = Math.Pow(10, s.LevelDecibels / 20.0);
             double original = s.OriginalDecibels <= OffDecibels ? 0 : Math.Pow(10, s.OriginalDecibels / 20.0);
-            float noisyGain = (float)(level + original);
-            float voiceGain = (float)(-level * s.RemovalPercent / 100.0);
+            float removal = s.RemovalPercent / 100f, wet = (float)level, dry = (float)original;
 
             double fadeStep = 1.0 / (FadeSeconds * sampleRate);
             double fade = _fade;
@@ -153,8 +151,8 @@ namespace ExplorerNative
                 float l = buffer[at];
                 float r = right != null ? buffer[at + 1] : 0;
 
-                if (!left.Push(l, noisyGain, voiceGain) ||
-                    (right != null && !right.Push(r, noisyGain, voiceGain)))
+                if (!left.Push(l, removal, wet, dry) ||
+                    (right != null && !right.Push(r, removal, wet, dry)))
                 {
                     // The library said no. Play the recording as it is from here
                     // on, rather than silence or noise, and say so once.
@@ -211,8 +209,11 @@ namespace ExplorerNative
             private readonly float[] _in, _out;
             private readonly SampleQueue _queue = new(16384);
             private readonly SampleQueue _rateQueue = new(4096);
+            private readonly SampleQueue _delay = new(4096);
+            private readonly SampleQueue _masked = new(4096);
+            private readonly VoiceMask _mask = new();
+            private readonly int _startup;
             private int _fill;
-            private float _noisy = 1, _voice = -1;
             private bool _ok = true;
 
             public ChannelPath(VoiceModel model, int rate)
@@ -225,17 +226,26 @@ namespace ExplorerNative
                     _up = new SincResampler(rate, model.SampleRate);
                     _down = new SincResampler(model.SampleRate, rate);
                 }
+                // The recording, held back to meet the model's voice estimate.
+                for (int i = 0; i < VoiceMask.ModelDelay; i++) _delay.Enqueue(0);
+                // Output comes a model frame and a mask hop at a time; starting
+                // with that much in hand means it never runs dry between them.
+                _startup = (int)Math.Ceiling((model.FrameLength + VoiceMask.Hop) * (double)rate / model.SampleRate) + 32;
             }
 
-            /// <summary>True once the first frame has come out, and from then on.</summary>
+            /// <summary>True once enough has come out to play without a gap, and from then on.</summary>
             public bool Ready { get; private set; }
 
-            public bool Push(float x, float noisy, float voice)
+            public bool Push(float x, float removal, float wet, float dry)
             {
-                _noisy = noisy; _voice = voice;
-                if (_up == null) { Feed(x); return _ok; }
-                _up.Push(x, _rateQueue);
-                while (_rateQueue.Count > 0) Feed(_rateQueue.Dequeue());
+                _mask.Set(removal, wet, dry);
+                if (_up == null) Feed(x);
+                else
+                {
+                    _up.Push(x, _rateQueue);
+                    while (_rateQueue.Count > 0) Feed(_rateQueue.Dequeue());
+                }
+                if (!Ready && _queue.Count >= _startup) Ready = true;
                 return _ok;
             }
 
@@ -243,13 +253,18 @@ namespace ExplorerNative
 
             private void Feed(float x)
             {
+                _delay.Enqueue(x);
                 _in[_fill++] = x;
                 if (_fill < _in.Length) return;
                 _fill = 0;
-                if (!_model.Process(_in, _out, _noisy, _voice)) { _ok = false; return; }
-                if (_down == null) for (int i = 0; i < _out.Length; i++) _queue.Enqueue(_out[i]);
-                else for (int i = 0; i < _out.Length; i++) _down.Push(_out[i], _queue);
-                Ready = true;
+                // The model gives its voice alone; the mask takes it from the recording.
+                if (!_model.Process(_in, _out, 0, 1)) { _ok = false; return; }
+                for (int i = 0; i < _out.Length; i++) _mask.Push(_delay.Dequeue(), _out[i], _masked);
+                while (_masked.Count > 0)
+                {
+                    float y = _masked.Dequeue();
+                    if (_down == null) _queue.Enqueue(y); else _down.Push(y, _queue);
+                }
             }
 
             public void Release() => VoiceModel.Give(_model);
@@ -421,6 +436,203 @@ namespace ExplorerNative
         }
     }
 
+    /// <summary>
+    /// The second stage (7.3.1). The model's own output works in 32 wide
+    /// bands, so wherever a voice and the room share a band, taking the model's
+    /// voice away left part of the voice behind, and Conner could hear it. This
+    /// takes the model's voice estimate and the recording through a much finer
+    /// transform (1024 points at 48 kilohertz, 513 bands 47 hertz apart), and in
+    /// each band keeps only what is not voice: the band's share is what is left
+    /// over once the voice is taken away, set against the voice weighted
+    /// <see cref="Alpha"/> times. The voice estimate is spread one band either
+    /// side, for the edges of each harmonic, and held as it decays, so a word's
+    /// echo goes with the word. Real gains on the recording's own spectrum, so
+    /// what is kept is the recording itself, never a reconstruction.
+    ///
+    /// Stream 0 is the recording; any further streams are only for the tests,
+    /// and get the same gains, so a test can mix a voice and a room, run the
+    /// mix, and hear exactly how much of each comes out.
+    /// </summary>
+    internal sealed class VoiceMask
+    {
+        public const int Size = 1024, Hop = 256, Bins = Size / 2 + 1;
+
+        /// <summary>How far the model's output is behind its input, in samples at 48 kilohertz.</summary>
+        public const int ModelDelay = 1440;
+
+        // Tuned against Windows' voice in a reverberant, noisy room (AmbienceTests),
+        // where the model's own subtraction left the voice 14 decibels down and
+        // these leave it 40 down, for 4.5 decibels of the room. The hold is per
+        // 5.3-millisecond hop: 0.9 is a voice's echo held for about 250 ms.
+        private const float Alpha = 32f;
+        private const float Spread = 0.5f;
+        private const float HoldPerHop = 0.9f;
+        private const float RestSmoothing = 0.5f;
+
+        private static readonly float[] Window = new float[Size];
+        private static readonly float[] Cos = new float[Size / 2], Sin = new float[Size / 2];
+        private static readonly int[] Reverse = new int[Size];
+
+        static VoiceMask()
+        {
+            for (int n = 0; n < Size; n++) Window[n] = (float)(0.5 - 0.5 * Math.Cos(2 * Math.PI * n / Size));
+            for (int k = 0; k < Size / 2; k++)
+            {
+                Cos[k] = (float)Math.Cos(-2 * Math.PI * k / Size);
+                Sin[k] = (float)Math.Sin(-2 * Math.PI * k / Size);
+            }
+            int bits = 0; while ((1 << bits) < Size) bits++;
+            for (int i = 0; i < Size; i++)
+            {
+                int r = 0;
+                for (int b = 0; b < bits; b++) if ((i & (1 << b)) != 0) r |= 1 << (bits - 1 - b);
+                Reverse[i] = r;
+            }
+        }
+
+        private readonly int _streams;
+        private readonly float[][] _frames;   // each stream's last Size samples
+        private readonly float[] _voiceFrame = new float[Size];
+        private readonly float[][] _sums;     // overlap-add, per stream
+        private readonly float[] _re = new float[Size], _im = new float[Size];
+        private readonly float[] _xr = new float[Bins], _xi = new float[Bins];
+        private readonly float[] _voice = new float[Bins], _held = new float[Bins], _rest = new float[Bins];
+        private readonly float[] _gain = new float[Bins];
+        private int _fill;
+        private float _alpha, _wet = 1, _dry;
+
+        public VoiceMask(int streams = 1)
+        {
+            _streams = streams;
+            _frames = new float[streams][];
+            _sums = new float[streams][];
+            for (int s = 0; s < streams; s++) { _frames[s] = new float[Size]; _sums[s] = new float[Size]; }
+        }
+
+        /// <summary>removal 0 to 1; wet, the ambience's gain; dry, the recording mixed back in.</summary>
+        public void Set(float removal, float wet, float dry)
+        {
+            _alpha = Alpha * removal * removal;
+            _wet = wet; _dry = dry;
+        }
+
+        /// <summary>One sample of the recording and of the model's voice, lined up; output comes Size samples later.</summary>
+        public void Push(float recording, float voice, SampleQueue output)
+        {
+            _frames[0][Size - Hop + _fill] = recording;
+            _voiceFrame[Size - Hop + _fill] = voice;
+            if (++_fill < Hop) return;
+            _fill = 0;
+            Run();
+            Emit(0, output);
+        }
+
+        /// <summary>For the tests: the recording, the voice, and the further streams, which get the same gains.</summary>
+        internal void Push(float recording, float voice, float[] others, SampleQueue[] outputs)
+        {
+            for (int s = 1; s < _streams; s++) _frames[s][Size - Hop + _fill] = others[s - 1];
+            _frames[0][Size - Hop + _fill] = recording;
+            _voiceFrame[Size - Hop + _fill] = voice;
+            if (++_fill < Hop) return;
+            _fill = 0;
+            Run();
+            for (int s = 0; s < _streams; s++) Emit(s, outputs[s]);
+        }
+
+        private void Run()
+        {
+            // The recording and the voice in one complex transform, then apart.
+            var x = _frames[0];
+            for (int n = 0; n < Size; n++) { _re[n] = x[n] * Window[n]; _im[n] = _voiceFrame[n] * Window[n]; }
+            Fft(_re, _im);
+            for (int k = 0; k < Bins; k++)
+            {
+                int m = (Size - k) & (Size - 1);
+                float xr = (_re[k] + _re[m]) * 0.5f, xi = (_im[k] - _im[m]) * 0.5f;
+                float vr = (_im[k] + _im[m]) * 0.5f, vi = (_re[m] - _re[k]) * 0.5f;
+                _xr[k] = xr; _xi[k] = xi;
+                _voice[k] = vr * vr + vi * vi;
+                float rr = xr - vr, ri = xi - vi;
+                _rest[k] = RestSmoothing * _rest[k] + (1 - RestSmoothing) * (rr * rr + ri * ri);
+            }
+
+            for (int k = 0; k < Bins; k++)
+            {
+                float v = _voice[k];
+                if (k > 0) v = Math.Max(v, Spread * _voice[k - 1]);
+                if (k < Bins - 1) v = Math.Max(v, Spread * _voice[k + 1]);
+                float held = Math.Max(v, _held[k] * HoldPerHop);
+                _held[k] = held;
+                float rest = _rest[k];
+                float g = rest / (rest + _alpha * held + 1e-20f);
+                _gain[k] = _wet * g + _dry;
+            }
+
+            for (int s = 0; s < _streams; s++)
+            {
+                if (s == 0) Inverse(_xr, _xi, _sums[0]);
+                else
+                {
+                    var f = _frames[s];
+                    for (int n = 0; n < Size; n++) { _re[n] = f[n] * Window[n]; _im[n] = 0; }
+                    Fft(_re, _im);
+                    var sr = new float[Bins]; var si = new float[Bins];
+                    Array.Copy(_re, sr, Bins); Array.Copy(_im, si, Bins);
+                    Inverse(sr, si, _sums[s]);
+                }
+                Array.Copy(_frames[s], Hop, _frames[s], 0, Size - Hop);
+            }
+            Array.Copy(_voiceFrame, Hop, _voiceFrame, 0, Size - Hop);
+        }
+
+        /// <summary>Gains on a spectrum, back to samples, windowed and added in.</summary>
+        private void Inverse(float[] xr, float[] xi, float[] sum)
+        {
+            for (int k = 0; k < Bins; k++)
+            {
+                float g = _gain[k];
+                _re[k] = xr[k] * g; _im[k] = -xi[k] * g; // conjugated: the forward transform runs the inverse
+                if (k > 0 && k < Size / 2) { _re[Size - k] = xr[k] * g; _im[Size - k] = xi[k] * g; }
+            }
+            Fft(_re, _im);
+            // Hann in and out at a quarter overlap adds up to 1.5.
+            const float Scale = 1f / (Size * 1.5f);
+            for (int n = 0; n < Size; n++) sum[n] += _re[n] * Window[n] * Scale;
+        }
+
+        private void Emit(int s, SampleQueue output)
+        {
+            var sum = _sums[s];
+            for (int n = 0; n < Hop; n++) output.Enqueue(sum[n]);
+            Array.Copy(sum, Hop, sum, 0, Size - Hop);
+            Array.Clear(sum, Size - Hop, Hop);
+        }
+
+        private static void Fft(float[] re, float[] im)
+        {
+            for (int i = 0; i < Size; i++)
+            {
+                int j = Reverse[i];
+                if (j > i) { (re[i], re[j]) = (re[j], re[i]); (im[i], im[j]) = (im[j], im[i]); }
+            }
+            for (int len = 2; len <= Size; len <<= 1)
+            {
+                int half = len >> 1, step = Size / len;
+                for (int start = 0; start < Size; start += len)
+                {
+                    for (int k = 0; k < half; k++)
+                    {
+                        float c = Cos[k * step], s = Sin[k * step];
+                        int a = start + k, b = a + half;
+                        float tr = re[b] * c - im[b] * s, ti = re[b] * s + im[b] * c;
+                        re[b] = re[a] - tr; im[b] = im[a] - ti;
+                        re[a] += tr; im[a] += ti;
+                    }
+                }
+            }
+        }
+    }
+
     /// <summary>A fixed ring of samples that grows if it has to.</summary>
     internal sealed class SampleQueue
     {
@@ -430,6 +642,8 @@ namespace ExplorerNative
         public SampleQueue(int capacity) => _ring = new float[capacity];
 
         public int Count => _count;
+
+        public void Clear() { _head = 0; _count = 0; }
 
         public void Enqueue(float x)
         {
