@@ -2156,10 +2156,10 @@ namespace ExplorerNative
                     // part on its own the gains the mix was given.
                     var dry = new float[voice.Length / 2];
                     for (int i = 0; i < dry.Length; i++) dry[i] = voice[2 * i];
-                    var (voiceLeft, roomKept) = Separate(Reverberant(dry, rate), Room(dry, rate), 1f);
+                    var (voiceLeft, roomKept, heard) = Separate(Reverberant(dry, rate), Room(dry, rate), 1f);
                     Check("the voice in a room is gone", voiceLeft < -35,
-                        "voice " + voiceLeft.ToString("0.0") + " dB, room " + roomKept.ToString("0.0") + " dB");
-                    Check("the room is kept", roomKept > -6, roomKept.ToString("0.0") + " dB");
+                        "voice " + voiceLeft.ToString("0.0") + " dB, room under the mask " + roomKept.ToString("0.0") + " dB");
+                    Check("the room plays at its own level, filled in where the voice was", Math.Abs(heard) < 3, heard.ToString("0.0") + " dB against the room");
 
                 }
             }
@@ -2228,7 +2228,7 @@ namespace ExplorerNative
         /// each part on its own given the same gains: how much of each is left,
         /// in decibels. Mono at 48 kilohertz.
         /// </summary>
-        private static (double voice, double room) Separate(float[] voice, float[] room, float removal)
+        private static (double voice, double room, double heard) Separate(float[] voice, float[] room, float removal)
         {
             using var model = VoiceModel.Create()!;
             var mask = new VoiceMask(3);
@@ -2265,8 +2265,7 @@ namespace ExplorerNative
                 for (int k = skip; k < i && k < source.Length; k++) pIn += source[k] * (double)source[k];
                 return 10 * Math.Log10(Math.Max(1e-20, pOut) / Math.Max(1e-20, pIn));
             }
-            outs[0].Clear();
-            return (Level(outs[1], voice), Level(outs[2], room));
+            return (Level(outs[1], voice), Level(outs[2], room), Level(outs[0], room));
         }
 
         /// <summary>A voice in a room: the dry voice plus two thousand echoes dying away over 600 milliseconds.</summary>

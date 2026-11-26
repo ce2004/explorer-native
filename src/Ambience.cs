@@ -437,21 +437,29 @@ namespace ExplorerNative
     }
 
     /// <summary>
-    /// The second stage (7.3.1). The model's own output works in 32 wide
-    /// bands, so wherever a voice and the room share a band, taking the model's
-    /// voice away left part of the voice behind, and Conner could hear it. This
+    /// The second stage. The model's own output works in 32 wide bands, so
+    /// wherever a voice and the room share a band, taking the model's voice away
+    /// left part of the voice behind, and Conner could hear it (7.3.0). This
     /// takes the model's voice estimate and the recording through a much finer
     /// transform (1024 points at 48 kilohertz, 513 bands 47 hertz apart), and in
     /// each band keeps only what is not voice: the band's share is what is left
     /// over once the voice is taken away, set against the voice weighted
     /// <see cref="Alpha"/> times. The voice estimate is spread one band either
-    /// side, for the edges of each harmonic, and held as it decays, so a word's
-    /// echo goes with the word. Real gains on the recording's own spectrum, so
-    /// what is kept is the recording itself, never a reconstruction.
+    /// side, for the edges of each harmonic, held as it decays (7.3.1), and from
+    /// 7.3.2 also summed into an echo that dies away the way a room's does, so a
+    /// word's echo goes with the word.
+    ///
+    /// Taking a voice out takes the room under it too, and in 7.3.1 that made
+    /// the room drop 10 to 15 decibels whenever anyone spoke. So, like an
+    /// ambience match, each band follows the room's own level, the quietest it
+    /// has been in the last second and a half (between syllables, a band is
+    /// only the room), and where the mask took sound out, that much of the
+    /// room's sound is put back, in random phase: the room plays on steadily
+    /// under the words. Measured on real voices (docs\audio-player.md, 7.3.2).
     ///
     /// Stream 0 is the recording; any further streams are only for the tests,
-    /// and get the same gains, so a test can mix a voice and a room, run the
-    /// mix, and hear exactly how much of each comes out.
+    /// and get the same gains without the fill, so a test can mix a voice and a
+    /// room, run the mix, and hear exactly how much of each comes through.
     /// </summary>
     internal sealed class VoiceMask
     {
@@ -460,14 +468,22 @@ namespace ExplorerNative
         /// <summary>How far the model's output is behind its input, in samples at 48 kilohertz.</summary>
         public const int ModelDelay = 1440;
 
-        // Tuned against Windows' voice in a reverberant, noisy room (AmbienceTests),
-        // where the model's own subtraction left the voice 14 decibels down and
-        // these leave it 40 down, for 4.5 decibels of the room. The hold is per
-        // 5.3-millisecond hop: 0.9 is a voice's echo held for about 250 ms.
-        private const float Alpha = 32f;
+        // Tuned on ten studio recordings of two real voices (the EARS set), in
+        // a room with echo and with noise 5 and 15 decibels under the voice.
+        // Per 5.3-millisecond hop: a hold of 0.9 is about 250 ms, an echo
+        // decay of 0.97 is a room whose echo dies 60 decibels in about 1.2 s.
+        // Alpha 512 took out 8 decibels more voice, and was left alone because
+        // the model's mistakes (a door, a bird) would be taken out as hard.
+        private const float Alpha = 128f;
         private const float Spread = 0.5f;
         private const float HoldPerHop = 0.9f;
+        private const float EchoDecay = 0.97f;
         private const float RestSmoothing = 0.5f;
+        // The room's level per band: the quietest the smoothed band has been
+        // over eight stretches of 32 hops (1.4 s), times four, which brought
+        // the room back to within about 2 decibels of its real level.
+        private const int Stretch = 32, Stretches = 8;
+        private const float FloorBias = 4f, FloorSmoothing = 0.85f;
 
         private static readonly float[] Window = new float[Size];
         private static readonly float[] Cos = new float[Size / 2], Sin = new float[Size / 2];
@@ -497,9 +513,14 @@ namespace ExplorerNative
         private readonly float[] _re = new float[Size], _im = new float[Size];
         private readonly float[] _xr = new float[Bins], _xi = new float[Bins];
         private readonly float[] _voice = new float[Bins], _held = new float[Bins], _rest = new float[Bins];
+        private readonly float[] _echo = new float[Bins], _smoothed = new float[Bins], _lowest = new float[Bins];
+        private readonly float[][] _lows = new float[Stretches][];
+        private int _hops, _lowCount;
         private readonly float[] _gain = new float[Bins];
+        private readonly float[] _fr = new float[Bins], _fi = new float[Bins];
         private int _fill;
-        private float _alpha, _wet = 1, _dry;
+        private float _alpha, _wet = 1, _dry, _refill;
+        private uint _random = 0x9E3779B9;
 
         public VoiceMask(int streams = 1)
         {
@@ -507,12 +528,15 @@ namespace ExplorerNative
             _frames = new float[streams][];
             _sums = new float[streams][];
             for (int s = 0; s < streams; s++) { _frames[s] = new float[Size]; _sums[s] = new float[Size]; }
+            for (int i = 0; i < Stretches; i++) _lows[i] = new float[Bins];
+            Array.Fill(_lowest, float.MaxValue);
         }
 
         /// <summary>removal 0 to 1; wet, the ambience's gain; dry, the recording mixed back in.</summary>
         public void Set(float removal, float wet, float dry)
         {
             _alpha = Alpha * removal * removal;
+            _refill = removal;
             _wet = wet; _dry = dry;
         }
 
@@ -563,14 +587,46 @@ namespace ExplorerNative
                 if (k < Bins - 1) v = Math.Max(v, Spread * _voice[k + 1]);
                 float held = Math.Max(v, _held[k] * HoldPerHop);
                 _held[k] = held;
+                float echo = EchoDecay * _echo[k] + v;
+                _echo[k] = echo;
                 float rest = _rest[k];
-                float g = rest / (rest + _alpha * held + 1e-20f);
+                float g = rest / (rest + _alpha * (held + echo) + 1e-20f);
                 _gain[k] = _wet * g + _dry;
+
+                // The room's level in this band, and as much of it put back as the mask took away.
+                float power = _xr[k] * _xr[k] + _xi[k] * _xi[k];
+                float smoothed = _hops == 0 ? power : FloorSmoothing * _smoothed[k] + (1 - FloorSmoothing) * power;
+                _smoothed[k] = smoothed;
+                if (smoothed < _lowest[k]) _lowest[k] = smoothed;
+                float floor = _lowest[k];
+                for (int i = 0; i < _lowCount; i++) if (_lows[i][k] < floor) floor = _lows[i][k];
+                // Only as much as the mask took: where it kept everything, nothing is added.
+                float gap = FloorBias * floor * (1 - g * g) * _refill;
+                if (gap > 0)
+                {
+                    float magnitude = MathF.Sqrt(gap) * _wet;
+                    _random ^= _random << 13; _random ^= _random >> 17; _random ^= _random << 5;
+                    float angle = _random * (2 * MathF.PI / 4294967296f);
+                    var (sin, cos) = MathF.SinCos(angle);
+                    _fr[k] = magnitude * cos; _fi[k] = magnitude * sin;
+                }
+                else { _fr[k] = 0; _fi[k] = 0; }
+            }
+
+            if (++_hops % Stretch == 0)
+            {
+                // A stretch done: its lowest goes into the ring, the oldest falls out.
+                var oldest = _lows[Stretches - 1];
+                Array.Copy(_lows, 0, _lows, 1, Stretches - 1);
+                _lows[0] = oldest;
+                Array.Copy(_lowest, oldest, Bins);
+                Array.Fill(_lowest, float.MaxValue);
+                if (_lowCount < Stretches) _lowCount++;
             }
 
             for (int s = 0; s < _streams; s++)
             {
-                if (s == 0) Inverse(_xr, _xi, _sums[0]);
+                if (s == 0) Inverse(_xr, _xi, _sums[0], true);
                 else
                 {
                     var f = _frames[s];
@@ -578,21 +634,24 @@ namespace ExplorerNative
                     Fft(_re, _im);
                     var sr = new float[Bins]; var si = new float[Bins];
                     Array.Copy(_re, sr, Bins); Array.Copy(_im, si, Bins);
-                    Inverse(sr, si, _sums[s]);
+                    Inverse(sr, si, _sums[s], false);
                 }
                 Array.Copy(_frames[s], Hop, _frames[s], 0, Size - Hop);
             }
             Array.Copy(_voiceFrame, Hop, _voiceFrame, 0, Size - Hop);
         }
 
-        /// <summary>Gains on a spectrum, back to samples, windowed and added in.</summary>
-        private void Inverse(float[] xr, float[] xi, float[] sum)
+        /// <summary>Gains on a spectrum, and the room's fill if asked, back to samples, windowed and added in.</summary>
+        private void Inverse(float[] xr, float[] xi, float[] sum, bool fill)
         {
             for (int k = 0; k < Bins; k++)
             {
                 float g = _gain[k];
-                _re[k] = xr[k] * g; _im[k] = -xi[k] * g; // conjugated: the forward transform runs the inverse
-                if (k > 0 && k < Size / 2) { _re[Size - k] = xr[k] * g; _im[Size - k] = xi[k] * g; }
+                float yr = xr[k] * g, yi = xi[k] * g;
+                if (fill) { yr += _fr[k]; yi += _fi[k]; }
+                if (k == 0 || k == Size / 2) yi = 0;
+                _re[k] = yr; _im[k] = -yi; // conjugated: the forward transform runs the inverse
+                if (k > 0 && k < Size / 2) { _re[Size - k] = yr; _im[Size - k] = yi; }
             }
             Fft(_re, _im);
             // Hann in and out at a quarter overlap adds up to 1.5.

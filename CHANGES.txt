@@ -1,3 +1,6 @@
+7.3.2
+Bug fixed: with Ambience on, the voice's echo could still be heard after each word, and the room dropped away whenever someone spoke, so it pumped up and down. Ambience now takes the echo out with the voice, and fills the room back in where the voice was, so the background plays on steadily under the words. Whispers are taken out too.
+
 7.3.1
 Bug fixed: with Ambience on, you could still hear the voice. Ambience now looks at the sound in much finer detail, and keeps the voice out through its echo too, so far less of it gets through. In testing, the voice that was left dropped from about a fifth of its loudness to about a hundredth.
 
